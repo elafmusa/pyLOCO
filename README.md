@@ -8,6 +8,7 @@ Please contact: <elaf.musa@desy.de>
 
 # Installation
 
+```bash
 git clone https://github.com/elafmusa/pyLOCO
 cd pyLOCO
 pip install -e .    # or: pip install .
