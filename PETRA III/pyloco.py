@@ -239,7 +239,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
     individuals, HCMCoupling, VCMCoupling, block="quads",
     auto_correct_delta=auto_correct_delta,
     fit_cfg=fit_cfg,
-    log_filename="quad_jacobian_logs.txt",
+    log_filename="quad_jacobian_logs.txt"
 )
     else:
         J_quad, delta = None, None
@@ -563,7 +563,7 @@ def calculate_quads_tilt_jacobian(
     ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C, individuals,
     HCMCoupling, VCMCoupling, auto_correct_delta=True,
     processes=None,
-    log_filename="quad_jacobian_logs.txt", quads_tilt_fit=None, fit_cfg=None
+    log_filename="quads_tilt_jacobian_logs.txt", quads_tilt_fit=None, fit_cfg=None,rf_step=None
 ):
 
     shm_C   = shared_memory.SharedMemory(create=True, size=C.nbytes)
@@ -589,7 +589,7 @@ def calculate_quads_tilt_jacobian(
                 quad_index, ring, dkick, bpm_indexes, used_cor_ind, dk, individuals
                 , auto_correct_delta,
                 HCMCoupling, VCMCoupling,
-                tilt_fit_i
+                tilt_fit_i,fit_cfg
             ))
 
         with ctx.Pool(
@@ -620,9 +620,9 @@ def calculate_quads_tilt_jacobian(
             try:
                 with open(log_filename, "w", encoding="utf-8") as f:
                     f.write("\n".join(all_logs) + "\n")
-                print(f"[calculate_quads_jacobian] Logs saved to '{os.path.abspath(log_filename)}'")
+                print(f"[calculate_quads_tilt_jacobian] Logs saved to '{os.path.abspath(log_filename)}'")
             except Exception as e:
-                print(f"[calculate_quads_jacobian] Could not write logs: {e}")
+                print(f"[calculate_quads_tilt_jacobian] Could not write logs: {e}")
 
         return J_quad, delta_vec
 
@@ -637,11 +637,9 @@ def calculate_quads_tilt_jacobian(
             pass
 
 
-
-
 def generating_quads_tilt_response_matrices(
     quad_index, ring, dkick, bpm_indexes, cor_indexes, delta_init, individuals,
-    auto_correct_delta, HCMCoupling, VCMCoupling, quads_tilt_fit, rf_step
+    auto_correct_delta, HCMCoupling, VCMCoupling, quads_tilt_fit,fit_cfg
 ):
     logs = []
 
@@ -656,12 +654,11 @@ def generating_quads_tilt_response_matrices(
     while DeltaCheckFlag:
 
 
-
         set_correction_tilt(ring, psi_values=delta_local + quads_tilt_fit,
                             elem_ind=group, individuals=individuals, config=fit_cfg)
 
         cfg = RMConfig(dkick=dkick, bpm_ords=bpm_indexes, cm_ords=cor_indexes, HCMCoupling=HCMCoupling,
-                       VCMCoupling=VCMCoupling, rfStep=rf_step)
+                       VCMCoupling=VCMCoupling)
         C_measured = response_matrix(ring, config=cfg)
 
         C_measured = G_C @ C_measured
@@ -870,7 +867,7 @@ def calculate_corrector_coupling_jacobian(
 
 
     cfg = RMConfig(dkick=cor_kicks, bpm_ords=bpm_ords, cm_ords=cm_ords, HCMCoupling=HCMCoupling,
-                   VCMCoupling=VCMCoupling, rfStep=rf_step)
+                   VCMCoupling=VCMCoupling)
     GR = response_matrix(ring, config=cfg)
 
 
@@ -2202,6 +2199,8 @@ svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', in
                            VCMCoupling=VCMCoupling, rfStep=rfStep)
             orm_model_LM = response_matrix(ring, config=cfg)
 
+
+
             C11 = hbpm_gain # shape (239,)
             C12 = hbpm_coupling
             C21 = vbpm_coupling
@@ -2240,6 +2239,7 @@ svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', in
             measured_orm_flat = orm_measured.reshape(-1, 1, order='F')
             model_orm_flat_LM = orm_model_LM.reshape(-1, 1, order='F')
             J_flat_LM = full_jacobian_LM.transpose(1, 2, 0).reshape(-1, full_jacobian_LM.shape[0], order='F')
+
 
 
             if remove_coupling_ == True:
