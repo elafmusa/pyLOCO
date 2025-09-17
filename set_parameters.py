@@ -68,9 +68,9 @@ def _resolve_attr_for_block(block: str, config: Optional[object]) -> tuple[str, 
         idx  = _cfg_get(config, "quads_attr_index", None)
         name, idx_from_spec = _parse_attr_and_index(spec, "PolynomB", 1)
     elif block == "skew_quads":
-        spec = _cfg_get(config, "skew_attr", "PolynomA[1]")
+        spec = _cfg_get(config, "skew_attr", "PolynomB[1]")
         idx  = _cfg_get(config, "skew_attr_index", None)
-        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomA", 1)
+        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomB", 1)
     else:
         # sensible default
         spec = "PolynomB[1]"
@@ -84,9 +84,9 @@ def _resolve_attr_for_block(block: str, config: Optional[object]) -> tuple[str, 
 
 def _resolve_attr_for_block_read(block: str, cfg) -> tuple[str, Optional[int]]:
     if block == "skew_quads":
-        spec = _cfg_get(cfg, "skew_attr", "PolynomA[1]")
+        spec = _cfg_get(cfg, "skew_attr", "PolynomB[1]")
         idx  = _cfg_get(cfg, "skew_attr_index", None)
-        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomA", 1)
+        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomB", 1)
     else:
         spec = _cfg_get(cfg, "quads_attr", "PolynomB[1]")
         idx  = _cfg_get(cfg, "quads_attr_index", None)
@@ -281,9 +281,9 @@ def _resolve_attr_for_block_read(
     Defaults: quads -> PolynomB[1]; skew_quads -> PolynomA[1].
     """
     if block == "skew_quads":
-        spec = _cfg_get(cfg, "skew_attr", "PolynomA[1]")
+        spec = _cfg_get(cfg, "skew_attr", "PolynomB[1]")
         idx  = _cfg_get(cfg, "skew_attr_index", None)
-        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomA", 1)
+        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomB", 1)
         return name, (idx_from_spec if idx_from_spec is not None else idx)
     else:  # "quads"
         spec = _cfg_get(cfg, "quads_attr", "PolynomB[1]")
@@ -300,8 +300,8 @@ def _initial_values_for_block(ring, ords, *, block: str, individuals: bool, conf
     """
     # decide which attribute to read from config
     if block == "skew_quads":
-        attr_spec = getattr(config, "skew_attr", "PolynomA[1]")
-        default = ("PolynomA", 1)
+        attr_spec = getattr(config, "skew_attr", "PolynomB[1]")
+        default = ("PolynomB", 1)
     else:
         attr_spec = getattr(config, "quads_attr", "PolynomB[1]")
         default = ("PolynomB", 1)
