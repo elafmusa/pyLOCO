@@ -1,0 +1,6 @@
+README.md
+setup.py
+pyLOCO.egg-info/PKG-INFO
+pyLOCO.egg-info/SOURCES.txt
+pyLOCO.egg-info/dependency_links.txt
+pyLOCO.egg-info/top_level.txt
