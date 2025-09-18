@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 LOGGER = logging.getLogger(__name__)
 import time
 from initial_fit import build_initial_fit_parameters
-from set_parameters import set_correction, set_correction_tilt, _resolve_attr_for_block_read, _get_attr_scalar, _initial_values_for_block
+from set_parameters import set_correction, set_correction_tilt, _get_attr_scalar, _initial_values_for_block, _resolve_attr_for_block_read
 import os
 import multiprocessing as mp
 from multiprocessing import shared_memory
@@ -206,7 +206,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                      include_cor_kick=False, include_cor_coupling=False, include_bpm_coupling=False,
                      include_delta_RF_frequency=False, include_HCMEnergyShift=False, include_VCMEnergyShift=False,
                      rf_step=fixed_parameters.rfstep
-                     ,individuals=False, auto_correct_delta=True,HCMCoupling = None, VCMCoupling = None, measured_eta_x=None, measured_eta_y=None,quads_tilt_fit=None, Frequency = fixed_parameters.Frequency):
+                     ,individuals=False, auto_correct_delta=True,HCMCoupling = None, VCMCoupling = None, measured_eta_x=None, measured_eta_y=None,quads_tilt_fit=None, Frequency = fixed_parameters.Frequency,fit_cfg=None):
 
     """
     Master function to compute full LOCO Jacobian including:
@@ -1575,7 +1575,7 @@ def loco_correction_lm(ring, used_bpms_ords, used_cor_ords, CMstep, nIter,
                        ver_dispersion_weight=1, outlier_rejection= False, sigma_outlier = 10
                        , nLMIter=10, max_lm_lambda=15, remove_coupling_=True,
                        show_svd_plot=False, plot_fit_parameters=False, scaled = True, Starting_Lambda = 1e-3, svd_selection_method='threshold',
-svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', individuals = True, auto_correct_delta = True, dk =None, inetial_fit_parameters = None, measured_eta_x=None, measured_eta_y=None):
+svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', individuals = True, auto_correct_delta = True, dk =None, inetial_fit_parameters = None, measured_eta_x=None, measured_eta_y=None, fit_cfg=None):
 
 
     current_dk = dk
@@ -1696,7 +1696,8 @@ svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', in
             HCMCoupling = HCMCoupling,
             measured_eta_x=measured_eta_x,
             measured_eta_y=measured_eta_y,
-            quads_tilt_fit=deltaqt
+            quads_tilt_fit=deltaqt,
+            fit_cfg =fit_cfg
         )
 
         print("Compute Jacopian Done...")
@@ -2185,13 +2186,13 @@ svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', in
                 deltaqt = np.array(fit_dict['quads_tilt']).ravel()
 
             if 'quads' in fit_list:
-                set_correction(ring, deltaq, quads_ords, individuals=individuals, block='quads')
+                set_correction(ring, deltaq, quads_ords, individuals=individuals, block='quads',config=fit_cfg)
 
             if 'skew_quads' in fit_list:
-                set_correction(ring, deltas, skew_ords, individuals=individuals, block='skew_quads')
+                set_correction(ring, deltas, skew_ords, individuals=individuals, block='skew_quads',config=fit_cfg)
 
             if 'quads_tilt' in fit_list:
-                set_correction_tilt(ring, deltaqt, quads_ords)
+                set_correction_tilt(ring, deltaqt, quads_ords,config=fit_cfg)
 
 
 
@@ -2298,15 +2299,15 @@ svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', in
 
                 if 'quads' in fit_list:
                     deltaq = delta0q
-                    set_correction(ring, deltaq, quads_ords, individuals=individuals, block='quads')
+                    set_correction(ring, deltaq, quads_ords, individuals=individuals, block='quads',config=fit_cfg)
 
                 if 'skew_quads' in fit_list:
                     deltas = delta0s
-                    set_correction(ring, deltas, skew_ords, individuals=individuals, block='skew_quads')
+                    set_correction(ring, deltas, skew_ords, individuals=individuals, block='skew_quads',config=fit_cfg)
 
                 if 'quads_tilt' in fit_list:
                     deltaqt = deltaqt0
-                    set_correction_tilt(ring, deltaqt, quads_ords)
+                    set_correction_tilt(ring, deltaqt, quads_ords,config=fit_cfg)
 
 
 

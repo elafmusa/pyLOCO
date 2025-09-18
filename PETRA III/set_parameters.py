@@ -51,7 +51,7 @@ def _resolve_attr_for_block(block: str, config: Optional[object]) -> Tuple[str, 
         raw = _cfg_get(config, "quads_attr", "PolynomB")
         idx = _cfg_get(config, "quads_attr_index", 1)  # default to PolynomB[1]
     elif block == "skew_quads":
-        raw = _cfg_get(config, "skew_attr", "PolynomB")
+        raw = _cfg_get(config, "skew_attr", "PolynomA")
         idx = _cfg_get(config, "skew_attr_index", 1)
     else:
         raw, idx = "PolynomB", 1
@@ -68,9 +68,9 @@ def _resolve_attr_for_block(block: str, config: Optional[object]) -> tuple[str, 
         idx  = _cfg_get(config, "quads_attr_index", None)
         name, idx_from_spec = _parse_attr_and_index(spec, "PolynomB", 1)
     elif block == "skew_quads":
-        spec = _cfg_get(config, "skew_attr", "PolynomB[1]")
+        spec = _cfg_get(config, "skew_attr", "PolynomA[1]")
         idx  = _cfg_get(config, "skew_attr_index", None)
-        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomB", 1)
+        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomA", 1)
     else:
         # sensible default
         spec = "PolynomB[1]"
@@ -84,9 +84,9 @@ def _resolve_attr_for_block(block: str, config: Optional[object]) -> tuple[str, 
 
 def _resolve_attr_for_block_read(block: str, cfg) -> tuple[str, Optional[int]]:
     if block == "skew_quads":
-        spec = _cfg_get(cfg, "skew_attr", "PolynomB[1]")
+        spec = _cfg_get(cfg, "skew_attr", "PolynomA[1]")
         idx  = _cfg_get(cfg, "skew_attr_index", None)
-        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomB", 1)
+        name, idx_from_spec = _parse_attr_and_index(spec, "PolynomA", 1)
     else:
         spec = _cfg_get(cfg, "quads_attr", "PolynomB[1]")
         idx  = _cfg_get(cfg, "quads_attr_index", None)

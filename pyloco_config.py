@@ -80,17 +80,21 @@ class FitInitConfig:
     rfStep: float = -3000
     individuals: bool = True
     init: Optional[Dict[str, Any]] = None
-    quads_attr: str = "PolynomB"
+
+    # what to read/write for each block
+    quads_attr: str = "PolynomB"   # default quad strength holder
     quads_attr_index: Optional[int] = 1
-    skew_attr: str = "PolynomB"
+    skew_attr: str = "PolynomB"    # <- you want skew to use B? set it here.
     skew_attr_index: Optional[int] = 1
+
     quads_tilt_attr_R1: str = "R1"
     quads_tilt_attr_R2: str = "R2"
     quads_tilt_method: str = "set"
 
-def __post_init__(self):
+    def __post_init__(self):
         if self.init_policy is None:
             self.init_policy = dict(DEFAULT_INIT_POLICY)
+
 
 def _default_get_mcf(ring):
     import at
