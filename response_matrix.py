@@ -1,7 +1,7 @@
 import at
 import logging
 from pyloco_config import RMConfig as config
-from pyloco_config import _cfg_get
+from pyloco_config import _cfg_get, get_mcf
 from typing import Optional, Union, List, Tuple
 import numpy as np
 
@@ -95,7 +95,7 @@ def response_matrix(
         Dispersion0 = (ClosedOrbitDP - ClosedOrbit) / DP
         Dispersion = Dispersion0[:4,:]
         L0 = at.get_s_pos(ring, NE)
-        MCF= at.get_mcf(ring)
+        MCF= get_mcf(ring)
 
         M44HCOR = [None] * n_hcor
         M44VCOR = [None] * n_vcor
