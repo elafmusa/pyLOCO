@@ -648,7 +648,8 @@ def generating_quads_tilt_response_matrices(
     delta_local = np.atleast_1d(delta_init)[:len(group)].astype(float)
 
     RMSGoal = 1e-6
-    RMSToleranceFactor = 10.0
+    RMSGoal = 1e-6
+    RMSTol = 10.0
     DeltaCheckFlag = True
 
     while DeltaCheckFlag:
@@ -662,6 +663,10 @@ def generating_quads_tilt_response_matrices(
         C_measured = response_matrix(ring, config=cfg)
 
         C_measured = G_C @ C_measured
+
+        np.save('C_measured',C_measured)
+        np.save('G_CMODEL', G_CMODEL)
+
         Mdiff = (C_measured - G_CMODEL).ravel(order='F')
         RMSDelta = np.sqrt(np.sum(Mdiff**2) / len(Mdiff))
 
@@ -676,50 +681,31 @@ def generating_quads_tilt_response_matrices(
             raise ValueError(f"LOCO error: RMS difference invalid for group {group}")
 
         if auto_correct_delta:
-            if RMSDelta < RMSGoal / RMSToleranceFactor:
+            if RMSDelta < RMSGoal / RMSTol:
                 for idx, q in enumerate(group):
-                    logs.append(f"Parameter #{q}, delta too small, "
-                                f"RMS(Model({k0_list[idx]+delta_local[idx]:0.5g})-"
-                                f"Model({k0_list[idx]:0.5g}))={1000*RMSDelta:0.5g} mm")
-
-
-
-                set_correction_tilt(ring, psi_values = quads_tilt_fit,
-                                    elem_ind=group, individuals=individuals, config=fit_cfg)
-
-                delta_local *= (RMSGoal / RMSDelta)
-
-            elif RMSDelta > RMSGoal * RMSToleranceFactor / 3.0:
-                for idx, q in enumerate(group):
-                    logs.append(f"Parameter #{q}, delta too big, "
-                                f"RMS(Model({k0_list[idx]+delta_local[idx]:0.5g})-"
-                                f"Model({k0_list[idx]:0.5g}))={1000*RMSDelta:0.5g} mm")
-
-
-
+                    logs.append(f"Param #{q}: delta too small; RMS={1000*RMSDelta:0.5g} mm")
+                # restore to nominal before changing step
                 set_correction_tilt(ring, psi_values=quads_tilt_fit,
                                     elem_ind=group, individuals=individuals, config=fit_cfg)
-
-                delta_local *= (RMSGoal / RMSDelta)
-
+                scale = (RMSGoal / RMSDelta)
+                delta_local *= scale
+            elif RMSDelta > RMSGoal * RMSTol / 3.0:
+                for idx, q in enumerate(group):
+                    logs.append(f"Param #{q}: delta too big; RMS={1000*RMSDelta:0.5g} mm")
+                set_correction_tilt(ring, psi_values=quads_tilt_fit,
+                                    elem_ind=group, individuals=individuals, config=fit_cfg)
+                scale = (RMSGoal / RMSDelta)
+                delta_local *= scale
             else:
                 for idx, q in enumerate(group):
-                    logs.append(f"Parameter #{q}, delta OK, "
-                                f"RMS(Model({k0_list[idx]+delta_local[idx]:0.5g})-"
-                                f"Model({k0_list[idx]:0.5g}))={1000*RMSDelta:0.5g} mm")
-                    logs.append(f"Parameter #{q}, autocorrected delta = {delta_local[idx]*(RMSGoal/RMSDelta):g}")
-                delta_local *= (RMSGoal / RMSDelta)
-                DeltaCheckFlag = False
+                    logs.append(f"Param #{q}: delta OK; RMS={1000*RMSDelta:0.5g} mm")
+                # keep last delta_local used
+                break
         else:
-            DeltaCheckFlag = False
-            if RMSDelta < RMSGoal / RMSToleranceFactor:
-                for idx, q in enumerate(group):
-                    logs.append(f"WARNING: Parameter #{q}, delta small, "
-                                f"RMS(Model(Delta={delta_local[idx]:0.5g})-Nominal)={1000*RMSDelta:.6f} mm")
-            elif RMSDelta > RMSGoal * RMSToleranceFactor / 3.0:
-                for idx, q in enumerate(group):
-                    logs.append(f"WARNING: Parameter #{q}, delta large, "
-                                f"RMS(Model(Delta={delta_local[idx]:0.5g})-Nominal)={1000*RMSDelta:.6f} mm")
+            # not auto-correcting; one pass only
+            break
+
+    ring.save('lat_tilt_ppython.mat', mat_key='ring')
 
     set_correction_tilt(ring, psi_values=quads_tilt_fit,
                         elem_ind=group, individuals=individuals, config=fit_cfg)
