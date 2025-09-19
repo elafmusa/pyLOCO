@@ -84,7 +84,7 @@ class FitInitConfig:
     # what to read/write for each block
     quads_attr: str = "PolynomB"   # default quad strength holder
     quads_attr_index: Optional[int] = 1
-    skew_attr: str = "PolynomB"    # <- you want skew to use B? set it here.
+    skew_attr: str = "PolynomB"    # you want skew to use A? set it here.
     skew_attr_index: Optional[int] = 1
 
     quads_tilt_attr_R1: str = "R1"
