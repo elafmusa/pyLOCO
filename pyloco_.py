@@ -664,8 +664,6 @@ def generating_quads_tilt_response_matrices(
 
         C_measured = G_C @ C_measured
 
-        np.save('C_measured',C_measured)
-        np.save('G_CMODEL', G_CMODEL)
 
         Mdiff = (C_measured - G_CMODEL).ravel(order='F')
         RMSDelta = np.sqrt(np.sum(Mdiff**2) / len(Mdiff))
@@ -704,8 +702,6 @@ def generating_quads_tilt_response_matrices(
         else:
             # not auto-correcting; one pass only
             break
-
-    ring.save('lat_tilt_ppython.mat', mat_key='ring')
 
     set_correction_tilt(ring, psi_values=quads_tilt_fit,
                         elem_ind=group, individuals=individuals, config=fit_cfg)

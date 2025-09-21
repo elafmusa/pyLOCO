@@ -4,6 +4,9 @@ import logging
 import matplotlib.pyplot as plt
 LOGGER = logging.getLogger(__name__)
 import time
+import numpy as np
+import time
+import matplotlib.pyplot as plt
 from initial_fit import build_initial_fit_parameters
 from set_parameters import set_correction, set_correction_tilt, _get_attr_scalar, _initial_values_for_block, _resolve_attr_for_block_read
 import os
@@ -203,7 +206,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                      nHorCOR, nVerCOR, nHBPM, nVBPM, C,CAVords,
                      skew_ind=None, includeDispersion=False, delta_coupling=1e-6, delta_skew_=1e-3, delta_q_tilt=1e-6,
                      include_quads=True, include_skew=False,include_quads_tilt=False,  include_bpm_gain=False,
-                     include_cor_kick=False, include_cor_coupling=False, include_bpm_coupling=False,
+                     include_cor_kick=False, include_cor_coupling=False, include_bpm_coupling=False, quads_tilt_ind = None,
                      include_delta_RF_frequency=False, include_HCMEnergyShift=False, include_VCMEnergyShift=False,
                      rf_step=fixed_parameters.rfstep
                      ,individuals=False, auto_correct_delta=True,HCMCoupling = None, VCMCoupling = None, measured_eta_x=None, measured_eta_y=None,quads_tilt_fit=None, Frequency = fixed_parameters.Frequency,fit_cfg=None):
@@ -260,7 +263,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
 
     if include_quads_tilt == True:
         J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
-            ring, C_model, dkick, CMords, bpm_indexes, quads_ind, delta_q_tilt, C, individuals,
+            ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
             HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta,
             log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
         )
@@ -451,11 +454,19 @@ def calculate_quads_jacobian(
             J_quad    = np.empty((0, C.shape[0], C.shape[1]))
             delta_vec = np.empty((0,))
 
+
+
         if all_logs:
             try:
-                with open(log_filename, "w", encoding="utf-8") as f:
+                os.makedirs("output", exist_ok=True)
+
+                log_path = os.path.join("output", log_filename)
+
+                with open(log_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(all_logs) + "\n")
-                print(f"[calculate_quads_jacobian] Logs saved to '{os.path.abspath(log_filename)}'")
+
+                print(f"[calculate_quads_jacobian] Logs saved to '{os.path.abspath(log_path)}'")
+
             except Exception as e:
                 print(f"[calculate_quads_jacobian] Could not write logs: {e}")
 
@@ -618,11 +629,17 @@ def calculate_quads_tilt_jacobian(
 
         if all_logs:
             try:
-                with open(log_filename, "w", encoding="utf-8") as f:
+                os.makedirs("output", exist_ok=True)
+
+                log_path = os.path.join("output", log_filename)
+
+                with open(log_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(all_logs) + "\n")
-                print(f"[calculate_quads_tilt_jacobian] Logs saved to '{os.path.abspath(log_filename)}'")
+
+                print(f"[calculate_quads_jacobian] Logs saved to '{os.path.abspath(log_path)}'")
+
             except Exception as e:
-                print(f"[calculate_quads_tilt_jacobian] Could not write logs: {e}")
+                print(f"[calculate_quads_jacobian] Could not write logs: {e}")
 
         return J_quad, delta_vec
 
@@ -644,10 +661,8 @@ def generating_quads_tilt_response_matrices(
     logs = []
 
     group = [int(quad_index)] if isinstance(quad_index, (np.integer, int)) else [int(q) for q in quad_index]
-    k0_list = np.array([0 for q in group], dtype=float)
     delta_local = np.atleast_1d(delta_init)[:len(group)].astype(float)
 
-    RMSGoal = 1e-6
     RMSGoal = 1e-6
     RMSTol = 10.0
     DeltaCheckFlag = True
@@ -702,6 +717,8 @@ def generating_quads_tilt_response_matrices(
         else:
             # not auto-correcting; one pass only
             break
+
+    ring.save('lat_tilt_ppython.mat', mat_key='ring')
 
     set_correction_tilt(ring, psi_values=quads_tilt_fit,
                         elem_ind=group, individuals=individuals, config=fit_cfg)
@@ -1000,7 +1017,7 @@ def normalize_jacobian_global(J_flat, model_orm_flat, weights_flat):
 def normalize_jacobian_componentwise(ring,
     J_flat, model_orm_flat, weights_flat,
     nHBPM, nVBPM, nHorCOR, nVerCOR, cor_kicks,
-    fit_list, quads_ind, skew_ords, rf_step
+    fit_list, quads_ind, quads_tilt_ind, skew_ords, rf_step
 ):
     Mmodelsq = np.sum((model_orm_flat / weights_flat) ** 2)
 
@@ -1084,7 +1101,7 @@ def normalize_jacobian_componentwise(ring,
 
 
     if 'quads_tilt' in fit_list:
-        n = len(quads_ind)
+        n = len(quads_tilt_ind)
         J_quads = J_flat[:, idx:idx + n]
         norm = np.sqrt(np.sum((J_quads) ** 2, axis=0) / Mmodelsq)
         J_flat_normalized[:, idx:idx + n] = J_quads / norm[np.newaxis, :]
@@ -1100,494 +1117,216 @@ def normalize_jacobian_componentwise(ring,
 #                               LOCO Minimization
 # ============================================================================== #
 
-def loco_correction_gn(SC, used_bpms_ords, used_cor_ords, CMstep, nIter,
-                       nHorCOR, nVerCOR, nHBPM, nVBPM, orm_measured,
-                       cut_, weights, twiss0, elements_ind, quads_ords, skew_ords, fit_list, remove_coupling_, includeDispersion = False,hor_dispersion_weight = 1,
-                       ver_dispersion_weight = 1, outlier_rejection= False, sigma_outlier = 10, quads_kick =None
-                       , skewness=False,
-                       show_svd_plot=False, plot_fit_parameters=False, n_orbits_avg=1, svd_selection_method='threshold',
-svd_threshold=1e-3,  apply_normalization=False, normalization_mode='global', method = 'add', individuals=True, auto_correct_delta = True
+
+def _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain):
+    C11 = np.diag(np.asarray(hbpm_gain).ravel())
+    C12 = np.diag(np.asarray(hbpm_coupling).ravel())
+    C21 = np.diag(np.asarray(vbpm_coupling).ravel())
+    C22 = np.diag(np.asarray(vbpm_gain).ravel())
+    return np.block([[C11, C12], [C21, C22]])
+
+def _svd_select_indices(S, method="threshold", svd_threshold=1e-3, cut_=None,
+                        interactive=False, show_plot=False, iteration_tag=""):
+    """Return indices Ivec of singular values to keep."""
+    if method == "threshold":
+        Ivec = np.where(S > svd_threshold * np.max(S))[0]
+    elif method == "user_input" and cut_ is not None:
+        Ivec = np.arange(min(cut_, len(S)))
+    elif method == "interactive" or interactive:
+        sv_indices = np.arange(len(S))
+        plt.figure(figsize=(10, 5))
+        plt.subplot(1, 2, 1); plt.semilogy(sv_indices, S, '.-'); plt.xlabel("SV idx"); plt.ylabel("SV")
+        plt.subplot(1, 2, 2); plt.plot(sv_indices, S/np.max(S), '.-'); plt.xlabel("SV idx"); plt.ylabel("SV/max")
+        plt.tight_layout(); plt.show(); time.sleep(0.5)
+        user = input("Enter indices (e.g. 0:20 or 0,1,2): ")
+        if ':' in user:
+            a,b = user.split(':'); Ivec = np.arange(int(a), int(b))
+        else:
+            Ivec = np.array([int(x.strip()) for x in user.split(',')])
+        Ivec = Ivec[Ivec < len(S)]
+    else:
+        Ivec = np.where(S > svd_threshold * np.max(S))[0]
+
+    if show_plot:
+        sv_indices = np.arange(len(S))
+        unused = np.setdiff1d(sv_indices, Ivec)
+
+        plt.figure(figsize=(10, 3))
+        plt.semilogy(Ivec, S[Ivec], '-', color="green", label="Used")
+        if len(unused):
+            plt.semilogy(unused, S[unused], '-', color="red", label="Cut")
+
+        plt.title("SVD Spectrum", fontsize=12)
+        plt.legend(fontsize=10)
+        plt.xticks(fontsize=9)
+        plt.yticks(fontsize=9)
+        plt.tight_layout()
+        plt.show()
+
+    return Ivec
+
+def _prepare_ring_and_rmconfig(
+    base_ring, fit_vec, *, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
+    quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg,
+    used_bpms_ords, used_cor_ords, CMstep, rfStep,
+    HCMCoupling, VCMCoupling,
+    hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain,
+    HCMEnergyShift, VCMEnergyShift
+):
+    """
+    Build a *temporary* ring with the trial fit applied, and an RMConfig
+    """
+
+    prop = _pack_fit_dict(
+        fit_vec, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
+        n_quads=len(quads_ords) if quads_ords is not None else 0,
+        n_skew=len(skew_ords) if skew_ords is not None else 0,
+        n_quads_tilt=len(quads_tilt_ind) if quads_tilt_ind is not None else 0
+    )
+
+    # Copy ring and apply trial lattice changes
+    import copy
+    ring_tmp = copy.deepcopy(base_ring)
+    _apply_fit_to_ring(ring_tmp, prop, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg)
+
+
+    dkick_H = np.asarray(prop.get('hcor_cal', np.ones(nHorCOR)), dtype=float).ravel()
+    dkick_V = np.asarray(prop.get('vcor_cal', np.ones(nVerCOR)), dtype=float).ravel()
+    dkick   = [dkick_H, dkick_V]
+
+    hbpm_gain = prop.get('hbpm_gain', hbpm_gain)
+    vbpm_gain = prop.get('vbpm_gain', vbpm_gain)
+    hbpm_coupling = prop.get('hbpm_coupling', hbpm_coupling)
+    vbpm_coupling = prop.get('vbpm_coupling', vbpm_coupling)
+
+    cfg = RMConfig(
+        dkick=dkick,
+        bpm_ords=used_bpms_ords,
+        cm_ords=used_cor_ords,
+        HCMCoupling=prop.get('hcor_coupling', HCMCoupling),
+        VCMCoupling=prop.get('vcor_coupling', VCMCoupling),
+        rfStep=float(np.asarray(prop.get('delta_rf', rfStep)).ravel()[0])
+    )
+
+    Cmat = _build_C_matrix(
+        prop.get('hbpm_gain',     hbpm_gain),
+        prop.get('hbpm_coupling', hbpm_coupling),
+        prop.get('vbpm_coupling', vbpm_coupling),
+        prop.get('vbpm_gain',     vbpm_gain),
+    )
+
+    Hshift = np.asarray(prop.get('HCMEnergyShift', HCMEnergyShift), dtype=float).ravel()
+    Vshift = np.asarray(prop.get('VCMEnergyShift', VCMEnergyShift), dtype=float).ravel()
+
+    return ring_tmp, cfg, Cmat, Hshift, Vshift, prop
+
+
+
+def _pack_fit_dict(vec, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR, n_quads, n_skew, n_quads_tilt):
+
+    d = {}; i = 0
+    if 'hbpm_gain'      in fit_list: d['hbpm_gain']      = vec[i:i+nHBPM]; i += nHBPM
+    if 'hbpm_coupling'  in fit_list: d['hbpm_coupling']  = vec[i:i+nHBPM]; i += nHBPM
+    if 'vbpm_coupling'  in fit_list: d['vbpm_coupling']  = vec[i:i+nVBPM]; i += nVBPM
+    if 'vbpm_gain'      in fit_list: d['vbpm_gain']      = vec[i:i+nVBPM]; i += nVBPM
+    if 'hcor_cal'       in fit_list: d['hcor_cal']       = vec[i:i+nHorCOR]; i += nHorCOR
+    if 'vcor_cal'       in fit_list: d['vcor_cal']       = vec[i:i+nVerCOR]; i += nVerCOR
+    if 'hcor_coupling'  in fit_list: d['hcor_coupling']  = vec[i:i+nHorCOR]; i += nHorCOR
+    if 'vcor_coupling'  in fit_list: d['vcor_coupling']  = vec[i:i+nVerCOR]; i += nVerCOR
+    if 'HCMEnergyShift' in fit_list: d['HCMEnergyShift'] = vec[i:i+nHorCOR]; i += nHorCOR
+    if 'VCMEnergyShift' in fit_list: d['VCMEnergyShift'] = vec[i:i+nVerCOR]; i += nVerCOR
+    if 'delta_rf'       in fit_list: d['delta_rf']       = vec[i:i+1];       i += 1
+    if 'quads'          in fit_list: d['quads']          = vec[i:i+n_quads]; i += n_quads
+    if 'skew_quads'     in fit_list: d['skew_quads']     = vec[i:i+n_skew];  i += n_skew
+    if 'quads_tilt'     in fit_list: d['quads_tilt']     = vec[i:i+n_quads]; i += n_quads_tilt
+    return d
+
+def _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg):
+
+    if 'quads' in fit_dict:
+        set_correction(ring, np.asarray(fit_dict['quads']).ravel(),
+                       quads_ords, individuals=individuals, block='quads', config=fit_cfg)
+    if 'skew_quads' in fit_dict:
+        set_correction(ring, np.asarray(fit_dict['skew_quads']).ravel(),
+                       skew_ords, individuals=individuals, block='skew_quads', config=fit_cfg)
+    if 'quads_tilt' in fit_dict:
+        set_correction_tilt(ring, np.asarray(fit_dict['quads_tilt']).ravel(),
+                            quads_tilt_ind, config=fit_cfg)
+
+# ----------------------- SOLVERS -----------------------
+
+def solve_step_gn(J_weighted, y, svd_method, svd_threshold, cut_, show_plot, tag):
+
+    U, S, Vh = np.linalg.svd(J_weighted, full_matrices=False)
+    Ivec = _svd_select_indices(S, method=svd_method, svd_threshold=svd_threshold,
+                               cut_=cut_, show_plot=show_plot, iteration_tag=tag)
+    b = U[:, Ivec].T @ y
+    b = np.diag(1.0 / S[Ivec]) @ b
+    fit_results = Vh.T[:, Ivec] @ b
+    return fit_results.ravel(), Ivec, S
+
+def solve_step_lm(J_weighted, y, *, scaled=True, Starting_Lambda=1e-3,
+                  max_lm_lambda=15, svd_method='threshold', svd_threshold=1e-3,
+                  cut_=None, show_plot=False, tag=""):
+    """
+    One LM inner step (choose Lamda, compute update). Returns (fit_results, lambda_used, Ivec, S).
+    Note: This computes update; caller decides accept/reject after recomputing chi².
+    """
+
+    C = J_weighted.T @ J_weighted
+    ay = J_weighted.T @ y
+    lam = Starting_Lambda
+
+    Uc, Sc, Vhc = np.linalg.svd(C + (lam*np.diag(np.diag(C)) if scaled else lam*np.eye(C.shape[0])),
+                                full_matrices=False)
+    Ivec = _svd_select_indices(Sc, method=svd_method, svd_threshold=svd_threshold,
+                               cut_=cut_, show_plot=show_plot, iteration_tag=tag)
+    # Solve (Uc diag(Sc) Vc^T) b = ay   b = Vc diag(1/Sc) Uc^T ay
+    b = Uc[:, Ivec].T @ ay
+    b = np.diag(1.0 / Sc[Ivec]) @ b
+    fit_results = Vhc.T[:, Ivec] @ b
+    return fit_results.ravel(), lam, Ivec, Sc
+
+# ----------------------- MASTER pyloco FUNCTION -----------------------
+
+def pyloco(
+    ring,
+    *,
+    algorithm="lm",                # "lm" or "gn"
+    nIter=3,
+    # indices & number of elements
+    used_bpms_ords=None, used_cor_ords=None, quads_ords=None, skew_ords=None, CAVords=None,
+    nHBPM=None, nVBPM=None, nHorCOR=None, nVerCOR=None, quads_tilt_ind=None, inetial_fit_parameters = None,
+    # measurment data
+    orm_measured=None, weights=None, includeDispersion=False,
+    measured_eta_x=None, measured_eta_y=None,
+    hor_dispersion_weight=1.0, ver_dispersion_weight=1.0,
+    # Correctors kicks & RF steps
+    CMstep=None, rfStep=None,
+    # features
+    fit_list=(), individuals=True, remove_coupling_=True,
+    # outliers & normalization
+    outlier_rejection=False, sigma_outlier=10,
+    apply_normalization=False, normalization_mode='global',
+    # SVD selection
+    svd_selection_method='threshold', svd_threshold=1e-7, cut_=None,
+    show_svd_plot=False,
+    # LM options
+    nLMIter=10, Starting_Lambda=1e-3, max_lm_lambda=15, scaled=True,
+    # more options
+    plot_fit_parameters=False, auto_correct_delta=True, fixedpathlength=False,
+    fit_cfg=None,
 ):
 
-
-
-    fit_results_all = []
-    twiss_all = []
-    etax_all = []
-    etay_all = []
-    fit_dict_all = {}
-
-
-
-    for i in range(nIter):
-        print(f"\n\n========== LOCO Iteration {i+1} / {nIter} GN Method ==========\n")
-
-        print("Measuring ORM from simulation ...")
-
-
-
-        cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=cm_ords, HCMCoupling=HCMCoupling,
-                       VCMCoupling=VCMCoupling, rfStep=rf_step)
-        orm_model = response_matrix(ring, config=cfg)
-
-
-        include_quads = 'quads' in fit_list
-        include_skew = 'skew_quads' in fit_list
-        include_bpm_gain = 'hbpm_gain' in fit_list or 'vbpm_gain' in fit_list
-        include_cor_kick = 'hcor_cal' in fit_list or 'vcor_cal' in fit_list
-        include_cor_coupling = 'hcor_coupling' in fit_list or 'vcor_coupling' in fit_list
-        include_bpm_coupling = 'hbpm_coupling' in fit_list or 'vbpm_coupling' in fit_list
-        include_delta_RF_frequency = 'delta_rf' in fit_list
-        include_HCMEnergyShift = 'HCMEnergyShift' in fit_list
-        include_VCMEnergyShift = 'VCMEnergyShift' in fit_list
-
-        full_jacobian, delta, delta_skew = compute_jacobian(
-            ring, orm_model, CMstep, quads_kick,
-            used_bpms_ords, used_cor_ords, quads_ords, skew_ords,
-            nHorCOR, nVerCOR, nHBPM, nVBPM,
-            skewness=skewness,  # ← REQUIRED
-            includeDispersion=includeDispersion,
-
-            # delta_coupling uses default unless you want to set it
-            include_quads=include_quads,
-            include_skew = include_skew,
-            include_bpm_gain=include_bpm_gain,
-            include_cor_kick=include_cor_kick,
-            include_cor_coupling=include_cor_coupling,
-            include_bpm_coupling=include_bpm_coupling,
-            include_delta_RF_frequency=include_delta_RF_frequency,
-            include_HCMEnergyShift=include_HCMEnergyShift,
-            include_VCMEnergyShift=include_VCMEnergyShift,
-            bidirectional=bidirectional,
-            rm_calculator=rm_calculator,
-            rf_step=rfStep,
-            # only pass method if it’s defined; otherwise remove this line
-            method=method,
-            n_orbits_avg=n_orbits_avg, HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling
-        )
-
-
-
-        # Flatten weights if needed
-
-        weights_flat = weight_matrix(weights, includeDispersion,hor_dispersion_weight, ver_dispersion_weight, nHBPM, nVBPM, nHorCOR, nVerCOR)
-
-
-        measured_orm_flat = orm_measured.reshape(-1, 1, order='F')
-        model_orm_flat = orm_model.reshape(-1, 1, order='F')
-        J_flat = full_jacobian.transpose(1, 2, 0).reshape(-1, full_jacobian.shape[0], order='F')
-
-
-        if remove_coupling_==True:
-            print("Removing XY coupling from ORM and Jacobian and weight ...")
-            measured_orm_flat, model_orm_flat, weights_flat, J_flat,iNoCoupling = remove_coupling(measured_orm_flat, model_orm_flat, weights_flat, J_flat,
-                            nHBPM, nVBPM, nHorCOR, nVerCOR,
-                            includeDispersion)
-
-        J_weighted = J_flat / weights_flat
-
-        if outlier_rejection == True :
-
-            y = (measured_orm_flat - model_orm_flat)  # / sigma_w2
-
-            i1 = np.where(np.abs(y - np.mean(y)) >  sigma_outlier * np.std(y))[0]
-            j1 = np.where(np.abs(y - np.mean(y)) <= sigma_outlier * np.std(y))[0]
-
-            y_j1 = y[j1]
-            i2 = np.where(np.abs(y_j1 - np.mean(y_j1)) > sigma_outlier * np.std(y_j1))[0]
-            iOutliers = np.sort(np.concatenate((i1, j1[i2])))
-
-            if iOutliers.size == 0:
-                print("   No outliers in the data set.")
-            else:
-                print(
-                    f"   std(Model-Measurement) = {1000 * np.std(measured_orm_flat - model_orm_flat):.6f} mm (with outliers)")
-
-
-
-            J_weighted = np.delete(J_weighted, iOutliers, axis=0)
-            orm_measured_flat = np.delete(measured_orm_flat, iOutliers, axis=0)
-            orm_model_corr_flat = np.delete(model_orm_flat, iOutliers, axis=0)
-            J_flat = np.delete(J_flat, iOutliers, axis=0)
-            weights_flat = np.delete(weights_flat, iOutliers, axis=0)
-
-        if apply_normalization == True:
-            fit_flags = {
-                'fit_cor_cal': 'hcor_cal' in fit_list or 'vcor_cal' in fit_list,
-                'fit_cor_coupling': 'hcor_coupling' in fit_list or 'vcor_coupling' in fit_list,
-                'fit_RF_energy_shift': 'delta_rf' in fit_list,
-            }
-
-            if normalization_mode == 'global':
-                J_weighted, norm_factors = normalize_jacobian_global(J_weighted, model_orm_flat, weights_flat)
-            elif normalization_mode == 'component':
-                J_weighted, norm_factors = normalize_jacobian_componentwise(SC,
-                    J_weighted, model_orm_flat, weights_flat,
-                    nHBPM, nVBPM, nHorCOR, nVerCOR, CMstep,
-                    fit_flags, fit_list, fixed_parameters.rfstep)
-
-
-        chi2_before = compute_chi_squared(
-            orm_measured_flat,
-            orm_model_corr_flat,
-            J=J_weighted,
-            bpm_noise=weights_flat
-        )
-
-        y = (measured_orm_flat - model_orm_flat) / weights_flat
-
-
-
-
-        print(f"Initial Chi^2 before correction: {chi2_before:.4e}")
-
-        print("Performing SVD of weighted Jacobian ...")
-
-        U, S, Vh = svd(J_weighted, full_matrices=False)
-
-        V = Vh.T
-
-        if svd_selection_method == 'threshold':
-            # Keep SVs greater than threshold * max(S)
-            Ivec = np.where(S > svd_threshold * np.max(S))[0]
-
-        #elif svd_selection_method == 'rank':
-        #    print("  Performing rank-based singular value selection ...")
-        #    Ivec = []
-        #    for i in reversed(range(1, len(S) + 1)):
-        #        try:
-        #            Amod = U[:, :i] @ np.diag(S[:i])
-        #            np.linalg.lstsq(Amod, y, rcond=None)  # Check stability
-        #            Ivec = np.arange(i)
-        #            break
-        #        except np.linalg.LinAlgError:
-        #            continue
-        #    if len(Ivec) == 0:
-        #        raise RuntimeError("Rank-based selection failed: no stable solution found.")
-
-
-        elif svd_selection_method == 'rank':
-
-            print("  Performing rank-based singular value selection ...")
-            ChiSquareVector = np.full(len(S), np.nan)
-            LastGoodSvalue = 0
-
-            for i in reversed(range(1, len(S) + 1)):
-                try:
-                    # Step 1: reconstruct Amod = U_i * S_i
-                    Amod = U[:, :i] @ np.diag(S[:i])
-
-                    # Step 2: solve b = Amod \ y
-                    b = np.linalg.lstsq(Amod, y, rcond=None)[0]
-
-                    # Step 3: back-transform using V (to match MATLAB logic)
-                    b = V[:, :i] @ b
-
-                    # Step 4: compute model response update
-                    Mfit = weights_flat * (J_flat @ b)
-                    Mmodelnew = model_orm_flat + Mfit
-
-                    # Step 5: compute chi² for these SVs
-                    chi2 = np.sum(((measured_orm_flat - Mmodelnew) / weights_flat) ** 2) / len(weights_flat)
-                    ChiSquareVector[i - 1] = chi2
-
-                    # Step 6: test covariance matrix
-                    Cmod = Amod.T @ Amod
-                    np.linalg.inv(Cmod)  # will raise if ill-conditioned
-
-                    LastGoodSvalue = i
-                    Ivec = np.arange(i)
-                    break  # found the largest stable SV count
-                except np.linalg.LinAlgError:
-                    continue
-
-            if LastGoodSvalue == 0:
-                raise RuntimeError("Rank-based selection failed: no stable solution found.")
-
-
-
-        elif svd_selection_method == 'user_input':
-
-            Ivec = np.arange(min(cut_, len(S)))
-
-
-        elif svd_selection_method == 'interactive':
-
-            sv_indices = np.arange(len(S))
-
-            # ---------- Plot 1: Raw SVD spectrum BEFORE input ----------
-
-            print("\n>>> SVD plots displayed to help you choose :)")
-
-            print("You can enter a range like 0:20 for example")
-
-            plt.figure(figsize=(10, 5))
-
-            plt.subplot(1, 2, 1)
-            plt.semilogy(sv_indices, S, 'b.-')
-            plt.xlabel("Singular Value Index")
-            plt.ylabel("Magnitude")
-
-
-            plt.subplot(1, 2, 2)
-            plt.plot(sv_indices, S / np.max(S), 'b.-')
-            plt.xlabel("Singular Value Index")
-            plt.ylabel("Magnitude / max(SV)")
-
-
-            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            plt.show()
-            plt.pause(0.1)
-            time.sleep(1)
-
-            # ---------- User input ----------
-
-
-
-            user_input = input("Please enter the singulare values indices to be used (e.g. 0:20): ")
-
-            try:
-
-                if ':' in user_input:
-
-                    parts = user_input.split(':')
-
-                    start = int(parts[0])
-
-                    end = int(parts[1])
-
-                    Ivec = np.arange(start, end)
-
-                else:
-
-                    Ivec = np.array([int(x.strip()) for x in user_input.split(',')])
-
-
-                Ivec = Ivec[Ivec < len(S)]
-
-            except Exception as e:
-
-                raise ValueError("Invalid input format for singular value indices.") from e
-
-
-
-
-        if show_svd_plot:
-            plt.figure(figsize=(10, 3))
-            sv_indices = np.arange(len(S))
-
-            plt.semilogy(Ivec, S[Ivec], color='green', linewidth=1.0, label='Used')
-            unused_indices = np.setdiff1d(sv_indices, Ivec)
-            plt.semilogy(unused_indices, S[unused_indices], color='red', linewidth=1.0, label='Cut Off')
-
-            plt.xlabel("Singular Value Index")
-            plt.ylabel("Magnitude")
-            plt.title(f"SVD Spectrum (Iteration {i + 1})")
-            plt.legend()
-            plt.tight_layout()
-            plt.show()
-
-        print(f"SVD retained: {len(Ivec)} / {len(S)} singular values")
-
-        V = Vh.T
-        #Ivec = np.arange(cut_)
-        b = U[:, Ivec].T @ y
-        b = np.diag(1.0 / S[Ivec]) @ b
-        fit_results = V[:, Ivec] @ b
-
-
-
-        if apply_normalization == True:
-
-                fit_results = fit_results/norm_factors
-
-
-        fit_results_all.append(fit_results)
-
-        fit_dict = {}
-        idx = 0
-
-
-
-
-        if 'hbpm_gain' in fit_list:
-            fit_dict['hbpm_gain'] = fit_results[idx:idx + nHBPM]
-
-            idx += nHBPM
-
-        if 'vbpm_gain' in fit_list:
-            fit_dict['vbpm_gain'] = fit_results[idx:idx + nVBPM]
-            idx += nVBPM
-
-        if 'hbpm_coupling' in fit_list:
-            fit_dict['hbpm_coupling'] = fit_results[idx:idx + nHBPM]
-            idx += nHBPM
-
-        if 'vbpm_coupling' in fit_list:
-            fit_dict['vbpm_coupling'] = fit_results[idx:idx + nVBPM]
-            idx += nVBPM
-
-        if 'hcor_cal' in fit_list:
-            fit_dict['hcor_cal'] = fit_results[idx:idx + nHorCOR]
-
-            new_hcor_kick = np.array(fit_results[idx:idx + nHorCOR]).ravel()
-            CMstep[0] = CMstep[0].ravel() + new_hcor_kick
-            idx += nHorCOR
-
-        if 'vcor_cal' in fit_list:
-            fit_dict['vcor_cal'] = fit_results[idx:idx + nVerCOR]
-
-            new_vcor_kick = np.array(fit_results[idx:idx + nVerCOR]).ravel()
-            CMstep[1] = CMstep[1].ravel() + new_vcor_kick
-            idx += nVerCOR
-
-        if 'hcor_coupling' in fit_list:
-            fit_dict['hcor_coupling'] = fit_results[idx:idx + nHorCOR]
-            idx += nHorCOR
-
-        if 'vcor_coupling' in fit_list:
-            fit_dict['vcor_coupling'] = fit_results[idx:idx + nVerCOR]
-            idx += nVerCOR
-
-        if 'HCMEnergyShift' in fit_list:
-            fit_dict['HCMEnergyShift'] = fit_results[idx:idx + nHorCOR]
-            idx += nHorCOR
-
-        if 'VCMEnergyShift' in fit_list:
-            fit_dict['VCMEnergyShift'] = fit_results[idx:idx + nVerCOR]
-            idx += nVerCOR
-
-        if 'delta_rf' in fit_list:
-            fit_dict['delta_rf'] = fit_results[idx:idx + 1]
-            idx += 1
-
-        if 'quads' in fit_list:
-            fit_dict['quads'] = fit_results[idx:]
-
-        fit_dict_all[i] = fit_dict.copy()
-
-        if plot_fit_parameters:
-            print("Plotting fit parameters ...")
-            n_plots = len(fit_dict)
-            fig, axs = plt.subplots(n_plots, 1, figsize=(5, 6))
-            if n_plots == 1:
-                axs = [axs]
-
-            for ax, (key, values) in zip(axs, fit_dict.items()):
-                ax.plot(values, marker='o', linestyle='-', markersize=3)
-                ax.set_title(key.replace('_', ' ').title())
-                ax.set_ylabel("Fit Value")
-                ax.grid(True, linestyle=':', alpha=0.7)
-
-            axs[-1].set_xlabel("Index")
-            plt.suptitle(f"LOCO Fit Parameters – Iteration {i + 1}", fontsize=10)
-            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            plt.show()
-
-
-
-        ring = set_correction(ring, fit_dict['quads'], quads_ords , individuals=individuals, skewness=skewness)
-
-
-
-        print("Computing chi-squared after correction ...")
-
-
-        cfg = RMConfig(dkick=cor_kicks, bpm_ords=bpm_ords, cm_ords=cm_ords, HCMCoupling=HCMCoupling,
-                       VCMCoupling=VCMCoupling, rfStep=rf_step)
-        orm_model_ = response_matrix(ring, config=cfg)
-
-
-        weights_flat = weight_matrix(weights, includeDispersion,hor_dispersion_weight, ver_dispersion_weight, nHBPM, nVBPM, nHorCOR, nVerCOR)
-
-
-        measured_orm_flat = orm_measured.reshape(-1, 1, order='F')
-        model_orm_flat = orm_model_.reshape(-1, 1, order='F')
-        J_flat = full_jacobian.transpose(1, 2, 0).reshape(-1, full_jacobian.shape[0], order='F')
-
-        if remove_coupling_==True:
-            print("Removing XY coupling from ORM and Jacobian and weight ...")
-            measured_orm_flat, model_orm_flat, weights_flat, J_flat,iNoCoupling = remove_coupling(measured_orm_flat, model_orm_flat,
-                                                                                      weights_flat, J_flat,
-                                                                                      nHBPM, nVBPM, nHorCOR, nVerCOR,
-                                                                                      includeDispersion)
-
-        #J_weighted = J_flat / weights_flat
-
-        # If outlier rejection is active, reuse filtered vectors
-        if outlier_rejection == True:
-
-            y = (measured_orm_flat - model_orm_flat)  # / sigma_w2
-
-            i1 = np.where(np.abs(y - np.mean(y)) >  sigma_outlier * np.std(y))[0]
-            j1 = np.where(np.abs(y - np.mean(y)) <= sigma_outlier * np.std(y))[0]
-
-            y_j1 = y[j1]
-            i2 = np.where(np.abs(y_j1 - np.mean(y_j1)) > sigma_outlier * np.std(y_j1))[0]
-            iOutliers = np.sort(np.concatenate((i1, j1[i2])))
-
-            if iOutliers.size == 0:
-                print("   No outliers in the data set.")
-            else:
-                print(
-                    f"   std(Model-Measurement) = {1000 * np.std(measured_orm_flat - model_orm_flat):.6f} mm (with outliers)")
-
-
-            orm_measured_flat = np.delete(measured_orm_flat, iOutliers, axis=0)
-            orm_model_corr_flat = np.delete(model_orm_flat, iOutliers, axis=0)
-
-        chi2_after = compute_chi_squared(
-            orm_measured_flat,
-            orm_model_corr_flat,
-            J=J_weighted,
-            bpm_noise=weights_flat
-        )
-
-        print(f"Chi-squared after correction: {chi2_after:.3f}")
-
-    print("LOCO GN Correction Completed! :)")
-
-    return fit_results_all, fit_dict_all, twiss_all, etax_all, etay_all, SC
-
-def loco_correction_lm(ring, used_bpms_ords, used_cor_ords, CMstep, nIter,
-                       nHorCOR, nVerCOR, nHBPM, nVBPM, orm_measured,
-                       cut_, weights , quads_ords, fit_list, CAVords, includeDispersion=False
-                       , fixedpathlength = False, quads_tilt = None, skew_ords = None,
-                       rfStep= 40, hor_dispersion_weight=1,
-                       ver_dispersion_weight=1, outlier_rejection= False, sigma_outlier = 10
-                       , nLMIter=10, max_lm_lambda=15, remove_coupling_=True,
-                       show_svd_plot=False, plot_fit_parameters=False, scaled = True, Starting_Lambda = 1e-3, svd_selection_method='threshold',
-svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', individuals = True, auto_correct_delta = True, dk =None, inetial_fit_parameters = None, measured_eta_x=None, measured_eta_y=None, fit_cfg=None):
-
-
-    current_dk = dk
-    current_dk_skew = 1e-3
-    current_dk_q_tilt = 1e-6
-    dk_history = []
-    dk_skew_history = []
-    dk_q_tilt_history = []
-
-    fit_results_all = []
-    twiss_all = []
-    etax_all = []
-    etay_all = []
-    fit_dict_all = {}
-    fit_dict_all_ = {}
-    fit_results_all_ = []
-
-    keep_mask = slice(None)  # keep everything when used as [keep_mask]
-
-    rfStep = fixed_parameters.rfstep
-
-    hbpm_gain = np.array(np.ones((nHBPM, 1))).ravel()
-    vbpm_gain = np.array(np.ones((nVBPM, 1))).ravel()
-    hbpm_coupling = np.array(np.zeros((nHBPM, 1))).ravel()
-    vbpm_coupling = np.array(np.zeros((nVBPM, 1))).ravel()
-    HCMEnergyShift = np.array(np.zeros((nHorCOR, 1))).ravel()
-    VCMEnergyShift = np.array(np.zeros((nVerCOR, 1))).ravel()
-    HCMCoupling = np.array(np.zeros((nHorCOR, 1))).ravel()
-    VCMCoupling = np.array(np.zeros((nVerCOR, 1))).ravel()
-    deltaqt = np.array(np.zeros((len(quads_ords), 1))).ravel()
+    hbpm_gain      = np.ones(nHBPM)
+    vbpm_gain      = np.ones(nVBPM)
+    hbpm_coupling  = np.zeros(nHBPM)
+    vbpm_coupling  = np.zeros(nVBPM)
+    HCMEnergyShift = np.zeros(nHorCOR)
+    VCMEnergyShift = np.zeros(nVerCOR)
+    HCMCoupling    = np.zeros(nHorCOR)
+    VCMCoupling    = np.zeros(nVerCOR)
+    deltaqt        = np.zeros(len(quads_ords)) if ('quads_tilt' in fit_list) else None
 
     if inetial_fit_parameters is None:
 
@@ -1595,72 +1334,65 @@ svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', in
             ring=ring,
             fit_list=fit_list,
             nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
-            quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt,
+            quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
             CMstep = CMstep, rfStep = rfStep,
             individuals = individuals)
 
     inetial_fit_parameters = np.asarray(inetial_fit_parameters).ravel()
     current_fit_parameters = inetial_fit_parameters.copy()
 
-    fit_parameters_history = [current_fit_parameters.copy()]
+    # histories
+    fit_results_all = []
+    fit_dict_all    = {}
 
+    # ------- Outer iterations -------
+    for it in range(nIter):
+        print(f"\n==== Iteration {it+1}/{nIter} – {algorithm.upper()} ====")
 
-    if fixedpathlength == False or 'HCMEnergyShift' in fit_list or 'VCMEnergyShift' in fit_list:
-        Fixedmomentum = True
-    else:
-        Fixedmomentum = False
-
-
-    for i in range(nIter):
-        print(f"\n\n========== LOCO Iteration {i+1} / {nIter} LM Method ==========")
-
-        print("Measuring ORM from simulation ...")
-
-        LMlambda = Starting_Lambda
-
-
-
-        cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords, HCMCoupling=HCMCoupling,
-                       VCMCoupling=VCMCoupling, rfStep=rfStep)
+        # --- 1) ORM model (with BPM C) ---
+        cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
+                       HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep)
         orm_model = response_matrix(ring, config=cfg)
+        Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
+        orm_model = Cmat @ orm_model
 
+        if fixedpathlength:
+            AlphaMCF = get_mcf(ring)
+            Frequency = fixed_parameters.Frequency
+            eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
+            eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
+            # Modify ORM with HCMEnergyShift/VCMEnergyShift effects
+            for i in range(nHorCOR):
+                orm_model[:nHBPM, i] += HCMEnergyShift[i] * eta_x_mcf
+                orm_model[nHBPM:, i] += HCMEnergyShift[i] * eta_y_mcf
+            for i in range(nVerCOR):
+                j = nHorCOR + i
+                orm_model[:nHBPM, j] += VCMEnergyShift[i] * eta_x_mcf
+                orm_model[nHBPM:, j] += VCMEnergyShift[i] * eta_y_mcf
 
-        print("Measuring ORM from simulation Done ...")
-     
+        # --- 2) Jacobian ---
+        include_quads         = ('quads' in fit_list)
+        include_skew          = ('skew_quads' in fit_list)
+        include_quads_tilt    = ('quads_tilt' in fit_list)
+        include_bpm_gain      = ('hbpm_gain' in fit_list) or ('vbpm_gain' in fit_list)
+        include_cor_kick      = ('hcor_cal' in fit_list) or ('vcor_cal' in fit_list)
+        include_cor_coupling  = ('hcor_coupling' in fit_list) or ('vcor_coupling' in fit_list)
+        include_bpm_coupling  = ('hbpm_coupling' in fit_list) or ('vbpm_coupling' in fit_list)
+        include_HCMEnergyShift= ('HCMEnergyShift' in fit_list)
+        include_VCMEnergyShift= ('VCMEnergyShift' in fit_list)
+        include_delta_RF      = ('delta_rf' in fit_list)
 
-        C11 = hbpm_gain
-        C12 = hbpm_coupling
-        C21 = vbpm_coupling
-        C22 = vbpm_gain
-
-        C = np.block([[np.diag(C11), np.diag(C12)], [np.diag(C21), np.diag(C22)]])
-
-        orm_model = C @ orm_model
-
-        rfStep = rfStep
-
-        include_quads = 'quads' in fit_list
-        include_skew = 'skew_quads' in fit_list
-        include_quads_tilt = 'quads_tilt' in fit_list
-        include_bpm_gain = ('hbpm_gain' in fit_list) or ('vbpm_gain' in fit_list)
-        include_cor_kick = ('hcor_cal' in fit_list) or ('vcor_cal' in fit_list)
-        include_cor_coupling = ('hcor_coupling' in fit_list) or ('vcor_coupling' in fit_list)
-        include_bpm_coupling = ('hbpm_coupling' in fit_list) or ('vbpm_coupling' in fit_list)
-        include_HCMEnergyShift = ('HCMEnergyShift' in fit_list)
-        include_VCMEnergyShift = ('VCMEnergyShift' in fit_list)
-        include_delta_RF_frequency = ('delta_RF' in fit_list)
-
-        print("Compute Jacopian ...")
-        full_jacobian, delta_q, delta_skew, delta_quads_tilt = compute_jacobian(
-            ring, C_model=orm_model, dkick = CMstep,
-            bpm_indexes= used_bpms_ords, CMords = used_cor_ords, quads_ind = quads_ords,
-            nHorCOR =  nHorCOR, nVerCOR= nVerCOR, nHBPM=nHBPM, nVBPM= nVBPM,
-            C=C, CAVords=CAVords,
+        Jfull, dq, dskew, dtilt = compute_jacobian(
+            ring, C_model=orm_model, dkick=CMstep,
+            bpm_indexes=used_bpms_ords, CMords=used_cor_ords, quads_ind=quads_ords,
+            nHorCOR=nHorCOR, nVerCOR=nVerCOR, nHBPM=nHBPM, nVBPM=nVBPM,
+            C=Cmat, CAVords=CAVords,
             dk=fixed_parameters.dk,
-            skew_ind=skew_ords,
+            skew_ind=skew_ords, quads_tilt_ind=quads_tilt_ind,
             includeDispersion=includeDispersion,
+            individuals=individuals,
             delta_skew_=fixed_parameters.delta_skew,
-            delta_q_tilt = fixed_parameters.delta_q_tilt,
+            delta_q_tilt=getattr(fixed_parameters, "delta_q_tilt", 1e-6),
             include_quads=include_quads,
             include_skew=include_skew,
             include_bpm_gain=include_bpm_gain,
@@ -1668,907 +1400,286 @@ svd_threshold=1e-3,  apply_normalization=False,  normalization_mode='global', in
             include_cor_coupling=include_cor_coupling,
             include_quads_tilt=include_quads_tilt,
             include_bpm_coupling=include_bpm_coupling,
-            include_delta_RF_frequency=include_delta_RF_frequency,
+            include_delta_RF_frequency=include_delta_RF,
             include_HCMEnergyShift=include_HCMEnergyShift,
             include_VCMEnergyShift=include_VCMEnergyShift,
-            rf_step=fixed_parameters.rfstep,
-            individuals=individuals,
+            rf_step=rfStep,
             auto_correct_delta=auto_correct_delta,
-            VCMCoupling = VCMCoupling,
-            HCMCoupling = HCMCoupling,
-            measured_eta_x=measured_eta_x,
-            measured_eta_y=measured_eta_y,
-            quads_tilt_fit=deltaqt,
-            fit_cfg =fit_cfg
+            VCMCoupling=VCMCoupling, HCMCoupling=HCMCoupling,
+            measured_eta_x=measured_eta_x, measured_eta_y=measured_eta_y,
+            quads_tilt_fit=(deltaqt if deltaqt is not None else None),
+            fit_cfg=fit_cfg
         )
 
-        print("Compute Jacopian Done...")
 
-        if delta_q is not None:
-            current_dk = np.copy(delta_q)
-        dk_history.append(current_dk)
-
-        if delta_skew is not None:
-            current_dk_skew = np.copy(delta_skew)
-        dk_skew_history.append(current_dk_skew)
-
-
-        if delta_quads_tilt is not None:
-            current_dk_q_tilt = np.copy(delta_quads_tilt)
-        dk_q_tilt_history.append(current_dk_q_tilt)
-
-        if Fixedmomentum == True:
-
-            print('Fixedmomentum == True')
-
-            AlphaMCF = get_mcf(ring)
-
-            Frequency = fixed_parameters.Frequency
-            eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
-            eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
-
-            for i in range(nHorCOR):
-
-                orm_model[:nHBPM, i] = orm_model[:nHBPM, i]  + HCMEnergyShift[i] *  eta_x_mcf
-                orm_model[nHBPM:, i] = orm_model[nHBPM:, i] + HCMEnergyShift[i] * eta_y_mcf
-
-            for i in range(nVerCOR):
-
-                orm_model[:nHBPM, i + nHorCOR] = orm_model[:nHBPM, i + nHorCOR]  + VCMEnergyShift[i] *  eta_x_mcf
-                orm_model[nHBPM:, i + nHorCOR] = orm_model[nHBPM:, i + nHorCOR] + VCMEnergyShift[i] * eta_y_mcf
-
-        weights_flat = weight_matrix(weights, includeDispersion,hor_dispersion_weight, ver_dispersion_weight, nHBPM, nVBPM, nHorCOR, nVerCOR)
-        measured_orm_flat = orm_measured.reshape(-1, 1, order='F')
-        model_orm_flat = orm_model.reshape(-1, 1, order='F')
-        J_flat = full_jacobian.transpose(1, 2, 0).reshape(-1, full_jacobian.shape[0], order='F')
-
-
-
+        # --- 3) Flatten, weights, optional coupling removal/outliers ---
+        weights_flat = weight_matrix(weights, includeDispersion,
+                                     hor_dispersion_weight, ver_dispersion_weight,
+                                     nHBPM, nVBPM, nHorCOR, nVerCOR)
+        y_meas = orm_measured.reshape(-1, 1, order="F")
+        y_model = orm_model.reshape(-1, 1, order="F")
+        J = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
 
         if remove_coupling_==True:
+            y_meas, y_model, weights_flat, J, _ = remove_coupling(
+                y_meas, y_model, weights_flat, J,
+                nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
+            )
 
+        Jw = J / weights_flat
+        y = (y_meas - y_model) / weights_flat
 
-            print("Removing XY coupling from ORM and Jacobian and weight ...")
-            measured_orm_flat, model_orm_flat, weights_flat, J_flat, iNoCoupling = remove_coupling(measured_orm_flat, model_orm_flat,
-                                                                                      weights_flat, J_flat,
-                                                                                      nHBPM, nVBPM, nHorCOR, nVerCOR,
-                                                                                      includeDispersion)
-        J_weighted = J_flat / weights_flat
-
-        if outlier_rejection == True:
-            y = (measured_orm_flat - model_orm_flat).ravel()
-            y_mean = np.mean(y)
-            y_std = np.std(y, ddof=1)
-            i1 = np.where(np.abs(y - y_mean) > sigma_outlier * y_std)[0]
-            j1 = np.where(np.abs(y - y_mean) <= sigma_outlier * y_std)[0]
-
-            y_j1 = y[j1]
-            yj_mean = np.mean(y_j1)
-            yj_std = np.std(y_j1, ddof=1)
-            i2 = np.where(np.abs(y_j1 - yj_mean) > sigma_outlier * yj_std)[0]
-
-            iOutliers = np.sort(np.concatenate((i1, j1[i2])))
-
-            std_with_outliers_mm = 1000.0 * np.std(measured_orm_flat - model_orm_flat, ddof=1)
-            print(f"   std(Model-Measurement) = {std_with_outliers_mm:.6f} mm (with outliers)")
-
-            if iOutliers.size == 0:
-                print("   No outliers in the data set.")
-            else:
-                print(f"   {iOutliers.size} outliers removed out of {len(y)} points (> {sigma_outlier} sigma) "
-                      f"({len(i1)} first test + {len(i2)} second test).")
-                keep = np.ones(len(y), dtype=bool)
-                keep[iOutliers] = False
+        keep_mask = slice(None)
+        if outlier_rejection==True:
+            r = (y_meas - y_model).ravel()
+            m, s = np.mean(r), np.std(r, ddof=1)
+            i1 = np.where(np.abs(r - m) > sigma_outlier * s)[0]
+            j1 = np.where(np.abs(r - m) <= sigma_outlier * s)[0]
+            r2 = r[j1]; m2, s2 = np.mean(r2), np.std(r2, ddof=1)
+            i2 = np.where(np.abs(r2 - m2) > sigma_outlier * s2)[0]
+            out = np.sort(np.concatenate([i1, j1[i2]]))
+            if out.size:
+                keep = np.ones_like(r, dtype=bool); keep[out] = False
                 keep_mask = keep
-                measured_orm_flat = measured_orm_flat[keep_mask]
-                model_orm_flat = model_orm_flat[keep_mask]
+                y_meas = y_meas[keep_mask]; y_model = y_model[keep_mask]
                 weights_flat = weights_flat[keep_mask, :]
-                J_flat = J_flat[keep_mask, :]
-                J_weighted = J_flat / weights_flat
+                J = J[keep_mask, :]; Jw = J / weights_flat; y = (y_meas - y_model) / weights_flat
 
-                std_after_mm = 1000.0 * np.std(measured_orm_flat - model_orm_flat, ddof=1)
-                print(f"   std(Model-Measurement) = {std_after_mm:.6f} mm")
-
-        if apply_normalization == True:
-
-
+        if apply_normalization==True:
             if normalization_mode == 'global':
-                J_weighted, norm_factors = normalize_jacobian_global(J_weighted, model_orm_flat, weights_flat)
-            elif normalization_mode == 'component':
-                J_weighted, norm_factors = normalize_jacobian_componentwise(ring,
-                    J_weighted, model_orm_flat, weights_flat,
-                    nHBPM, nVBPM, nHorCOR, nVerCOR,CMstep,
-                    fit_list, quads_ords, skew_ords, fixed_parameters.rfstep
+                Jw, norm_factors = normalize_jacobian_global(Jw, y_model, weights_flat)
+            else:
+                Jw, norm_factors = normalize_jacobian_componentwise(
+                    ring, Jw, y_model, weights_flat, nHBPM, nVBPM, nHorCOR, nVerCOR, CMstep,
+                    fit_list, quads_ords, quads_tilt_ind, skew_ords, rfStep
+                )
+        else:
+            norm_factors = None
+
+        chi2_before = compute_chi_squared(y_meas, y_model, J=Jw, bpm_noise=weights_flat)
+        print(f"Initial Chi²: {chi2_before:.4e}")
+
+        # --- 4) Minimization
+
+        if algorithm.lower() == "lm":
+            # LM inner loop with accept/reject and lambda updates
+            LMlambda = Starting_Lambda
+            chi2_0 = chi2_before
+            accepted = False
+            for j in range(nLMIter):
+                fit_results, lam_used, Ivec, S = solve_step_lm(
+                    Jw, y, scaled=scaled, Starting_Lambda=LMlambda, max_lm_lambda=max_lm_lambda,
+                    svd_method=svd_selection_method, svd_threshold=svd_threshold,
+                    cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it+1}/in{j+1}"
+                )
+                # de-normalize if needed
+                if norm_factors is not None:
+                    nf = np.asarray(norm_factors)
+                    nf = np.diag(nf) if nf.ndim == 2 and nf.shape[0]==nf.shape[1] else nf.ravel()
+                    fit_results = fit_results / nf
+
+                old_fit_parameters = current_fit_parameters.copy()
+                new_vec = old_fit_parameters + fit_results
+
+                # Build temp ring + config (trial)
+                ring_tmp, cfg2, Cmat2, Hshift2, Vshift2, prop_dict = _prepare_ring_and_rmconfig(
+                    ring, new_vec,
+                    fit_list=fit_list, nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+                    quads_ords=quads_ords, quads_tilt_ind=quads_tilt_ind, skew_ords=skew_ords,
+                    individuals=individuals, fit_cfg=fit_cfg,
+                    used_bpms_ords=used_bpms_ords, used_cor_ords=used_cor_ords,
+                    CMstep=CMstep, rfStep=rfStep,
+                    HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
+                    hbpm_gain=hbpm_gain, hbpm_coupling=hbpm_coupling,
+                    vbpm_coupling=vbpm_coupling, vbpm_gain=vbpm_gain,
+                    HCMEnergyShift=HCMEnergyShift, VCMEnergyShift=VCMEnergyShift
                 )
 
-
-
-        chi2_0 = compute_chi_squared(
-            measured_orm_flat,
-            model_orm_flat,
-            J=J_weighted,
-            bpm_noise=weights_flat
-        )
-
-        print(f"Initial Chi^2 before inner loop: {chi2_0:.4e}")
-        y = (measured_orm_flat - model_orm_flat) / weights_flat
-
-        for j in range(nLMIter):
-
-            print(f"\n========== Inner Iteration {j+1} / {nLMIter} – LM ==========")
-
-            ay = J_weighted.T @ y
-            C = J_weighted.T @ J_weighted
-            C += (LMlambda * np.diag(np.diag(C)) if scaled else LMlambda * np.eye(C.shape[0]))
-
-            print("Performing SVD of weighted Jacobian ...")
-
-            U, S, Vh = np.linalg.svd(C, full_matrices=False)
-
-
-            if svd_selection_method == 'threshold':
-                # Keep SVs greater than threshold * max(S)
-                Ivec = np.where(S > svd_threshold * np.max(S))[0]
-
-
-            elif svd_selection_method == 'rank':
-
-                print("  Performing rank-based singular value selection ...")
-
-                ChiSquareVector = np.full(len(S), np.nan)
-
-                LastGoodSvalue = 0
-
-                for i in reversed(range(1, len(S) + 1)):
-
-                    try:
-
-                        # reconstruct Amod = U_i * S_i
-
-                        Amod = U[:, :i] @ np.diag(S[:i])
-
-                        # solve b = Amod \ y
-
-                        b = np.linalg.lstsq(Amod, y, rcond=None)[0]
-
-                        # back-transform using V (to match MATLAB logic)
-
-                        b = V[:, :i] @ b
-
-                        #  compute model response update
-
-                        Mfit = weights_flat * (J_flat @ b)
-
-                        Mmodelnew = model_orm_flat + Mfit
-
-                        #  compute chi² for these SVs
-
-                        chi2 = np.sum(((measured_orm_flat - Mmodelnew) / weights_flat) ** 2) / len(weights_flat)
-
-                        ChiSquareVector[i - 1] = chi2
-
-                        # test covariance matrix
-
-                        Cmod = Amod.T @ Amod
-
-                        np.linalg.inv(Cmod)  # will raise if ill-conditioned
-
-                        LastGoodSvalue = i
-
-                        Ivec = np.arange(i)
-
-                        break  # found the largest stable SV count
-
-                    except np.linalg.LinAlgError:
-
-                        continue
-
-
-
-            elif svd_selection_method == 'user_input':
-
-                Ivec = np.arange(min(cut_, len(S)))
-
-
-            elif svd_selection_method == 'interactive':
-
-                sv_indices = np.arange(len(S))
-
-                # ---------- Plot 1: Raw SVD spectrum BEFORE input ----------
-
-                print("\n>>> SVD plots displayed to help you choose :)")
-
-                print("You can enter a range like 0:20 for example")
-
-                plt.figure(figsize=(10, 5))
-
-                plt.subplot(1, 2, 1)
-                plt.semilogy(sv_indices, S, 'b.-')
-                plt.xlabel("Singular Value Index")
-                plt.ylabel("Magnitude")
-                # plt.title("Singular Value Spectrum (log scale)")
-                # plt.grid(True, linestyle=':', alpha=0.6)
-
-                plt.subplot(1, 2, 2)
-                plt.plot(sv_indices, S / np.max(S), 'b.-')
-                plt.xlabel("Singular Value Index")
-                plt.ylabel("Magnitude / max(SV)")
-                # plt.title("Normalized Singular Value Spectrum")
-                # plt.grid(True, linestyle=':', alpha=0.6)
-
-                # plt.suptitle("Inspect SVD Spectrum Before Selecting Indices", fontsize=12)
-                plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-                plt.show()
-                plt.pause(0.1)  # <- This forces the plot to render before input box appears
-                time.sleep(1)  # <- Add short sleep if still racing with input popup
-
-                # ---------- User input ----------
-
-                user_input = input("Please enter the singulare values indices to be used (e.g. 0:20): ")
-
-                try:
-
-                    if ':' in user_input:
-
-                        parts = user_input.split(':')
-
-                        start = int(parts[0])
-
-                        end = int(parts[1])
-
-                        Ivec = np.arange(start, end)
-
-                    else:
-
-                        Ivec = np.array([int(x.strip()) for x in user_input.split(',')])
-
-                    # Safety clip
-
-                    Ivec = Ivec[Ivec < len(S)]
-
-                except Exception as e:
-
-                    raise ValueError("Invalid input format for singular value indices.") from e
-
-            if show_svd_plot:
-                print("\n SVD plots displayed ..")
-                plt.figure(figsize=(10, 3))
-                sv_indices = np.arange(len(S))
-
-                plt.semilogy(Ivec, S[Ivec], color='green', linewidth=1.0, label='Used')
-                unused_indices = np.setdiff1d(sv_indices, Ivec)
-                plt.semilogy(unused_indices, S[unused_indices], color='red', linewidth=1.0, label='Cut Off')
-
-                plt.xlabel("Singular Value Index")
-                plt.ylabel("Magnitude")
-                plt.title(f"SVD Spectrum")
-                plt.legend()
-                plt.tight_layout()
-                plt.show()
-
-            print(f"SVD retained: {len(Ivec)} / {len(S)} singular values")
-
-
-
-            b = U[:, Ivec].T @ ay
-            b = np.diag(1.0 / S[Ivec]) @ b
-            b = Vh.T[:, Ivec] @ b
-
-            old_fit_parameters = current_fit_parameters.copy()
-
-            fit_results = np.asarray(b).reshape(-1)  # (nParams,)
-
-
-
-            if apply_normalization == True:
-
-                nf = np.asarray(norm_factors)
-                # reduce nf to a 1-D vector
-                if nf.ndim == 2:
-                    if nf.shape[0] == nf.shape[1]:
-                        # take per-parameter factors from diagonal
-                        nf = np.diag(nf)
-                    else:
-                        # unexpected 2D shape: fall back to flatten
-                        nf = nf.ravel()
-                else:
-                    nf = nf.ravel()
-
-                if nf.size != fit_results.size:
-                    raise ValueError(
-                        f"norm_factors size mismatch: expected {fit_results.size}, got {nf.size}"
+                # Trial ORM on the *temp* ring
+                orm_trial = response_matrix(ring_tmp, config=cfg2)
+                orm_trial = Cmat2 @ orm_trial
+
+
+
+
+                # Fixed path length adjustment (trial)
+                if fixedpathlength:
+                    AlphaMCF = get_mcf(ring_tmp)
+                    Frequency = fixed_parameters.Frequency
+                    rf_used = float(np.asarray(prop_dict.get('delta_rf', rfStep)).ravel()[0])
+                    eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rf_used
+                    eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rf_used
+                    for iH in range(nHorCOR):
+                        orm_trial[:nHBPM, iH] += Hshift2[iH] * eta_x_mcf
+                        orm_trial[nHBPM:, iH] += Hshift2[iH] * eta_y_mcf
+                    for iV in range(nVerCOR):
+                        jcol = nHorCOR + iV
+                        orm_trial[:nHBPM, jcol] += Vshift2[iV] * eta_x_mcf
+                        orm_trial[nHBPM:, jcol] += Vshift2[iV] * eta_y_mcf
+
+                y_model_trial = orm_trial.reshape(-1, 1, order="F")
+
+                if remove_coupling_:
+                    _, y_model_trial, _, _, _ = remove_coupling(
+                        orm_measured.reshape(-1, 1, order="F"), y_model_trial, None, None, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
                     )
 
+                # Flatten and compute trial chi² using the SAME keep_mask and weights
+
+                chi2_new = compute_chi_squared(y_meas[keep_mask], y_model_trial[keep_mask], J=Jw[keep_mask],
+                                               bpm_noise=weights_flat[keep_mask, :])
+
+                print(f"  LM inner {j + 1}: chi² {chi2_new:.4e} (previous {chi2_0:.4e}), λ={LMlambda:g}")
+
+                if chi2_new < chi2_0:
+                    # ACCEPT: commit everything from trial to live state
+                    chi2_0 = chi2_new
+                    LMlambda = LMlambda / 10.0
+                    accepted = True
+
+                    # Commit live vectors from prop_dict (if present)
+                    upd = prop_dict
+                    hbpm_gain = upd.get('hbpm_gain', hbpm_gain)
+                    vbpm_gain = upd.get('vbpm_gain', vbpm_gain)
+                    hbpm_coupling = upd.get('hbpm_coupling', hbpm_coupling)
+                    vbpm_coupling = upd.get('vbpm_coupling', vbpm_coupling)
+                    HCMCoupling = upd.get('hcor_coupling', HCMCoupling)
+                    VCMCoupling = upd.get('vcor_coupling', VCMCoupling)
+                    HCMEnergyShift = upd.get('HCMEnergyShift', HCMEnergyShift)
+                    VCMEnergyShift = upd.get('VCMEnergyShift', VCMEnergyShift)
+                    if 'delta_rf' in upd:
+                        rfStep = float(np.asarray(upd['delta_rf']).ravel()[0])
+
+                    if 'quads_tilt' in fit_list and ('quads_tilt' in prop_dict):
+                        deltaqt = np.asarray(prop_dict['quads_tilt']).ravel()
+
+                    # Commit CMstep base vectors if you track calibrated steps permanently:
+                    # (optional; you can also keep base CMstep fixed and only pass gains via dkick each time)
+                    if 'hcor_cal' in upd:
+                        CMstep[0] = np.asarray(upd['hcor_cal']).ravel()
+                    if 'vcor_cal' in upd:
+                        CMstep[1] = np.asarray(upd['vcor_cal']).ravel()
+
+
+                    # MOST IMPORTANT: commit lattice by replacing live ring with the accepted temp ring
+                    ring = ring_tmp
+                    current_fit_parameters = new_vec
+
+                    break
+                else:
+                    # REJECT: do not touch ring or state; increase lambda
+                    LMlambda *= 10.0
+                    if LMlambda > max_lm_lambda:
+                        print("  λ exceeded maximum; stop inner loop.")
+                        break
+
+            if not accepted:
+                fit_results = np.zeros(Jw.shape[1])
+
+
+        # GN de-normalization and application (LM handled above)
+        elif algorithm.lower() == "gn":
+
+            fit_results, Ivec, S = solve_step_gn(
+                Jw, y, svd_selection_method, svd_threshold, cut_,
+                show_svd_plot, tag=f"GN it{it + 1}"
+            )
+
+            # 2) De-normalize (if used)
+            if apply_normalization and (norm_factors is not None):
+                nf = np.asarray(norm_factors)
+                nf = np.diag(nf) if nf.ndim == 2 and nf.shape[0] == nf.shape[1] else nf.ravel()
                 fit_results = fit_results / nf
 
-
-            # Sanity checks
-            if fit_results.ndim != 1:
-                raise ValueError(f"fit_results must be 1-D, got shape {fit_results.shape}")
-            if current_fit_parameters.ndim != 1:
-                current_fit_parameters = np.asarray(current_fit_parameters).ravel()
-            if inetial_fit_parameters.ndim != 1:
-                inetial_fit_parameters = np.asarray(inetial_fit_parameters).ravel()
-
-            # Combine with previous parameters
-
-
-            idx = 0
-
-            if 'hbpm_gain' in fit_list:
-
-                idx += nHBPM
-
-            if 'hbpm_coupling' in fit_list:
-
-                idx += nHBPM
-
-            if 'vbpm_coupling' in fit_list:
-
-                idx += nVBPM
-
-            if 'vbpm_gain' in fit_list:
-
-                idx += nVBPM
-
-            if 'hcor_cal' in fit_list:
-
-                idx += nHorCOR
-
-            if 'vcor_cal' in fit_list:
-
-                idx += nVerCOR
-
-            if 'hcor_coupling' in fit_list:
-
-
-                idx += nHorCOR
-
-            if 'vcor_coupling' in fit_list:
-
-
-                idx += nVerCOR
-
-            if 'HCMEnergyShift' in fit_list:
-                idx += nHorCOR
-
-            if 'VCMEnergyShift' in fit_list:
-
-                idx += nVerCOR
-
-            if 'delta_rf' in fit_list:
-                idx += 1
-
-            if 'quads' in fit_list:
-                idx += len(quads_ords)
-
-            if 'skew_quads' in fit_list:
-                idx += len(skew_ords)
-
-            if 'quads_tilt' in fit_list:
-                deltaqt0 = old_fit_parameters[idx:idx + len(quads_ords)]
-                idx += len(quads_ords)
-
-
-            new_fit_parameters = old_fit_parameters + fit_results
-
-
-
-            idx = 0
-            fit_dict = {}
-
-            if 'hbpm_gain' in fit_list:
-                fit_dict['hbpm_gain'] = new_fit_parameters[idx:idx + nHBPM]
-
-                hbpm_gain = new_fit_parameters[idx:idx + nHBPM]
-                idx += nHBPM
-
-            if 'hbpm_coupling' in fit_list:
-                fit_dict['hbpm_coupling'] = new_fit_parameters[idx:idx + nHBPM]
-                hbpm_coupling = new_fit_parameters[idx:idx + nHBPM]
-                idx += nHBPM
-
-
-            if 'vbpm_coupling' in fit_list:
-                fit_dict['vbpm_coupling'] = new_fit_parameters[idx:idx + nVBPM]
-                vbpm_coupling = new_fit_parameters[idx:idx + nVBPM]
-                idx += nVBPM
-
-            if 'vbpm_gain' in fit_list:
-                fit_dict['vbpm_gain'] = new_fit_parameters[idx:idx + nVBPM]
-                vbpm_gain = new_fit_parameters[idx:idx + nVBPM]
-                idx += nVBPM
-
-            if 'hcor_cal' in fit_list:
-                fit_dict['hcor_cal'] = new_fit_parameters[idx:idx + nHorCOR]
-
-                CMstep[0] = new_fit_parameters[idx:idx + nHorCOR]
-                idx += nHorCOR
-
-            if 'vcor_cal' in fit_list:
-                fit_dict['vcor_cal'] = new_fit_parameters[idx:idx + nVerCOR]
-                CMstep[1] = new_fit_parameters[idx:idx + nVerCOR]
-                idx += nVerCOR
-
-            if 'hcor_coupling' in fit_list:
-                fit_dict['hcor_coupling'] = new_fit_parameters[idx:idx + nHorCOR]
-                HCMCoupling = new_fit_parameters[idx:idx + nHorCOR]
-
-                idx += nHorCOR
-
-            if 'vcor_coupling' in fit_list:
-                fit_dict['vcor_coupling'] = new_fit_parameters[idx:idx + nVerCOR]
-                VCMCoupling = new_fit_parameters[idx:idx + nVerCOR]
-
-                idx += nVerCOR
-
-            if 'HCMEnergyShift' in fit_list:
-                fit_dict['HCMEnergyShift'] = new_fit_parameters[idx:idx + nHorCOR]
-                HCMEnergyShift = new_fit_parameters[idx:idx + nHorCOR]
-                idx += nHorCOR
-
-            if 'VCMEnergyShift' in fit_list:
-                fit_dict['VCMEnergyShift'] = new_fit_parameters[idx:idx + nVerCOR]
-                VCMEnergyShift = new_fit_parameters[idx:idx + nVerCOR]
-
-                idx += nVerCOR
-
-            if 'delta_rf' in fit_list:
-                fit_dict['delta_rf'] = new_fit_parameters[idx:idx + 1]
-                rfStep = new_fit_parameters[idx:idx + 1]
-                idx += 1
-
-
-            if 'quads' in fit_list:
-                fit_dict['quads'] = new_fit_parameters[idx:idx + len(quads_ords)]
-                idx += len(quads_ords)
-
-
-            if 'skew_quads' in fit_list:
-                fit_dict['skew_quads'] = new_fit_parameters[idx:idx + len(skew_ords)]
-                idx += len(skew_ords)
-
-
-            if 'quads_tilt' in fit_list:
-                fit_dict['quads_tilt'] = new_fit_parameters[idx:idx + len(quads_ords)]
-                deltaqt = new_fit_parameters[idx:idx + len(quads_ords)]
-                idx += len(quads_ords)
-
-            fit_dict_all_[j] = fit_dict.copy()
-            fit_results_all_.append(fit_results)
-
-
-            # quads initial values
-            if 'quads' in fit_list:
-
-                delta0q = _initial_values_for_block(
-                    ring, quads_ords,
-                    block="quads",
-                    individuals=individuals,
-                    config=fit_cfg,  # your FitInitConfig instance
-                )
-
-            if 'skew_quads' in fit_list:
-
-                delta0s = _initial_values_for_block(
-                    ring, skew_ords,
-                    block="skew_quads",
-                    individuals=individuals,
-                    config=fit_cfg,
-                )
-
-            if 'quads' in fit_list:
-
-               deltaq = np.array(fit_dict['quads']).ravel()
-
-            if 'skew_quads' in fit_list:
-                deltas = np.array(fit_dict['skew_quads']).ravel()
-
-            if 'quads_tilt' in fit_list:
-                deltaqt = np.array(fit_dict['quads_tilt']).ravel()
-
-            if 'quads' in fit_list:
-                set_correction(ring, deltaq, quads_ords, individuals=individuals, block='quads',config=fit_cfg)
-
-            if 'skew_quads' in fit_list:
-                set_correction(ring, deltas, skew_ords, individuals=individuals, block='skew_quads',config=fit_cfg)
-
-            if 'quads_tilt' in fit_list:
-                set_correction_tilt(ring, deltaqt, quads_ords,config=fit_cfg)
-
-
-
-            cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords, HCMCoupling=HCMCoupling,
-                           VCMCoupling=VCMCoupling, rfStep=rfStep)
-            orm_model_LM = response_matrix(ring, config=cfg)
-
-
-
-            C11 = hbpm_gain # shape (239,)
-            C12 = hbpm_coupling
-            C21 = vbpm_coupling
-            C22 = vbpm_gain
-
-
-            C = np.block([[np.diag(C11), np.diag(C12)], [np.diag(C21), np.diag(C22)]])
-
-
-            orm_model_LM = C @ orm_model_LM
-
-            if Fixedmomentum == True:
-
-                AlphaMCF = get_mcf(ring)
-                Frequency = fixed_parameters.Frequency
-
-
-                eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
-                eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
-
-
-                for i in range(nHorCOR):
-                    orm_model_LM[:nHBPM, i] = orm_model_LM[:nHBPM, i] + HCMEnergyShift[i] * eta_x_mcf
-                    orm_model_LM[nHBPM:, i] = orm_model_LM[nHBPM:, i] + HCMEnergyShift[i] * eta_y_mcf
-
-                for i in range(nVerCOR):
-                    orm_model_LM[:nHBPM, i + nHorCOR] = orm_model_LM[:nHBPM, i + nHorCOR] + VCMEnergyShift[i] * eta_x_mcf
-                    orm_model_LM[nHBPM:, i + nHorCOR] = orm_model_LM[nHBPM:, i + nHorCOR] + VCMEnergyShift[i] * eta_y_mcf
-
-
-            full_jacobian_LM = full_jacobian
-
-            weights_flat_LM = weight_matrix(weights, includeDispersion, hor_dispersion_weight, ver_dispersion_weight,
-                                         nHBPM, nVBPM, nHorCOR, nVerCOR)
-
-            measured_orm_flat = orm_measured.reshape(-1, 1, order='F')
-            model_orm_flat_LM = orm_model_LM.reshape(-1, 1, order='F')
-            J_flat_LM = full_jacobian_LM.transpose(1, 2, 0).reshape(-1, full_jacobian_LM.shape[0], order='F')
-
-
-
-            if remove_coupling_ == True:
-                #print("Removing XY coupling from ORM and Jacobian and weight ...")
-                measured_orm_flat, model_orm_flat_LM, weights_flat_LM, J_flat_LM, iNoCoupling = remove_coupling(
-                    measured_orm_flat,
-                    model_orm_flat_LM, weights_flat_LM,
-                    J_flat_LM,
-                    nHBPM, nVBPM, nHorCOR,
-                    nVerCOR,
-                    includeDispersion)
-
-            J_weighted_LM = J_flat_LM / weights_flat_LM
-
-            # If outlier rejection is active, reuse filtered vectors
-            if outlier_rejection == True:
-
-                    measured_orm_flat = measured_orm_flat[keep_mask]
-                    model_orm_flat_LM = model_orm_flat_LM[keep_mask]
-                    weights_flat_LM = weights_flat_LM[keep_mask, :]
-                    J_flat_LM = J_flat_LM[keep_mask, :]
-
-                    J_weighted_LM = J_flat_LM / weights_flat_LM
-
-
-            y_LM = (measured_orm_flat - model_orm_flat_LM) / weights_flat_LM
-
-            chi2_new = compute_chi_squared(
-
-                measured_orm_flat,
-                model_orm_flat_LM,
-                J=J_weighted_LM,
-                bpm_noise=weights_flat_LM
+            # 6) Update the parameter vector (so history/returns are correct)
+            current_fit_parameters = current_fit_parameters + np.asarray(fit_results).ravel()
+
+
+            # 3) Unpack into a dict of physical knobs
+            fit_dict = _pack_fit_dict(
+                current_fit_parameters, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
+                n_quads=len(quads_ords) if quads_ords is not None else 0,
+                n_skew=len(skew_ords) if skew_ords is not None else 0,
+                n_quads_tilt=len(quads_tilt_ind) if quads_tilt_ind is not None else 0
             )
 
 
-            # Apply corrections
-
-            print(f"Chi² after correction: {chi2_new:.4e} (previous: {chi2_0:.4e})")
-
-            if chi2_new < chi2_0:
-                print("Chi² improved — reducing lambda")
-                chi2_0 = chi2_new
-
-                LMlambda = LMlambda / 10
-                current_fit_parameters = new_fit_parameters.copy()
-                fit_parameters_history.append(current_fit_parameters.copy())
-
-                break
-
-            else:
-                print("Chi² did not improve — increasing lambda")
-
-
-                LMlambda *= 10.0
-
-                if 'quads' in fit_list:
-                    deltaq = delta0q
-                    set_correction(ring, deltaq, quads_ords, individuals=individuals, block='quads',config=fit_cfg)
-
-                if 'skew_quads' in fit_list:
-                    deltas = delta0s
-                    set_correction(ring, deltas, skew_ords, individuals=individuals, block='skew_quads',config=fit_cfg)
-
-                if 'quads_tilt' in fit_list:
-                    deltaqt = deltaqt0
-                    set_correction_tilt(ring, deltaqt, quads_ords,config=fit_cfg)
-
-
-
-
-                current_fit_parameters = old_fit_parameters.copy()
-
-                if LMlambda > max_lm_lambda:
-                    print("Lambda exceeded maximum. Stopping.")
-                    break
-
-
-            idx = 0
-            fit_dict = {}
-
-            if 'hbpm_gain' in fit_list:
-
-                fit_dict['hbpm_gain'] = current_fit_parameters[idx:idx + nHBPM]
-
-                hbpm_gain = current_fit_parameters[idx:idx + nHBPM]
-                idx += nHBPM
-
-
-            if 'hbpm_coupling' in fit_list:
-
-                fit_dict['hbpm_coupling'] = current_fit_parameters[idx:idx + nHBPM]
-                hbpm_coupling = current_fit_parameters[idx:idx + nHBPM]
-                idx += nHBPM
-
-            if 'vbpm_coupling' in fit_list:
-
-                fit_dict['vbpm_coupling'] = current_fit_parameters[idx:idx + nVBPM]
-                vbpm_coupling = current_fit_parameters[idx:idx + nVBPM]
-                idx += nVBPM
-
-
-            if 'vbpm_gain' in fit_list:
-
-                fit_dict['vbpm_gain'] = current_fit_parameters[idx:idx + nVBPM]
-                vbpm_gain = current_fit_parameters[idx:idx + nVBPM]
-                idx += nVBPM
-
-
-
-
-
-            if 'hcor_cal' in fit_list:
-
-                fit_dict['hcor_cal'] = current_fit_parameters[idx:idx + nHorCOR]
-
-                CMstep[0] = current_fit_parameters[idx:idx + nHorCOR]
-                idx += nHorCOR
-
-            if 'vcor_cal' in fit_list:
-                fit_dict['vcor_cal'] = current_fit_parameters[idx:idx + nVerCOR]
-                CMstep[1] = current_fit_parameters[idx:idx + nVerCOR]
-                idx += nVerCOR
-
-            if 'hcor_coupling' in fit_list:
-                fit_dict['hcor_coupling'] = current_fit_parameters[idx:idx + nHorCOR]
-                HCMCoupling  = current_fit_parameters[idx:idx + nHorCOR]
-
-                idx += nHorCOR
-
-            if 'vcor_coupling' in fit_list:
-                fit_dict['vcor_coupling'] = current_fit_parameters[idx:idx + nVerCOR]
-                VCMCoupling = current_fit_parameters[idx:idx + nVerCOR]
-
-                idx += nVerCOR
-
-            if 'HCMEnergyShift' in fit_list:
-                fit_dict['HCMEnergyShift'] = current_fit_parameters[idx:idx + nHorCOR]
-                HCMEnergyShift = current_fit_parameters[idx:idx + nHorCOR]
-                idx += nHorCOR
-
-            if 'VCMEnergyShift' in fit_list:
-                fit_dict['VCMEnergyShift'] = current_fit_parameters[idx:idx + nVerCOR]
-                VCMEnergyShift = current_fit_parameters[idx:idx + nVerCOR]
-
-                idx += nVerCOR
-
-            if 'delta_rf' in fit_list:
-                fit_dict['delta_rf'] = current_fit_parameters[idx:idx + 1]
-                rfStep = new_fit_parameters[idx:idx + 1]
-                idx += 1
-
-            if 'quads' in fit_list:
-                fit_dict['quads'] = current_fit_parameters[idx:idx + len(quads_ords)]
-                idx += len(quads_ords)
-
-            if 'skew_quads' in fit_list:
-                fit_dict['skew_quads'] = current_fit_parameters[idx:idx + len(skew_ords)]
-                idx += len(skew_ords)
-
-            if 'quads_tilt' in fit_list:
-                fit_dict['quads_tilt'] = current_fit_parameters[idx:idx + len(quads_ords)]
-                deltaqt = current_fit_parameters[idx:idx + len(quads_ords)]
-                idx += len(quads_ords)
-
-            fit_dict_all_[j] = fit_dict.copy()
-            fit_results_all_.append(fit_results)
-
-
-
-
-            j = j+1
-            if j < nLMIter:
-                C = J_weighted.T @ J_weighted
-                U, S, Vh = np.linalg.svd(C, full_matrices=False)
-
-
-
-
-        fit_dict = {}
-        idx = 0
-
-        if 'hbpm_gain' in fit_list:
-            fit_dict['hbpm_gain'] = fit_results[idx:idx + nHBPM]
-            idx += nHBPM
-
-
-
-        if 'hbpm_coupling' in fit_list:
-            fit_dict['hbpm_coupling'] = fit_results[idx:idx + nHBPM]
-            idx += nHBPM
-
-
-        if 'vbpm_coupling' in fit_list:
-            fit_dict['vbpm_coupling'] = fit_results[idx:idx + nVBPM]
-            idx += nVBPM
-
-
-        if 'vbpm_gain' in fit_list:
-            fit_dict['vbpm_gain'] = fit_results[idx:idx + nVBPM]
-            idx += nVBPM
-
-
-
-
-
-        if 'hcor_cal' in fit_list:
-            fit_dict['hcor_cal'] = fit_results[idx:idx + nHorCOR]
-            idx += nHorCOR
-            #new_hcor_kick = fit_results[idx:idx + nHorCOR]
-            #CMstep[0] = CMstep[0] + new_hcor_kick,
-
-        if 'vcor_cal' in fit_list:
-            fit_dict['vcor_cal'] = fit_results[idx:idx + nVerCOR]
-            idx += nVerCOR
-            #new_vcor_kick = fit_results[idx:idx + nVerCOR]
-            #CMstep[1] = CMstep[1] + new_vcor_kick,
-
-        if 'hcor_coupling' in fit_list:
-            fit_dict['hcor_coupling'] = fit_results[idx:idx + nHorCOR]
-            idx += nHorCOR
-
-        if 'vcor_coupling' in fit_list:
-            fit_dict['vcor_coupling'] = fit_results[idx:idx + nVerCOR]
-            idx += nVerCOR
-
-        if 'HCMEnergyShift' in fit_list:
-            fit_dict['HCMEnergyShift'] = fit_results[idx:idx + nHorCOR]
-            idx += nHorCOR
-
-        if 'VCMEnergyShift' in fit_list:
-            fit_dict['VCMEnergyShift'] = fit_results[idx:idx + nVerCOR]
-            idx += nVerCOR
-
-        if 'delta_rf' in fit_list:
-            fit_dict['delta_rf'] = fit_results[idx:idx + 1]
-            idx += 1
-
-        if 'quads' in fit_list:
-            fit_dict['quads'] = fit_results[idx:idx + len(quads_ords)]
-            idx += len(quads_ords)
-
-        if 'skew_quads' in fit_list:
-            fit_dict['skew_quads'] = fit_results[idx:idx + len(skew_ords)]
-            idx += len(skew_ords)
-
-        if 'quads_tilt' in fit_list:
-            fit_dict['quads_tilt'] = fit_results[idx:idx + len(quads_ords)]
-            idx += len(quads_ords)
-
-
-        fit_dict_all[i] = fit_dict_all_.copy()
-        fit_results_all.append(fit_results_all_)
-
-
-        print("Computing chi-squared after correction ...")
-
-
-        cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords, HCMCoupling=HCMCoupling,
-                       VCMCoupling=VCMCoupling, rfStep=rfStep)
-        orm_model_ = response_matrix(ring, config=cfg)
-
-        C11 = hbpm_gain  # shape (239,)
-        C12 = hbpm_coupling
-        C21 = vbpm_coupling
-        C22 = vbpm_gain
-
-        C = np.block([[np.diag(C11), np.diag(C12)], [np.diag(C21), np.diag(C22)]])
-
-        orm_model_ =  C @ orm_model_
-
-        if Fixedmomentum == True:
-
-
+            # 4) Update non-lattice state (keep conventions same as LM)
+            if 'hbpm_gain' in fit_dict: hbpm_gain = fit_dict['hbpm_gain']
+            if 'vbpm_gain' in fit_dict: vbpm_gain = fit_dict['vbpm_gain']
+            if 'hbpm_coupling' in fit_dict: hbpm_coupling = fit_dict['hbpm_coupling']
+            if 'vbpm_coupling' in fit_dict: vbpm_coupling = fit_dict['vbpm_coupling']
+            if 'hcor_coupling' in fit_dict: HCMCoupling = fit_dict['hcor_coupling']
+            if 'vcor_coupling' in fit_dict: VCMCoupling = fit_dict['vcor_coupling']
+            if 'HCMEnergyShift' in fit_dict: HCMEnergyShift = fit_dict['HCMEnergyShift']
+            if 'VCMEnergyShift' in fit_dict: VCMEnergyShift = fit_dict['VCMEnergyShift']
+            if 'delta_rf' in fit_dict: rfStep = float(np.asarray(fit_dict['delta_rf']).ravel()[0])
+            if 'quads_tilt' in fit_list and ('quads_tilt' in fit_dict):
+                deltaqt = np.asarray(fit_dict['quads_tilt']).ravel()
+
+            # If you use calibrated CM steps, update consistently (same convention as LM)
+            if 'hcor_cal' in fit_dict:
+                CMstep[0] = np.asarray(fit_dict['hcor_cal']).ravel()
+            if 'vcor_cal' in fit_dict:
+                CMstep[1] = np.asarray(fit_dict['vcor_cal']).ravel()
+
+            # 5) Apply lattice changes to ring
+            _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg)
+
+
+
+
+        else:
+            raise ValueError("algorithm must be 'lm' or 'gn'")
+
+        # --- Recompute chi²  ---
+        cfg3 = RMConfig(dkick=[CMstep[0],CMstep[1]],
+                        bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
+                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
+                        rfStep=rfStep)
+        orm_model_after = response_matrix(ring, config=cfg3)
+        orm_model_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain) @ orm_model_after
+
+        if fixedpathlength:
             AlphaMCF = get_mcf(ring)
-
             Frequency = fixed_parameters.Frequency
             eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
             eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
+            for i in range(nHorCOR):
+                orm_model_after[:nHBPM, i] += HCMEnergyShift[i] * eta_x_mcf
+                orm_model_after[nHBPM:, i] += HCMEnergyShift[i] * eta_y_mcf
+            for i in range(nVerCOR):
+                jj = nHorCOR + i
+                orm_model_after[:nHBPM, jj] += VCMEnergyShift[i] * eta_x_mcf
+                orm_model_after[nHBPM:, jj] += VCMEnergyShift[i] * eta_y_mcf
 
-        for i in range(nHorCOR):
+        y_model_after = orm_model_after.reshape(-1, 1, order="F")
+        if remove_coupling_:
 
-                orm_model_[:nHBPM, i] = orm_model_[:nHBPM, i]  + HCMEnergyShift[i] *  eta_x_mcf
-                orm_model_[nHBPM:, i] = orm_model_[nHBPM:, i] + HCMEnergyShift[i] * eta_y_mcf
-
-        for i in range(nVerCOR):
-
-            orm_model_[:nHBPM, i + nHorCOR] = orm_model_[:nHBPM, i + nHorCOR]  + VCMEnergyShift[i] *  eta_x_mcf
-            orm_model_[nHBPM:, i + nHorCOR] = orm_model_[nHBPM:, i + nHorCOR] + VCMEnergyShift[i] * eta_y_mcf
-
-
-        # If outlier rejection is active, reuse filtered vectors
-
-        weights_flat = weight_matrix(weights, includeDispersion,hor_dispersion_weight, ver_dispersion_weight, nHBPM, nVBPM, nHorCOR, nVerCOR)
-        measured_orm_flat = orm_measured.reshape(-1, 1, order='F')
-        model_orm_flat = orm_model_.reshape(-1, 1, order='F')
-        J_flat = full_jacobian.transpose(1, 2, 0).reshape(-1, full_jacobian.shape[0], order='F')
-
-        if remove_coupling_==True:
-            #print("Removing XY coupling from ORM and Jacobian and weight ...")
-            measured_orm_flat, model_orm_flat, weights_flat, J_flat,iNoCoupling = remove_coupling(measured_orm_flat, model_orm_flat,
-                                                                                      weights_flat, J_flat,
-                                                                                      nHBPM, nVBPM, nHorCOR, nVerCOR,
-                                                                                      includeDispersion)
-
-        J_weighted = J_flat / weights_flat
-
-        if outlier_rejection == True:
-            measured_orm_flat = measured_orm_flat[keep_mask]
-            model_orm_flat = model_orm_flat[keep_mask]
-            weights_flat = weights_flat[keep_mask, :]
-            J_flat = J_flat[keep_mask, :]
-
-            J_weighted = J_flat / weights_flat
+            _, y_model_after, _, _, _ = remove_coupling(
+                orm_measured.reshape(-1, 1, order="F"), y_model_after, None, None, nHBPM,
+                nVBPM, nHorCOR, nVerCOR, includeDispersion
+            )
 
 
-        chi2_after= compute_chi_squared(
-            measured_orm_flat,
-            model_orm_flat,
-            J=J_weighted,
-            bpm_noise=weights_flat
+        chi2_after = compute_chi_squared(y_meas[keep_mask], y_model_after[keep_mask],
+                                         J=Jw, bpm_noise=weights_flat[keep_mask, :])
+        print(f"Chi² after correction: {chi2_after:.4e}")
+
+        # Save iteration
+
+
+        fit_results_all.append(current_fit_parameters.copy())
+        fit_dict_all[it] = _pack_fit_dict(
+            current_fit_parameters,
+            fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
+            n_quads=len(quads_ords) if quads_ords is not None else 0,
+            n_skew=len(skew_ords) if skew_ords is not None else 0,
+            n_quads_tilt=len(quads_tilt_ind) if quads_tilt_ind is not None else 0
         )
 
-
-        print(f"Chi-squared after correction: {chi2_after:.3f}")
-
-        if plot_fit_parameters:
-            print("Plotting fit parameters ...")
-            n_plots = len(fit_dict)
-            fig, axs = plt.subplots(n_plots, 1, figsize=(5, 6))
-            if n_plots == 1:
-                axs = [axs]
-
-            for ax, (key, values) in zip(axs, fit_dict.items()):
-                ax.plot(values, marker='o', linestyle='-', markersize=3)
-                ax.set_title(key.replace('_', ' ').title())
-                ax.set_ylabel("Fit Value")
-                ax.grid(True, linestyle=':', alpha=0.7)
-
-            axs[-1].set_xlabel("Index")
-            plt.suptitle(f"LOCO Fit Parameters – Iteration {i + 1}", fontsize=10)
-            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-            plt.show()
-
-    print("LOCO LM Correction Completed! :)")
-    return current_fit_parameters, ring
+    print(f"LOCO {algorithm.upper()} completed! :).")
+    return fit_results_all, fit_dict_all, ring
 
 
 
