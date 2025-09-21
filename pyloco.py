@@ -273,10 +273,14 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
         J_quad_tilt, delta_quads_tilt = None, None
 
 
-
     J_bpm_gain = calculate_bpm_gain_jacobian(
         C_inv @ C_model, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion, include_bpm_coupling
     ) if include_bpm_gain  == True else None
+
+    if include_bpm_gain  == False and include_bpm_coupling == True:
+        J_bpm_gain = calculate_bpm_coupling_jacobian(
+            C_inv @ C_model, nHBPM, nVBPM, includeDispersion
+        )
 
     J_cor_gain = calculate_corrector_kick_jacobian(
         C_model, dkick, nHorCOR, nVerCOR,includeDispersion
@@ -1361,20 +1365,6 @@ def pyloco(
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model = Cmat @ orm_model
 
-        if Fixedmomentum == True:
-
-            AlphaMCF = get_mcf(ring)
-
-            eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
-            eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
-            # Modify ORM with HCMEnergyShift/VCMEnergyShift effects
-            for i in range(nHorCOR):
-                orm_model[:nHBPM, i] += HCMEnergyShift[i] * eta_x_mcf
-                orm_model[nHBPM:, i] += HCMEnergyShift[i] * eta_y_mcf
-            for i in range(nVerCOR):
-                j = nHorCOR + i
-                orm_model[:nHBPM, j] += VCMEnergyShift[i] * eta_x_mcf
-                orm_model[nHBPM:, j] += VCMEnergyShift[i] * eta_y_mcf
 
         # --- 2) Jacobian ---
         include_quads         = ('quads' in fit_list)
@@ -1417,6 +1407,23 @@ def pyloco(
             fit_cfg=fit_cfg,
             Frequency = Frequency
         )
+
+
+        if Fixedmomentum == True:
+
+            AlphaMCF = get_mcf(ring)
+
+            eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
+            eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
+            # Modify ORM with HCMEnergyShift/VCMEnergyShift effects
+            for i in range(nHorCOR):
+                orm_model[:nHBPM, i] += HCMEnergyShift[i] * eta_x_mcf
+                orm_model[nHBPM:, i] += HCMEnergyShift[i] * eta_y_mcf
+            for i in range(nVerCOR):
+                j = nHorCOR + i
+                orm_model[:nHBPM, j] += VCMEnergyShift[i] * eta_x_mcf
+                orm_model[nHBPM:, j] += VCMEnergyShift[i] * eta_y_mcf
+
 
 
         # --- 3) Flatten, weights, optional coupling removal/outliers ---
@@ -1481,11 +1488,12 @@ def pyloco(
                     svd_method=svd_selection_method, svd_threshold=svd_threshold,
                     cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it+1}/in{j+1}"
                 )
-                # de-normalize if needed
+
+
                 if norm_factors is not None:
-                    nf = np.asarray(norm_factors)
-                    nf = np.diag(nf) if nf.ndim == 2 and nf.shape[0]==nf.shape[1] else nf.ravel()
+                    nf = np.asarray(norm_factors).ravel()
                     fit_results = fit_results / nf
+
 
                 old_fit_parameters = current_fit_parameters.copy()
                 new_vec = old_fit_parameters + fit_results
@@ -1555,8 +1563,8 @@ def pyloco(
                     if 'delta_rf' in upd:
                         rfStep = float(np.asarray(upd['delta_rf']).ravel()[0])
 
-                    if 'quads_tilt' in fit_list and ('quads_tilt' in prop_dict):
-                        deltaqt = np.asarray(prop_dict['quads_tilt']).ravel()
+                    if 'quads_tilt' in fit_list and ('quads_tilt' in upd):
+                        deltaqt = np.asarray(upd['quads_tilt']).ravel()
 
                     # Commit CMstep base vectors if you track calibrated steps permanently:
                     # (optional; you can also keep base CMstep fixed and only pass gains via dkick each time)
@@ -1646,6 +1654,7 @@ def pyloco(
         orm_model_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain) @ orm_model_after
 
         if Fixedmomentum == True:
+
             AlphaMCF = get_mcf(ring)
             eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
             eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
