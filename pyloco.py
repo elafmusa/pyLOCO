@@ -718,7 +718,7 @@ def generating_quads_tilt_response_matrices(
             # not auto-correcting; one pass only
             break
 
-    ring.save('lat_tilt_ppython.mat', mat_key='ring')
+
 
     set_correction_tilt(ring, psi_values=quads_tilt_fit,
                         elem_ind=group, individuals=individuals, config=fit_cfg)
