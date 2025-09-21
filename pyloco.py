@@ -1125,7 +1125,7 @@ def _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain):
     C22 = np.diag(np.asarray(vbpm_gain).ravel())
     return np.block([[C11, C12], [C21, C22]])
 
-def _svd_select_indices(S, method="threshold", svd_threshold=1e-3, cut_=None,
+def _svd_select_indices(S, method="threshold", svd_threshold=1e-7, cut_=None,
                         interactive=False, show_plot=False, iteration_tag=""):
     """Return indices Ivec of singular values to keep."""
     if method == "threshold":
@@ -1190,8 +1190,8 @@ def _prepare_ring_and_rmconfig(
     _apply_fit_to_ring(ring_tmp, prop, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg)
 
 
-    dkick_H = np.asarray(prop.get('hcor_cal', np.ones(nHorCOR)), dtype=float).ravel()
-    dkick_V = np.asarray(prop.get('vcor_cal', np.ones(nVerCOR)), dtype=float).ravel()
+    dkick_H = np.asarray(prop.get('hcor_cal', CMstep[0]), dtype=float).ravel()
+    dkick_V = np.asarray(prop.get('vcor_cal', CMstep[1]), dtype=float).ravel()
     dkick   = [dkick_H, dkick_V]
 
     hbpm_gain = prop.get('hbpm_gain', hbpm_gain)
@@ -1238,7 +1238,7 @@ def _pack_fit_dict(vec, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR, n_quads, n_ske
     if 'delta_rf'       in fit_list: d['delta_rf']       = vec[i:i+1];       i += 1
     if 'quads'          in fit_list: d['quads']          = vec[i:i+n_quads]; i += n_quads
     if 'skew_quads'     in fit_list: d['skew_quads']     = vec[i:i+n_skew];  i += n_skew
-    if 'quads_tilt'     in fit_list: d['quads_tilt']     = vec[i:i+n_quads]; i += n_quads_tilt
+    if 'quads_tilt'     in fit_list: d['quads_tilt']     = vec[i:i+n_quads_tilt]; i += n_quads_tilt
     return d
 
 def _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg):
@@ -1277,7 +1277,7 @@ def solve_step_lm(J_weighted, y, *, scaled=True, Starting_Lambda=1e-3,
     ay = J_weighted.T @ y
     lam = Starting_Lambda
 
-    Uc, Sc, Vhc = np.linalg.svd(C + (lam*np.diag(np.diag(C)) if scaled else lam*np.eye(C.shape[0])),
+    Uc, Sc, Vhc = np.linalg.svd(C + (lam*np.diag(np.diag(C)) if scaled == True else lam*np.eye(C.shape[0])),
                                 full_matrices=False)
     Ivec = _svd_select_indices(Sc, method=svd_method, svd_threshold=svd_threshold,
                                cut_=cut_, show_plot=show_plot, iteration_tag=tag)
@@ -1302,7 +1302,7 @@ def pyloco(
     measured_eta_x=None, measured_eta_y=None,
     hor_dispersion_weight=1.0, ver_dispersion_weight=1.0,
     # Correctors kicks & RF steps
-    CMstep=None, rfStep=None,
+    CMstep=None, rfStep=None, Frequency = fixed_parameters.Frequency,
     # features
     fit_list=(), individuals=True, remove_coupling_=True,
     # outliers & normalization
@@ -1327,6 +1327,11 @@ def pyloco(
     HCMCoupling    = np.zeros(nHorCOR)
     VCMCoupling    = np.zeros(nVerCOR)
     deltaqt        = np.zeros(len(quads_ords)) if ('quads_tilt' in fit_list) else None
+
+    if fixedpathlength == False or 'HCMEnergyShift' in fit_list or 'VCMEnergyShift' in fit_list:
+        Fixedmomentum = True
+    else:
+        Fixedmomentum = False
 
     if inetial_fit_parameters is None:
 
@@ -1356,9 +1361,10 @@ def pyloco(
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model = Cmat @ orm_model
 
-        if fixedpathlength:
+        if Fixedmomentum == True:
+
             AlphaMCF = get_mcf(ring)
-            Frequency = fixed_parameters.Frequency
+
             eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
             eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
             # Modify ORM with HCMEnergyShift/VCMEnergyShift effects
@@ -1408,7 +1414,8 @@ def pyloco(
             VCMCoupling=VCMCoupling, HCMCoupling=HCMCoupling,
             measured_eta_x=measured_eta_x, measured_eta_y=measured_eta_y,
             quads_tilt_fit=(deltaqt if deltaqt is not None else None),
-            fit_cfg=fit_cfg
+            fit_cfg=fit_cfg,
+            Frequency = Frequency
         )
 
 
@@ -1459,6 +1466,8 @@ def pyloco(
         chi2_before = compute_chi_squared(y_meas, y_model, J=Jw, bpm_noise=weights_flat)
         print(f"Initial Chi²: {chi2_before:.4e}")
 
+
+
         # --- 4) Minimization
 
         if algorithm.lower() == "lm":
@@ -1499,13 +1508,9 @@ def pyloco(
                 orm_trial = response_matrix(ring_tmp, config=cfg2)
                 orm_trial = Cmat2 @ orm_trial
 
-
-
-
                 # Fixed path length adjustment (trial)
-                if fixedpathlength:
+                if Fixedmomentum == True:
                     AlphaMCF = get_mcf(ring_tmp)
-                    Frequency = fixed_parameters.Frequency
                     rf_used = float(np.asarray(prop_dict.get('delta_rf', rfStep)).ravel()[0])
                     eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rf_used
                     eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rf_used
@@ -1519,15 +1524,15 @@ def pyloco(
 
                 y_model_trial = orm_trial.reshape(-1, 1, order="F")
 
-                if remove_coupling_:
+                if remove_coupling_ == True:
                     _, y_model_trial, _, _, _ = remove_coupling(
                         orm_measured.reshape(-1, 1, order="F"), y_model_trial, None, None, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
                     )
 
                 # Flatten and compute trial chi² using the SAME keep_mask and weights
 
-                chi2_new = compute_chi_squared(y_meas[keep_mask], y_model_trial[keep_mask], J=Jw[keep_mask],
-                                               bpm_noise=weights_flat[keep_mask, :])
+                chi2_new = compute_chi_squared(y_meas, y_model_trial[keep_mask], J=Jw,
+                                               bpm_noise=weights_flat)
 
                 print(f"  LM inner {j + 1}: chi² {chi2_new:.4e} (previous {chi2_0:.4e}), λ={LMlambda:g}")
 
@@ -1640,9 +1645,8 @@ def pyloco(
         orm_model_after = response_matrix(ring, config=cfg3)
         orm_model_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain) @ orm_model_after
 
-        if fixedpathlength:
+        if Fixedmomentum == True:
             AlphaMCF = get_mcf(ring)
-            Frequency = fixed_parameters.Frequency
             eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
             eta_y_mcf = -AlphaMCF * Frequency * measured_eta_y / rfStep
             for i in range(nHorCOR):
@@ -1654,7 +1658,7 @@ def pyloco(
                 orm_model_after[nHBPM:, jj] += VCMEnergyShift[i] * eta_y_mcf
 
         y_model_after = orm_model_after.reshape(-1, 1, order="F")
-        if remove_coupling_:
+        if remove_coupling_ == True:
 
             _, y_model_after, _, _, _ = remove_coupling(
                 orm_measured.reshape(-1, 1, order="F"), y_model_after, None, None, nHBPM,
@@ -1662,8 +1666,8 @@ def pyloco(
             )
 
 
-        chi2_after = compute_chi_squared(y_meas[keep_mask], y_model_after[keep_mask],
-                                         J=Jw, bpm_noise=weights_flat[keep_mask, :])
+        chi2_after = compute_chi_squared(y_meas, y_model_after[keep_mask],
+                                         J=Jw, bpm_noise=weights_flat)
         print(f"Chi² after correction: {chi2_after:.4e}")
 
         # Save iteration
