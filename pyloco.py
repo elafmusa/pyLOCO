@@ -1261,7 +1261,7 @@ def _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, in
 
 def solve_step_gn(J_weighted, y, svd_method, svd_threshold, cut_, show_plot, tag):
 
-    U, S, Vh = np.linalg.svd(J_weighted, full_matrices=False)
+    U, S, Vh = np.linalg.svd(J_weighted, full_matrices=False) # or True ?
     Ivec = _svd_select_indices(S, method=svd_method, svd_threshold=svd_threshold,
                                cut_=cut_, show_plot=show_plot, iteration_tag=tag)
     b = U[:, Ivec].T @ y
