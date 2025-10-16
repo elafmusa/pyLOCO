@@ -1,0 +1,29 @@
+# =============================
+# Ignore all Examples except PETRAIII
+# =============================
+/Examples/*
+!/Examples/PETRAIII/
+/Examples/PETRAIII/*.mat
+!/Examples/PETRAIII/*.py
+!/Examples/PETRAIII/*.ipynb
+!/Examples/PETRAIII/data/
+
+# =============================
+# Python + temp files
+# =============================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.npz
+*.npy
+*.h5
+*.zip
+*.log
+*.tmp
+
+# =============================
+# Jupyter + system files
+# =============================
+.ipynb_checkpoints/
+.DS_Store

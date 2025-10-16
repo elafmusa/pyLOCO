@@ -3,9 +3,11 @@ import logging
 from pyloco_config import RMConfig as config
 from pyloco_config import _cfg_get, get_mcf
 from typing import Optional, Union, List, Tuple
+
+
+import logging
+LOGGER = logging.getLogger(__name__)
 import numpy as np
-
-
 
 def response_matrix(
 
@@ -402,8 +404,6 @@ def findelemm44(ring, ELEM, orbit_in, dt=None):
 
     return M44
 
-
-import numpy as np
 
 def shift_rf(ring, cav_ords, freq_delta, attr="Frequency"):
     freq_delta = float(freq_delta)

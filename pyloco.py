@@ -1499,6 +1499,7 @@ def pyloco(
                 new_vec = old_fit_parameters + fit_results
 
                 # Build temp ring + config (trial)
+
                 ring_tmp, cfg2, Cmat2, Hshift2, Vshift2, prop_dict = _prepare_ring_and_rmconfig(
                     ring, new_vec,
                     fit_list=fit_list, nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
