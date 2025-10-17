@@ -13,12 +13,15 @@ def load_config(config_path: str | None = None,
     if config_module:
         mod = importlib.import_module(config_module)
     elif config_path:
-        spec = importlib.util.spec_from_file_location("pyloco_config_user", config_path)
+        # Register directly under the canonical name
+        spec = importlib.util.spec_from_file_location("pyloco_config", config_path)
         mod = importlib.util.module_from_spec(spec)
         assert spec and spec.loader
         spec.loader.exec_module(mod)
     else:
         mod = importlib.import_module("pyloco_config")
 
+    # Ensure all other imports use the same module
     sys.modules["pyloco_config"] = mod
     return mod
+
