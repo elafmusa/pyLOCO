@@ -241,7 +241,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
     ring, C_model, dkick, CMords, bpm_indexes, quads_ind, dk, C,
     individuals, HCMCoupling, VCMCoupling, block="quads",
     auto_correct_delta=auto_correct_delta,
-    fit_cfg=fit_cfg,
+    fit_cfg=fit_cfg, includeDispersion=includeDispersion,
     log_filename="quad_jacobian_logs.txt"
 )
     else:
@@ -253,7 +253,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
     ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
     individuals, HCMCoupling, VCMCoupling, block="skew_quads",
     auto_correct_delta=auto_correct_delta,
-    fit_cfg=fit_cfg,
+    fit_cfg=fit_cfg,includeDispersion=includeDispersion,
     log_filename="skew_jacobian_logs.txt",
 )
     else:
@@ -264,7 +264,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
     if include_quads_tilt == True:
         J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
             ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
-            HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta,
+            HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta, includeDispersion=includeDispersion,
             log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
         )
 
@@ -415,7 +415,7 @@ def calculate_quads_jacobian(
     individuals, HCMCoupling, VCMCoupling, block,
     auto_correct_delta=True,
     fit_cfg=None,
-    log_filename="quad_jacobian_logs.txt",     processes = None
+    log_filename="quad_jacobian_logs.txt",     processes = None, includeDispersion=False
 ):
     # Shared matrices (read-only)
     shm_C   = shared_memory.SharedMemory(create=True, size=C.nbytes)
@@ -434,7 +434,7 @@ def calculate_quads_jacobian(
                 quad_index, ring, dkick,used_cor_ind,  bpm_indexes, dk,
                 individuals,HCMCoupling, VCMCoupling,
                 auto_correct_delta,
-                 block, fit_cfg
+                 block, fit_cfg,includeDispersion
             ))
 
         with ctx.Pool(
@@ -497,7 +497,7 @@ def _init_shared(shm_name_C, shape_C, dtype_C, shm_name_Cm, shape_Cm, dtype_Cm):
 
 def generating_quads_response_matrices(
     quad_index, ring, dkick, cor_indexes,bpm_indexes, delta_init, individuals,
-    HCMCoupling, VCMCoupling, auto_correct_delta, block, fit_cfg
+    HCMCoupling, VCMCoupling, auto_correct_delta, block, fit_cfg, includeDispersion
 ):
     logs = []
 
@@ -528,7 +528,7 @@ def generating_quads_response_matrices(
 
         #  ORM with current dk
         cfg = RMConfig(dkick=dkick, bpm_ords=bpm_indexes, cm_ords=cor_indexes,
-                       HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling)
+                       HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, includeDispersion=includeDispersion)
 
         C_measured = response_matrix(ring, config=cfg)
 
@@ -577,7 +577,7 @@ def calculate_quads_tilt_jacobian(
 
     ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C, individuals,
     HCMCoupling, VCMCoupling, auto_correct_delta=True,
-    processes=None,
+    processes=None, includeDispersion=False,
     log_filename="quads_tilt_jacobian_logs.txt", quads_tilt_fit=None, fit_cfg=None,rf_step=None
 ):
 
@@ -604,7 +604,7 @@ def calculate_quads_tilt_jacobian(
                 quad_index, ring, dkick, bpm_indexes, used_cor_ind, dk, individuals
                 , auto_correct_delta,
                 HCMCoupling, VCMCoupling,
-                tilt_fit_i,fit_cfg
+                tilt_fit_i,fit_cfg,includeDispersion
             ))
 
         with ctx.Pool(
@@ -660,7 +660,7 @@ def calculate_quads_tilt_jacobian(
 
 def generating_quads_tilt_response_matrices(
     quad_index, ring, dkick, bpm_indexes, cor_indexes, delta_init, individuals,
-    auto_correct_delta, HCMCoupling, VCMCoupling, quads_tilt_fit,fit_cfg
+    auto_correct_delta, HCMCoupling, VCMCoupling, quads_tilt_fit,fit_cfg,includeDispersion
 ):
     logs = []
 
@@ -678,7 +678,7 @@ def generating_quads_tilt_response_matrices(
                             elem_ind=group, individuals=individuals, config=fit_cfg)
 
         cfg = RMConfig(dkick=dkick, bpm_ords=bpm_indexes, cm_ords=cor_indexes, HCMCoupling=HCMCoupling,
-                       VCMCoupling=VCMCoupling)
+                       VCMCoupling=VCMCoupling,includeDispersion=includeDispersion)
         C_measured = response_matrix(ring, config=cfg)
 
         C_measured = G_C @ C_measured
@@ -870,7 +870,7 @@ def calculate_corrector_coupling_jacobian(
 
 
     cfg = RMConfig(dkick=cor_kicks, bpm_ords=bpm_ords, cm_ords=cm_ords, HCMCoupling=HCMCoupling,
-                   VCMCoupling=VCMCoupling)
+                   VCMCoupling=VCMCoupling,includeDispersion=includeDispersion)
     GR = response_matrix(ring, config=cfg)
 
 
@@ -909,7 +909,7 @@ def calculate_HCMEnergyShift_jacobian(ring, C_model, nHBPM, nVBPM, nHorCOR, nVer
 
     if has_disp:
         print("Error: Better to either include dispersion on ORM or fit the energy shift at correctors.")
-        return None
+        #return None
 
     nParams_total = nHorCOR
     alpha_mc = get_mcf(ring)
@@ -938,7 +938,7 @@ def calculate_VCMEnergyShift_jacobian(ring, C_model, nHBPM, nVBPM, nHorCOR, nVer
 
     if has_disp:
         print("Error: Better to either include dispersion on ORM or fit the energy shift at correctors.")
-        return None
+        #return None
 
     nParams_total = nVerCOR
     alpha_mc = get_mcf(ring)
@@ -1175,7 +1175,7 @@ def _prepare_ring_and_rmconfig(
     used_bpms_ords, used_cor_ords, CMstep, rfStep,
     HCMCoupling, VCMCoupling,
     hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain,
-    HCMEnergyShift, VCMEnergyShift
+    HCMEnergyShift, VCMEnergyShift,includeDispersion
 ):
     """
     Build a *temporary* ring with the trial fit applied, and an RMConfig
@@ -1209,7 +1209,7 @@ def _prepare_ring_and_rmconfig(
         cm_ords=used_cor_ords,
         HCMCoupling=prop.get('hcor_coupling', HCMCoupling),
         VCMCoupling=prop.get('vcor_coupling', VCMCoupling),
-        rfStep=float(np.asarray(prop.get('delta_rf', rfStep)).ravel()[0])
+        rfStep=float(np.asarray(prop.get('delta_rf', rfStep)).ravel()[0]),includeDispersion=includeDispersion
     )
 
     Cmat = _build_C_matrix(
@@ -1360,7 +1360,7 @@ def pyloco(
 
         # --- 1) ORM model (with BPM C) ---
         cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
-                       HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep)
+                       HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep,includeDispersion=includeDispersion)
         orm_model = response_matrix(ring, config=cfg)
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model = Cmat @ orm_model
@@ -1407,7 +1407,6 @@ def pyloco(
             fit_cfg=fit_cfg,
             Frequency = Frequency
         )
-
 
         if Fixedmomentum == True:
 
@@ -1510,7 +1509,7 @@ def pyloco(
                     HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
                     hbpm_gain=hbpm_gain, hbpm_coupling=hbpm_coupling,
                     vbpm_coupling=vbpm_coupling, vbpm_gain=vbpm_gain,
-                    HCMEnergyShift=HCMEnergyShift, VCMEnergyShift=VCMEnergyShift
+                    HCMEnergyShift=HCMEnergyShift, VCMEnergyShift=VCMEnergyShift, includeDispersion=includeDispersion,
                 )
 
                 # Trial ORM on the *temp* ring
@@ -1650,7 +1649,7 @@ def pyloco(
         cfg3 = RMConfig(dkick=[CMstep[0],CMstep[1]],
                         bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
                         HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
-                        rfStep=rfStep)
+                        rfStep=rfStep,includeDispersion=includeDispersion)
         orm_model_after = response_matrix(ring, config=cfg3)
         orm_model_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain) @ orm_model_after
 
