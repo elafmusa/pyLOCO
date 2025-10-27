@@ -6,6 +6,7 @@ from typing import Optional, Callable, Any, Union, Sequence, Tuple, Dict
 #import at
 #ring = at.load_lattice('new_lattice0')
 
+
 LOGGER = logging.getLogger(__name__)
 
 def _cfg_get(cfg, name, current):
@@ -49,6 +50,50 @@ DEFAULT_INIT_POLICY: Dict[str, str] = {
     "skew_quads":     "zeros",
     "quads_tilt":     "tilts:zeros",
 }
+
+
+# ----------------------------------------------------------------------------- #
+#                               LOCO options
+# ----------------------------------------------------------------------------- #
+@dataclass
+class LOCOOptions:
+    # --- main control ---
+    algorithm: str = "lm"
+    nIter: int = 1
+    nLMIter: int = 10
+    Starting_Lambda: float = 1e-3
+    max_lm_lambda: float = 15
+    scaled: bool = True
+
+    # --- SVD control ---
+    svd_selection_method: str = "threshold"
+    svd_threshold: float = 1e-7
+    cut_: int = 397
+    show_svd_plot: bool = True
+
+    # --- fitting list ---
+    fit_list: list = ("quads", "hbpm_gain", "vbpm_gain", "hcor_cal", "vcor_cal", "HCMEnergyShift")
+
+    # --- normalization & outliers ---
+    outlier_rejection: bool = True
+    sigma_outlier: float = 10
+    apply_normalization: bool = True
+    normalization_mode: str = "component"
+
+    # --- dispersion settings ---
+    includeDispersion: bool = False
+    hor_dispersion_weight: float = 1.0
+    ver_dispersion_weight: float = 1.0
+
+    # --- additional options ---
+    plot_fit_parameters: bool = False
+    auto_correct_delta: bool = True
+    fixedpathlength: bool = False
+    individuals: bool = True
+    remove_coupling_: bool = True
+
+loco_options = LOCOOptions()
+
 
 @dataclass
 class RMConfig:
