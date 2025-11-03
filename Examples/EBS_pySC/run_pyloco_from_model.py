@@ -1,5 +1,5 @@
-from pyloco import pyloco, remove_bad_bpms, plot_data
-from helpers import load_config
+from pyLOCO.pyloco import pyloco, remove_bad_bpms, plot_data
+from pyLOCO.helpers import load_config
 import numpy as np
 import at
 
