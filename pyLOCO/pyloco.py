@@ -7,13 +7,13 @@ import time
 import numpy as np
 import time
 import matplotlib.pyplot as plt
-from initial_fit import build_initial_fit_parameters
-from set_parameters import set_correction, set_correction_tilt, _get_attr_scalar, _initial_values_for_block, _resolve_attr_for_block_read
+from .initial_fit import build_initial_fit_parameters
+from .set_parameters import set_correction, set_correction_tilt, _get_attr_scalar, _initial_values_for_block, _resolve_attr_for_block_read
 import os
 import multiprocessing as mp
 from multiprocessing import shared_memory
 from pyloco_config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
-from response_matrix import response_matrix
+from .response_matrix import response_matrix
 fit_cfg = FitInitConfig()
 import warnings
 warnings.filterwarnings("ignore", category=RuntimeWarning)
