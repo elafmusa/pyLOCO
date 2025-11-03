@@ -1,7 +1,9 @@
 import sys, importlib.util, importlib
+from typing import Optional
 
-def load_config(config_path: str | None = None,
-                config_module: str | None = None):
+def load_config(config_path: Optional[str] = None,
+                config_module: Optional[str] = None):
+
     """
     Load a pyloco_config from either:
       - a filesystem path to a Python file, or

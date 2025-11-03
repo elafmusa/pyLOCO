@@ -1,5 +1,39 @@
 # =============================
-# Ignore all Examples except PETRAIII
+# macOS system files
+# =============================
+.DS_Store
+
+# =============================
+# IDE and virtual environments
+# =============================
+.idea/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# =============================
+# Build and package files
+# =============================
+pyLOCO.egg-info/
+*.egg
+*.egg-info
+
+# =============================
+# Temporary data, results, and logs
+# =============================
+analysis/
+*.npz
+*.npy
+*.h5
+*.zip
+*.log
+*.tmp
+.ipynb_checkpoints/
+
+# =============================
+# Ignore all examples except PETRAIII
 # =============================
 /Examples/*
 !/Examples/PETRAIII/
@@ -7,23 +41,3 @@
 !/Examples/PETRAIII/*.py
 !/Examples/PETRAIII/*.ipynb
 !/Examples/PETRAIII/data/
-
-# =============================
-# Python + temp files
-# =============================
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.npz
-*.npy
-*.h5
-*.zip
-*.log
-*.tmp
-
-# =============================
-# Jupyter + system files
-# =============================
-.ipynb_checkpoints/
-.DS_Store
