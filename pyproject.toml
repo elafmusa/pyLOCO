@@ -1,7 +1,7 @@
 [build-system]
-requires = ["hatchling”]
-build-backend = “hatchling.build”
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
-name = “pyLOCO"
+name = "pyLOCO"
 version = "0.0.1"
