@@ -1696,8 +1696,6 @@ def pyloco(
 
 
 
-
-
 def plot_data(s_pos, data, xlabel, ylabel, title):
     plt.figure(figsize=(7, 3))
     plt.plot(s_pos, data, color='navy')  # Deep blue color
@@ -1705,5 +1703,40 @@ def plot_data(s_pos, data, xlabel, ylabel, title):
     plt.ylabel(ylabel)
     plt.title(title)
     # plt.grid(True, which='both', linestyle=':', color='gray')
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d'):
+    n = len(matrices)
+
+    if n == 0:
+        raise ValueError("At least one matrix must be provided.")
+
+    if titles is None:
+        titles = [f"Matrix {i + 1}" for i in range(n)]
+    elif len(titles) < n:
+        titles += [f"Matrix {i + 1}" for i in range(len(titles), n)]
+
+    fig = plt.figure(figsize=(6 * n, 5))
+
+    for i, matrix in enumerate(matrices):
+        if plot_type == '3d':
+            ax = fig.add_subplot(1, n, i + 1, projection='3d')
+            X, Y = np.meshgrid(np.arange(matrix.shape[1]), np.arange(matrix.shape[0]))
+            surf = ax.plot_surface(X, Y, matrix, cmap=cmap, edgecolor='none')
+            ax.set_title(titles[i])
+            ax.set_xlabel('Correctors')
+            ax.set_ylabel('BPMs')
+            ax.set_zlabel('[m]')
+            fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10)
+        else:
+            ax = fig.add_subplot(1, n, i + 1)
+            im = ax.imshow(matrix, aspect='auto', cmap=cmap)
+            ax.set_title(titles[i])
+            ax.set_xlabel('Correctors')
+            ax.set_ylabel('BPMs')
+            fig.colorbar(im, ax=ax)
+
     plt.tight_layout()
     plt.show()
