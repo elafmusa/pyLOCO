@@ -1746,7 +1746,7 @@ def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d', save_p
 
     plt.show()
 
-
+from pathlib import Path
 def save_fit_dict(fit_dict, output_path: Path):
     """
     Save a LOCO fit_dict to JSON, converting NumPy and non-serializable types safely.
