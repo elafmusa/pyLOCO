@@ -1706,10 +1706,11 @@ def plot_data(s_pos, data, xlabel, ylabel, title):
     plt.tight_layout()
     plt.show()
 
+import matplotlib.pyplot as plt
+import numpy as np
 
-def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d'):
+def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d', save_path=None):
     n = len(matrices)
-
     if n == 0:
         raise ValueError("At least one matrix must be provided.")
 
@@ -1739,4 +1740,9 @@ def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d'):
             fig.colorbar(im, ax=ax)
 
     plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        print(f"Plot saved to: {save_path}")
+
     plt.show()
