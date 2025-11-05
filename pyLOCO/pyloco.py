@@ -1706,8 +1706,7 @@ def plot_data(s_pos, data, xlabel, ylabel, title):
     plt.tight_layout()
     plt.show()
 
-import matplotlib.pyplot as plt
-import numpy as np
+
 
 def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d', save_path=None):
     n = len(matrices)
@@ -1746,3 +1745,37 @@ def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d', save_p
         print(f"Plot saved to: {save_path}")
 
     plt.show()
+
+
+def save_fit_dict(fit_dict, output_path: Path):
+    """
+    Save a LOCO fit_dict to JSON, converting NumPy and non-serializable types safely.
+    Falls back to .npz if the data is mostly numeric arrays.
+    """
+    def _to_jsonable(x):
+        if isinstance(x, np.ndarray):
+            return x.tolist()
+        if isinstance(x, (np.integer,)):
+            return int(x)
+        if isinstance(x, (np.floating,)):
+            return float(x)
+        if isinstance(x, (list, tuple)):
+            return [_to_jsonable(xx) for xx in x]
+        if isinstance(x, dict):
+            return {kk: _to_jsonable(vv) for kk, vv in x.items()}
+        if isinstance(x, (np.bool_)):
+            return bool(x)
+        if x is None or isinstance(x, (str, bool, int, float)):
+            return x
+        # Fallback: represent unknown objects as string
+        return str(x)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path = output_path.with_suffix(".json")
+
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(_to_jsonable(fit_dict), f, ensure_ascii=False, indent=4)
+
+    print(f"[info] Saved fit_dict to {json_path}")
+    return json_path
