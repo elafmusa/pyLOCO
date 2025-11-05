@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 LOGGER = logging.getLogger(__name__)
 import time
 import numpy as np
-json
+import json
 import time
 import matplotlib.pyplot as plt
 from .initial_fit import build_initial_fit_parameters
