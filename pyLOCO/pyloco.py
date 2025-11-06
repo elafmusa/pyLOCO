@@ -4,13 +4,12 @@ import logging
 import matplotlib.pyplot as plt
 LOGGER = logging.getLogger(__name__)
 import time
-import numpy as np
 import json
-import time
 import matplotlib.pyplot as plt
 from .initial_fit import build_initial_fit_parameters
 from .set_parameters import set_correction, set_correction_tilt, _get_attr_scalar, _initial_values_for_block, _resolve_attr_for_block_read
 import os
+import h5py
 import multiprocessing as mp
 from multiprocessing import shared_memory
 from pyloco_config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
@@ -210,7 +209,8 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                      include_cor_kick=False, include_cor_coupling=False, include_bpm_coupling=False, quads_tilt_ind = None,
                      include_delta_RF_frequency=False, include_HCMEnergyShift=False, include_VCMEnergyShift=False,
                      rf_step=fixed_parameters.rfstep
-                     ,individuals=False, auto_correct_delta=True,HCMCoupling = None, VCMCoupling = None, measured_eta_x=None, measured_eta_y=None,quads_tilt_fit=None, Frequency = fixed_parameters.Frequency,fit_cfg=None):
+                     ,individuals=False, auto_correct_delta=True,HCMCoupling = None, VCMCoupling = None, measured_eta_x=None, measured_eta_y=None,quads_tilt_fit=None, Frequency = fixed_parameters.Frequency,fit_cfg=None, iteration=1,  quad_jacobian_file=None,
+    skew_jacobian_file=None, quads_tilt_jacobian_file=None ):
 
     """
     Master function to compute full LOCO Jacobian including:
@@ -237,41 +237,158 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
         assert VCMCoupling.size == nVerCOR, "VCMCoupling must have length nVerCOR"
 
     # --- QUADS ---
+    J_quad, delta = None, None
     if include_quads:
-        J_quad, delta = calculate_quads_jacobian(
-    ring, C_model, dkick, CMords, bpm_indexes, quads_ind, dk, C,
-    individuals, HCMCoupling, VCMCoupling, block="quads",
-    auto_correct_delta=auto_correct_delta,
-    fit_cfg=fit_cfg, includeDispersion=includeDispersion,
-    log_filename="quad_jacobian_logs.txt"
-)
-    else:
-        J_quad, delta = None, None
-
-    # --- SKEW ---
-    if include_skew  == True:
-        J_skew, delta_skew =calculate_quads_jacobian(
-    ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
-    individuals, HCMCoupling, VCMCoupling, block="skew_quads",
-    auto_correct_delta=auto_correct_delta,
-    fit_cfg=fit_cfg,includeDispersion=includeDispersion,
-    log_filename="skew_jacobian_logs.txt",
-)
-    else:
-        J_skew, delta_skew = None, None
 
 
+        if quad_jacobian_file is not None:
+            J_path = quad_jacobian_file
+        else:
+            J_path = f"output/jacobians/quads/J_quads_iter{iteration}.h5"
 
-    if include_quads_tilt == True:
-        J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
-            ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
-            HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta, includeDispersion=includeDispersion,
-            log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
-        )
+        os.makedirs(os.path.dirname(J_path), exist_ok=True)
+
+        # Try loading existing Jacobian
+        if os.path.exists(J_path):
+            print(f"[Jacobian] Loading existing normal-quadrupole Jacobian from {J_path}")
+            with h5py.File(J_path, "r") as f:
+                J_quad = np.array(f["J_quads"])
+                delta = None  # optional, unless you also saved it
+        else:
+            print(f"[Jacobian] Computing normal-quadrupole Jacobian (iteration {iteration})...")
+            J_quad, delta = calculate_quads_jacobian(
+                ring, C_model, dkick, CMords, bpm_indexes, quads_ind, dk, C,
+                individuals, HCMCoupling, VCMCoupling, block="quads",
+                auto_correct_delta=auto_correct_delta,
+                fit_cfg=fit_cfg, includeDispersion=includeDispersion,
+                log_filename="quad_jacobian_logs.txt"
+            )
+
+            # Save the computed Jacobian
+            with h5py.File(J_path, "w") as f:
+                f.create_dataset("J_quads", data=J_quad)
+                f.create_dataset("C_model", data=C_model)
+                if isinstance(dkick, (list, tuple)):
+                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
+                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
+                else:
+                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+
+                f.attrs["iteration"] = iteration
+                f.attrs["nHBPM"] = nHBPM
+                f.attrs["nVBPM"] = nVBPM
+                f.attrs["nHorCOR"] = nHorCOR
+                f.attrs["nVerCOR"] = nVerCOR
+                f.attrs["includeDispersion"] = includeDispersion
+                f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
+                f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
+                f.attrs["date"] = time.ctime()
+
+            print(f"[Jacobian] Saved normal-quadrupole Jacobian to {J_path}")
 
 
-    else:
-        J_quad_tilt, delta_quads_tilt = None, None
+
+    # SKEW
+    J_skew, delta_skew = None, None
+    if include_skew:
+
+        # Determine file path
+        if skew_jacobian_file is not None:
+            J_path_skew = skew_jacobian_file
+        else:
+            J_path_skew = f"output/jacobians/skew/J_skew_iter{iteration}.h5"
+
+        os.makedirs(os.path.dirname(J_path_skew), exist_ok=True)
+
+        # Try to load existing Jacobian
+        if os.path.exists(J_path_skew):
+            print(f"[Jacobian] Loading existing skew-quadrupole Jacobian from {J_path_skew}")
+            with h5py.File(J_path_skew, "r") as f:
+                J_skew = np.array(f["J_skew"])
+                delta_skew = None
+        else:
+            print(f"[Jacobian] Computing skew-quadrupole Jacobian (iteration {iteration})...")
+            J_skew, delta_skew = calculate_quads_jacobian(
+                ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
+                individuals, HCMCoupling, VCMCoupling, block="skew_quads",
+                auto_correct_delta=auto_correct_delta,
+                fit_cfg=fit_cfg, includeDispersion=includeDispersion,
+                log_filename="skew_jacobian_logs.txt"
+            )
+
+            # Save the computed Jacobian
+            with h5py.File(J_path_skew, "w") as f:
+                f.create_dataset("J_skew", data=J_skew)
+                f.create_dataset("C_model", data=C_model)
+                if isinstance(dkick, (list, tuple)):
+                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
+                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
+                else:
+                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+
+                f.attrs["iteration"] = iteration
+                f.attrs["nHBPM"] = nHBPM
+                f.attrs["nVBPM"] = nVBPM
+                f.attrs["nHorCOR"] = nHorCOR
+                f.attrs["nVerCOR"] = nVerCOR
+                f.attrs["includeDispersion"] = includeDispersion
+                f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
+                f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
+                f.attrs["date"] = time.ctime()
+
+            print(f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}")
+
+
+
+    # --- QUAD TILT ---
+    J_quad_tilt, delta_quads_tilt = None, None  # ensure defined before branching
+
+    if include_quads_tilt:
+
+        # Determine file path
+        if quads_tilt_jacobian_file is not None:
+            J_path_tilt = quads_tilt_jacobian_file
+        else:
+            J_path_tilt = f"output/jacobians/tilt/J_tilt_iter{iteration}.h5"
+
+        os.makedirs(os.path.dirname(J_path_tilt), exist_ok=True)
+
+        # Try to load existing Jacobian
+        if os.path.exists(J_path_tilt):
+            print(f"[Jacobian] Loading existing tilt-quadrupole Jacobian from {J_path_tilt}")
+            with h5py.File(J_path_tilt, "r") as f:
+                J_quad_tilt = np.array(f["J_tilt"])
+                delta_quads_tilt = None
+        else:
+            print(f"[Jacobian] Computing tilt-quadrupole Jacobian (iteration {iteration})...")
+            J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
+                ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
+                HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta, includeDispersion=includeDispersion,
+                log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
+            )
+
+            # Save the computed Jacobian
+            with h5py.File(J_path_tilt, "w") as f:
+                f.create_dataset("J_tilt", data=J_quad_tilt)
+                f.create_dataset("C_model", data=C_model)
+                if isinstance(dkick, (list, tuple)):
+                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
+                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
+                else:
+                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+
+                f.attrs["iteration"] = iteration
+                f.attrs["nHBPM"] = nHBPM
+                f.attrs["nVBPM"] = nVBPM
+                f.attrs["nHorCOR"] = nHorCOR
+                f.attrs["nVerCOR"] = nVerCOR
+                f.attrs["includeDispersion"] = includeDispersion
+                f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
+                f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
+                f.attrs["date"] = time.ctime()
+
+            print(f"[Jacobian] Saved tilt-quadrupole Jacobian to {J_path_tilt}")
+
 
 
     J_bpm_gain = calculate_bpm_gain_jacobian(
@@ -1321,6 +1438,10 @@ def pyloco(
     # more options
     plot_fit_parameters=False, auto_correct_delta=True, fixedpathlength=False,
     fit_cfg=None,
+    # Jacopians files
+    quad_jacobian_file=None,
+    skew_jacobian_file=None,
+    quads_tilt_jacobian_file=None
 ):
 
     hbpm_gain      = np.ones(nHBPM)
@@ -1406,7 +1527,12 @@ def pyloco(
             measured_eta_x=measured_eta_x, measured_eta_y=measured_eta_y,
             quads_tilt_fit=(deltaqt if deltaqt is not None else None),
             fit_cfg=fit_cfg,
-            Frequency = Frequency
+            Frequency = Frequency,
+            iteration = it+1,
+            quad_jacobian_file=None,
+            skew_jacobian_file=None,
+            quads_tilt_jacobian_file=None
+
         )
 
         if Fixedmomentum == True:
