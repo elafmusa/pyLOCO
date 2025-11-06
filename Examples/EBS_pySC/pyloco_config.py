@@ -68,7 +68,7 @@ class LOCOOptions:
     # --- SVD control ---
     svd_selection_method: str = "threshold"
     svd_threshold: float = 1e-7
-    cut_: int = 397
+    cut_: int = 96
     show_svd_plot: bool = True
 
     # --- fitting list ---
