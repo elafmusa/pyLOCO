@@ -99,7 +99,7 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta
     hor_dispersion_weight = 10
     ver_dispersion_weight = 10
 
-    fit_results, fit_dict, ring = pyloco(
+    fit_results, fit_dict, ring_pyloco = pyloco(
         ring,
 
         # --- general control ---
@@ -164,7 +164,9 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta
     )
 
     # --- save results ---
-    np.save("./output/loco_lm_fit_results_iterations.npy", fit_results)
+    from pathlib import Path
+    save_fit_dict(fit_dict, Path("./output/fit_results_all_parameters"))
+    ring_pyloco.save('./output/ring_pyloco.mat', mat_key='ring')
 
     # --- save results ---
     return fit_results, fit_dict, ring
