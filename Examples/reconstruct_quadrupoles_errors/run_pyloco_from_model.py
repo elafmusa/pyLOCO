@@ -1,4 +1,4 @@
-from pyLOCO.pyloco import pyloco, remove_bad_bpms, plot_data
+from pyLOCO.pyloco import pyloco, remove_bad_bpms, plot_data, save_fit_dict
 from pyLOCO.helpers import load_config
 import numpy as np
 import os
