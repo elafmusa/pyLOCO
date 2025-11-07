@@ -242,7 +242,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
     if include_quads:
 
         user_provided = quad_jacobian_file is not None
-        J_path = quad_jacobian_file if user_provided else f"output/jacobians/quads/J_quads_iter{iteration}_{dkick}urad_{fixed_parameters.rfstep}Hz.h5"
+        J_path = quad_jacobian_file if user_provided else f"output/jacobians/quads/J_quads_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
         os.makedirs(os.path.dirname(J_path), exist_ok=True)
 
         # --- logic ---
