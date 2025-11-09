@@ -74,7 +74,7 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta
     nHorCOR = len(Corords[0])
     nVerCOR = len(Corords[1])
     nHBPM = nVBPM = len(used_bpms_ords)
-    nIter = 5
+    nIter = 50
     fit_list = [
         "quads",
         'skew_quads',
@@ -96,8 +96,8 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta
     remove_coupling_ = True
     includeDispersion = False
     fixedpathlength = False
-    hor_dispersion_weight = 10
-    ver_dispersion_weight = 10
+    hor_dispersion_weight = 1
+    ver_dispersion_weight = 1
 
     fit_results, fit_dict, ring_pyloco = pyloco(
         ring,
@@ -161,6 +161,12 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta
         auto_correct_delta=loco_options.auto_correct_delta,
         fixedpathlength= fixedpathlength,
         fit_cfg=fit_cfg,
+
+        quad_jacobian_file="output/jacobians/quads/J_quads_iter1_0.0001urad_200Hz.h5",
+        skew_jacobian_file=None,
+        quads_tilt_jacobian_file=None,
+        force_recompute=False
+
     )
 
     # --- save results ---
