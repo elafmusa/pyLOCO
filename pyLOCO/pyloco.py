@@ -270,25 +270,26 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
             )
 
             # Save
-            with h5py.File(J_path, "w") as f:
-                f.create_dataset("J_quads", data=J_quad)
-                f.create_dataset("C_model", data=C_model)
-                if isinstance(dkick, (list, tuple)):
-                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
-                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
-                else:
-                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
-                f.attrs.update({
-                    "iteration": iteration,
-                    "nHBPM": nHBPM, "nVBPM": nVBPM,
-                    "nHorCOR": nHorCOR, "nVerCOR": nVerCOR,
-                    "includeDispersion": includeDispersion,
-                    "HCMCoupling": json.dumps(np.asarray(HCMCoupling).tolist()),
-                    "VCMCoupling": json.dumps(np.asarray(VCMCoupling).tolist()),
-                    "date": time.ctime(),
-                })
+            if iteration == 1:
+                with h5py.File(J_path, "w") as f:
+                    f.create_dataset("J_quads", data=J_quad)
+                    f.create_dataset("C_model", data=C_model)
+                    if isinstance(dkick, (list, tuple)):
+                        f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
+                        f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
+                    else:
+                        f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+                    f.attrs.update({
+                        "iteration": iteration,
+                        "nHBPM": nHBPM, "nVBPM": nVBPM,
+                        "nHorCOR": nHorCOR, "nVerCOR": nVerCOR,
+                        "includeDispersion": includeDispersion,
+                        "HCMCoupling": json.dumps(np.asarray(HCMCoupling).tolist()),
+                        "VCMCoupling": json.dumps(np.asarray(VCMCoupling).tolist()),
+                        "date": time.ctime(),
+                    })
 
-            print(f"[Jacobian] Saved normal-quadrupole Jacobian to {J_path}")
+                print(f"[Jacobian] Saved normal-quadrupole Jacobian to {J_path}")
 
 
     # --- SKEW ---
@@ -322,28 +323,28 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                 fit_cfg=fit_cfg, includeDispersion=includeDispersion,
                 log_filename="skew_jacobian_logs.txt"
             )
+            if iteration == 1:
+                # --- Save the computed Jacobian ---
+                with h5py.File(J_path_skew, "w") as f:
+                    f.create_dataset("J_skew", data=J_skew)
+                    f.create_dataset("C_model", data=C_model)
+                    if isinstance(dkick, (list, tuple)):
+                        f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
+                        f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
+                    else:
+                        f.create_dataset("correctors_dkick", data=np.asarray(dkick))
 
-            # --- Save the computed Jacobian ---
-            with h5py.File(J_path_skew, "w") as f:
-                f.create_dataset("J_skew", data=J_skew)
-                f.create_dataset("C_model", data=C_model)
-                if isinstance(dkick, (list, tuple)):
-                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
-                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
-                else:
-                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+                    f.attrs["iteration"] = iteration
+                    f.attrs["nHBPM"] = nHBPM
+                    f.attrs["nVBPM"] = nVBPM
+                    f.attrs["nHorCOR"] = nHorCOR
+                    f.attrs["nVerCOR"] = nVerCOR
+                    f.attrs["includeDispersion"] = includeDispersion
+                    f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
+                    f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
+                    f.attrs["date"] = time.ctime()
 
-                f.attrs["iteration"] = iteration
-                f.attrs["nHBPM"] = nHBPM
-                f.attrs["nVBPM"] = nVBPM
-                f.attrs["nHorCOR"] = nHorCOR
-                f.attrs["nVerCOR"] = nVerCOR
-                f.attrs["includeDispersion"] = includeDispersion
-                f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
-                f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
-                f.attrs["date"] = time.ctime()
-
-            print(f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}")
+                print(f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}")
 
     # --- QUAD TILT ---
     J_quad_tilt, delta_quads_tilt = None, None
@@ -378,26 +379,27 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
             )
 
             # --- Save the computed Jacobian ---
-            with h5py.File(J_path_tilt, "w") as f:
-                f.create_dataset("J_quads_tilt", data=J_quad_tilt)
-                f.create_dataset("C_model", data=C_model)
-                if isinstance(dkick, (list, tuple)):
-                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
-                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
-                else:
-                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+            if iteration == 1:
+                with h5py.File(J_path_tilt, "w") as f:
+                    f.create_dataset("J_quads_tilt", data=J_quad_tilt)
+                    f.create_dataset("C_model", data=C_model)
+                    if isinstance(dkick, (list, tuple)):
+                        f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
+                        f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
+                    else:
+                        f.create_dataset("correctors_dkick", data=np.asarray(dkick))
 
-                f.attrs["iteration"] = iteration
-                f.attrs["nHBPM"] = nHBPM
-                f.attrs["nVBPM"] = nVBPM
-                f.attrs["nHorCOR"] = nHorCOR
-                f.attrs["nVerCOR"] = nVerCOR
-                f.attrs["includeDispersion"] = includeDispersion
-                f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
-                f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
-                f.attrs["date"] = time.ctime()
+                    f.attrs["iteration"] = iteration
+                    f.attrs["nHBPM"] = nHBPM
+                    f.attrs["nVBPM"] = nVBPM
+                    f.attrs["nHorCOR"] = nHorCOR
+                    f.attrs["nVerCOR"] = nVerCOR
+                    f.attrs["includeDispersion"] = includeDispersion
+                    f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
+                    f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
+                    f.attrs["date"] = time.ctime()
 
-            print(f"[Jacobian] Saved quadrupole-tilt Jacobian to {J_path_tilt}")
+                print(f"[Jacobian] Saved quadrupole-tilt Jacobian to {J_path_tilt}")
 
 
 
