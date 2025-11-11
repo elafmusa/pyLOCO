@@ -266,7 +266,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                 individuals, HCMCoupling, VCMCoupling, block="quads",
                 auto_correct_delta=auto_correct_delta,
                 fit_cfg=fit_cfg, includeDispersion=includeDispersion,
-                log_filename="quad_jacobian_logs.txt"
+                log_filename="quad_jacobian_logs2.txt"
             )
 
             # Save
@@ -1454,7 +1454,13 @@ def pyloco(
     quad_jacobian_file=None,
     skew_jacobian_file=None,
     quads_tilt_jacobian_file=None,
-    force_recompute=False
+    force_recompute=False,
+    # Fit multi stage
+    continue_from_previous=False,
+    previous_fit_results=None,
+    previous_fit_dict=None,
+    previous_ring=None,
+
 ):
 
     hbpm_gain      = np.ones(nHBPM)
@@ -1467,13 +1473,43 @@ def pyloco(
     VCMCoupling    = np.zeros(nVerCOR)
     deltaqt        = np.zeros(len(quads_ords)) if ('quads_tilt' in fit_list) else None
 
+    # --- Resume from previous fit if requested ---
+    if continue_from_previous:
+        print("[pyloco] Continuing from previous iteration set...")
+        if previous_ring is not None:
+            ring = previous_ring
+        if previous_fit_results is not None:
+            current_fit_parameters = np.asarray(previous_fit_results[-1]).copy()
+        if previous_fit_dict is not None and len(previous_fit_dict) > 0:
+            last_fit = previous_fit_dict[max(previous_fit_dict.keys())] ## last by order
+            # Restore key parameters
+            hbpm_gain = last_fit.get("hbpm_gain", hbpm_gain)
+            vbpm_gain = last_fit.get("vbpm_gain", vbpm_gain)
+            hbpm_coupling = last_fit.get("hbpm_coupling", hbpm_coupling)
+            vbpm_coupling = last_fit.get("vbpm_coupling", vbpm_coupling)
+            HCMCoupling = last_fit.get("hcor_coupling", HCMCoupling)
+            VCMCoupling = last_fit.get("vcor_coupling", VCMCoupling)
+            HCMEnergyShift = last_fit.get("HCMEnergyShift", HCMEnergyShift)
+            VCMEnergyShift = last_fit.get("VCMEnergyShift", VCMEnergyShift)
+            if "delta_rf" in last_fit:
+                rfStep = float(np.asarray(last_fit["delta_rf"]).ravel()[0])
+            if "quads_tilt" in last_fit:
+                deltaqt = np.asarray(last_fit["quads_tilt"]).ravel()
+
+            if 'hcor_cal' in last_fit:
+                CMstep[0] = np.asarray(last_fit['hcor_cal']).ravel()
+            if 'vcor_cal' in last_fit:
+                CMstep[1] = np.asarray(last_fit['vcor_cal']).ravel()
+
+
+
     if fixedpathlength == False or 'HCMEnergyShift' in fit_list or 'VCMEnergyShift' in fit_list:
         Fixedmomentum = True
     else:
         Fixedmomentum = False
 
-    if inetial_fit_parameters is None:
 
+    if inetial_fit_parameters is None and not continue_from_previous:
         inetial_fit_parameters, blocks = build_initial_fit_parameters(
             ring=ring,
             fit_list=fit_list,
@@ -1481,6 +1517,29 @@ def pyloco(
             quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
             CMstep = CMstep, rfStep = rfStep,
             individuals = individuals)
+    #elif continue_from_previous and previous_fit_results is not None:
+    #     inetial_fit_parameters = np.asarray(previous_fit_results[-1]).copy()
+    elif continue_from_previous and previous_fit_dict is not None:
+        print("[pyloco] Building initial vector from previous stage...")
+        last_fit = previous_fit_dict[max(previous_fit_dict.keys())]
+
+        # Build new vector with the current fit_list structure
+        inetial_fit_parameters, blocks = build_initial_fit_parameters(
+            ring=ring,
+            fit_list=fit_list,
+            nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+            quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
+            CMstep=CMstep, rfStep=rfStep,
+            individuals=individuals,
+        )
+
+        # Overwrite any parameters that were fitted before
+        for key in fit_list:
+            if key in last_fit and key in blocks:
+                print(f"[pyloco] Restoring previous values for {key}...")
+                arr = np.asarray(last_fit[key]).ravel()
+                sl = blocks[key]  # use the slice directly
+                inetial_fit_parameters[sl] = arr[: sl.stop - sl.start]
 
     inetial_fit_parameters = np.asarray(inetial_fit_parameters).ravel()
     current_fit_parameters = inetial_fit_parameters.copy()
@@ -1512,6 +1571,8 @@ def pyloco(
         include_HCMEnergyShift= ('HCMEnergyShift' in fit_list)
         include_VCMEnergyShift= ('VCMEnergyShift' in fit_list)
         include_delta_RF      = ('delta_rf' in fit_list)
+
+        ring.save('ring_jac0.mat', mat_key='ring')
 
         Jfull, dq, dskew, dtilt = compute_jacobian(
             ring, C_model=orm_model, dkick=CMstep,
@@ -1628,6 +1689,8 @@ def pyloco(
                     svd_method=svd_selection_method, svd_threshold=svd_threshold,
                     cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it+1}/in{j+1}"
                 )
+
+
 
 
                 if norm_factors is not None:
@@ -1822,7 +1885,6 @@ def pyloco(
 
         # Save iteration
 
-
         fit_results_all.append(current_fit_parameters.copy())
         fit_dict_all[it] = _pack_fit_dict(
             current_fit_parameters,
@@ -1833,6 +1895,11 @@ def pyloco(
         )
 
     print(f"LOCO {algorithm.upper()} completed! :).")
+
+    #if continue_from_previous and previous_fit_results is not None:
+    #    fit_results_all = previous_fit_results + fit_results_all
+    #    fit_dict_all = {**previous_fit_dict, **fit_dict_all}
+
     return fit_results_all, fit_dict_all, ring
 
 
