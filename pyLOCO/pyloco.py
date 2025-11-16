@@ -243,6 +243,8 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
 
         user_provided = quad_jacobian_file is not None
         J_path = quad_jacobian_file if user_provided else f"output/jacobians/quads/J_quads_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
+
+
         os.makedirs(os.path.dirname(J_path), exist_ok=True)
 
         # --- logic ---
@@ -370,12 +372,10 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
             else:
                 print(f"[Jacobian] Computing quadrupole-tilt Jacobian (iteration {iteration})...")
 
-            J_quad_tilt, delta_quads_tilt = calculate_quads_jacobian(
-                ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_quads_tilt, C,
-                individuals, HCMCoupling, VCMCoupling, block="quads_tilt",
-                auto_correct_delta=auto_correct_delta,
-                fit_cfg=fit_cfg, includeDispersion=includeDispersion,
-                log_filename="quads_tilt_jacobian_logs.txt"
+            J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
+                ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
+                HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta, includeDispersion=includeDispersion,
+                log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
             )
 
             # --- Save the computed Jacobian ---
