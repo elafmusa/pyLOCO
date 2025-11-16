@@ -370,12 +370,11 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
             else:
                 print(f"[Jacobian] Computing quadrupole-tilt Jacobian (iteration {iteration})...")
 
-            J_quad_tilt, delta_quads_tilt = calculate_quads_jacobian(
-                ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_quads_tilt, C,
-                individuals, HCMCoupling, VCMCoupling, block="quads_tilt",
-                auto_correct_delta=auto_correct_delta,
-                fit_cfg=fit_cfg, includeDispersion=includeDispersion,
-                log_filename="quads_tilt_jacobian_logs.txt"
+           
+            J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
+                ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
+                HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta, includeDispersion=includeDispersion,
+                log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
             )
 
             # --- Save the computed Jacobian ---
