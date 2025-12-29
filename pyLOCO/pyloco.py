@@ -370,7 +370,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
             else:
                 print(f"[Jacobian] Computing quadrupole-tilt Jacobian (iteration {iteration})...")
 
-           
+
             J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
                 ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
                 HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta, includeDispersion=includeDispersion,
@@ -1558,7 +1558,6 @@ def pyloco(
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model = Cmat @ orm_model
 
-
         # --- 2) Jacobian ---
         include_quads         = ('quads' in fit_list)
         include_skew          = ('skew_quads' in fit_list)
@@ -1571,7 +1570,6 @@ def pyloco(
         include_VCMEnergyShift= ('VCMEnergyShift' in fit_list)
         include_delta_RF      = ('delta_rf' in fit_list)
 
-        ring.save('ring_jac0.mat', mat_key='ring')
 
         Jfull, dq, dskew, dtilt = compute_jacobian(
             ring, C_model=orm_model, dkick=CMstep,
@@ -1632,6 +1630,10 @@ def pyloco(
                                      nHBPM, nVBPM, nHorCOR, nVerCOR)
         y_meas = orm_measured.reshape(-1, 1, order="F")
         y_model = orm_model.reshape(-1, 1, order="F")
+        np.save('weights_flat', weights_flat)
+        np.save('y_meas', y_meas)
+        np.save('y_model', y_model)
+
         J = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
 
         if remove_coupling_==True:
@@ -1646,6 +1648,15 @@ def pyloco(
         keep_mask = slice(None)
         if outlier_rejection==True:
             r = (y_meas - y_model).ravel()
+            if includeDispersion==True:
+                #Note: dispersion error should be scaled by the weight (maybe this should be made a separate outlier test)
+                #Remove the weight on the dispersion for the outlier calculation
+                nBPM = len(used_bpms_ords) * 2
+                WeightedEta = np.asarray(y[-nBPM:]).ravel()
+                UnWeightedEtaX = WeightedEta[:nHBPM] * hor_dispersion_weight
+                UnWeightedEtaY = WeightedEta[nHBPM:nHBPM + nVBPM] * ver_dispersion_weight
+                r[-nBPM:] = np.concatenate([UnWeightedEtaX, UnWeightedEtaY]).ravel()
+
             m, s = np.mean(r), np.std(r, ddof=1)
             i1 = np.where(np.abs(r - m) > sigma_outlier * s)[0]
             j1 = np.where(np.abs(r - m) <= sigma_outlier * s)[0]
