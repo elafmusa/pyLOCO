@@ -48,6 +48,7 @@ def weight_matrix(W, include_dispersion=False,
 
     # Orbit weight matrix: repeat std vector across all correctors
     W_matrix = np.outer(W, np.ones(nHorCOR + nVerCOR))  # shape: (nBPMs, nCorrectors)
+    W_matrix_chi = np.outer(W, np.ones(nHorCOR + nVerCOR))
 
     if include_dispersion:
         # Split orbit BPM stds into horizontal and vertical parts
@@ -61,14 +62,22 @@ def weight_matrix(W, include_dispersion=False,
 
         W_matrix = np.hstack((W_matrix, dispersion_std))  # shape: (nBPMs, nCORs + 1)
 
-    W_flat = W_matrix.reshape(-1, 1, order='F')
+        dispersion_std_chi = np.concatenate([
+            W_H / 1,
+            W_V / 1
+        ]).reshape(-1, 1)  # column vector (nHBPM + nVBPM, 1)
 
-    return W_flat
+        W_matrix_chi = np.hstack((W_matrix_chi, dispersion_std_chi))  # shape: (nBPMs, nCORs + 1)
+
+    W_flat = W_matrix.reshape(-1, 1, order='F')
+    W_flat_chi = W_matrix_chi.reshape(-1, 1, order='F')
+
+    return W_flat, W_flat_chi
 
 
 def remove_coupling(orm1, orm2, W=None, Jacobian=None,
                     nHBPM=None, nVBPM=None, nHorCOR=None, nVerCOR=None,
-                    include_dispersion=False):
+                    include_dispersion=False, for_chi_squared=False):
     """
     Remove coupling-related rows from ORMs, Jacobian, and weight matrix.
 
@@ -104,31 +113,36 @@ def remove_coupling(orm1, orm2, W=None, Jacobian=None,
         [np.ones((nHBPM, nHorCOR)), np.zeros((nHBPM, nVerCOR))],
         [np.zeros((nVBPM, nHorCOR)), np.ones((nVBPM, nVerCOR))]
     ])
-
     if include_dispersion==True:
+        dispersion_column_chi = np.concatenate([
+            2 * np.ones((nHBPM, 1)),
+            3* np.ones((nVBPM, 1))
+        ])
+
         dispersion_column = np.concatenate([
             2 * np.ones((nHBPM, 1)),
             np.zeros((nVBPM, 1))
         ])
-        CF = np.hstack((CF, dispersion_column))
 
+    CF_chi = np.hstack((CF, dispersion_column_chi))
+    CF_flat_chi = CF_chi.flatten(order='F')
+    iNoCoupling_chi = np.where(CF_flat_chi > 0)[0]
+
+    CF = np.hstack((CF, dispersion_column))
     CF_flat = CF.flatten(order='F')
     iNoCoupling = np.where(CF_flat > 0)[0]
-
     # Apply filtering
     orm1_filtered = orm1[iNoCoupling]
     orm2_filtered = orm2[iNoCoupling]
     W_filtered = W[iNoCoupling] if W is not None else None
     Jacobian_filtered = Jacobian[iNoCoupling, :] if Jacobian is not None else None
 
-    return orm1_filtered, orm2_filtered, W_filtered, Jacobian_filtered, iNoCoupling
+    return orm1_filtered, orm2_filtered, W_filtered, Jacobian_filtered, iNoCoupling, iNoCoupling_chi
 
 
 def select_equally_spaced_elements(total_elements, num_elements):
     step = len(total_elements) // (num_elements - 1)
     return total_elements[::step]
-
-
 
 
 def remove_bad_bpms(data, bad_bpms, total_bpms, axis=0, input_type="positions"):
@@ -178,19 +192,115 @@ def remove_bad_bpms(data, bad_bpms, total_bpms, axis=0, input_type="positions"):
     cleaned = np.delete(data, bad_rows, axis=axis)
     return cleaned, bad_rows
 
+# ============================================================================== #
+#                                    For chi Squared                                      #
+# ============================================================================== #
 
 
+def reduced_outliers_to_coupled(iOutliers_reduced, iNoCoupling, n_total):
+    """
+    Map outliers from reduced (no-coupling) space back to coupled space
+    """
+    tmp = np.zeros(n_total, dtype=bool)
+    tmp[iNoCoupling[iOutliers_reduced]] = True
+    return np.where(tmp)[0]
 
-def compute_chi_squared(measured_orm, model_orm, J, bpm_noise):
+def split_orm_eta_outliers(iOutliers_coupled,
+                           nHBPM, nVBPM, nHorCOR, nVerCOR,
+                           includeDispersion):
+    nORM = (nHBPM + nVBPM) * (nHorCOR + nVerCOR)
+
+    if not includeDispersion:
+        return iOutliers_coupled, np.array([], dtype=int)
+
+    # Python 0-based: ORM part is [0 .. nORM-1]
+    is_orm = iOutliers_coupled < nORM
+    is_eta = iOutliers_coupled >= nORM
+
+    orm_out = iOutliers_coupled[is_orm]
+    eta_out = iOutliers_coupled[is_eta] - nORM  # eta-local indices
+
+    return orm_out, eta_out
 
 
-    residuals = (measured_orm - model_orm) / bpm_noise
+def rebuild_chi2_outliers(orm_outliers, eta_outliers,
+                          nHBPM, nVBPM, nHorCOR, nVerCOR,
+                          includeDispersion):
+    nORM = (nHBPM + nVBPM) * (nHorCOR + nVerCOR)
+
+    if not includeDispersion:
+        return orm_outliers
+
+    return np.concatenate([orm_outliers, eta_outliers + nORM])
+
+
+def build_chi2_keep_mask(n_total, chi2_outliers):
+    mask = np.ones(n_total, dtype=bool)
+    mask[chi2_outliers] = False
+    return mask
+
+def compute_chi_squared_(
+    Mmeas,
+    Mmodel,
+    Mstd,
+    *,
+    nHBPM, nVBPM, nHorCOR, nVerCOR,
+    include_dispersion,
+    remove_coupling_, iNoCoupling,
+    iOutliers,
+    n_fit_parameters
+):
+    """
+    Faithful Python port of MATLAB lococalcchi2
+
+    Parameters
+    ----------
+    Mmeas, Mmodel, Mstd : (N,1) arrays
+        FULL coupled vectors (before remove_coupling)
+    iOutliers : 1D int array
+        Outlier indices in FULL coupled space (0-based)
+    n_fit_parameters : ndarray
+        Jacobian used for the fit (after remove_coupling & outliers)
+    """
+
+    # ---- 1) Copy (do NOT modify originals)
+    Mmeas  = Mmeas.copy()
+    Mmodel = Mmodel.copy()
+    Mstd   = Mstd.copy()
+
+    # ---- 2) Mark outliers as NaN (still COUPLED)
+    if iOutliers is not None and len(iOutliers) > 0:
+        Mmeas[iOutliers]  = np.nan
+        Mmodel[iOutliers] = np.nan
+        Mstd[iOutliers]   = np.nan
+
+    # ---- 3) Remove coupling (MATLAB does this AFTER outliers)
+    if remove_coupling_:
+        #Mmeas, Mmodel, Mstd, _, _ = remove_coupling(
+        #    Mmeas, Mmodel, Mstd, None,
+        #    nHBPM, nVBPM, nHorCOR, nVerCOR,
+        #    include_dispersion,
+        #    for_chi_squared=True
+        #)
+
+        Mmeas = Mmeas[iNoCoupling]
+        Mmodel = Mmodel[iNoCoupling]
+        Mstd = Mstd[iNoCoupling]
+
+    # ---- 4) Drop NaNs
+    mask = ~np.isnan(Mmeas).ravel()
+    Mmeas  = Mmeas[mask]
+    Mmodel = Mmodel[mask]
+    Mstd   = Mstd[mask]
+
+    # ---- 5) Chi²
+    residuals = (Mmeas - Mmodel) / Mstd
     chi2 = np.sum(residuals ** 2)
-    dof = len(bpm_noise) - J.shape[1]
 
+    # ---- 6) Degrees of freedom
+    dof = len(Mstd) - n_fit_parameters.shape[1]
     if dof <= 0:
-        raise ValueError("Degrees of freedom must be positive.")
-
+        raise ValueError(f"Invalid DOF: {dof}")
     return chi2 / dof
 
 
@@ -210,7 +320,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                      include_delta_RF_frequency=False, include_HCMEnergyShift=False, include_VCMEnergyShift=False,
                      rf_step=fixed_parameters.rfstep
                      ,individuals=False, auto_correct_delta=True,HCMCoupling = None, VCMCoupling = None, measured_eta_x=None, measured_eta_y=None,quads_tilt_fit=None, Frequency = fixed_parameters.Frequency,fit_cfg=None, iteration=1,  quad_jacobian_file=None,
-    skew_jacobian_file=None, quads_tilt_jacobian_file=None,force_recompute=False):
+    skew_jacobian_file=None, quads_tilt_jacobian_file=None,force_recompute=True):
 
     """
     Master function to compute full LOCO Jacobian including:
@@ -663,8 +773,19 @@ def generating_quads_response_matrices(
 
 
         C_measured = G_C @ C_measured
-        Mdiff = (C_measured - G_CMODEL).ravel(order='F')
-        RMSDelta = float(np.sqrt(np.sum(Mdiff**2) / max(1, Mdiff.size)))
+
+        if includeDispersion == True:
+            # exclude last column (dispersion)
+            Mdiff_no_disp = (
+                    C_measured[:, :-1] - G_CMODEL[:, :-1]
+            ).ravel(order='F')
+
+            RMSDelta = float(
+                np.sqrt(np.sum(Mdiff_no_disp ** 2) / max(1, Mdiff_no_disp.size))
+            )
+        else:
+            Mdiff = (C_measured - G_CMODEL).ravel(order='F')
+            RMSDelta = float(np.sqrt(np.sum(Mdiff**2) / max(1, Mdiff.size)))
 
         if not np.isfinite(RMSDelta) or RMSDelta == 0:
             raise ValueError(f"LOCO error: RMS difference invalid for group {group}")
@@ -812,9 +933,18 @@ def generating_quads_tilt_response_matrices(
 
         C_measured = G_C @ C_measured
 
+        if includeDispersion == True:
+            # exclude last column (dispersion)
+            Mdiff_no_disp = (
+                    C_measured[:, :-1] - G_CMODEL[:, :-1]
+            ).ravel(order='F')
 
-        Mdiff = (C_measured - G_CMODEL).ravel(order='F')
-        RMSDelta = np.sqrt(np.sum(Mdiff**2) / len(Mdiff))
+            RMSDelta = float(
+                np.sqrt(np.sum(Mdiff_no_disp ** 2) / max(1, Mdiff_no_disp.size))
+            )
+        else:
+            Mdiff = (C_measured - G_CMODEL).ravel(order='F')
+            RMSDelta = float(np.sqrt(np.sum(Mdiff ** 2) / max(1, Mdiff.size)))
 
         logs.append(f"quads_tilt_fit #{quads_tilt_fit}")
         logs.append(f"delta_local #{delta_local}")
@@ -1447,7 +1577,7 @@ def pyloco(
     # LM options
     nLMIter=10, Starting_Lambda=1e-3, max_lm_lambda=15, scaled=True,
     # more options
-    plot_fit_parameters=False, auto_correct_delta=True, fixedpathlength=False,
+    plot_fit_parameters=False, auto_correct_delta=True, fixedpathlength=True, fixedmomentum=False,
     fit_cfg=None,
     # Jacopians files
     quad_jacobian_file=None,
@@ -1500,12 +1630,14 @@ def pyloco(
             if 'vcor_cal' in last_fit:
                 CMstep[1] = np.asarray(last_fit['vcor_cal']).ravel()
 
-
+    if fixedmomentum and \
+            'HCMEnergyShift' not in fit_list and \
+            'VCMEnergyShift' not in fit_list:
+        fixedmomentum = True
+        #fixedpathlength = True
 
     if fixedpathlength == False or 'HCMEnergyShift' in fit_list or 'VCMEnergyShift' in fit_list:
-        Fixedmomentum = True
-    else:
-        Fixedmomentum = False
+        fixedmomentum = True
 
 
     if inetial_fit_parameters is None and not continue_from_previous:
@@ -1607,7 +1739,7 @@ def pyloco(
 
         )
 
-        if Fixedmomentum == True:
+        if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
 
@@ -1625,50 +1757,73 @@ def pyloco(
 
 
         # --- 3) Flatten, weights, optional coupling removal/outliers ---
-        weights_flat = weight_matrix(weights, includeDispersion,
+        weights_flat_, weights_flat_chi_ = weight_matrix(weights, includeDispersion,
                                      hor_dispersion_weight, ver_dispersion_weight,
                                      nHBPM, nVBPM, nHorCOR, nVerCOR)
-        y_meas = orm_measured.reshape(-1, 1, order="F")
-        y_model = orm_model.reshape(-1, 1, order="F")
-        np.save('weights_flat', weights_flat)
-        np.save('y_meas', y_meas)
-        np.save('y_model', y_model)
+        y_meas_ = orm_measured.reshape(-1, 1, order="F")
+        y_model_ = orm_model.reshape(-1, 1, order="F")
 
-        J = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
+        J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
 
         if remove_coupling_==True:
-            y_meas, y_model, weights_flat, J, _ = remove_coupling(
-                y_meas, y_model, weights_flat, J,
+            y_meas, y_model, weights_flat, J, _, iNoCoupling_chi = remove_coupling(
+                y_meas_, y_model_, weights_flat_, J_,
                 nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
             )
 
         Jw = J / weights_flat
         y = (y_meas - y_model) / weights_flat
 
-        keep_mask = slice(None)
-        if outlier_rejection==True:
-            r = (y_meas - y_model).ravel()
-            if includeDispersion==True:
-                #Note: dispersion error should be scaled by the weight (maybe this should be made a separate outlier test)
-                #Remove the weight on the dispersion for the outlier calculation
-                nBPM = len(used_bpms_ords) * 2
-                WeightedEta = np.asarray(y[-nBPM:]).ravel()
-                UnWeightedEtaX = WeightedEta[:nHBPM] * hor_dispersion_weight
-                UnWeightedEtaY = WeightedEta[nHBPM:nHBPM + nVBPM] * ver_dispersion_weight
-                r[-nBPM:] = np.concatenate([UnWeightedEtaX, UnWeightedEtaY]).ravel()
 
+
+        keep_mask_reduced = slice(None)
+        iOut_coupled = np.array([], dtype=int)
+
+        if outlier_rejection:
+            r = (y_meas - y_model).ravel()
+
+            # ----- First test -----
             m, s = np.mean(r), np.std(r, ddof=1)
             i1 = np.where(np.abs(r - m) > sigma_outlier * s)[0]
             j1 = np.where(np.abs(r - m) <= sigma_outlier * s)[0]
-            r2 = r[j1]; m2, s2 = np.mean(r2), np.std(r2, ddof=1)
+
+            # ----- Second test -----
+            r2 = r[j1]
+            m2, s2 = np.mean(r2), np.std(r2, ddof=1)
             i2 = np.where(np.abs(r2 - m2) > sigma_outlier * s2)[0]
-            out = np.sort(np.concatenate([i1, j1[i2]]))
-            if out.size:
-                keep = np.ones_like(r, dtype=bool); keep[out] = False
-                keep_mask = keep
-                y_meas = y_meas[keep_mask]; y_model = y_model[keep_mask]
-                weights_flat = weights_flat[keep_mask, :]
-                J = J[keep_mask, :]; Jw = J / weights_flat; y = (y_meas - y_model) / weights_flat
+
+            out_reduced = np.sort(np.concatenate([i1, j1[i2]]))
+
+            if out_reduced.size == 0:
+                print("   No outliers in the data set.")
+            else:
+                print(
+                    f"   std(Model-Measurement) = {1000*np.std(y_meas-y_model):.6f} mm "
+                    "(with outliers)"
+                )
+
+                print(
+                    f"   {out_reduced.size} outliers removed out of {r.size} points "
+                    f"(> {sigma_outlier} sigma) "
+                    f"({len(i1)} first test + {len(i2)} second test)."
+                )
+
+                # ----- Build keep mask -----
+                keep = np.ones(r.size, dtype=bool)
+                keep[out_reduced] = False
+
+                # ----- Apply reduction -----
+                y_meas = y_meas[keep]
+                y_model = y_model[keep]
+                weights_flat = weights_flat[keep, :]
+                J = J[keep, :]
+                # Map reduced outliers -> coupled indices for chi^2
+                n_total = y_meas_.size  # full coupled length
+                iOut_coupled = reduced_outliers_to_coupled(out_reduced, iNoCoupling_chi, n_total)
+
+                Jw = J / weights_flat
+                y = (y_meas - y_model) / weights_flat
+
 
         if apply_normalization==True:
             if normalization_mode == 'global':
@@ -1681,10 +1836,17 @@ def pyloco(
         else:
             norm_factors = None
 
-        chi2_before = compute_chi_squared(y_meas, y_model, J=Jw, bpm_noise=weights_flat)
+        chi2_before = compute_chi_squared_(
+            Mmeas=y_meas_,
+            Mmodel=y_model_,
+            Mstd=weights_flat_chi_,
+            nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+            include_dispersion=includeDispersion,
+            remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi,
+            iOutliers=iOut_coupled,
+            n_fit_parameters=J_
+        )
         print(f"Initial Chi²: {chi2_before:.4e}")
-
-
 
         # --- 4) Minimization
 
@@ -1699,10 +1861,6 @@ def pyloco(
                     svd_method=svd_selection_method, svd_threshold=svd_threshold,
                     cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it+1}/in{j+1}"
                 )
-
-
-
-
                 if norm_factors is not None:
                     nf = np.asarray(norm_factors).ravel()
                     fit_results = fit_results / nf
@@ -1731,7 +1889,7 @@ def pyloco(
                 orm_trial = Cmat2 @ orm_trial
 
                 # Fixed path length adjustment (trial)
-                if Fixedmomentum == True:
+                if fixedmomentum == True:
                     AlphaMCF = get_mcf(ring_tmp)
                     rf_used = float(np.asarray(prop_dict.get('delta_rf', rfStep)).ravel()[0])
                     eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rf_used
@@ -1744,17 +1902,25 @@ def pyloco(
                         orm_trial[:nHBPM, jcol] += Vshift2[iV] * eta_x_mcf
                         orm_trial[nHBPM:, jcol] += Vshift2[iV] * eta_y_mcf
 
-                y_model_trial = orm_trial.reshape(-1, 1, order="F")
+                y_model_trial_ = orm_trial.reshape(-1, 1, order="F")
 
                 if remove_coupling_ == True:
-                    _, y_model_trial, _, _, _ = remove_coupling(
-                        orm_measured.reshape(-1, 1, order="F"), y_model_trial, None, None, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
+                    _, y_model_trial, _, _, _ , iNoCoupling_chi = remove_coupling(
+                        orm_measured.reshape(-1, 1, order="F"), y_model_trial_, None, None, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
                     )
 
                 # Flatten and compute trial chi² using the SAME keep_mask and weights
 
-                chi2_new = compute_chi_squared(y_meas, y_model_trial[keep_mask], J=Jw,
-                                               bpm_noise=weights_flat)
+                chi2_new = compute_chi_squared_(
+                Mmeas=orm_measured.reshape(-1, 1, order="F"),
+                Mmodel=y_model_trial_,
+                Mstd=weights_flat_chi_,
+                nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+                include_dispersion=includeDispersion,
+                remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi,
+                iOutliers=iOut_coupled,
+                n_fit_parameters=J_
+            )
 
                 print(f"  LM inner {j + 1}: chi² {chi2_new:.4e} (previous {chi2_0:.4e}), λ={LMlambda:g}")
 
@@ -1867,7 +2033,7 @@ def pyloco(
         orm_model_after = response_matrix(ring, config=cfg3)
         orm_model_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain) @ orm_model_after
 
-        if Fixedmomentum == True:
+        if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
             eta_x_mcf = -AlphaMCF * Frequency * measured_eta_x / rfStep
@@ -1880,17 +2046,29 @@ def pyloco(
                 orm_model_after[:nHBPM, jj] += VCMEnergyShift[i] * eta_x_mcf
                 orm_model_after[nHBPM:, jj] += VCMEnergyShift[i] * eta_y_mcf
 
-        y_model_after = orm_model_after.reshape(-1, 1, order="F")
+        y_model_after_ = orm_model_after.reshape(-1, 1, order="F")
         if remove_coupling_ == True:
 
-            _, y_model_after, _, _, _ = remove_coupling(
-                orm_measured.reshape(-1, 1, order="F"), y_model_after, None, None, nHBPM,
+            _, y_model_after, _, _, _, _ = remove_coupling(
+                orm_measured.reshape(-1, 1, order="F"), y_model_after_, None, None, nHBPM,
                 nVBPM, nHorCOR, nVerCOR, includeDispersion
             )
 
 
-        chi2_after = compute_chi_squared(y_meas, y_model_after[keep_mask],
-                                         J=Jw, bpm_noise=weights_flat)
+        #chi2_after = compute_chi_squared(y_meas, y_model_after[keep_mask],
+        #                                 J=Jw, bpm_noise=weights_flat)
+
+        chi2_after = compute_chi_squared_(
+            Mmeas=orm_measured.reshape(-1, 1, order="F"),
+            Mmodel=y_model_after_,
+            Mstd=weights_flat_chi_,
+            nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+            include_dispersion=includeDispersion,
+            remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi,
+            iOutliers=iOut_coupled,
+            n_fit_parameters=J_
+        )
+
         print(f"Chi² after correction: {chi2_after:.4e}")
 
         # Save iteration
