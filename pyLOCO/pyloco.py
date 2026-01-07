@@ -1376,6 +1376,74 @@ def normalize_jacobian_componentwise(ring,
 
 
 
+def remove_rf_normalization(fit_list, rf_step, fit_result, nHBPM, nVBPM, nHorCOR, nVerCOR, quads_ind, quads_tilt_ind, skew_ords):
+
+    norm_factors_rf = 1 / rf_step / 10
+    nf = np.asarray(norm_factors_rf).ravel()
+    fit_result_unnormalized = np.zeros_like(fit_result)
+    idx = 0
+    if 'hbpm_gain' in fit_list or 'vbpm_gain' in fit_list:
+        J_bpm_gain = fit_result[idx:idx + nHBPM + nVBPM]
+        fit_result_unnormalized[idx:idx + nHBPM + nVBPM] = J_bpm_gain  # no normalization
+        idx += nHBPM + nVBPM
+
+    if 'hbpm_coupling' in fit_list or 'vbpm_coupling' in fit_list:
+        J_bpm_coupling = fit_result[idx:idx + nHBPM + nVBPM]
+        fit_result_unnormalized[idx:idx + nHBPM + nVBPM] = J_bpm_coupling  # no normalization
+        idx += nHBPM + nVBPM
+
+    if 'hcor_cal' in fit_list or 'vcor_cal' in fit_list:
+        n = nHorCOR + nVerCOR
+        J_cor_cal = fit_result[idx:idx + n]
+        fit_result_unnormalized[idx:idx + n] = J_cor_cal
+        idx += n
+
+    if 'hcor_coupling' in fit_list or 'vcor_coupling' in fit_list:
+        n = nHorCOR + nVerCOR
+        J_cor_coupling = fit_result[idx:idx + n]
+        fit_result_unnormalized[idx:idx + n] = J_cor_coupling
+        idx += n
+
+    if 'HCMEnergyShift' in fit_list:
+        n = nHorCOR
+        J_HCMEnergyShift = fit_result[idx:idx + n]
+        fit_result_unnormalized[idx:idx + n] = J_HCMEnergyShift
+        idx += n
+
+    if 'VCMEnergyShift' in fit_list:
+        n = nVerCOR
+        J_VCMEnergyShift = fit_result[idx:idx + n]
+        fit_result_unnormalized[idx:idx + n] = J_VCMEnergyShift
+        norm_factors[idx:idx + n] = norm
+        idx += n
+
+    if 'delta_rf' in fit_list:
+        J_delta_rf = fit_result[idx:idx + 1]
+        nf  = 1 / rf_step / 10
+        fit_result_unnormalized[idx:idx + 1] = J_delta_rf / nf # already normalized
+        idx += 1
+
+    if 'quads' in fit_list:
+        n = len(quads_ind)
+        J_quads = fit_result[idx:idx + n]
+        fit_result_unnormalized[idx:idx + n] = J_quads
+        idx += n
+
+    if 'skew_quads' in fit_list:
+        n = len(skew_ords)
+        J_quads = fit_result[idx:idx + n]
+        fit_result_unnormalized[idx:idx + n] = J_quads
+        idx += n
+
+    if 'quads_tilt' in fit_list:
+        n = len(quads_tilt_ind)
+        J_quads =  fit_result[idx:idx + n]
+        fit_result_unnormalized[idx:idx + n] = J_quads
+        idx += n
+
+    return fit_result_unnormalized
+
+
 # ============================================================================== #
 #                               LOCO Minimization
 # ============================================================================== #
@@ -1602,6 +1670,9 @@ def pyloco(
     VCMCoupling    = np.zeros(nVerCOR)
     deltaqt        = np.zeros(len(quads_ords)) if ('quads_tilt' in fit_list) else None
 
+    iOut_coupled_persistent = np.array([], dtype=int)
+    iNoCoupling_chi_persistent = np.array([], dtype=int)
+
     # --- Resume from previous fit if requested ---
     if continue_from_previous:
         print("[pyloco] Continuing from previous iteration set...")
@@ -1682,7 +1753,7 @@ def pyloco(
     # ------- Outer iterations -------
     for it in range(nIter):
         print(f"\n==== Iteration {it+1}/{nIter} – {algorithm.upper()} ====")
-
+        print('Iteration', it+1, 'rfStep', rfStep)
         # --- 1) ORM model (with BPM C) ---
         cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep,includeDispersion=includeDispersion)
@@ -1774,7 +1845,9 @@ def pyloco(
         Jw = J / weights_flat
         y = (y_meas - y_model) / weights_flat
 
-
+        # ------------------------------------------------------------
+        # Apply persistent outliers BEFORE computing chi2_before
+        # ------------------------------------------------------------
 
         keep_mask_reduced = slice(None)
         iOut_coupled = np.array([], dtype=int)
@@ -1836,19 +1909,22 @@ def pyloco(
         else:
             norm_factors = None
 
+        if it == 0:
+            iOut_coupled_persistent = iOut_coupled.copy()
+            iNoCoupling_chi_persistent = iNoCoupling_chi.copy()
+
         chi2_before = compute_chi_squared_(
             Mmeas=y_meas_,
             Mmodel=y_model_,
             Mstd=weights_flat_chi_,
             nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
             include_dispersion=includeDispersion,
-            remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi,
-            iOutliers=iOut_coupled,
+            remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi_persistent,
+            iOutliers=iOut_coupled_persistent,
             n_fit_parameters=J_
         )
         print(f"Initial Chi²: {chi2_before:.4e}")
 
-        # --- 4) Minimization
 
         if algorithm.lower() == "lm":
             # LM inner loop with accept/reject and lambda updates
@@ -1861,6 +1937,9 @@ def pyloco(
                     svd_method=svd_selection_method, svd_threshold=svd_threshold,
                     cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it+1}/in{j+1}"
                 )
+                if 'delta_rf' in fit_list:
+                    fit_results = remove_rf_normalization(fit_list, rfStep, fit_results, nHBPM, nVBPM, nHorCOR, nVerCOR, quads_ords, quads_tilt_ind, skew_ords)
+
                 if norm_factors is not None:
                     nf = np.asarray(norm_factors).ravel()
                     fit_results = fit_results / nf
@@ -1905,7 +1984,7 @@ def pyloco(
                 y_model_trial_ = orm_trial.reshape(-1, 1, order="F")
 
                 if remove_coupling_ == True:
-                    _, y_model_trial, _, _, _ , iNoCoupling_chi = remove_coupling(
+                    _, y_model_trial, _, _, _ , _ = remove_coupling(
                         orm_measured.reshape(-1, 1, order="F"), y_model_trial_, None, None, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
                     )
 
@@ -1917,8 +1996,8 @@ def pyloco(
                 Mstd=weights_flat_chi_,
                 nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
                 include_dispersion=includeDispersion,
-                remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi,
-                iOutliers=iOut_coupled,
+                remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi_persistent,
+                iOutliers=iOut_coupled_persistent,
                 n_fit_parameters=J_
             )
 
@@ -1977,6 +2056,10 @@ def pyloco(
                 Jw, y, svd_selection_method, svd_threshold, cut_,
                 show_svd_plot, tag=f"GN it{it + 1}"
             )
+
+            if 'delta_rf' in fit_list:
+                fit_results = remove_rf_normalization(fit_list, rfStep, fit_results, nHBPM, nVBPM, nHorCOR, nVerCOR,
+                                                      quads_ords, quads_tilt_ind, skew_ords)
 
             # 2) De-normalize (if used)
             if apply_normalization and (norm_factors is not None):
@@ -2068,6 +2151,9 @@ def pyloco(
             iOutliers=iOut_coupled,
             n_fit_parameters=J_
         )
+
+        iOut_coupled_persistent = iOut_coupled
+        iNoCoupling_chi_persistent = iNoCoupling_chi
 
         print(f"Chi² after correction: {chi2_after:.4e}")
 
