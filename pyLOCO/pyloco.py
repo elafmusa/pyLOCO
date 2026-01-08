@@ -373,7 +373,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
 
             J_quad, delta = calculate_quads_jacobian(
                 ring, C_model, dkick, CMords, bpm_indexes, quads_ind, dk, C,
-                individuals, HCMCoupling, VCMCoupling, block="quads",
+                individuals, HCMCoupling, VCMCoupling, rf_step, block="quads",
                 auto_correct_delta=auto_correct_delta,
                 fit_cfg=fit_cfg, includeDispersion=includeDispersion,
                 log_filename="quad_jacobian_logs2.txt"
@@ -428,7 +428,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
 
             J_skew, delta_skew = calculate_quads_jacobian(
                 ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
-                individuals, HCMCoupling, VCMCoupling, block="skew_quads",
+                individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
                 auto_correct_delta=auto_correct_delta,
                 fit_cfg=fit_cfg, includeDispersion=includeDispersion,
                 log_filename="skew_jacobian_logs.txt"
@@ -483,7 +483,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
 
             J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
                 ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
-                HCMCoupling, VCMCoupling, auto_correct_delta=auto_correct_delta, includeDispersion=includeDispersion,
+                HCMCoupling, VCMCoupling, rf_step, auto_correct_delta=auto_correct_delta, includeDispersion=includeDispersion,
                 log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
             )
 
@@ -530,7 +530,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
     J_cor_coupling = calculate_corrector_coupling_jacobian(ring,
                                                            bpm_indexes,
                                                            CMords, C_model, dkick, nHBPM, nVBPM, nHorCOR, nVerCOR,
-                                                           includeDispersion, C, HCMCoupling, VCMCoupling,
+                                                           includeDispersion, C, HCMCoupling, VCMCoupling,rf_step,
                                                            delta_coupling,
                                                            ) if include_cor_coupling == True else None
 
@@ -651,7 +651,7 @@ def full_jacobian_(
 
 def calculate_quads_jacobian(
     ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C,
-    individuals, HCMCoupling, VCMCoupling, block,
+    individuals, HCMCoupling, VCMCoupling, rf_step, block,
     auto_correct_delta=True,
     fit_cfg=None,
     log_filename="quad_jacobian_logs.txt",     processes = None, includeDispersion=False
@@ -671,7 +671,7 @@ def calculate_quads_jacobian(
         for quad_index in quads_ind:
             quad_args.append((
                 quad_index, ring, dkick,used_cor_ind,  bpm_indexes, dk,
-                individuals,HCMCoupling, VCMCoupling,
+                individuals,HCMCoupling, VCMCoupling,rf_step,
                 auto_correct_delta,
                  block, fit_cfg,includeDispersion
             ))
@@ -736,7 +736,7 @@ def _init_shared(shm_name_C, shape_C, dtype_C, shm_name_Cm, shape_Cm, dtype_Cm):
 
 def generating_quads_response_matrices(
     quad_index, ring, dkick, cor_indexes,bpm_indexes, delta_init, individuals,
-    HCMCoupling, VCMCoupling, auto_correct_delta, block, fit_cfg, includeDispersion
+    HCMCoupling, VCMCoupling, rf_step, auto_correct_delta, block, fit_cfg, includeDispersion
 ):
     logs = []
 
@@ -767,7 +767,7 @@ def generating_quads_response_matrices(
 
         #  ORM with current dk
         cfg = RMConfig(dkick=dkick, bpm_ords=bpm_indexes, cm_ords=cor_indexes,
-                       HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, includeDispersion=includeDispersion)
+                       HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, includeDispersion=includeDispersion, rfStep=rf_step)
 
         C_measured = response_matrix(ring, config=cfg)
 
@@ -826,9 +826,9 @@ def generating_quads_response_matrices(
 def calculate_quads_tilt_jacobian(
 
     ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C, individuals,
-    HCMCoupling, VCMCoupling, auto_correct_delta=True,
+    HCMCoupling, VCMCoupling, rf_step, auto_correct_delta=True,
     processes=None, includeDispersion=False,
-    log_filename="quads_tilt_jacobian_logs.txt", quads_tilt_fit=None, fit_cfg=None,rf_step=None
+    log_filename="quads_tilt_jacobian_logs.txt", quads_tilt_fit=None, fit_cfg=None
 ):
 
     shm_C   = shared_memory.SharedMemory(create=True, size=C.nbytes)
@@ -853,7 +853,7 @@ def calculate_quads_tilt_jacobian(
             quad_args.append((
                 quad_index, ring, dkick, bpm_indexes, used_cor_ind, dk, individuals
                 , auto_correct_delta,
-                HCMCoupling, VCMCoupling,
+                HCMCoupling, VCMCoupling, rf_step,
                 tilt_fit_i,fit_cfg,includeDispersion
             ))
 
@@ -910,7 +910,7 @@ def calculate_quads_tilt_jacobian(
 
 def generating_quads_tilt_response_matrices(
     quad_index, ring, dkick, bpm_indexes, cor_indexes, delta_init, individuals,
-    auto_correct_delta, HCMCoupling, VCMCoupling, quads_tilt_fit,fit_cfg,includeDispersion
+    auto_correct_delta, HCMCoupling, VCMCoupling, rf_step, quads_tilt_fit,fit_cfg,includeDispersion
 ):
     logs = []
 
@@ -928,7 +928,7 @@ def generating_quads_tilt_response_matrices(
                             elem_ind=group, individuals=individuals, config=fit_cfg)
 
         cfg = RMConfig(dkick=dkick, bpm_ords=bpm_indexes, cm_ords=cor_indexes, HCMCoupling=HCMCoupling,
-                       VCMCoupling=VCMCoupling,includeDispersion=includeDispersion)
+                       VCMCoupling=VCMCoupling,includeDispersion=includeDispersion, rfStep=rf_step)
         C_measured = response_matrix(ring, config=cfg)
 
         C_measured = G_C @ C_measured
@@ -1114,8 +1114,8 @@ def calculate_corrector_coupling_jacobian(
         nVBPM,
         nHorCOR,
         nVerCOR,
-        includeDispersion, C, HCMCoupling, VCMCoupling,
-        delta_coupling=1e-6,rf_step = None
+        includeDispersion, C, HCMCoupling, VCMCoupling,rf_step,
+        delta_coupling=1e-6
 ):
 
     nBPM_total = nHBPM + nVBPM
@@ -1129,7 +1129,7 @@ def calculate_corrector_coupling_jacobian(
 
 
     cfg = RMConfig(dkick=cor_kicks, bpm_ords=bpm_ords, cm_ords=cm_ords, HCMCoupling=HCMCoupling,
-                   VCMCoupling=VCMCoupling,includeDispersion=includeDispersion)
+                   VCMCoupling=VCMCoupling,includeDispersion=includeDispersion, rfStep=rf_step)
     GR = response_matrix(ring, config=cfg)
 
 
@@ -1249,10 +1249,10 @@ def calculate_delta_RF_frequency_jacobian(C_model, nHBPM, nVBPM, nHorCOR, nVerCO
     J_delta_RF_frequency[:, -1] = C_model[:, -1] / rf_step
 
     # Apply normalization factor to increase fitting weight of RF frequency
-    normalization_factor = 1 / rf_step / 10
-    J_delta_RF_frequency = J_delta_RF_frequency / normalization_factor
+    #normalization_factor = 1 / rf_step / 10
+    #J_delta_RF_frequency = J_delta_RF_frequency / normalization_factor
 
-    print("The RF frequency parameter is normalized by 1 / rf_step / 10 to to get a better fit.")
+    #print("The RF frequency parameter is normalized by 1 / rf_step / 10 to to get a better fit.")
 
     J_delta_RF_frequency = J_delta_RF_frequency[np.newaxis, :, :] # convert it to 3 d
 
@@ -1443,6 +1443,93 @@ def remove_rf_normalization(fit_list, rf_step, fit_result, nHBPM, nVBPM, nHorCOR
 
     return fit_result_unnormalized
 
+
+
+def rf_normalization(ring,
+    J_flat, model_orm_flat, weights_flat,
+    nHBPM, nVBPM, nHorCOR, nVerCOR, cor_kicks,
+    fit_list, quads_ind, quads_tilt_ind, skew_ords, rf_step
+):
+
+
+    norm_factors = np.ones(J_flat.shape[1])  # default = no normalization
+    J_flat_normalized = np.zeros_like(J_flat)
+    idx = 0
+
+    if 'hbpm_gain' in fit_list or 'vbpm_gain' in fit_list:
+        J_bpm_gain = J_flat[:, idx:idx + nHBPM + nVBPM]
+        J_flat_normalized[:, idx:idx + nHBPM + nVBPM] = J_bpm_gain  # no normalization
+        idx += nHBPM + nVBPM
+
+    if 'hbpm_coupling' in fit_list or 'vbpm_coupling' in fit_list:
+        J_bpm_coupling = J_flat[:, idx:idx + nHBPM + nVBPM]
+        J_flat_normalized[:, idx:idx + nHBPM + nVBPM] = J_bpm_coupling  # no normalization
+        idx += nHBPM + nVBPM
+
+    if 'hcor_cal' in fit_list or 'vcor_cal' in fit_list:
+        n = nHorCOR + nVerCOR
+        J_cor_cal = J_flat[:, idx:idx + n]
+        cor_kicks_ = np.concatenate((cor_kicks[0], cor_kicks[1]))
+        J_flat_normalized[:, idx:idx + n] = J_cor_cal #/ norm
+        idx += n
+
+
+    if 'hcor_coupling' in fit_list or 'vcor_coupling' in fit_list:
+        n = nHorCOR + nVerCOR
+        J_cor_coupling = J_flat[:, idx:idx + n]
+        J_flat_normalized[:, idx:idx + n] = J_cor_coupling #/ norm[np.newaxis, :]
+        idx += n
+
+
+
+    if 'HCMEnergyShift' in fit_list:
+        n = nHorCOR
+        J_HCMEnergyShift = J_flat[:, idx:idx + n]
+        alpha_mc = get_mcf(ring)
+        Frequency = fixed_parameters.Frequency
+        J_flat_normalized[:, idx:idx + n] = J_HCMEnergyShift #/ norm
+        idx += n
+
+    if 'VCMEnergyShift' in fit_list:
+        n = nVerCOR
+        J_VCMEnergyShift = J_flat[:, idx:idx + n]
+        alpha_mc = get_mcf(ring)
+        Frequency = fixed_parameters.Frequency
+        J_flat_normalized[:, idx:idx + n] = J_VCMEnergyShift #/ norm
+        idx += n
+
+    if 'delta_rf' in fit_list:
+        J_delta_rf = J_flat[:, idx:idx + 1]
+
+        # Apply normalization factor to increase fitting weight of RF frequency
+        normalization_factor = 1 / rf_step / 10
+        print("The RF frequency parameter is normalized by 1 / rf_step / 10 to to get a better fit.")
+
+        J_flat_normalized[:, idx:idx + 1] = J_delta_rf/ normalization_factor
+        norm_factors[idx:idx + 1] = normalization_factor
+        idx += 1
+
+    if 'quads' in fit_list:
+        n = len(quads_ind)
+        J_quads = J_flat[:, idx:idx + n]
+        J_flat_normalized[:, idx:idx + n] = J_quads #/ norm[np.newaxis, :]
+        idx += n
+
+    if 'skew_quads' in fit_list:
+        n = len(skew_ords)
+        J_quads = J_flat[:, idx:idx + n]
+        J_flat_normalized[:, idx:idx + n] = J_quads #/ norm[np.newaxis, :]
+        idx += n
+
+
+    if 'quads_tilt' in fit_list:
+        n = len(quads_tilt_ind)
+        J_quads = J_flat[:, idx:idx + n]
+        J_flat_normalized[:, idx:idx + n] = J_quads #/ norm[np.newaxis, :]
+        idx += n
+
+
+    return J_flat_normalized, norm_factors.reshape(-1, 1)
 
 # ============================================================================== #
 #                               LOCO Minimization
@@ -1753,8 +1840,7 @@ def pyloco(
     # ------- Outer iterations -------
     for it in range(nIter):
         print(f"\n==== Iteration {it+1}/{nIter} – {algorithm.upper()} ====")
-        print('Iteration', it+1, 'rfStep', rfStep)
-        # --- 1) ORM model (with BPM C) ---
+        # --- 1) ORM model ---
         cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep,includeDispersion=includeDispersion)
         orm_model = response_matrix(ring, config=cfg)
@@ -1841,12 +1927,11 @@ def pyloco(
                 y_meas_, y_model_, weights_flat_, J_,
                 nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
             )
-
         Jw = J / weights_flat
         y = (y_meas - y_model) / weights_flat
 
         # ------------------------------------------------------------
-        # Apply persistent outliers BEFORE computing chi2_before
+        # Apply outliers BEFORE computing chi2_before
         # ------------------------------------------------------------
 
         keep_mask_reduced = slice(None)
@@ -1897,6 +1982,13 @@ def pyloco(
                 Jw = J / weights_flat
                 y = (y_meas - y_model) / weights_flat
 
+        if 'delta_rf' in fit_list:
+
+            Jw, rf_norm_factors = rf_normalization(ring,
+                             Jw, y_model, weights_flat,
+                             nHBPM, nVBPM, nHorCOR, nVerCOR, CMstep,
+                             fit_list, quads_ords, quads_tilt_ind, skew_ords, rfStep
+                             )
 
         if apply_normalization==True:
             if normalization_mode == 'global':
@@ -1931,6 +2023,7 @@ def pyloco(
             LMlambda = Starting_Lambda
             chi2_0 = chi2_before
             accepted = False
+
             for j in range(nLMIter):
                 fit_results, lam_used, Ivec, S = solve_step_lm(
                     Jw, y, scaled=scaled, Starting_Lambda=LMlambda, max_lm_lambda=max_lm_lambda,
@@ -1938,7 +2031,10 @@ def pyloco(
                     cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it+1}/in{j+1}"
                 )
                 if 'delta_rf' in fit_list:
-                    fit_results = remove_rf_normalization(fit_list, rfStep, fit_results, nHBPM, nVBPM, nHorCOR, nVerCOR, quads_ords, quads_tilt_ind, skew_ords)
+
+                    #fit_results = remove_rf_normalization(fit_list, rfStep, fit_results, nHBPM, nVBPM, nHorCOR, nVerCOR, quads_ords, quads_tilt_ind, skew_ords)
+                    nf = np.asarray(rf_norm_factors).ravel()
+                    fit_results = fit_results / nf
 
                 if norm_factors is not None:
                     nf = np.asarray(norm_factors).ravel()
