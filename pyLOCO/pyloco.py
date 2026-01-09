@@ -1949,11 +1949,14 @@ def pyloco(
                 y_meas_, y_model_, weights_flat_, J_,
                 nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
             )
+
+
         else:
             y_meas = y_meas_
             y_model = y_model_
             weights_flat = weights_flat_
             J = J_
+
 
         Jw = J / weights_flat
         y = (y_meas - y_model) / weights_flat
@@ -2005,8 +2008,10 @@ def pyloco(
                 J = J[keep, :]
                 # Map reduced outliers -> coupled indices for chi^2
                 n_total = y_meas_.size  # full coupled length
-                iOut_coupled = reduced_outliers_to_coupled(out_reduced, iNoCoupling_chi, n_total)
-
+                if remove_coupling_ == True:
+                    iOut_coupled = reduced_outliers_to_coupled(out_reduced, iNoCoupling_chi, n_total)
+                else:
+                    iOut_coupled = out_reduced.copy()
                 Jw = J / weights_flat
                 y = (y_meas - y_model) / weights_flat
         if 'delta_rf' in fit_list:
