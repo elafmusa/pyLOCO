@@ -50,7 +50,7 @@ def weight_matrix(W, include_dispersion=False,
     W_matrix = np.outer(W, np.ones(nHorCOR + nVerCOR))  # shape: (nBPMs, nCorrectors)
     W_matrix_chi = np.outer(W, np.ones(nHorCOR + nVerCOR))
 
-    if include_dispersion:
+    if include_dispersion == True:
         # Split orbit BPM stds into horizontal and vertical parts
         W_H = W[:nHBPM]
         W_V = W[nHBPM:]
@@ -113,10 +113,11 @@ def remove_coupling(orm1, orm2, W=None, Jacobian=None,
         [np.ones((nHBPM, nHorCOR)), np.zeros((nHBPM, nVerCOR))],
         [np.zeros((nVBPM, nHorCOR)), np.ones((nVBPM, nVerCOR))]
     ])
-    if include_dispersion==True:
+
+    if include_dispersion:
         dispersion_column_chi = np.concatenate([
             2 * np.ones((nHBPM, 1)),
-            3* np.ones((nVBPM, 1))
+            3 * np.ones((nVBPM, 1))
         ])
 
         dispersion_column = np.concatenate([
@@ -124,13 +125,19 @@ def remove_coupling(orm1, orm2, W=None, Jacobian=None,
             np.zeros((nVBPM, 1))
         ])
 
-    CF_chi = np.hstack((CF, dispersion_column_chi))
-    CF_flat_chi = CF_chi.flatten(order='F')
-    iNoCoupling_chi = np.where(CF_flat_chi > 0)[0]
+        CF_chi = np.hstack((CF, dispersion_column_chi))
+        CF_flat_chi = CF_chi.flatten(order='F')
+        iNoCoupling_chi = np.where(CF_flat_chi > 0)[0]
 
-    CF = np.hstack((CF, dispersion_column))
-    CF_flat = CF.flatten(order='F')
-    iNoCoupling = np.where(CF_flat > 0)[0]
+        CF = np.hstack((CF, dispersion_column))
+        CF_flat = CF.flatten(order='F')
+        iNoCoupling = np.where(CF_flat > 0)[0]
+
+    else:
+        CF_flat = CF.flatten(order='F')
+        iNoCoupling = np.where(CF_flat > 0)[0]
+        iNoCoupling_chi = iNoCoupling
+
     # Apply filtering
     orm1_filtered = orm1[iNoCoupling]
     orm2_filtered = orm2[iNoCoupling]
@@ -138,6 +145,33 @@ def remove_coupling(orm1, orm2, W=None, Jacobian=None,
     Jacobian_filtered = Jacobian[iNoCoupling, :] if Jacobian is not None else None
 
     return orm1_filtered, orm2_filtered, W_filtered, Jacobian_filtered, iNoCoupling, iNoCoupling_chi
+
+
+
+def build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion):
+    nBPM = nHBPM + nVBPM
+
+    CF = np.block([
+        [np.ones((nHBPM, nHorCOR)), np.zeros((nHBPM, nVerCOR))],
+        [np.zeros((nVBPM, nHorCOR)), np.ones((nVBPM, nVerCOR))]
+    ])
+
+    if includeDispersion:
+        # fit mask: keep horizontal dispersion only (match MATLAB CF=[...; zeros(VBPM,1)])
+        disp_fit = np.concatenate([2*np.ones((nHBPM,1)), np.zeros((nVBPM,1))])
+        CF_fit = np.hstack((CF, disp_fit))
+        iNoCoupling = np.where(CF_fit.flatten(order="F") > 0)[0]
+
+        # chi mask (your choice): often keep both planes for chi² (or match MATLAB if you prefer)
+        disp_chi = np.concatenate([2*np.ones((nHBPM,1)), 3*np.ones((nVBPM,1))])
+        CF_chi = np.hstack((CF, disp_chi))
+        iNoCoupling_chi = np.where(CF_chi.flatten(order="F") > 0)[0]
+    else:
+        iNoCoupling = np.where(CF.flatten(order="F") > 0)[0]
+        iNoCoupling_chi = iNoCoupling.copy()
+
+    return iNoCoupling, iNoCoupling_chi, nBPM
+
 
 
 def select_equally_spaced_elements(total_elements, num_elements):
@@ -1002,44 +1036,35 @@ def calculate_bpm_gain_jacobian(C_model, nHBPM, nVBPM, nHorCOR, nVerCOR, include
     if fit_bpms_coupling == False:
 
         for i in range(nHBPM):
-            J_bpm[i, i, :nHorCOR] = C_model[i, :nHorCOR]
+            J_bpm[i, i, :] = C_model[i, :]
 
         for i in range(nVBPM):
             idx = i + nHBPM
-            J_bpm[idx, idx, nHorCOR:nHorCOR + nVerCOR] = C_model[idx, nHorCOR:nHorCOR + nVerCOR]
+            J_bpm[idx, idx, :] = C_model[idx, :]
 
-        if includeDispersion == True:
-            for i in range(nBPM):
-                J_bpm[i, :, -1] = 0.0
 
     if fit_bpms_coupling == True:
 
         for i in range(nHBPM):
-            J_bpm[i, i, :nHorCOR] = C_model[i, :nHorCOR]
+            J_bpm[i, i, :] = C_model[i, :]
 
-        # 1. YX Coupling
-
-        for i in range(nVBPM):
-            idx = i + nHBPM
-            J_bpm[i+nHBPM, i, :] = C_model[idx, :]
-
-
-        # 2. XY Coupling
-
+        # 1. XY Coupling : Horizontal BPMs coupling
 
         for i in range(nHBPM):
             idx = i + nVBPM
-            J_bpm[i+nHBPM+nHBPM, idx, :] = C_model[i, :]
+            J_bpm[i + nHBPM, i, :] = C_model[idx, :]
+
+        # 2. YX Coupling : Vertical BPMs coupling
+
+        for i in range(nVBPM):
+            idx = i + nHBPM
+            J_bpm[i+nHBPM + nVBPM, idx, :] = C_model[i, :]
 
 
         for i in range(nVBPM):
             idx = i + nHBPM
-            J_bpm[i+nHBPM+nHBPM+nVBPM, idx, nHorCOR:nHorCOR + nVerCOR] = C_model[idx, nHorCOR:nHorCOR + nVerCOR]
+            J_bpm[i+nHBPM+nHBPM+nVBPM, idx, :] = C_model[idx, :]
 
-
-        if includeDispersion == True:
-            for i in range(nBPM):
-                J_bpm[i, :, -1] = 0.0
 
     return J_bpm
 
@@ -1051,22 +1076,20 @@ def calculate_bpm_coupling_jacobian(
     nBPM, nCOR = C_model.shape
     J_bpm = np.zeros((nBPM, nBPM, nCOR))
 
-    # 1. YX Coupling
-
-    for i in range(nVBPM):
-        idx = i + nHBPM
-        J_bpm[i, i, :] = C_model[idx, :]
-
     # 1. XY Coupling
 
     for i in range(nHBPM):
         idx = i + nVBPM
-        J_bpm[idx, idx, :] = C_model[i, :]
+        J_bpm[idx, i, :] = C_model[idx, :]
+
+    # 1. YX Coupling
+
+    for i in range(nVBPM):
+        idx = i + nHBPM
+        J_bpm[i, idx, :] = C_model[i, :]
 
 
-    if includeDispersion == True:
-        for i in range(nBPM):
-            J_bpm[i, :, -1] = 0
+
 
     return J_bpm
 
@@ -1895,7 +1918,6 @@ def pyloco(
             force_recompute=force_recompute
 
         )
-
         if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
@@ -1919,14 +1941,20 @@ def pyloco(
                                      nHBPM, nVBPM, nHorCOR, nVerCOR)
         y_meas_ = orm_measured.reshape(-1, 1, order="F")
         y_model_ = orm_model.reshape(-1, 1, order="F")
-
         J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
 
+        iNoCoupling, iNoCoupling_chi, nBPM = build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion)
         if remove_coupling_==True:
-            y_meas, y_model, weights_flat, J, _, iNoCoupling_chi = remove_coupling(
+            y_meas, y_model, weights_flat, J, iNoCoupling, iNoCoupling_chi = remove_coupling(
                 y_meas_, y_model_, weights_flat_, J_,
                 nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
             )
+        else:
+            y_meas = y_meas_
+            y_model = y_model_
+            weights_flat = weights_flat_
+            J = J_
+
         Jw = J / weights_flat
         y = (y_meas - y_model) / weights_flat
 
@@ -1981,7 +2009,6 @@ def pyloco(
 
                 Jw = J / weights_flat
                 y = (y_meas - y_model) / weights_flat
-
         if 'delta_rf' in fit_list:
 
             Jw, rf_norm_factors = rf_normalization(ring,
@@ -2016,7 +2043,6 @@ def pyloco(
             n_fit_parameters=J_
         )
         print(f"Initial Chi²: {chi2_before:.4e}")
-
 
         if algorithm.lower() == "lm":
             # LM inner loop with accept/reject and lambda updates
