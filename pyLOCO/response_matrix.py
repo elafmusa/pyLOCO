@@ -21,7 +21,7 @@ def response_matrix(
     coupling_orm=False,
     calculator = 'Linear',
     NewVectorizedMethod = True,
-    fixedpathlength = False,
+    fixedpathlength = True,
     log_info=False,
     HCMCoupling=None,
     VCMCoupling=None, Frequency = None, HarmNumber = None,
@@ -321,7 +321,7 @@ def response_matrix(
 
         if calculator == 'Linear':
 
-            f_rf =Frequency
+            f_rf = Frequency
             h_rf = HarmNumber
 
             _, ORBITPLUS = at.find_sync_orbit(
