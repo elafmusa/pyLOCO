@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 LOGGER = logging.getLogger(__name__)
 import time
 import json
-import matplotlib.pyplot as plt
 from .initial_fit import build_initial_fit_parameters
 from .set_parameters import set_correction, set_correction_tilt, _get_attr_scalar, _initial_values_for_block, _resolve_attr_for_block_read
 import os
@@ -702,12 +701,13 @@ def calculate_quads_jacobian(
 
     try:
         quad_args = []
+        fit_cfg_dict = fit_cfg.__dict__.copy()
         for quad_index in quads_ind:
             quad_args.append((
                 quad_index, ring, dkick,used_cor_ind,  bpm_indexes, dk,
                 individuals,HCMCoupling, VCMCoupling,rf_step,
                 auto_correct_delta,
-                 block, fit_cfg,includeDispersion
+                 block, fit_cfg_dict,includeDispersion
             ))
 
         with ctx.Pool(
@@ -882,13 +882,14 @@ def calculate_quads_tilt_jacobian(
             f"Length mismatch: {len(quads_tilt_fit)=} vs {len(quads_ind)=}"
 
         quad_args = []
+        fit_cfg_dict = fit_cfg.__dict__.copy()
         for i, quad_index in enumerate(quads_ind):
             tilt_fit_i = quads_tilt_fit[i]
             quad_args.append((
                 quad_index, ring, dkick, bpm_indexes, used_cor_ind, dk, individuals
                 , auto_correct_delta,
                 HCMCoupling, VCMCoupling, rf_step,
-                tilt_fit_i,fit_cfg,includeDispersion
+                tilt_fit_i,fit_cfg_dict,includeDispersion
             ))
 
         with ctx.Pool(
