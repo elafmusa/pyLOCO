@@ -2388,3 +2388,77 @@ def save_fit_dict(fit_dict, output_path: Path):
 
     print(f"[info] Saved fit_dict to {json_path}")
     return json_path
+
+
+# ----------------------- Extract Correction Value -----------------------
+
+def last_by_sorted_key(d):
+    def norm(k):
+        # try numeric sort first; fallback to string
+        try:
+            return (0, float(k))
+        except Exception:
+            return (1, str(k))
+    last_key = sorted(d.keys(), key=norm)[-1]
+    return d[last_key]
+
+def get_quads_block(fit_vec):
+    """
+    Extract (quads_fit, skew_fit) from the *last* entry of fit_vec.
+
+    Accepted last-entry formats:
+      - dict with keys 'quads' and optionally 'skew' or 'skew_quads'
+      - tuple/list like (quads, skew)
+      - plain ndarray/sequence of quads only
+    Returns:
+      (np.ndarray, np.ndarray)  # skew may be empty if not available
+    Missing values -> np.nan.
+    """
+    # empty / None guard
+    if fit_vec is None:
+        return np.asarray(np.nan), np.asarray(np.nan)
+    try:
+        last = fit_vec[-1]  # works for list/tuple/ndarray
+    except Exception:
+        # fit_vec is scalar or not indexable
+        last = fit_vec
+
+    # Case 1: dict-like
+    if isinstance(last, dict):
+        quads = np.asarray(last.get('quads', np.nan), dtype=float)
+        # accept several possible names for skew block
+        skew = last.get('skew', last.get('skew_quads', np.nan))
+        skew = np.asarray(skew, dtype=float)
+        return quads, skew
+
+    # Case 2: tuple/list: (quads, skew) or just [quads]
+    if isinstance(last, (list, tuple)):
+        if len(last) == 0:
+            return np.asarray(np.nan), np.asarray(np.nan)
+        if len(last) >= 2:
+            quads = np.asarray(last[0], dtype=float)
+            skew  = np.asarray(last[1], dtype=float)
+            return quads, skew
+        # single-entry -> treat as quads only
+        return np.asarray(last[0], dtype=float), np.asarray([])
+
+    # Case 3: NumPy array
+    if isinstance(last, np.ndarray):
+        # If it's a structured array with named fields, try fields first
+        if last.dtype.names:
+            q = last[last.dtype.names[0]] if 'quads' not in last.dtype.names else last['quads']
+            quads = np.asarray(q, dtype=float)
+            if 'skew' in last.dtype.names:
+                skew = np.asarray(last['skew'], dtype=float)
+            elif 'skew_quads' in last.dtype.names:
+                skew = np.asarray(last['skew_quads'], dtype=float)
+            else:
+                skew = np.asarray([])
+            return quads, skew
+        # plain numeric array -> assume it's quads only
+        return np.asarray(last, dtype=float), np.asarray([])
+
+    # Fallback: unknown type -> return NaNs
+    return np.asarray(np.nan), np.asarray(np.nan)
+
+
