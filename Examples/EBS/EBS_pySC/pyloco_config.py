@@ -66,7 +66,7 @@ class LOCOOptions:
     scaled: bool = True
 
     # --- SVD control ---
-    svd_selection_method: str = "user_input" # "threshold", "user_input", "interactive",
+    svd_selection_method: str = "threshold"
     svd_threshold: float = 1e-7
     cut_: int = 96
     show_svd_plot: bool = True
@@ -82,8 +82,8 @@ class LOCOOptions:
 
     # --- dispersion settings ---
     includeDispersion: bool = False
-    hor_dispersion_weight: float = 10
-    ver_dispersion_weight: float = 10
+    hor_dispersion_weight: float = 1.0
+    ver_dispersion_weight: float = 1.0
 
     # --- additional options ---
     plot_fit_parameters: bool = False
