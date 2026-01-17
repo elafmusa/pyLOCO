@@ -1813,6 +1813,22 @@ def pyloco(
     HCMCoupling    = np.zeros(nHorCOR)
     VCMCoupling    = np.zeros(nVerCOR)
     deltaqt        = np.zeros(len(quads_ords)) if ('quads_tilt' in fit_list) else None
+    quads_fit, blocks = build_initial_fit_parameters(
+            ring=ring,
+            fit_list=['quads'],
+            nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+            quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
+            CMstep = CMstep, rfStep = rfStep,
+            individuals = individuals)
+
+    skew_quads_fit, blocks = build_initial_fit_parameters(
+            ring=ring,
+            fit_list=['skew_quads'],
+            nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+            quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
+            CMstep = CMstep, rfStep = rfStep,
+            individuals = individuals)
+
 
     iOut_coupled_persistent = np.array([], dtype=int)
     iNoCoupling_chi_persistent = np.array([], dtype=int)
@@ -1839,11 +1855,15 @@ def pyloco(
                 rfStep = float(np.asarray(last_fit["delta_rf"]).ravel()[0])
             if "quads_tilt" in last_fit:
                 deltaqt = np.asarray(last_fit["quads_tilt"]).ravel()
-
             if 'hcor_cal' in last_fit:
                 CMstep[0] = np.asarray(last_fit['hcor_cal']).ravel()
             if 'vcor_cal' in last_fit:
                 CMstep[1] = np.asarray(last_fit['vcor_cal']).ravel()
+            if 'quads' in last_fit:
+                quads_fit = np.asarray(last_fit['quads']).ravel()
+            if 'skew_quads' in last_fit:
+                skew_quads_fit = np.asarray(last_fit['skew_quads']).ravel()
+
 
     if fixedmomentum and \
             'HCMEnergyShift' not in fit_list and \
@@ -2105,7 +2125,6 @@ def pyloco(
                     nf = np.asarray(norm_factors).ravel()
                     fit_results = fit_results / nf
 
-                np.save('fit_results', fit_results)
                 old_fit_parameters = current_fit_parameters.copy()
                 new_vec = old_fit_parameters + fit_results
 
@@ -2193,6 +2212,12 @@ def pyloco(
                     if 'vcor_cal' in upd:
                         CMstep[1] = np.asarray(upd['vcor_cal']).ravel()
 
+                    if 'quads' in upd:
+                        quads_fit = np.asarray(upd['quads']).ravel()
+
+                    if 'skew_quads' in upd:
+                        skew_quads_fit = np.asarray(upd['skew_quads']).ravel()
+
 
                     # MOST IMPORTANT: commit lattice by replacing live ring with the accepted temp ring
                     ring = ring_tmp
@@ -2259,6 +2284,12 @@ def pyloco(
                 CMstep[0] = np.asarray(fit_dict['hcor_cal']).ravel()
             if 'vcor_cal' in fit_dict:
                 CMstep[1] = np.asarray(fit_dict['vcor_cal']).ravel()
+
+            if 'quads' in fit_dict:
+                quads_fit = np.asarray(fit_dict['quads']).ravel()
+
+            if 'skew_quads' in fit_dict:
+                skew_quads_fit = np.asarray(fit_dict['skew_quads']).ravel()
 
             # 5) Apply lattice changes to ring
             _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg)
@@ -2329,8 +2360,6 @@ def pyloco(
         #    n_quads_tilt=len(quads_tilt_ind) if quads_tilt_ind is not None else 0
         #)
 
-
-
         fit_dict_all[it] = build_full_fit_state(
             hbpm_gain=hbpm_gain,
             vbpm_gain=vbpm_gain,
@@ -2341,12 +2370,8 @@ def pyloco(
             HCMEnergyShift=HCMEnergyShift,
             VCMEnergyShift=VCMEnergyShift,
             rfStep=rfStep,
-            quads=np.asarray([
-                ring[q].K for q in quads_ords
-            ]) if quads_ords is not None else None,
-            skew_quads=np.asarray([
-                ring[s].K for s in skew_ords
-            ]) if skew_ords is not None else None,
+            quads= quads_fit,
+            skew_quads= skew_quads_fit,
             quads_tilt=deltaqt,
             CMstep=CMstep
         )
