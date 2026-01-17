@@ -1919,6 +1919,7 @@ def pyloco(
             force_recompute=force_recompute
 
         )
+        np.save('Jfull', Jfull)
         if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
@@ -2072,7 +2073,7 @@ def pyloco(
                     nf = np.asarray(norm_factors).ravel()
                     fit_results = fit_results / nf
 
-
+                np.save('fit_results', fit_results)
                 old_fit_parameters = current_fit_parameters.copy()
                 new_vec = old_fit_parameters + fit_results
 
@@ -2461,5 +2462,30 @@ def get_quads_block(fit_vec):
 
     # Fallback: unknown type -> return NaNs
     return np.asarray(np.nan), np.asarray(np.nan)
+
+
+
+def get_fit_param_block(fit_dict, name):
+    """
+    Return a fit-parameter block from the LAST iteration.
+    """
+    if not fit_dict:
+        raise ValueError("Empty fit_dict")
+
+    last_key = max(fit_dict)
+    inner = fit_dict[last_key]
+
+    if not isinstance(inner, dict):
+        raise TypeError(f"Iteration {last_key} is not a dict")
+
+    if name not in inner:
+        raise KeyError(
+            f"Parameter '{name}' not found in last iteration. "
+            f"Available: {list(inner.keys())}"
+        )
+
+    return np.asarray(inner[name], dtype=float)
+
+
 
 
