@@ -1683,6 +1683,39 @@ def _pack_fit_dict(vec, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR, n_quads, n_ske
     if 'quads_tilt'     in fit_list: d['quads_tilt']     = vec[i:i+n_quads_tilt]; i += n_quads_tilt
     return d
 
+
+def build_full_fit_state(
+    *,
+    hbpm_gain, vbpm_gain,
+    hbpm_coupling, vbpm_coupling,
+    HCMCoupling, VCMCoupling,
+    HCMEnergyShift, VCMEnergyShift,
+    rfStep,
+    quads, skew_quads, quads_tilt,
+    CMstep
+):
+    """
+    Cumulative LOCO fit state (all parameters, all stages)
+    """
+    return {
+        "hbpm_gain": np.asarray(hbpm_gain).copy(),
+        "vbpm_gain": np.asarray(vbpm_gain).copy(),
+        "hbpm_coupling": np.asarray(hbpm_coupling).copy(),
+        "vbpm_coupling": np.asarray(vbpm_coupling).copy(),
+        "hcor_coupling": np.asarray(HCMCoupling).copy(),
+        "vcor_coupling": np.asarray(VCMCoupling).copy(),
+        "HCMEnergyShift": np.asarray(HCMEnergyShift).copy(),
+        "VCMEnergyShift": np.asarray(VCMEnergyShift).copy(),
+        "delta_rf": float(rfStep),
+        "quads": np.asarray(quads).copy() if quads is not None else None,
+        "skew_quads": np.asarray(skew_quads).copy() if skew_quads is not None else None,
+        "quads_tilt": np.asarray(quads_tilt).copy() if quads_tilt is not None else None,
+        "hcor_cal": np.asarray(CMstep[0]).copy(),
+        "vcor_cal": np.asarray(CMstep[1]).copy(),
+    }
+
+
+
 def _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg):
 
     if 'quads' in fit_dict:
@@ -1919,7 +1952,6 @@ def pyloco(
             force_recompute=force_recompute
 
         )
-        np.save('Jfull', Jfull)
         if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
@@ -2289,12 +2321,34 @@ def pyloco(
         # Save iteration
 
         fit_results_all.append(current_fit_parameters.copy())
-        fit_dict_all[it] = _pack_fit_dict(
-            current_fit_parameters,
-            fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
-            n_quads=len(quads_ords) if quads_ords is not None else 0,
-            n_skew=len(skew_ords) if skew_ords is not None else 0,
-            n_quads_tilt=len(quads_tilt_ind) if quads_tilt_ind is not None else 0
+        #fit_dict_all[it] = _pack_fit_dict(
+        #    current_fit_parameters,
+        #    fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
+        #    n_quads=len(quads_ords) if quads_ords is not None else 0,
+        #    n_skew=len(skew_ords) if skew_ords is not None else 0,
+        #    n_quads_tilt=len(quads_tilt_ind) if quads_tilt_ind is not None else 0
+        #)
+
+
+
+        fit_dict_all[it] = build_full_fit_state(
+            hbpm_gain=hbpm_gain,
+            vbpm_gain=vbpm_gain,
+            hbpm_coupling=hbpm_coupling,
+            vbpm_coupling=vbpm_coupling,
+            HCMCoupling=HCMCoupling,
+            VCMCoupling=VCMCoupling,
+            HCMEnergyShift=HCMEnergyShift,
+            VCMEnergyShift=VCMEnergyShift,
+            rfStep=rfStep,
+            quads=np.asarray([
+                ring[q].K for q in quads_ords
+            ]) if quads_ords is not None else None,
+            skew_quads=np.asarray([
+                ring[s].K for s in skew_ords
+            ]) if skew_ords is not None else None,
+            quads_tilt=deltaqt,
+            CMstep=CMstep
         )
 
     print(f"LOCO {algorithm.upper()} completed! :).")
