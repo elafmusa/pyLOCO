@@ -1,0 +1,60 @@
+lattice:
+  lattice_file: /Users/elafmusa/Desktop/pyLOCO/Examples/EBS/EBS_MDT_16Jan_2026/output_all_err3/ring_pyloco3.mat
+  simulator: at
+  use: ring
+
+magnets:
+  quadrupoles:
+    regex: ^QD|^QF
+    components: 
+      - B2L: null
+  sextupoles:
+    regex: ^SJ|^SF|^SD|^SI
+    components: 
+      - B1L: null
+      - A1L: null 
+      - A2L: null
+      - B3L: null
+    invert:
+      - B1L
+  octupoles: 
+    regex: ^O
+    components: 
+      - B4L: null
+  correctors:
+    regex: ^SH
+    components:
+      - B1L: null
+      - A1L: null
+      - A2L: null
+    invert:
+      - B1L
+
+rf:
+  main:
+    regex: ^CAV
+    voltage: null # V
+    phase: null # rad
+    frequency: null # Hz
+
+bpms:
+  bpms:  ## looks redundant but allows for different bpm families
+    regex: ^BPM
+
+tuning:
+    #sort_correctors: True
+    HCORR:
+      - correctors: B1L
+      - sextupoles: B1L
+    VCORR: 
+      - correctors: A1L
+      - sextupoles: A1L
+
+    model_RM_folder: ./
+
+    multipoles:
+      - sextupoles: B3L
+      - octupoles: B4L
+
+    bba_magnets:
+      - quadrupoles: B2L
