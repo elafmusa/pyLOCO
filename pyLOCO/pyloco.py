@@ -1921,8 +1921,10 @@ def pyloco(
         cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep,includeDispersion=includeDispersion)
         orm_model = response_matrix(ring, config=cfg)
+
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model = Cmat @ orm_model
+        np.save('Cmat', Cmat)
 
         # --- 2) Jacobian ---
         include_quads         = ('quads' in fit_list)
@@ -1987,8 +1989,7 @@ def pyloco(
                 orm_model[:nHBPM, j] += VCMEnergyShift[i] * eta_x_mcf
                 orm_model[nHBPM:, j] += VCMEnergyShift[i] * eta_y_mcf
 
-
-
+        np.save('last_orm_model', orm_model)
         # --- 3) Flatten, weights, optional coupling removal/outliers ---
         weights_flat_, weights_flat_chi_ = weight_matrix(weights, includeDispersion,
                                      hor_dispersion_weight, ver_dispersion_weight,
@@ -2386,15 +2387,118 @@ def pyloco(
 
 
 
-def plot_data(s_pos, data, xlabel, ylabel, title):
-    plt.figure(figsize=(7, 3))
-    plt.plot(s_pos, data, color='navy')  # Deep blue color
-    plt.xlabel(xlabel)
-    plt.ylabel(ylabel)
-    plt.title(title)
-    # plt.grid(True, which='both', linestyle=':', color='gray')
+def plot_beta(s_pos, bx, by):
+    def rms(x):
+        return np.sqrt(np.mean(x ** 2))
+    fig, axes = plt.subplots(
+        ncols=2,
+        figsize=(14, 4),
+        sharey=False
+    )
+
+    # Normal quadrupoles
+
+    # axes[0].scatter(s_pos, bx*100, s=15, color='darkblue')
+    axes[0].plot(s_pos, bx * 100, linewidth=0.8, color='darkorange')
+    axes[0].set_xlabel("S [m]")
+    axes[0].set_ylabel(r"$\Delta \beta_x  \beta_x \%$")
+    axes[0].set_title("Horizontal beta beating")
+
+    text_q = (
+        f"max = {(bx.max()) * 100:.2e}\n"
+        f"RMS = {rms(bx) * 100:.2e} %"
+    )
+    axes[0].text(
+        0.98, 0.95, text_q,
+        transform=axes[0].transAxes,
+        fontsize=10,
+        verticalalignment='top',
+        horizontalalignment='right',
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8)
+    )
+
+    # Skew quadrupoles
+
+    # axes[1].scatter(s_pos, by* 100, s=15, color='darkblue')
+    axes[1].plot(s_pos, by * 100, linewidth=0.8, color='darkblue')
+    axes[1].set_xlabel("S [m]")
+    axes[1].set_ylabel(r"$\Delta \beta_y  \beta_y \%$")
+    axes[1].set_title("Vertical beta beating")
+    text_q = (
+        f"max = {(by.max()) * 100:.2e}\n"
+        f"RMS = {rms(by) * 100:.2e} %"
+    )
+
+  
+    axes[1].text(
+        0.98, 0.95, text_q,
+        transform=axes[1].transAxes,
+        fontsize=10,
+        verticalalignment='top',
+        horizontalalignment='right',
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8)
+    )
+
     plt.tight_layout()
     plt.show()
+
+
+
+def plot_eta(s_pos, dx, dy):
+    def rms(x):
+        return np.sqrt(np.mean(x ** 2))
+    fig, axes = plt.subplots(
+        ncols=2,
+        figsize=(14, 4),
+        sharey=False
+    )
+
+    # Normal quadrupoles
+
+    # axes[0].scatter(s_pos, bx*100, s=15, color='darkblue')
+    axes[0].plot(s_pos, dx * 1000, linewidth=0.8, color='darkorange')
+    axes[0].set_xlabel("S [m]")
+    axes[0].set_ylabel(r"$\Delta \eta_x  [mm]$")
+    axes[0].set_title("Horizontal dispersion")
+
+
+    text_q = (
+        f"max = {(dx.max()) * 1000:.2e}\n"
+        f"RMS = {rms(dx) * 1000:.2e} mm"
+    )
+    axes[0].text(
+        0.98, 0.95, text_q,
+        transform=axes[0].transAxes,
+        fontsize=10,
+        verticalalignment='top',
+        horizontalalignment='right',
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8)
+    )
+
+    # Skew quadrupoles
+
+    # axes[1].scatter(s_pos, by* 100, s=15, color='darkblue')
+    axes[1].plot(s_pos, dy * 1000, linewidth=0.8, color='darkblue')
+    axes[1].set_xlabel("S [m]")
+    axes[1].set_ylabel(r"$\Delta \eta_y  [mm]$")
+    axes[1].set_title("Vertical dispersion")
+
+    text_q = (
+        f"max = {(dy.max()) * 1000:.2e}\n"
+        f"RMS = {rms(dy) * 1000:.2e} mm"
+    )
+    axes[1].text(
+        0.98, 0.95, text_q,
+        transform=axes[1].transAxes,
+        fontsize=10,
+        verticalalignment='top',
+        horizontalalignment='right',
+        bbox=dict(boxstyle="round", facecolor="white", alpha=0.8)
+    )
+
+    plt.tight_layout()
+    plt.show()
+
 
 
 
