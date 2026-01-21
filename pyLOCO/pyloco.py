@@ -1924,7 +1924,6 @@ def pyloco(
 
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model = Cmat @ orm_model
-        np.save('Cmat', Cmat)
 
         # --- 2) Jacobian ---
         include_quads         = ('quads' in fit_list)
@@ -2405,7 +2404,7 @@ def plot_beta(s_pos, bx, by):
     axes[0].set_title("Horizontal beta beating")
 
     text_q = (
-        f"max = {(bx.max()) * 100:.2e}\n"
+        f"Max = {(bx.max()) * 100:.2e}\n"
         f"RMS = {rms(bx) * 100:.2e} %"
     )
     axes[0].text(
@@ -2425,7 +2424,7 @@ def plot_beta(s_pos, bx, by):
     axes[1].set_ylabel(r"$\Delta \beta_y  \beta_y \%$")
     axes[1].set_title("Vertical beta beating")
     text_q = (
-        f"max = {(by.max()) * 100:.2e}\n"
+        f"Max = {(by.max()) * 100:.2e}\n"
         f"RMS = {rms(by) * 100:.2e} %"
     )
 
@@ -2463,7 +2462,7 @@ def plot_eta(s_pos, dx, dy):
 
 
     text_q = (
-        f"max = {(dx.max()) * 1000:.2e}\n"
+        f"Max = {(dx.max()) * 1000:.2e}\n"
         f"RMS = {rms(dx) * 1000:.2e} mm"
     )
     axes[0].text(
@@ -2484,7 +2483,7 @@ def plot_eta(s_pos, dx, dy):
     axes[1].set_title("Vertical dispersion")
 
     text_q = (
-        f"max = {(dy.max()) * 1000:.2e}\n"
+        f"Max = {(dy.max()) * 1000:.2e}\n"
         f"RMS = {rms(dy) * 1000:.2e} mm"
     )
     axes[1].text(
