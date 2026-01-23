@@ -296,18 +296,17 @@ def compute_chi_squared_(
         Jacobian used for the fit (after remove_coupling & outliers)
     """
 
-    # ---- 1) Copy (do NOT modify originals)
     Mmeas  = Mmeas.copy()
     Mmodel = Mmodel.copy()
     Mstd   = Mstd.copy()
 
-    # ---- 2) Mark outliers as NaN (still COUPLED)
+    # Mark outliers as NaN (still COUPLED)
     if iOutliers is not None and len(iOutliers) > 0:
         Mmeas[iOutliers]  = np.nan
         Mmodel[iOutliers] = np.nan
         Mstd[iOutliers]   = np.nan
 
-    # ---- 3) Remove coupling (MATLAB does this AFTER outliers)
+    # Remove coupling (MATLAB does this AFTER outliers)
     if remove_coupling_:
         #Mmeas, Mmodel, Mstd, _, _ = remove_coupling(
         #    Mmeas, Mmodel, Mstd, None,
@@ -1988,7 +1987,7 @@ def pyloco(
                 orm_model[:nHBPM, j] += VCMEnergyShift[i] * eta_x_mcf
                 orm_model[nHBPM:, j] += VCMEnergyShift[i] * eta_y_mcf
 
-        np.save('last_orm_model', orm_model)
+
         # --- 3) Flatten, weights, optional coupling removal/outliers ---
         weights_flat_, weights_flat_chi_ = weight_matrix(weights, includeDispersion,
                                      hor_dispersion_weight, ver_dispersion_weight,
@@ -2321,6 +2320,8 @@ def pyloco(
                 orm_model_after[:nHBPM, jj] += VCMEnergyShift[i] * eta_x_mcf
                 orm_model_after[nHBPM:, jj] += VCMEnergyShift[i] * eta_y_mcf
 
+        np.save('last_orm_model', orm_model)
+
         y_model_after_ = orm_model_after.reshape(-1, 1, order="F")
         if remove_coupling_ == True:
 
@@ -2384,7 +2385,7 @@ def pyloco(
 
     return fit_results_all, fit_dict_all, ring
 
-
+# ----------------------- PLOTING OPTICS AND ORMs -----------------------
 
 def plot_beta(s_pos, bx, by):
     def rms(x):
@@ -2538,6 +2539,73 @@ def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d', save_p
         print(f"Plot saved to: {save_path}")
 
     plt.show()
+
+def plot_orm_bars_simone_style(
+    R_dir, R_coup,
+    R_model=None,
+    labels=None,
+    title="Steerers response",
+    ylabel="std [m/rad]"
+):
+
+    std_dir = np.std(R_dir , axis=0)
+    std_coup = np.std(R_coup, axis=0)
+    std_model = np.std(R_model, axis=0) if R_model is not None else None
+
+    x = np.arange(len(std_dir))
+    width = 0.75
+
+    fig, ax = plt.subplots(figsize=(8, 2))
+
+
+
+    ax.bar(
+        x,
+        std_dir,
+        width=width * 0.85,
+        color="green",
+        alpha=0.85,
+        label="direct",
+        zorder=2
+    )
+
+    ax.bar(
+        x,
+        std_coup,
+        width=width * 0.55,
+        color="red",
+        alpha=0.85,
+        label="coupling",
+        zorder=3
+    )
+
+    if std_model is not None:
+        ax.bar(
+            x,
+            std_model,
+            width=width,
+            facecolor="none",
+            edgecolor="black",
+            linewidth=1.2,
+            label="expected",
+            zorder=1
+        )
+
+    ax.set_title(title, fontsize=10)
+    ax.set_ylabel(ylabel, fontsize=10)
+    #ax.set_ylim(4, 6)
+    if labels is not None:
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels, rotation=90, fontsize=8)
+
+    ax.legend(loc="upper right")
+    ax.grid(axis="y", alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ----------------------- SAVE DICTIONARY -----------------------
 
 from pathlib import Path
 def save_fit_dict(fit_dict, output_path: Path):
