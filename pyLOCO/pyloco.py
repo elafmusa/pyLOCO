@@ -1080,15 +1080,13 @@ def calculate_bpm_coupling_jacobian(
 
     for i in range(nHBPM):
         idx = i + nVBPM
-        J_bpm[idx, i, :] = C_model[idx, :]
+        J_bpm[i, i, :] = C_model[idx, :] #####
 
     # 1. YX Coupling
 
     for i in range(nVBPM):
         idx = i + nHBPM
-        J_bpm[i, idx, :] = C_model[i, :]
-
-
+        J_bpm[idx, idx, :] = C_model[i, :] ###
 
 
     return J_bpm
@@ -1995,6 +1993,9 @@ def pyloco(
         y_meas_ = orm_measured.reshape(-1, 1, order="F")
         y_model_ = orm_model.reshape(-1, 1, order="F")
         J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
+        np.save('orm_model', orm_model)
+
+        np.save('J_', J_)
 
         iNoCoupling, iNoCoupling_chi, nBPM = build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion)
         if remove_coupling_==True:
@@ -2305,6 +2306,7 @@ def pyloco(
                         HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
                         rfStep=rfStep,includeDispersion=includeDispersion)
         orm_model_after = response_matrix(ring, config=cfg3)
+        C_bpms_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain) @ orm_model_after
 
         if fixedmomentum == True:
@@ -2381,7 +2383,7 @@ def pyloco(
     #    fit_results_all = previous_fit_results + fit_results_all
     #    fit_dict_all = {**previous_fit_dict, **fit_dict_all}
     np.save('last_orm_model', orm_model_after)
-    return fit_results_all, fit_dict_all, ring, orm_model_after
+    return fit_results_all, fit_dict_all, ring, orm_model_after, C_bpms_after
 
 
 # ----------------------- SAVE DICTIONARY -----------------------
