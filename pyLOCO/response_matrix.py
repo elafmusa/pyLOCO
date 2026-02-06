@@ -47,6 +47,7 @@ def response_matrix(
     HarmNumber = fixed_parameters.HarmNumber
     RFAttr = _cfg_get(config, "RFAttr", "Frequency")
 
+
     # ---------------------------------------------------------------
 
     if log_info:
@@ -62,6 +63,14 @@ def response_matrix(
     n_bpm = len(bpm_ords)
     n_hcor, n_vcor = len(cm_ords[0]), len(cm_ords[1])
     n_cm = n_hcor + n_vcor
+
+    if isinstance(cm_ords, np.ndarray) and cm_ords.dtype == object:
+        cm_ords = cm_ords.item()
+    cm_ords = (
+        np.atleast_1d(np.asarray(cm_ords[0], dtype=int)),
+        np.atleast_1d(np.asarray(cm_ords[1], dtype=int)),
+    )
+
     response_matrix = np.full((2 * n_bpm, n_cm), np.nan)
 
     if HCMCoupling is None:
