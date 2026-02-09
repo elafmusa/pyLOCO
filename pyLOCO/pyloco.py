@@ -1919,6 +1919,7 @@ def pyloco(
                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep,includeDispersion=includeDispersion)
         orm_model = response_matrix(ring, config=cfg)
 
+
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model = Cmat @ orm_model
 
@@ -1970,6 +1971,7 @@ def pyloco(
             force_recompute=force_recompute
 
         )
+
         if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
@@ -1993,9 +1995,6 @@ def pyloco(
         y_meas_ = orm_measured.reshape(-1, 1, order="F")
         y_model_ = orm_model.reshape(-1, 1, order="F")
         J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
-        np.save('orm_model', orm_model)
-
-        np.save('J_', J_)
 
         iNoCoupling, iNoCoupling_chi, nBPM = build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion)
         if remove_coupling_==True:
@@ -2382,7 +2381,6 @@ def pyloco(
     #if continue_from_previous and previous_fit_results is not None:
     #    fit_results_all = previous_fit_results + fit_results_all
     #    fit_dict_all = {**previous_fit_dict, **fit_dict_all}
-    np.save('last_orm_model', orm_model_after)
     return fit_results_all, fit_dict_all, ring, orm_model_after, C_bpms_after
 
 
