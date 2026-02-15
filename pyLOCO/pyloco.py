@@ -1583,8 +1583,7 @@ def _svd_select_indices(S, method="threshold", svd_threshold=1e-7, cut_=None,
         else:
             Ivec = np.array([int(x.strip()) for x in user.split(',')])
         Ivec = Ivec[Ivec < len(S)]
-    else:
-        Ivec = np.where(S > svd_threshold * np.max(S))[0]
+
         
     elif svd_selection_method == "rank":
 
