@@ -1617,7 +1617,8 @@ def _svd_select_indices(S, method="threshold", svd_threshold=1e-7, cut_=None,
 
             LastGoodSvalue = i
             Ivec = np.arange(i)
-            break  
+            print(f"Rank-based SVD selected rank is {i}...")
+            break
         except np.linalg.LinAlgError:
             continue
 
