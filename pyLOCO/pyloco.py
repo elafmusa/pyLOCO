@@ -1558,42 +1558,32 @@ def _svd_select_indices(
 
     elif method == "rank":
 
-        print("  Performing rank-based singular value selection ...")
+        print("Performing rank-based singular value selection...")
         ChiSquareVector = np.full(len(S), np.nan)
-        LastGoodSvalue = 0
+        Ivec = None
 
         for i in reversed(range(1, len(S) + 1)):
             try:
-                # reconstruct Amod = U_i * S_i
                 Amod = U[:, :i] @ np.diag(S[:i])
-
-                # solve b = Amod \ y
                 b = np.linalg.lstsq(Amod, y, rcond=None)[0]
-
-                # back-transform using V (to match MATLAB logic)
                 b = Vh.T[:, :i] @ b
-
-                # compute model response update
 
                 Mfit = weights_flat * (J_weighted @ b)
                 Mmodelnew = model_orm_flat + Mfit
 
-                # S compute chi^2 for these SVs
                 chi2 = np.sum(((measured_orm_flat - Mmodelnew) / weights_flat) ** 2) / len(weights_flat)
                 ChiSquareVector[i - 1] = chi2
 
-                # test covariance matrix
-                Cmod = Amod.T @ Amod
-                np.linalg.inv(Cmod)
+                np.linalg.inv(Amod.T @ Amod)
 
-                LastGoodSvalue = i
                 Ivec = np.arange(i)
-                print(f"Rank-based SVD selected rank is {i}...")
+                print(f"Rank-based SVD selected rank is {i}")
                 break
+
             except np.linalg.LinAlgError:
                 continue
 
-        if LastGoodSvalue == 0:
+        if Ivec is None:
             raise RuntimeError("Rank-based selection failed: no stable solution found.")
 
     if show_plot:
@@ -2280,7 +2270,7 @@ def pyloco(
 
             fit_results, Ivec, S = solve_step_gn(
                 Jw, y, svd_selection_method, svd_threshold, cut_,
-                show_svd_plot, tag=f"GN it{it + 1}"
+                show_svd_plot, tag=f"GN it{it + 1}",weights_flat= weights_flat, model_orm_flat=y_model,measured_orm_flat= y_meas
             )
 
             if 'delta_rf' in fit_list:
