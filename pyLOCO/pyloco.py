@@ -1585,6 +1585,44 @@ def _svd_select_indices(S, method="threshold", svd_threshold=1e-7, cut_=None,
         Ivec = Ivec[Ivec < len(S)]
     else:
         Ivec = np.where(S > svd_threshold * np.max(S))[0]
+        
+   elif svd_selection_method == "rank":
+
+    print("  Performing rank-based singular value selection ...")
+    ChiSquareVector = np.full(len(S), np.nan)
+    LastGoodSvalue = 0
+
+    for i in reversed(range(1, len(S) + 1)):
+        try:
+            # reconstruct Amod = U_i * S_i
+            Amod = U[:, :i] @ np.diag(S[:i])
+
+            # solve b = Amod \ y
+            b = np.linalg.lstsq(Amod, y, rcond=None)[0]
+
+            # back-transform using V (to match MATLAB logic)
+            b = V[:, :i] @ b
+
+            # compute model response update
+            Mfit = weights_flat * (J_flat @ b)
+            Mmodelnew = model_orm_flat + Mfit
+
+            # S compute chi^2 for these SVs
+            chi2 = np.sum(((measured_orm_flat - Mmodelnew) / weights_flat) ** 2) / len(weights_flat)
+            ChiSquareVector[i - 1] = chi2
+
+            # test covariance matrix
+            Cmod = Amod.T @ Amod
+            np.linalg.inv(Cmod)
+
+            LastGoodSvalue = i
+            Ivec = np.arange(i)
+            break  
+        except np.linalg.LinAlgError:
+            continue
+
+    if LastGoodSvalue == 0:
+        raise RuntimeError("Rank-based selection failed: no stable solution found.")
 
     if show_plot:
         sv_indices = np.arange(len(S))
