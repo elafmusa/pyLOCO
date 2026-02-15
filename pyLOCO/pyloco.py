@@ -1586,7 +1586,7 @@ def _svd_select_indices(S, method="threshold", svd_threshold=1e-7, cut_=None,
     else:
         Ivec = np.where(S > svd_threshold * np.max(S))[0]
         
-   elif svd_selection_method == "rank":
+    elif svd_selection_method == "rank":
 
     print("  Performing rank-based singular value selection ...")
     ChiSquareVector = np.full(len(S), np.nan)
