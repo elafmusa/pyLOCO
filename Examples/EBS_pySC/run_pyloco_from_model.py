@@ -1,5 +1,6 @@
-from pyLOCO.pyloco import pyloco, remove_bad_bpms, plot_data
 from pyLOCO.helpers import load_config
+from pyLOCO.pyloco import pyloco, remove_bad_bpms
+from pyLOCO.analysis import plot_beta, plot_eta, plot_matrices
 import numpy as np
 import at
 
@@ -68,7 +69,7 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x,  measured_eta_
     hor_dispersion_weight = 10
     ver_dispersion_weight = 10
 
-    fit_results, fit_dict, ring = pyloco(
+    fit_results, fit_dict, ring,_,_,_,_,_  = pyloco(
         ring,
 
         # --- general control ---
