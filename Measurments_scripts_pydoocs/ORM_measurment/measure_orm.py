@@ -80,7 +80,53 @@ def response_matrix(
     print(f"ref orbit x = {orbit_x0[:3]}")
     print(f"ref orbit y = {orbit_y0[:3]}")
 
-   
+    logs = {
+        "bpm_names": bpm_names,
+        "hcor_names": cm_names[0],
+        "vcor_names": cm_names[1],
+
+        "orbit0_x": orbit_x0,
+        "orbit0_y": orbit_y0,
+        "std_orbit0_x": std_orbit_x0,
+        "std_orbit0_y": std_orbit_y0,
+
+        "kick0": np.full(n_cm, np.nan),
+        "kick_p": np.full(n_cm, np.nan),
+        "kick_m": np.full(n_cm, np.nan),
+        "kick_f": np.full(n_cm, np.nan),
+        "dkick_used": np.full(n_cm, np.nan),
+
+  
+        "KICK_SP_0": np.full(n_cm, np.nan),
+        "KICK_RBV_0": np.full(n_cm, np.nan),
+        "CURRENT_SP_0": np.full(n_cm, np.nan),
+        "CURRENT_RBV_0": np.full(n_cm, np.nan),
+
+        "KICK_SP_p": np.full(n_cm, np.nan),
+        "KICK_RBV_p": np.full(n_cm, np.nan),
+        "CURRENT_SP_p": np.full(n_cm, np.nan),
+        "CURRENT_RBV_p": np.full(n_cm, np.nan),
+
+        "KICK_SP_m": np.full(n_cm, np.nan),
+        "KICK_RBV_m": np.full(n_cm, np.nan),
+        "CURRENT_SP_m": np.full(n_cm, np.nan),
+        "CURRENT_RBV_m": np.full(n_cm, np.nan),
+
+        "KICK_SP_f": np.full(n_cm, np.nan),
+        "KICK_RBV_f": np.full(n_cm, np.nan),
+        "CURRENT_SP_f": np.full(n_cm, np.nan),
+        "CURRENT_RBV_f": np.full(n_cm, np.nan),
+
+        "orbit_plus_x": np.full((n_bpm, n_cm), np.nan),
+        "orbit_plus_y": np.full((n_bpm, n_cm), np.nan),
+        "std_orbit_plus_x": np.full((n_bpm, n_cm), np.nan),
+        "std_orbit_plus_y": np.full((n_bpm, n_cm), np.nan),
+
+        "orbit_minus_x": np.full((n_bpm, n_cm), np.nan),
+        "orbit_minus_y": np.full((n_bpm, n_cm), np.nan),
+        "std_orbit_minus_x": np.full((n_bpm, n_cm), np.nan),
+        "std_orbit_minus_y": np.full((n_bpm, n_cm), np.nan),
+    }
 
     def _get_dkick_for(n_dim, j):
         if isinstance(dkick, (list, tuple, np.ndarray)):
@@ -93,16 +139,21 @@ def response_matrix(
             return float(dkick)
 
     cnt = 0
-    for n_dim in [0]: 
+    for n_dim in [0,1]: 
         for j, cm_name in enumerate(cm_names[n_dim]):
             this_dkick = _get_dkick_for(n_dim, j)
             kick0 = get_setpoint(cm_name, kick=True)
             print(f"this_dkick = {this_dkick}")
             print(f"[{cnt}] {cm_name}: kick_s = {kick0}")
 
-           
+            logs["kick0"][cnt] = kick0
+            logs["dkick_used"][cnt] = this_dkick
+
             r0 = read_all_non_strength(cm_name)
-          
+            logs["KICK_SP_0"][cnt] = r0["KICK_SP"]
+            logs["KICK_RBV_0"][cnt] = r0["KICK_RBV"]
+            logs["CURRENT_SP_0"][cnt] = r0["CURRENT_SP"]
+            logs["CURRENT_RBV_0"][cnt] = r0["CURRENT_RBV"]
 
             if bidirectional:
         
@@ -111,28 +162,52 @@ def response_matrix(
                 time.sleep(1)
                 kick_read_p = get_setpoint(cm_name, kick=True)
                 print(f"[{cnt}] kick_p = {kick_read_p}")
+                logs["kick_p"][cnt] = kick_read_p
                 rp = read_all_non_strength(cm_name)
-             
+                logs["KICK_SP_p"][cnt] = rp["KICK_SP"]
+                logs["KICK_RBV_p"][cnt] = rp["KICK_RBV"]
+                logs["CURRENT_SP_p"][cnt] = rp["CURRENT_SP"]
+                logs["CURRENT_RBV_p"][cnt] = rp["CURRENT_RBV"]
+
+
                 orbit_plus_x, orbit_plus_y, std_plus_x, std_plus_y = get_average_orbit(n_orbits=10, dt=0.1)
-               
+                logs["orbit_plus_x"][:, cnt] = orbit_plus_x
+                logs["orbit_plus_y"][:, cnt] = orbit_plus_y
+                logs["std_orbit_plus_x"][:, cnt] = std_plus_x
+                logs["std_orbit_plus_y"][:, cnt] = std_plus_y
+
       
                 kick_value_n = kick0 - this_dkick / 2.0
                 set_setpoint(magnet=cm_name, value=kick_value_n, kick=True)
                 time.sleep(1)
                 kick_read_m = get_setpoint(cm_name, kick=True)
                 print(f"[{cnt}] kick_m = {kick_read_m}")
+                logs["kick_m"][cnt] = kick_read_m
 
                 rmv = read_all_non_strength(cm_name)
-               
+                logs["KICK_SP_m"][cnt] = rmv["KICK_SP"]
+                logs["KICK_RBV_m"][cnt] = rmv["KICK_RBV"]
+                logs["CURRENT_SP_m"][cnt] = rmv["CURRENT_SP"]
+                logs["CURRENT_RBV_m"][cnt] = rmv["CURRENT_RBV"]
+
 
 
                 orbit_minus_x, orbit_minus_y, std_minus_x, std_minus_y = get_average_orbit(n_orbits=10, dt=0.1)
-                
+                logs["orbit_minus_x"][:, cnt] = orbit_minus_x
+                logs["orbit_minus_y"][:, cnt] = orbit_minus_y
+                logs["std_orbit_minus_x"][:, cnt] = std_minus_x
+                logs["std_orbit_minus_y"][:, cnt] = std_minus_y
+
                 set_setpoint(magnet=cm_name, value=kick0, kick=True)
                 kick_f = get_setpoint(cm_name, kick=True)
                 print(f"[{cnt}] kick_f = {kick_f}")
+                logs["kick_f"][cnt] = kick_f
                 rf = read_all_non_strength(cm_name)
-                
+                logs["KICK_SP_f"][cnt] = rf["KICK_SP"]
+                logs["KICK_RBV_f"][cnt] = rf["KICK_RBV"]
+                logs["CURRENT_SP_f"][cnt] = rf["CURRENT_SP"]
+                logs["CURRENT_RBV_f"][cnt] = rf["CURRENT_RBV"]
+
 
                 dx = (orbit_plus_x - orbit_minus_x)  #- orbit_x0
                 dy = (orbit_plus_y - orbit_minus_y) #- orbit_y0
@@ -143,16 +218,29 @@ def response_matrix(
                 set_setpoint(magnet=cm_name, value=kick_value, kick=True)
                 kick_read_p = get_setpoint(cm_name, kick=True)
                 print(f"[{cnt}] kick (single) = {kick_read_p}")
+                logs["kick_p"][cnt] = kick_read_p
                 rp = read_all_non_strength(cm_name)
-              
+                logs["KICK_SP_p"][cnt] = rp["KICK_SP"]
+                logs["KICK_RBV_p"][cnt] = rp["KICK_RBV"]
+                logs["CURRENT_SP_p"][cnt] = rp["CURRENT_SP"]
+                logs["CURRENT_RBV_p"][cnt] = rp["CURRENT_RBV"]
+
                 orbit_x, orbit_y, std_x, std_y = get_average_orbit(n_orbits=10, dt=0.1)
-                
+                logs["orbit_plus_x"][:, cnt] = orbit_x
+                logs["orbit_plus_y"][:, cnt] = orbit_y
+                logs["std_orbit_plus_x"][:, cnt] = std_x
+                logs["std_orbit_plus_y"][:, cnt] = std_y
+
                 # Reset
                 set_setpoint(magnet=cm_name, value=kick0, kick=True)
                 kick_f = get_setpoint(cm_name, kick=True)
                 print(f"[{cnt}] kick_f = {kick_f}")
+                logs["kick_f"][cnt] = kick_f
                 rf = read_all_non_strength(cm_name)
-                
+                logs["KICK_SP_f"][cnt] = rf["KICK_SP"]
+                logs["KICK_RBV_f"][cnt] = rf["KICK_RBV"]
+                logs["CURRENT_SP_f"][cnt] = rf["CURRENT_SP"]
+                logs["CURRENT_RBV_f"][cnt] = rf["CURRENT_RBV"]
 
                 dx = orbit_x - orbit_x0
                 dy = orbit_y - orbit_y0
@@ -179,8 +267,13 @@ def load_names(filename):
 HCM_names = load_names("HCM_names2.txt")
 VCM_names = load_names("VCM_names2.txt")
 BPM_names = load_names("BPM_names.txt")
-cm_names = [HCM_names, VCM_names]
-cor_kicks = 100e-6
+
+HCM_names_10 = [HCM_names[ii] for ii in np.linspace(0, len(HCM_names), 50, dtype=int, endpoint=False)]
+VCM_names_10 = [VCM_names[ii] for ii in np.linspace(0, len(VCM_names), 50, dtype=int, endpoint=False)]
+
+
+cm_names = [HCM_names_10, VCM_names_10]
+
 
 
 start_time = time.time()
@@ -188,7 +281,7 @@ start_time = time.time()
 RM, logs = response_matrix(
     BPM_names,
     cm_names,
-    dkick=cor_kicks,
+    dkick=100e-6,
     bidirectional=True,
     includeDispersion=False,
     hor_dispersion_weight=1,
@@ -201,12 +294,31 @@ executing_time = end_time - start_time
 print(f"\ntime: {executing_time:.3f} seconds")
 
 import h5py
-with h5py.File("measured_orm_loco.h5", "w") as f:
+#with h5py.File("orm_8july26_50cor_quads_error.h5", "w") as f:
     # Main dataset
+#    f.create_dataset("response_matrix", data=RM)
+#    f.create_dataset("dkick", data=100e-6)
+#    f.attrs["n_orbits"] = 10
+#    f.attrs["dt"] = 0.1
+#    f.attrs["bidirectional"] = True
+#    f.attrs["scaled"] = True
+#    f.attrs["execution_time_sec"] = executing_time
+
+
+with h5py.File("orm_8july26_50cor_quads_error.h5", "w") as f:
     f.create_dataset("response_matrix", data=RM)
-    f.create_dataset("dkick", data=cor_kicks)
+
+    log_group = f.create_group("logs")
+    for key, value in logs.items():
+        if isinstance(value, list):
+            value = np.array(value, dtype="S")
+        elif isinstance(value, np.ndarray) and value.dtype.kind in {"U", "O"}:
+            value = value.astype("S")
+
+        log_group.create_dataset(key, data=value)
+
     f.attrs["n_orbits"] = 10
     f.attrs["dt"] = 0.1
     f.attrs["bidirectional"] = True
     f.attrs["scaled"] = True
-    f.attrs["execution_time_sec"] = executing_time
+    f.attrs["execution_time_sec"] = executing_time    

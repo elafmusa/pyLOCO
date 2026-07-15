@@ -342,6 +342,136 @@ def compute_chi_squared_(
     return chi2 / dof
 
 
+def compute_delta_chi2(
+    ring,
+    p_final,
+    p_initial,
+    *,
+    fit_list,
+    nHBPM, nVBPM, nHorCOR, nVerCOR,
+    quads_ords, quads_tilt_ind, skew_ords,
+    individuals, fit_cfg,
+    used_bpms_ords, used_cor_ords,
+    CMstep, rfStep,
+    HCMCoupling, VCMCoupling,
+    hbpm_gain, hbpm_coupling,
+    vbpm_coupling, vbpm_gain,
+    HCMEnergyShift, VCMEnergyShift,
+    orm_measured, weights_flat_chi_,
+    includeDispersion,
+    iNoCoupling_chi, iOut_coupled,
+    J_
+):
+    """
+    MATLAB-equivalent Δχ² per fit parameter
+    """
+
+    n_params = len(p_final)
+    delta_chi2 = np.zeros(n_params)
+
+    # --- Nominal χ² ---
+    cfg = RMConfig(
+        dkick=CMstep,
+        bpm_ords=used_bpms_ords,
+        cm_ords=used_cor_ords,
+        HCMCoupling=HCMCoupling,
+        VCMCoupling=VCMCoupling,
+        rfStep=rfStep,
+        includeDispersion=includeDispersion
+    )
+
+    orm_model = response_matrix(ring, config=cfg)
+    Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
+    orm_model = Cmat @ orm_model
+
+    chi2_nominal = compute_chi_squared_(
+        Mmeas=orm_measured.reshape(-1, 1, order="F"),
+        Mmodel=orm_model.reshape(-1, 1, order="F"),
+        Mstd=weights_flat_chi_,
+        nHBPM=nHBPM, nVBPM=nVBPM,
+        nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+        include_dispersion=includeDispersion,
+        remove_coupling_=True,
+        iNoCoupling=iNoCoupling_chi,
+        iOutliers=iOut_coupled,
+        n_fit_parameters=J_
+    )
+
+    # --- Loop over parameters ---
+    for j in range(n_params):
+
+        # Copy final parameters
+        p_test = p_final.copy()
+
+        # Reset ONE parameter to initial
+        p_test[j] = p_initial[j]
+
+        # Build temporary ring
+        ring_tmp, cfg2, Cmat2, Hshift2, Vshift2, prop_dict = _prepare_ring_and_rmconfig(
+            ring, p_test,
+            fit_list=fit_list,
+            nHBPM=nHBPM, nVBPM=nVBPM,
+            nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+            quads_ords=quads_ords,
+            quads_tilt_ind=quads_tilt_ind,
+            skew_ords=skew_ords,
+            individuals=individuals,
+            fit_cfg=fit_cfg,
+            used_bpms_ords=used_bpms_ords,
+            used_cor_ords=used_cor_ords,
+            CMstep=CMstep,
+            rfStep=rfStep,
+            HCMCoupling=HCMCoupling,
+            VCMCoupling=VCMCoupling,
+            hbpm_gain=hbpm_gain,
+            hbpm_coupling=hbpm_coupling,
+            vbpm_coupling=vbpm_coupling,
+            vbpm_gain=vbpm_gain,
+            HCMEnergyShift=HCMEnergyShift,
+            VCMEnergyShift=VCMEnergyShift,
+            includeDispersion=includeDispersion,
+        )
+
+        # Compute ORM
+        orm_test = response_matrix(ring_tmp, config=cfg2)
+        orm_test = Cmat2 @ orm_test
+
+        # Compute χ²
+        chi2_test = compute_chi_squared_(
+            Mmeas=orm_measured.reshape(-1, 1, order="F"),
+            Mmodel=orm_test.reshape(-1, 1, order="F"),
+            Mstd=weights_flat_chi_,
+            nHBPM=nHBPM, nVBPM=nVBPM,
+            nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+            include_dispersion=includeDispersion,
+            remove_coupling_=True,
+            iNoCoupling=iNoCoupling_chi,
+            iOutliers=iOut_coupled,
+            n_fit_parameters=J_
+        )
+
+        delta_chi2[j] = chi2_test - chi2_nominal
+
+        if j % 50 == 0:
+            print(f"Δχ² progress: {j}/{n_params}")
+
+    return delta_chi2, chi2_nominal
+
+def compute_group_delta_chi2(delta_chi2, blocks):
+    group_contributions = {}
+
+    for name, sl in blocks.items():
+        values = delta_chi2[sl]
+
+        group_contributions[name] = {
+            "sum": np.sum(values),
+            "abs_sum": np.sum(np.abs(values)),
+            "rms": np.sqrt(np.mean(values**2)),
+            "max": np.max(np.abs(values)),
+        }
+
+    return group_contributions
+
 # ============================================================================== #
 #                           Compute Jacobians of fit parameters
 # ============================================================================== #
@@ -381,7 +511,6 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
         VCMCoupling = np.asarray(VCMCoupling, dtype=float).reshape(-1)
         assert VCMCoupling.size == nVerCOR, "VCMCoupling must have length nVerCOR"
 
-    # --- QUADS ---
     # --- QUADS ---
     J_quad, delta = None, None
     if include_quads:
@@ -784,7 +913,7 @@ def generating_quads_response_matrices(
     # choose delta
     if delta_init is None:
         delta_local = 1e-3 * k0_list
-        delta_local[delta_local == 0] = 1e-3
+        delta_local[delta_local == 0] = 1e-3 #
     else:
         delta_local = np.atleast_1d(delta_init)[:len(group)].astype(float)
 
@@ -849,6 +978,13 @@ def generating_quads_response_matrices(
     step = float(delta_local[0]) if delta_local.size else 1.0
     if step == 0.0:
         step = 1.0  # avoid division by zero
+    import os
+
+    base_path = os.path.abspath("output/debug")
+    os.makedirs(base_path, exist_ok=True)
+    np.save(f'output/debug/C_measured_{quad_index}.npy', C_measured)
+    np.save(f'output/debug/G_CMODEL_{quad_index}.npy', G_CMODEL)
+    np.save(f'output/debug/step_{quad_index}.npy', step)
     return (C_measured - G_CMODEL) / step, delta_local, logs
 
 
@@ -1499,6 +1635,250 @@ def rf_normalization(ring,
     return J_flat_normalized, norm_factors.reshape(-1, 1)
 
 
+
+
+# ============================================================================== #
+#                               Constrained Quads
+# ============================================================================== #
+
+
+def _as_1d_scale(scale, n):
+    if scale is None:
+        return np.ones(n)
+    arr = np.asarray(scale).ravel()
+    if arr.size != n:
+        raise ValueError(f"scale has size {arr.size}, expected {n}")
+    return arr
+
+def build_quad_constraint_rows(
+    n_params,
+    quad_slice,
+    *,
+    quad_sigma,
+    quad_weights=None,
+    quad_mask=None,
+):
+    """
+    Build G and yc for penalty rows:
+        || G * z - 0 ||^2
+    where z is the SOLVER variable.
+
+    If your solver uses normalized variables z and later converts back via
+        delta_p = z / param_scale
+    then the penalty on physical delta_p requires:
+        G(row, col_j) = (w_k / quad_sigma) / param_scale[j]
+    """
+    quad_cols = np.arange(quad_slice.start, quad_slice.stop)
+
+    if quad_mask is not None:
+        quad_mask = np.asarray(quad_mask, dtype=bool)
+        if quad_mask.size != quad_cols.size:
+            raise ValueError(
+                f"quad_mask has size {quad_mask.size}, expected {quad_cols.size}"
+            )
+        quad_cols = quad_cols[quad_mask]
+
+    n_constrained = len(quad_cols)
+    if n_constrained == 0:
+        return None, None
+
+    if quad_weights is None:
+        wk = np.ones(n_constrained)
+    else:
+        quad_weights = np.asarray(quad_weights).ravel()
+        if quad_mask is not None:
+            if quad_weights.size != (quad_slice.stop - quad_slice.start):
+                raise ValueError(
+                    "quad_weights must have length equal to len(quads_ords) "
+                    "before masking"
+                )
+            wk = quad_weights[quad_mask]
+        else:
+            if quad_weights.size != n_constrained:
+                raise ValueError(
+                    f"quad_weights has size {quad_weights.size}, expected {n_constrained}"
+                )
+            wk = quad_weights
+
+    quad_sigma = np.asarray(quad_sigma).ravel()
+
+    # --- case 1: scalar sigma ---
+    if quad_sigma.size == 1:
+        if quad_sigma[0] <= 0:
+            raise ValueError("quad_sigma must be > 0")
+        sigma_vec = np.full(n_constrained, quad_sigma[0])
+
+    # --- case 2: per-quad sigma ---
+    else:
+        if quad_sigma.size != (quad_slice.stop - quad_slice.start):
+            raise ValueError(
+                f"quad_sigma has size {quad_sigma.size}, expected {(quad_slice.stop - quad_slice.start)}"
+            )
+
+        if quad_mask is not None:
+            sigma_vec = quad_sigma[quad_mask]
+        else:
+            sigma_vec = quad_sigma
+
+        if np.any(sigma_vec <= 0):
+            raise ValueError("All quad_sigma values must be > 0")
+
+    # --- build constraint ---
+    diag_vals = wk / sigma_vec
+
+    G = np.zeros((n_constrained, n_params), dtype=float)
+    G[np.arange(n_constrained), quad_cols] = diag_vals
+
+    yc = np.zeros((n_constrained, 1), dtype=float)
+
+
+    return G, yc
+
+
+def build_skew_constraint_rows(
+    n_params,
+    skew_slice,
+    *,
+    skew_sigma,
+    skew_weights=None,
+    skew_mask=None,
+):
+    skew_cols = np.arange(skew_slice.start, skew_slice.stop)
+
+    if skew_mask is not None:
+        skew_mask = np.asarray(skew_mask, dtype=bool)
+        if skew_mask.size != skew_cols.size:
+            raise ValueError("skew_mask size mismatch")
+        skew_cols = skew_cols[skew_mask]
+
+    n_constrained = len(skew_cols)
+    if n_constrained == 0:
+        return None, None
+
+    # weights
+    if skew_weights is None:
+        wk = np.ones(n_constrained)
+    else:
+        skew_weights = np.asarray(skew_weights).ravel()
+        if skew_mask is not None:
+            wk = skew_weights[skew_mask]
+        else:
+            wk = skew_weights
+
+    # sigma
+    skew_sigma = np.asarray(skew_sigma).ravel()
+
+    if skew_sigma.size == 1:
+        sigma_vec = np.full(n_constrained, skew_sigma[0])
+    else:
+        if skew_mask is not None:
+            sigma_vec = skew_sigma[skew_mask]
+        else:
+            sigma_vec = skew_sigma
+
+    if np.any(sigma_vec <= 0):
+        raise ValueError("skew_sigma must be > 0")
+
+    diag_vals = wk / sigma_vec
+
+    G = np.zeros((n_constrained, n_params))
+    G[np.arange(n_constrained), skew_cols] = diag_vals
+
+    yc = np.zeros((n_constrained, 1))
+
+    return G, yc
+def augment_system_with_constraints(
+    Jw, y, blocks, fit_list, *,
+    constraint_cfg=None,
+):
+    if constraint_cfg is None or not constraint_cfg.enable:
+        return Jw, y, None, None
+
+    G_list = []
+    yc_list = []
+
+    # -------------------
+    # QUADS
+    # -------------------
+    # --- QUADS ---
+    if 'quads' in fit_list and 'quads' in blocks:
+        Gq, yq = build_constraint_rows(
+            n_params=Jw.shape[1],
+            param_slice=blocks['quads'],
+            sigma=constraint_cfg.quad_sigma,
+            weights=constraint_cfg.quad_weights,
+            mask=constraint_cfg.quad_mask,
+        )
+        if Gq is not None:
+            G_list.append(Gq)
+            yc_list.append(yq)
+
+    # --- SKEW ---
+    if 'skew_quads' in fit_list and 'skew_quads' in blocks:
+        Gs, ys = build_constraint_rows(
+            n_params=Jw.shape[1],
+            param_slice=blocks['skew_quads'],
+            sigma=constraint_cfg.skew_sigma,
+            weights=constraint_cfg.skew_weights,
+            mask=constraint_cfg.skew_mask,
+        )
+        if Gs is not None:
+            G_list.append(Gs)
+            yc_list.append(ys)
+
+    if not G_list:
+        return Jw, y, None, None
+
+    G = np.vstack(G_list)
+    yc = np.vstack(yc_list)
+
+    return Jw, y, G, yc
+
+
+
+def build_constraint_rows(
+    n_params,
+    param_slice,
+    *,
+    sigma,
+    weights=None,
+    mask=None,
+):
+    cols = np.arange(param_slice.start, param_slice.stop)
+
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        cols = cols[mask]
+
+    n = len(cols)
+    if n == 0:
+        return None, None
+
+    # weights
+    if weights is None:
+        wk = np.ones(n)
+    else:
+        weights = np.asarray(weights).ravel()
+        wk = weights[mask] if mask is not None else weights
+
+    # sigma
+    sigma = np.asarray(sigma).ravel()
+    if sigma.size == 1:
+        sigma_vec = np.full(n, sigma[0])
+    else:
+        sigma_vec = sigma[mask] if mask is not None else sigma
+
+    diag_vals = wk / sigma_vec
+
+    G = np.zeros((n, n_params))
+    G[np.arange(n), cols] = diag_vals
+
+    yc = np.zeros((n, 1))
+
+    return G, yc
+
+
+
 # ============================================================================== #
 #                               LOCO Minimization
 # ============================================================================== #
@@ -1591,11 +1971,17 @@ def _svd_select_indices(
         unused = np.setdiff1d(sv_indices, Ivec)
 
         plt.figure(figsize=(10, 3))
-        plt.semilogy(Ivec, S[Ivec], '-', color="green", label="Used")
+
+        # used singular values
+        plt.semilogy(Ivec, S[Ivec], 'o', color="green", label="Used", markersize=6)
+
+        # cut singular values
         if len(unused):
-            plt.semilogy(unused, S[unused], '-', color="red", label="Cut")
+            plt.semilogy(unused, S[unused], 'o', color="red", label="Cut", markersize=6)
 
         plt.title("SVD Spectrum", fontsize=12)
+        plt.xlabel("Index")
+        plt.ylabel("Singular Value")
         plt.legend(fontsize=10)
         plt.xticks(fontsize=9)
         plt.yticks(fontsize=9)
@@ -1757,6 +2143,7 @@ def solve_step_gn(
     return fit_results.ravel(), Ivec, S
 
 
+
 def solve_step_lm(
         J_weighted, y, weights_flat,
         model_orm_flat, measured_orm_flat,
@@ -1764,15 +2151,39 @@ def solve_step_lm(
         max_lm_lambda=15,
         svd_method='threshold',
         svd_threshold=1e-3,
-        cut_=None, show_plot=False, tag=""
+        cut_=None, show_plot=False, tag="", constraint_cfg=None, blocks=None, fit_list=None
 ):
-    C = J_weighted.T @ J_weighted
-    ay = J_weighted.T @ y
+    # -------------------------------
+    # Constraints (fix bug: Jw -> J_weighted)
+    # -------------------------------
+
+    if constraint_cfg is not None:
+        _, _, G, yc = augment_system_with_constraints(
+            J_weighted, y, blocks, fit_list,
+            constraint_cfg=constraint_cfg,
+        )
+
+
+
     lam = Starting_Lambda
 
-    C_lm = C + (lam * np.diag(np.diag(C)) if scaled
-                else lam * np.eye(C.shape[0]))
+    C = J_weighted.T @ J_weighted
+    ay = J_weighted.T @ y
 
+    # LM
+    if scaled:
+        C_lm = C + lam * np.diag(np.diag(C))
+    else:
+        C_lm = C + lam * np.eye(C.shape[0])
+
+    # ADD constraint diagonal term
+    if constraint_cfg is not None:
+        C_delta = G.T @ G
+        C_lm += np.diag(np.diag(C_delta))
+
+    # -------------------------------
+    # SVD
+    # -------------------------------
     Uc, Sc, Vhc = np.linalg.svd(C_lm, full_matrices=False)
 
     Ivec = _svd_select_indices(
@@ -1791,6 +2202,9 @@ def solve_step_lm(
         iteration_tag=tag
     )
 
+    # -------------------------------
+    # Solve
+    # -------------------------------
     b = Uc[:, Ivec].T @ ay
     b = np.diag(1.0 / Sc[Ivec]) @ b
     fit_results = Vhc.T[:, Ivec] @ b
@@ -1822,6 +2236,7 @@ def pyloco(
         # SVD selection
         svd_selection_method='threshold', svd_threshold=1e-7, cut_=None,
         show_svd_plot=False,
+        constraint_cfg=None,
         # LM options
         nLMIter=10, Starting_Lambda=1e-3, max_lm_lambda=15, scaled=True,
         # more options
@@ -1831,14 +2246,17 @@ def pyloco(
         quad_jacobian_file=None,
         skew_jacobian_file=None,
         quads_tilt_jacobian_file=None,
-        force_recompute=False,
+        force_recompute=True,
         # Fit multi stage
         continue_from_previous=False,
         previous_fit_results=None,
         previous_fit_dict=None,
         previous_ring=None,
+        calculate_delta_chi2=False
 
 ):
+
+
     hbpm_gain = np.ones(nHBPM)
     vbpm_gain = np.ones(nVBPM)
     hbpm_coupling = np.zeros(nHBPM)
@@ -1847,8 +2265,11 @@ def pyloco(
     VCMEnergyShift = np.zeros(nVerCOR)
     HCMCoupling = np.zeros(nHorCOR)
     VCMCoupling = np.zeros(nVerCOR)
+
     deltaqt = np.zeros(len(quads_ords)) if ('quads_tilt' in fit_list) else None
-    quads_fit, blocks = build_initial_fit_parameters(
+
+
+    quads_fit, _ = build_initial_fit_parameters(
         ring=ring,
         fit_list=['quads'],
         nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
@@ -1856,7 +2277,7 @@ def pyloco(
         CMstep=CMstep, rfStep=rfStep,
         individuals=individuals)
 
-    skew_quads_fit, blocks = build_initial_fit_parameters(
+    skew_quads_fit, _ = build_initial_fit_parameters(
         ring=ring,
         fit_list=['skew_quads'],
         nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
@@ -1866,6 +2287,7 @@ def pyloco(
 
     iOut_coupled_persistent = np.array([], dtype=int)
     iNoCoupling_chi_persistent = np.array([], dtype=int)
+    chi2_history = []
 
     # --- Resume from previous fit if requested ---
     if continue_from_previous:
@@ -1942,6 +2364,10 @@ def pyloco(
     inetial_fit_parameters = np.asarray(inetial_fit_parameters).ravel()
     current_fit_parameters = inetial_fit_parameters.copy()
 
+    p_initial = inetial_fit_parameters.copy()
+    delta_chi2_history = []
+    group_delta_history = []
+
     # histories
     fit_results_all = []
     fit_dict_all = {}
@@ -2005,7 +2431,7 @@ def pyloco(
             force_recompute=force_recompute
 
         )
-
+        np.save('p4_nominal_jacobian_selected_quads', Jfull)
         if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
@@ -2043,8 +2469,22 @@ def pyloco(
             weights_flat = weights_flat_
             J = J_
 
+
         Jw = J / weights_flat
         y = (y_meas - y_model) / weights_flat
+
+        np.save('p4_nominal_Jw', Jw)
+
+
+        # ------------------------------------------------------------
+        # Consentrain
+        # ------------------------------------------------------------
+
+        #if constraint_cfg is not None:
+        #    Jw, y = augment_system_with_constraints(
+        #        Jw, y, blocks, fit_list,
+        #        constraint_cfg=constraint_cfg,
+        #    )
 
         # ------------------------------------------------------------
         # Apply outliers BEFORE computing chi2_before
@@ -2099,6 +2539,11 @@ def pyloco(
                     iOut_coupled = out_reduced.copy()
                 Jw = J / weights_flat
                 y = (y_meas - y_model) / weights_flat
+
+
+
+
+
         if 'delta_rf' in fit_list:
             Jw, rf_norm_factors = rf_normalization(ring,
                                                    Jw, y_model, weights_flat,
@@ -2140,12 +2585,13 @@ def pyloco(
             accepted = False
 
             for j in range(nLMIter):
+
+
                 fit_results, lam_used, Ivec, S = solve_step_lm(
                     Jw, y, weights_flat, y_model, y_meas, scaled=scaled, Starting_Lambda=LMlambda,
                     max_lm_lambda=max_lm_lambda,
                     svd_method=svd_selection_method, svd_threshold=svd_threshold,
-                    cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it + 1}/in{j + 1}"
-                )
+                    cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it + 1}/in{j + 1}", constraint_cfg=constraint_cfg, blocks=blocks, fit_list=fit_list)
                 if 'delta_rf' in fit_list:
                     # fit_results = remove_rf_normalization(fit_list, rfStep, fit_results, nHBPM, nVBPM, nHorCOR, nVerCOR, quads_ords, quads_tilt_ind, skew_ords)
                     nf = np.asarray(rf_norm_factors).ravel()
@@ -2376,6 +2822,55 @@ def pyloco(
 
         print(f"Chi² after correction: {chi2_after:.4e}")
 
+        chi2_history.append(chi2_after)
+
+        if calculate_delta_chi2 ==True:
+
+            print(f"Calculating delta Chi² for all fit paramaters from iteration 0 ...")
+            p_initial_iter = current_fit_parameters.copy()  ########
+            p_initial_global = inetial_fit_parameters.copy()
+
+
+            delta_chi2_iter, chi2_nominal = compute_delta_chi2(
+                ring=ring,
+                p_final=current_fit_parameters,
+                p_initial=p_initial_global, ####
+                fit_list=fit_list,
+                nHBPM=nHBPM, nVBPM=nVBPM,
+                nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+                quads_ords=quads_ords,
+                quads_tilt_ind=quads_tilt_ind,
+                skew_ords=skew_ords,
+                individuals=individuals,
+                fit_cfg=fit_cfg,
+                used_bpms_ords=used_bpms_ords,
+                used_cor_ords=used_cor_ords,
+                CMstep=CMstep,
+                rfStep=rfStep,
+                HCMCoupling=HCMCoupling,
+                VCMCoupling=VCMCoupling,
+                hbpm_gain=hbpm_gain,
+                hbpm_coupling=hbpm_coupling,
+                vbpm_coupling=vbpm_coupling,
+                vbpm_gain=vbpm_gain,
+                HCMEnergyShift=HCMEnergyShift,
+                VCMEnergyShift=VCMEnergyShift,
+                orm_measured=orm_measured,
+                weights_flat_chi_=weights_flat_chi_,
+                includeDispersion=includeDispersion,
+                iNoCoupling_chi=iNoCoupling_chi_persistent,
+                iOut_coupled=iOut_coupled_persistent,
+                J_=J_
+            )
+
+            delta_chi2_history.append(delta_chi2_iter)
+            group_delta = compute_group_delta_chi2(delta_chi2_iter, blocks)
+
+            print("\nΔχ² contribution per group:")
+            for k, v in group_delta.items():
+                print(f"{k:20s}  sum={v['sum']:.3e}   rms={v['rms']:.3e}   max={v['max']:.3e}")
+            group_delta_history.append(group_delta)
+            print(f"Calculating delta Chi² DONE ...")
         # Save iteration
 
         fit_results_all.append(current_fit_parameters.copy())
@@ -2408,7 +2903,16 @@ def pyloco(
     # if continue_from_previous and previous_fit_results is not None:
     #    fit_results_all = previous_fit_results + fit_results_all
     #    fit_dict_all = {**previous_fit_dict, **fit_dict_all}
-    return fit_results_all, fit_dict_all, ring, orm_model_after, C_bpms_after
+    return (
+        fit_results_all,
+        fit_dict_all,
+        ring,
+        orm_model_after,
+        C_bpms_after,
+        chi2_history,
+        delta_chi2_history,
+        blocks
+    )
 
 
 # ----------------------- SAVE DICTIONARY -----------------------

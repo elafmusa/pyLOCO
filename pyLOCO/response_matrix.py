@@ -273,39 +273,44 @@ def response_matrix(
                 else:
                     this_dkick = float(dkick)
 
-                kick0 = ring[cm_ord].KickAngle[n_dim]
-                kick1 = ring[cm_ord].KickAngle[other_dim]
+                if n_dim == 0:  # Horizontal
+                    base_kick = ring[cm_ord].PolynomB[0]
+                else:  # Vertical
+                    base_kick = ring[cm_ord].PolynomA[0]
 
-                if bidirectional == True:
+                if bidirectional:
 
-                    ring[cm_ord].KickAngle[n_dim] = kick0 + this_dkick / 2
-                    if coupling_orm and delta_coupling:
-                        ring[cm_ord].KickAngle[other_dim] = kick1 + this_dkick * delta_coupling
+                    # +delta
+                    if n_dim == 0:
+                        ring[cm_ord].PolynomB[0] = base_kick + this_dkick / 2
+                    else:
+                        ring[cm_ord].PolynomA[0] = base_kick + this_dkick / 2
 
-                    _,orbit = at.find_orbit4(ring, 0, bpm_ords)
-                    orbit_plus_x = orbit[:,0]
-                    orbit_plus_y = orbit[:,2]
+                    _, orbit = at.find_orbit4(ring, 0, bpm_ords)
+                    orbit_plus_x = orbit[:, 0]
+                    orbit_plus_y = orbit[:, 2]
 
-                    ring[cm_ord].KickAngle[n_dim] = kick0
-                    ring[cm_ord].KickAngle[n_dim] = kick0 - this_dkick / 2
+                    # -delta
+                    if n_dim == 0:
+                        ring[cm_ord].PolynomB[0] = base_kick - this_dkick / 2
+                    else:
+                        ring[cm_ord].PolynomA[0] = base_kick - this_dkick / 2
 
-                    if coupling_orm and delta_coupling:
-                        ring[cm_ord].KickAngle[other_dim] = kick1 - this_dkick * delta_coupling
-
-                    _,orbit = at.find_orbit4(ring, 0, bpm_ords)
-                    orbit_minus_x = orbit[:,0]
-                    orbit_minus_y = orbit[:,2]
+                    _, orbit = at.find_orbit4(ring, 0, bpm_ords)
+                    orbit_minus_x = orbit[:, 0]
+                    orbit_minus_y = orbit[:, 2]
 
                     # Reset
-                    ring[cm_ord].KickAngle[n_dim] = kick0
-                    ring[cm_ord].KickAngle[other_dim] = kick1
+                    if n_dim == 0:
+                        ring[cm_ord].PolynomB[0] = base_kick
+                    else:
+                        ring[cm_ord].PolynomA[0] = base_kick
 
                     dx = orbit_plus_x - orbit_minus_x
                     dy = orbit_plus_y - orbit_minus_y
-
                 else:
 
-                    ring[cm_ord].KickAngle[n_dim] = kick0 + this_dkick
+                    ring[cm_ord].KickAngle[n_dim] = base_kick + this_dkick
                     if coupling_orm and delta_coupling:
                         ring[cm_ord].KickAngle[other_dim] = kick1 + this_dkick * delta_coupling
 
@@ -313,7 +318,7 @@ def response_matrix(
                     orbit_new_x = orbit[:,0]
                     orbit_new_y = orbit[:,2]
 
-                    ring[cm_ord].KickAngle[n_dim] = kick0
+                    ring[cm_ord].KickAngle[n_dim] = base_kick
                     ring[cm_ord].KickAngle[other_dim] = kick1
 
                     dx = orbit_new_x - orbit0_x
