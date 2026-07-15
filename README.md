@@ -20,4 +20,4 @@ The repository also includes examples that demonstrate how to use **pyLOCO** wit
 
 ```bash
 pip install accelerator-commissioning
-```
+
