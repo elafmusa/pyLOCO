@@ -12,7 +12,7 @@ Please contact: <elaf.musa@desy.de>
 git clone https://github.com/elafmusa/pyLOCO
 cd pyLOCO
 pip install -e .    # or: pip install .
-
+```
 
 **pyLOCO** is primarily designed for LOCO analysis using experimental measurements.
 
@@ -20,4 +20,4 @@ The repository also includes examples that demonstrate how to use **pyLOCO** wit
 
 ```bash
 pip install accelerator-commissioning
-
+```
