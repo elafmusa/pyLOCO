@@ -2431,7 +2431,6 @@ def pyloco(
             force_recompute=force_recompute
 
         )
-        np.save('p4_nominal_jacobian_selected_quads', Jfull)
         if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
@@ -2472,8 +2471,6 @@ def pyloco(
 
         Jw = J / weights_flat
         y = (y_meas - y_model) / weights_flat
-
-        np.save('p4_nominal_Jw', Jw)
 
 
         # ------------------------------------------------------------

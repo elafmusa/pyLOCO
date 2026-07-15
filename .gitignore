@@ -1,23 +1,5 @@
-# Ignore Python cache and temporary files
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.log
-
-# Ignore virtual environments
-venv/
-.env/
-*/__pycache__/
-
-# Ignore output and measurement data
-
-data/
-*.h5
-*.mat
-*.npz
-*.json
-
+# Ignore geberated output
+Examples/PETRAIII/output/
 # Ignore Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 
@@ -25,3 +7,12 @@ data/
 .idea/
 .vscode/
 .DS_Store
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Generated output
+Examples/PETRAIII/output/
