@@ -16,3 +16,8 @@ __pycache__/
 
 # Generated output
 Examples/PETRAIII/output/
+# PETRA III output
+Examples/PETRAIII/output/
+
+# or, if you only want to ignore the logs:
+Examples/PETRAIII/output/*logs*.txt
