@@ -14,6 +14,11 @@ cd pyLOCO
 pip install -e .    # or: pip install .
 ```
 
+Optional (creat vertual environment)
+```
+python -m venv venv
+source venv/bin/activate
+```
 **pyLOCO** is primarily designed for LOCO analysis using experimental measurements.
 
 The repository also includes examples that demonstrate how to use **pyLOCO** with simulated commissioning, for example with **pySC**. To install pySC:
