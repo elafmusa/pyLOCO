@@ -1,23 +1,22 @@
-# Ignore geberated output
-Examples/PETRAIII/output/
-# Ignore Jupyter Notebook checkpoints
-.ipynb_checkpoints/
-
-# Ignore IDE settings
-.idea/
-.vscode/
+# macOS
 .DS_Store
-# Python cache
+
+# Python
 __pycache__/
 *.pyc
 
-# Jupyter checkpoints
+# Jupyter
 .ipynb_checkpoints/
 
-# Generated output
-Examples/PETRAIII/output/
-# PETRA III output
+# IDEs
+.idea/
+.vscode/
+
+# PETRA III generated output
 Examples/PETRAIII/output/
 
-# or, if you only want to ignore the logs:
-Examples/PETRAIII/output/*logs*.txt
+# Generated debug output
+**/output/debug/
+
+**/output/jacobians/
+

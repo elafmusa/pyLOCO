@@ -1,14 +1,15 @@
-from pyLOCO.pyloco import pyloco, remove_bad_bpms, plot_data, save_fit_dict
 from pyLOCO.helpers import load_config
+from pyLOCO.pyloco import pyloco, remove_bad_bpms, save_fit_dict
+from pyLOCO.analysis import plot_beta, plot_eta, plot_matrices
 import numpy as np
-import os
 import at
-
+import os
 def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta_y_, config_path: str | None = None,
                         config_module: str | None = None):
 
     import at.lattice.elements
     import multiprocessing
+    import os
     multiprocessing.set_start_method("fork", force=True)
 
     cfgmod = load_config(config_path=config_path, config_module=config_module)
@@ -74,7 +75,7 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta
     nHorCOR = len(Corords[0])
     nVerCOR = len(Corords[1])
     nHBPM = nVBPM = len(used_bpms_ords)
-    nIter = 50
+    nIter = 2
     fit_list = [
         "quads",
         'skew_quads',
@@ -99,7 +100,7 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta
     hor_dispersion_weight = 1
     ver_dispersion_weight = 1
 
-    fit_results, fit_dict, ring_pyloco = pyloco(
+    fit_results, fit_dict, ring_pyloco,_,_,_,_,_ = pyloco(
         ring,
 
         # --- general control ---
@@ -165,7 +166,7 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x_,  measured_eta
 
     # --- save results ---
     from pathlib import Path
-    save_fit_dict(fit_dict, Path("./output/fit_results_all_parameters"))
+    #save_fit_dict(fit_dict, Path("./output/fit_results_all_parameters"))
     ring_pyloco.save('./output/ring_pyloco.mat', mat_key='ring')
 
     # --- save results ---
