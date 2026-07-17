@@ -98,12 +98,18 @@ def analyze_ring(SC, twiss,  elements_indices=None, RF_indices=None, rfStep=40,
     print(f"RMS vertical beta beating    : {by_rms_err * 100:8.4f} %")
     print(f"RMS horizontal dispersion err: {dx_rms_err * 1e3:8.4f} mm")
     print(f"RMS vertical dispersion err  : {dy_rms_err * 1e3:8.4f} mm")
-    print(f"Ideal Tune                         : {at.get_tune(SC.lattice.design, get_integer=True)}")
-    print(f"Ideal Chromaticity                 : {at.get_chrom(SC.lattice.design)}")
-    print(f"Tune                         : {at.get_tune(SC.lattice.ring, get_integer=True)}")
-    print(f"Chromaticity                 : {at.get_chrom(SC.lattice.ring)}")
-    print('Ideal emittance_h', emittance_h0 * 1e12, 'emittance_v', emittance_v0 * 1e12)
-    print('With errors emittance_h', emittance_h * 1e12, 'emittance_v', emittance_v * 1e12)
+    ideal_tune = at.get_tune(SC.lattice.design, get_integer=True)
+    tune = at.get_tune(SC.lattice.ring, get_integer=True)
+    ideal_chrom = at.get_chrom(SC.lattice.design)
+    chrom = at.get_chrom(SC.lattice.ring)
+    print(f"Ideal tune                   : H = {ideal_tune[0]:.4f}, V = {ideal_tune[1]:.4f}")
+    print(f"Tune (with errors)           : H = {tune[0]:.4f}, V = {tune[1]:.4f}")
+
+    print(f"Ideal chromaticity           : H = {ideal_chrom[0]:.4f}, V = {ideal_chrom[1]:.4f}")
+    print(f"Chromaticity (with errors)   : H = {chrom[0]:.4f}, V = {chrom[1]:.4f}")
+
+    print(f"Ideal emittance              : H = {emittance_h0 * 1e12:.4f} pm, V = {emittance_v0 * 1e12:.4f} pm")
+    print(f"Emittance (with errors)      : H = {emittance_h * 1e12:.4f} pm, V = {emittance_v * 1e12:.4f} pm")
     print('----------------------------------------------------------------------')
 
     if makeplot:
