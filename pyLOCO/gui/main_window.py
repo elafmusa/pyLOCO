@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 
-from .backend import LocoRunError, LocoRunRequest, run_loco_request
+from .backend import LocoRunError, LocoRunRequest, run_loco_request, _load_bad_bpm_positions
 from .models.project import ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata
 from .widgets.project_explorer import ProjectExplorer
 from .widgets.orm_comparison import OrmComparisonWindow
@@ -1108,18 +1108,43 @@ class MainWindow(QMainWindow):
         if suffix in {".h5", ".hdf5"}:
             with h5py.File(path, "r") as handle:
                 if "response_matrix" in handle:
-                    return np.asarray(handle["response_matrix"])
-                keys = list(handle.keys())
-                if not keys:
-                    raise ValueError(f"ORM measurement file {path} contains no datasets.")
-                return np.asarray(handle[keys[0]])
-        if suffix == ".npy":
-            return np.load(path, allow_pickle=False)
-        if suffix == ".npz":
+                    measured_orm = np.asarray(handle["response_matrix"])
+                else:
+                    keys = list(handle.keys())
+                    if not keys:
+                        raise ValueError(f"ORM measurement file {path} contains no datasets.")
+                    measured_orm = np.asarray(handle[keys[0]])
+        elif suffix == ".npy":
+            measured_orm = np.load(path, allow_pickle=False)
+        elif suffix == ".npz":
             with np.load(path, allow_pickle=False) as archive:
                 key = "orm" if "orm" in archive else archive.files[0]
-                return np.asarray(archive[key])
-        raise ValueError(f"Unsupported ORM comparison file type: {suffix}")
+                measured_orm = np.asarray(archive[key])
+        else:
+            raise ValueError(f"Unsupported ORM comparison file type: {suffix}")
+
+        bad_bpm_positions = _load_bad_bpm_positions(
+            {key: dataset.path for key, dataset in self.project.measurements.items()}
+        )
+        if bad_bpm_positions is None:
+            return measured_orm
+
+        from pyLOCO.pyloco import remove_bad_bpms
+
+        total_bpms = measured_orm.shape[0] // 2
+        if measured_orm.shape[0] != total_bpms * 2:
+            raise ValueError(
+                "Measured ORM must have an even number of rows before applying the Bad BPM list; "
+                f"got shape {measured_orm.shape}."
+            )
+        cleaned_orm, _removed = remove_bad_bpms(
+            measured_orm,
+            bad_bpm_positions,
+            total_bpms=total_bpms,
+            axis=0,
+            input_type="positions",
+        )
+        return cleaned_orm
 
     def _load_model_orm_for_comparison(self):
         import numpy as np
