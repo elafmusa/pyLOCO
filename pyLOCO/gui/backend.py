@@ -130,6 +130,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
 
         fit_cfg = config_module.FitInitConfig(**request.backend_mapping["FitInitConfig"])
         rm_cfg = config_module.RMConfig(**request.backend_mapping["RMConfig"])
+        indices = _apply_machine_element_selections(indices, request.backend_mapping.get("MachineElements", {}), rm_cfg)
         constraint_cfg = _make_constraint_config(request.backend_mapping["ConstraintConfig"])
         options.setdefault("fit_list", fit_cfg.fit_list or ())
         _disable_worker_ui_options(options, log, preserve_svd_ui=interactive_svd)
@@ -377,6 +378,38 @@ def _derive_indices(ring, measured: dict[str, Any]) -> dict[str, Any]:
     quads = np.asarray(at.get_refpts(ring, at.elements.Quadrupole))
     cavs = np.asarray(at.get_refpts(ring, at.elements.RFCavity))
     return {"used_bpms_ords": bpm_ords, "used_cor_ords": [hcors, vcors], "quads_ords": quads, "skew_ords": None, "CAVords": cavs, "quads_tilt_ind": quads, "nHBPM": len(bpm_ords), "nVBPM": len(bpm_ords), "nHorCOR": len(hcors), "nVerCOR": len(vcors)}
+
+
+def _apply_machine_element_selections(indices: dict[str, Any], selections: dict[str, Any], rm_cfg) -> dict[str, Any]:
+    """Override auto-derived backend ordinals with explicit GUI element selections."""
+
+    import numpy as np
+
+    updated = dict(indices)
+    bpm_ords = list(selections.get("bpm_ords") or rm_cfg.bpm_ords or [])
+    hcor_ords = list(selections.get("horizontal_corrector_ords") or [])
+    vcor_ords = list(selections.get("vertical_corrector_ords") or [])
+    if not (hcor_ords or vcor_ords) and rm_cfg.cm_ords is not None:
+        hcor_ords, vcor_ords = [list(v) for v in rm_cfg.cm_ords]
+    cavity_ords = list(selections.get("cavity_ords") or rm_cfg.cav_ords or [])
+    quad_ords = list(selections.get("normal_quadrupole_ords") or [])
+    skew_ords = list(selections.get("skew_quadrupole_ords") or [])
+    if bpm_ords:
+        updated["used_bpms_ords"] = np.asarray(bpm_ords, dtype=int)
+        updated["nHBPM"] = len(bpm_ords)
+        updated["nVBPM"] = len(bpm_ords)
+    if hcor_ords or vcor_ords:
+        updated["used_cor_ords"] = [np.asarray(hcor_ords, dtype=int), np.asarray(vcor_ords, dtype=int)]
+        updated["nHorCOR"] = len(hcor_ords)
+        updated["nVerCOR"] = len(vcor_ords)
+    if cavity_ords:
+        updated["CAVords"] = np.asarray(cavity_ords, dtype=int)
+    if quad_ords:
+        updated["quads_ords"] = np.asarray(quad_ords, dtype=int)
+        updated["quads_tilt_ind"] = np.asarray(quad_ords, dtype=int)
+    if skew_ords:
+        updated["skew_ords"] = np.asarray(skew_ords, dtype=int)
+    return updated
 
 
 def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixed_parameters, measured, indices):

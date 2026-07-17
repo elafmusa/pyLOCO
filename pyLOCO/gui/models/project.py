@@ -40,12 +40,31 @@ class LatticeSelection:
 
 
 @dataclass(slots=True)
+class ElementSelection:
+    """Selected lattice ordinals for one machine-element role."""
+
+    ords: list[int] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class MachineElementsConfig:
+    """Machine element selections stored as lattice ordinals."""
+
+    bpm_ords: list[int] = field(default_factory=list)
+    horizontal_corrector_ords: list[int] = field(default_factory=list)
+    vertical_corrector_ords: list[int] = field(default_factory=list)
+    normal_quadrupole_ords: list[int] = field(default_factory=list)
+    skew_quadrupole_ords: list[int] = field(default_factory=list)
+    cavity_ords: list[int] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class ResponseMatrixConfig:
     """GUI state matching the backend RMConfig constructor fields."""
 
-    bpm_ords: str = ""
-    cm_ords: str = ""
-    cav_ords: str = ""
+    bpm_ords: list[int] = field(default_factory=list)
+    cm_ords: tuple[list[int], list[int]] = field(default_factory=lambda: ([], []))
+    cav_ords: list[int] = field(default_factory=list)
     dkick_h: float = 1e-5
     dkick_v: float = 1e-5
     bidirectional: bool = True
@@ -68,9 +87,9 @@ class ResponseMatrixConfig:
 
         calculator = "Linear" if self.calculator == "Linear" else "Tracking"
         data = {
-            "bpm_ords": _literal_or_none(self.bpm_ords),
-            "cm_ords": _literal_or_none(self.cm_ords),
-            "cav_ords": _literal_or_none(self.cav_ords),
+            "bpm_ords": list(self.bpm_ords),
+            "cm_ords": (list(self.cm_ords[0]), list(self.cm_ords[1])),
+            "cav_ords": list(self.cav_ords),
             "dkick": (self.dkick_h, self.dkick_v),
             "bidirectional": self.bidirectional,
             "includeDispersion": self.includeDispersion,
@@ -253,6 +272,7 @@ class FixedParameterConfig:
 class LocoConfiguration:
     """Complete GUI LOCO configuration without importing numerical backend code."""
 
+    machine_elements: MachineElementsConfig = field(default_factory=MachineElementsConfig)
     response_matrix: ResponseMatrixConfig = field(default_factory=ResponseMatrixConfig)
     solver: SolverConfig = field(default_factory=SolverConfig)
     svd: SVDConfig = field(default_factory=SVDConfig)
@@ -267,15 +287,26 @@ class LocoConfiguration:
         options = asdict(self.solver) | asdict(self.svd) | asdict(self.rejection)
         options["fit_list"] = self.parameters.fit_list()
         options["includeDispersion"] = self.rejection.includeDispersion
+        self._sync_response_matrix_elements()
         return {
             "LOCOOptions": options,
             "RMConfig": self.response_matrix.to_rm_config_kwargs(),
+            "MachineElements": asdict(self.machine_elements),
             "FitInitConfig": self.parameters.to_fit_init_config_kwargs(),
             "ConstraintConfig": self.constraints.to_constraint_config_kwargs(),
             "FixedParameters": self.fixed_parameters.to_fixed_parameters_kwargs(),
         }
 
+    def _sync_response_matrix_elements(self) -> None:
+        self.response_matrix.bpm_ords = list(self.machine_elements.bpm_ords)
+        self.response_matrix.cm_ords = (
+            list(self.machine_elements.horizontal_corrector_ords),
+            list(self.machine_elements.vertical_corrector_ords),
+        )
+        self.response_matrix.cav_ords = list(self.machine_elements.cavity_ords)
+
     def summary_lines(self) -> list[str]:
+        self._sync_response_matrix_elements()
         fit_list = ", ".join(self.parameters.fit_list()) or "none"
         return [
             f"Response matrix: {self.response_matrix.calculator}, dispersion={self.response_matrix.includeDispersion}, coupling={self.response_matrix.coupling_orm}, bidirectional={self.response_matrix.bidirectional}",
@@ -315,6 +346,7 @@ class LocoConfiguration:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "LocoConfiguration":
         return cls(
+            machine_elements=MachineElementsConfig(**data.get("machine_elements", {})),
             response_matrix=ResponseMatrixConfig(**data.get("response_matrix", {})),
             solver=SolverConfig(**data.get("solver", {})),
             svd=SVDConfig(**data.get("svd", {})),

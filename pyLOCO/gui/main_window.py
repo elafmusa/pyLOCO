@@ -7,6 +7,7 @@ backend-compatible LOCO configuration, and responsive execution monitoring.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -23,6 +26,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QPlainTextEdit,
+    QRadioButton,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -31,6 +36,8 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QStatusBar,
     QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QToolBar,
     QVBoxLayout,
@@ -149,6 +156,167 @@ class LocoRunWorker(QObject):
             self.failed.emit(LocoRunError(str(exc), traceback.format_exc()))
         else:
             self.finished.emit(result)
+
+
+ELEMENT_ROLES = {
+    "bpm_ords": ("BPMs", "bpm"),
+    "horizontal_corrector_ords": ("Horizontal correctors", "hcor"),
+    "vertical_corrector_ords": ("Vertical correctors", "vcor"),
+    "normal_quadrupole_ords": ("Normal quadrupoles", "quad"),
+    "skew_quadrupole_ords": ("Skew quadrupoles", "skew"),
+    "cavity_ords": ("RF cavities", "cavity"),
+}
+
+
+class ElementSelectionDialog(QDialog):
+    """Select and preview lattice ordinals for one machine-element role."""
+
+    def __init__(self, parent, role_key: str, current: list[int]) -> None:
+        super().__init__(parent)
+        self.role_key = role_key
+        self.role_label, self.role_kind = ELEMENT_ROLES[role_key]
+        self.setWindowTitle(f"Select {self.role_label}")
+        self.resize(760, 560)
+        self._lattice = parent._load_current_lattice()
+        self.selected_ords = list(current)
+
+        layout = QVBoxLayout(self)
+        mode_row = QHBoxLayout()
+        self.auto_radio = QRadioButton("Automatic detection")
+        self.type_radio = QRadioButton("AT element type")
+        self.pattern_radio = QRadioButton("Family/name pattern")
+        self.file_radio = QRadioButton("Load index file")
+        self.manual_radio = QRadioButton("Manual indices")
+        self.manual_radio.setChecked(True)
+        for button in (self.auto_radio, self.type_radio, self.pattern_radio, self.file_radio, self.manual_radio):
+            mode_row.addWidget(button)
+        layout.addLayout(mode_row)
+
+        form = QFormLayout()
+        self.type_edit = QLineEdit(self._default_type_name())
+        self.pattern_edit = QLineEdit(self._default_pattern())
+        self.file_edit = QLineEdit()
+        file_button = QPushButton("Browse…")
+        file_button.clicked.connect(self._browse_index_file)
+        file_row = QHBoxLayout(); file_row.addWidget(self.file_edit); file_row.addWidget(file_button)
+        self.manual_edit = QPlainTextEdit(", ".join(str(i) for i in current))
+        self.manual_edit.setPlaceholderText("Enter integer lattice ordinals separated by commas, spaces, or new lines.")
+        form.addRow("AT class/type contains", self.type_edit)
+        form.addRow("Family/name regex", self.pattern_edit)
+        form.addRow("Index file", file_row)
+        form.addRow("Manual lattice ordinals", self.manual_edit)
+        layout.addLayout(form)
+
+        preview_button = QPushButton("Preview selection")
+        preview_button.clicked.connect(self._preview)
+        layout.addWidget(preview_button)
+        self.table = QTableWidget(0, 4)
+        self.table.setHorizontalHeaderLabels(["Selection position", "Lattice ordinal", "Family/name", "Element class"])
+        configure_item_view(self.table)
+        layout.addWidget(self.table, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self._set_preview(current)
+
+    def _default_type_name(self) -> str:
+        return {"bpm": "Monitor", "hcor": "Corrector", "vcor": "Corrector", "quad": "Quadrupole", "skew": "Quadrupole", "cavity": "RFCavity"}[self.role_kind]
+
+    def _default_pattern(self) -> str:
+        return {"bpm": "BPM|MON", "hcor": "HCM|HCOR|CH", "vcor": "VCM|VCOR|CV", "quad": "Q", "skew": "SQ|SKQ|SKEW", "cavity": "RFCAV|CAV|RF"}[self.role_kind]
+
+    def _iter_elements(self):
+        return list(enumerate(self._lattice or []))
+
+    def _element_name(self, elem) -> str:
+        return str(getattr(elem, "FamName", getattr(elem, "name", getattr(elem, "Name", ""))))
+
+    def _element_class(self, elem) -> str:
+        return type(elem).__name__
+
+    def _browse_index_file(self) -> None:
+        filename = QFileDialog.getOpenFileName(self, "Load lattice-index array", "", "Index arrays (*.npy *.npz *.h5 *.hdf5 *.txt);;All files (*)")[0]
+        if filename:
+            self.file_edit.setText(filename); self.file_radio.setChecked(True); self._preview()
+
+    def _candidate_indices(self) -> list[int]:
+        if self.auto_radio.isChecked():
+            needle = self._default_type_name().lower()
+            return [i for i, e in self._iter_elements() if needle in self._element_class(e).lower()]
+        if self.type_radio.isChecked():
+            needle = self.type_edit.text().strip().lower()
+            return [i for i, e in self._iter_elements() if needle and needle in self._element_class(e).lower()]
+        if self.pattern_radio.isChecked():
+            pattern = re.compile(self.pattern_edit.text().strip(), re.I)
+            return [i for i, e in self._iter_elements() if pattern.search(self._element_name(e))]
+        if self.file_radio.isChecked():
+            return self._load_index_file(Path(self.file_edit.text()).expanduser())
+        return [int(x) for x in re.findall(r"[-+]?\d+", self.manual_edit.toPlainText())]
+
+    def _load_index_file(self, path: Path) -> list[int]:
+        import numpy as np
+        suffix = path.suffix.lower()
+        if suffix == ".npy":
+            arr = np.load(path)
+        elif suffix == ".npz":
+            data = np.load(path); arr = data[next(iter(data.files))]
+        elif suffix in {".h5", ".hdf5"}:
+            import h5py
+            with h5py.File(path, "r") as h5:
+                first = next(iter(h5.keys())); arr = h5[first][()]
+        else:
+            arr = np.loadtxt(path)
+        return self._validate_array(arr)
+
+    def _validate_array(self, arr) -> list[int]:
+        import numpy as np
+        a = np.asarray(arr)
+        if a.ndim != 1:
+            raise ValueError("Selection indices must be a one-dimensional array.")
+        if not np.issubdtype(a.dtype, np.integer):
+            if np.issubdtype(a.dtype, np.floating) and np.all(a == np.floor(a)):
+                a = a.astype(int)
+            else:
+                raise ValueError("Selection indices must be integers.")
+        values = [int(v) for v in a.tolist()]
+        if len(set(values)) != len(values):
+            raise ValueError("Selection indices must be unique.")
+        if self._lattice and any(v < 0 or v >= len(self._lattice) for v in values):
+            raise ValueError(f"Selection indices must be within lattice range [0, {len(self._lattice)-1}].")
+        self._validate_compatible(values)
+        return values
+
+    def _validate_compatible(self, values: list[int]) -> None:
+        if not self._lattice:
+            return
+        required = self._default_type_name().lower()
+        for v in values:
+            cls = self._element_class(self._lattice[v]).lower()
+            if required not in cls:
+                raise ValueError(f"Ordinal {v} is a {cls}, not compatible with {self.role_label}.")
+
+    def _preview(self) -> bool:
+        try:
+            values = self._validate_array(self._candidate_indices())
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid selection", str(exc))
+            return False
+        self.selected_ords = values
+        self._set_preview(values)
+        return True
+
+    def _set_preview(self, values: list[int]) -> None:
+        self.table.setRowCount(len(values))
+        for row, ordinal in enumerate(values):
+            elem = self._lattice[ordinal] if self._lattice and 0 <= ordinal < len(self._lattice) else None
+            cells = [row, ordinal, self._element_name(elem) if elem else "", self._element_class(elem) if elem else ""]
+            for col, value in enumerate(cells):
+                self.table.setItem(row, col, QTableWidgetItem(str(value)))
+
+    def _accept_if_valid(self) -> None:
+        if self._preview():
+            self.accept()
 
 
 class MainWindow(QMainWindow):
@@ -270,6 +438,29 @@ class MainWindow(QMainWindow):
         group = QGroupBox("Lattice selection and metadata")
         group.setLayout(form)
         page.layout().addWidget(group)
+
+        self.element_count_labels = {}
+        self.element_preview_tables = {}
+        elements_group = QGroupBox("Machine Elements")
+        elements_layout = QVBoxLayout(elements_group)
+        elements_layout.addWidget(QLabel("Define BPMs, correctors, quadrupoles, and RF cavities after loading the lattice. Bad BPM positions are applied later as positions within the selected BPM list, not as lattice ordinals."))
+        for key, (label, _kind) in ELEMENT_ROLES.items():
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label))
+            count = QLabel("0 selected")
+            self.element_count_labels[key] = count
+            row.addWidget(count, 1)
+            button = QPushButton("Edit/Select…")
+            button.clicked.connect(lambda checked=False, role=key: self.edit_element_selection(role))
+            row.addWidget(button)
+            elements_layout.addLayout(row)
+            table = QTableWidget(0, 4)
+            table.setHorizontalHeaderLabels(["Selection position", "Lattice ordinal", "Family/name", "Element class"])
+            configure_item_view(table)
+            table.setMaximumHeight(160)
+            self.element_preview_tables[key] = table
+            elements_layout.addWidget(table)
+        page.layout().addWidget(elements_group)
         page.layout().addStretch(1)
         return page
 
@@ -339,17 +530,6 @@ class MainWindow(QMainWindow):
             ("Vertical kick step", self.rm_dkick_v),
             ("RF frequency step", self.rm_rf_step),
             ("Coupling delta (dimensionless)", self.rm_delta_coupling),
-        ):
-            rm_form.addRow(label, widget)
-        for label, widget in (
-            ("bpm_ords", self.rm_bpm_ords),
-            ("cm_ords", self.rm_cm_ords),
-            ("cav_ords", self.rm_cav_ords),
-            ("HCMCoupling", self.rm_hcm_coupling),
-            ("VCMCoupling", self.rm_vcm_coupling),
-            ("Frequency", self.rm_frequency),
-            ("HarmNumber", self.rm_harm_number),
-            ("RFAttr", self.rm_rf_attr),
         ):
             rm_form.addRow(label, widget)
         for widget in (self.rm_dispersion, self.rm_coupling, self.rm_bidirectional, self.rm_vectorized, self.rm_fixedpath, self.rm_log_info):
@@ -655,9 +835,7 @@ class MainWindow(QMainWindow):
         widgets = [
             self.rm_calculator, self.rm_dispersion, self.rm_coupling, self.rm_bidirectional,
             self.rm_vectorized, self.rm_dkick_h, self.rm_dkick_v, self.rm_rf_step,
-            self.rm_delta_coupling, self.rm_bpm_ords, self.rm_cm_ords, self.rm_cav_ords,
-            self.rm_hcm_coupling, self.rm_vcm_coupling, self.rm_frequency, self.rm_harm_number,
-            self.rm_rf_attr, self.rm_fixedpath, self.rm_log_info, self.solver_algorithm, self.solver_n_iter,
+            self.rm_delta_coupling, self.rm_fixedpath, self.rm_log_info, self.solver_algorithm, self.solver_n_iter,
             self.solver_lm_iter, self.solver_lambda, self.solver_max_lambda,
             self.solver_scaled, self.svd_method, self.svd_threshold, self.svd_rank,
             self.svd_plot, self.outlier_enabled, self.outlier_sigma, self.norm_enabled,
@@ -742,14 +920,7 @@ class MainWindow(QMainWindow):
         self.rm_dkick_v.setValue(cfg.response_matrix.dkick_v)
         self.rm_rf_step.setValue(cfg.response_matrix.rfStep)
         self.rm_delta_coupling.setValue(cfg.response_matrix.delta_coupling)
-        self.rm_bpm_ords.setText(cfg.response_matrix.bpm_ords)
-        self.rm_cm_ords.setText(cfg.response_matrix.cm_ords)
-        self.rm_cav_ords.setText(cfg.response_matrix.cav_ords)
-        self.rm_hcm_coupling.setText(cfg.response_matrix.HCMCoupling)
-        self.rm_vcm_coupling.setText(cfg.response_matrix.VCMCoupling)
-        self.rm_frequency.setText(cfg.response_matrix.Frequency)
-        self.rm_harm_number.setText(cfg.response_matrix.HarmNumber)
-        self.rm_rf_attr.setText(cfg.response_matrix.RFAttr)
+        self._refresh_element_selection_ui()
         self.rm_fixedpath.setChecked(cfg.response_matrix.fixedpathlength)
         self.rm_log_info.setChecked(cfg.response_matrix.log_info)
         self._set_solver_algorithm_value(cfg.solver.algorithm)
@@ -815,14 +986,8 @@ class MainWindow(QMainWindow):
         cfg.response_matrix.dkick_v = self.rm_dkick_v.value()
         cfg.response_matrix.rfStep = self.rm_rf_step.value()
         cfg.response_matrix.delta_coupling = self.rm_delta_coupling.value()
-        cfg.response_matrix.bpm_ords = self.rm_bpm_ords.text()
-        cfg.response_matrix.cm_ords = self.rm_cm_ords.text()
-        cfg.response_matrix.cav_ords = self.rm_cav_ords.text()
-        cfg.response_matrix.HCMCoupling = self.rm_hcm_coupling.text()
-        cfg.response_matrix.VCMCoupling = self.rm_vcm_coupling.text()
-        cfg.response_matrix.Frequency = self.rm_frequency.text()
-        cfg.response_matrix.HarmNumber = self.rm_harm_number.text()
-        cfg.response_matrix.RFAttr = self.rm_rf_attr.text()
+        cfg.machine_elements = self.project.loco_config.machine_elements
+        cfg._sync_response_matrix_elements()
         cfg.response_matrix.fixedpathlength = self.rm_fixedpath.isChecked()
         cfg.response_matrix.log_info = self.rm_log_info.isChecked()
         cfg.solver.algorithm = self._selected_solver_algorithm()
@@ -973,6 +1138,58 @@ class MainWindow(QMainWindow):
             self.project.save(filename)
             self._refresh_ui(f"Saved {filename}")
 
+
+    def _load_current_lattice(self):
+        """Load the currently selected AT lattice for element detection/preview."""
+
+        if not self.project.lattice.path:
+            return None
+        try:
+            import at
+            return at.load_lattice(self.project.lattice.path)
+        except Exception:
+            return None
+
+    def _element_preview_rows(self, ords: list[int]) -> list[tuple[int, int, str, str]]:
+        lattice = self._load_current_lattice()
+        rows = []
+        for position, ordinal in enumerate(ords):
+            elem = lattice[ordinal] if lattice and 0 <= ordinal < len(lattice) else None
+            name = str(getattr(elem, "FamName", getattr(elem, "name", getattr(elem, "Name", "")))) if elem else ""
+            cls = type(elem).__name__ if elem else ""
+            rows.append((position, ordinal, name, cls))
+        return rows
+
+    def _refresh_element_selection_ui(self) -> None:
+        if not hasattr(self, "element_count_labels"):
+            return
+        elements = self.project.loco_config.machine_elements
+        advanced = self.project.mode == "Advanced"
+        for key in ELEMENT_ROLES:
+            values = list(getattr(elements, key))
+            self.element_count_labels[key].setText(f"{len(values)} selected")
+            table = self.element_preview_tables[key]
+            table.setVisible(advanced)
+            rows = self._element_preview_rows(values) if advanced else []
+            table.setRowCount(len(rows))
+            for r, row in enumerate(rows):
+                for c, value in enumerate(row):
+                    table.setItem(r, c, QTableWidgetItem(str(value)))
+
+    @Slot()
+    def edit_element_selection(self, role_key: str) -> None:
+        elements = self.project.loco_config.machine_elements
+        current = list(getattr(elements, role_key))
+        dialog = ElementSelectionDialog(self, role_key, current)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        setattr(elements, role_key, dialog.selected_ords)
+        self.project.loco_config._sync_response_matrix_elements()
+        self.project.modified = True
+        self._refresh_element_selection_ui()
+        self._update_fit_summary()
+        self._refresh_ui(f"Updated {ELEMENT_ROLES[role_key][0]} selection")
+
     @Slot()
     def select_lattice(self) -> None:
         filename = QFileDialog.getOpenFileName(
@@ -986,7 +1203,11 @@ class MainWindow(QMainWindow):
             self.project.lattice = LatticeSelection(
                 path=str(path), file_type=path.suffix.lower().lstrip(".")
             )
+            lattice = self._load_current_lattice()
+            if lattice is not None:
+                self.project.lattice.element_count = len(lattice)
             self.project.modified = True
+            self._refresh_element_selection_ui()
             self._refresh_ui(f"Selected lattice {path.name}")
 
     @Slot()
@@ -1071,8 +1292,6 @@ class MainWindow(QMainWindow):
             return
         advanced = self.project.mode == "Advanced"
         widgets = (
-            self.rm_bpm_ords, self.rm_cm_ords, self.rm_cav_ords, self.rm_hcm_coupling,
-            self.rm_vcm_coupling, self.rm_frequency, self.rm_harm_number, self.rm_rf_attr,
             self.rm_fixedpath, self.rm_log_info, self.loco_include_dispersion,
             self.loco_hor_dispersion_weight, self.loco_ver_dispersion_weight, self.loco_fixedpath,
             self.loco_individuals, self.loco_remove_coupling, self.loco_plot_fit_parameters,
@@ -1126,6 +1345,7 @@ class MainWindow(QMainWindow):
             if self.project.lattice.element_count
             else "Unknown"
         )
+        self._refresh_element_selection_ui()
         self.measurement_list.clear()
         for role, dataset in sorted(self.project.measurements.items()):
             self.measurement_list.addItem(
