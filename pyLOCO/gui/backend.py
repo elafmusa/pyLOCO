@@ -10,6 +10,9 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import importlib.util
+import os
+import sys
 import time
 import traceback
 from dataclasses import asdict, dataclass
@@ -44,6 +47,14 @@ class LocoRunRequest:
             measurements={key: dataset.path for key, dataset in project.measurements.items()},
             backend_mapping=project.loco_config.to_backend_mapping(),
         )
+
+
+@dataclass(slots=True)
+class LocoRunError:
+    """Serializable backend exception details safe to emit across Qt threads."""
+
+    message: str
+    traceback: str
 
 
 @dataclass(slots=True)
@@ -95,6 +106,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         raise RuntimeError("LOCO run cancelled before backend execution started.")
 
     config_module = _make_gui_config(request.backend_mapping)
+    _configure_worker_matplotlib()
     try:
         import at
         from pyLOCO.pyloco import pyloco, save_fit_dict
@@ -114,6 +126,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         constraint_cfg = _make_constraint_config(request.backend_mapping["ConstraintConfig"])
         options = dict(request.backend_mapping["LOCOOptions"])
         options.setdefault("fit_list", fit_cfg.fit_list or ())
+        _disable_worker_ui_options(options, log)
 
         kwargs = _build_pyloco_kwargs(
             ring=ring,
@@ -146,6 +159,44 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
     except Exception:
         log(traceback.format_exc())
         raise
+    finally:
+        _close_worker_matplotlib_figures()
+
+
+def _configure_worker_matplotlib() -> None:
+    """Force a non-GUI Matplotlib backend before backend code imports pyplot.
+
+    The LOCO backend can optionally create diagnostic Matplotlib figures.  When
+    launched from the Qt GUI those calls happen in a QThread, so a native GUI
+    backend such as macOSX/QtAgg could instantiate NSWindow/QWidget objects off
+    the main thread.  Agg keeps worker-thread execution computation-only.
+    """
+
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    if importlib.util.find_spec("matplotlib") is None:
+        return
+
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+
+
+def _disable_worker_ui_options(options: dict[str, Any], log) -> None:
+    """Disable backend options that would create interactive windows."""
+
+    disabled = []
+    for key in ("show_svd_plot", "plot_fit_parameters"):
+        if options.get(key):
+            options[key] = False
+            disabled.append(key)
+    if disabled:
+        log("Disabled interactive backend UI options in worker thread: " + ", ".join(disabled))
+
+
+def _close_worker_matplotlib_figures() -> None:
+    plt = sys.modules.get("matplotlib.pyplot")
+    if plt is not None:
+        plt.close("all")
 
 
 def _make_gui_config(mapping: dict[str, Any]):
