@@ -20,6 +20,18 @@ cd pyLOCO
 pip install -e .    # or: pip install .
 ```
 
+# GUI
+
+The developmet of the GUI is currently ongoing.
+Install the optional GUI dependencies:
+
+```bash
+pip install -e ".[gui]"
+```
+```bash
+Launch the GUI:
+```
+python -m pyLOCO.gui.app
 
 **pyLOCO** is primarily designed for LOCO analysis using experimental measurements.
 
