@@ -13,7 +13,7 @@ import os
 import h5py
 import multiprocessing as mp
 from multiprocessing import shared_memory
-from pyloco_config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
+from .config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
 from .response_matrix import response_matrix
 
 fit_cfg = FitInitConfig()

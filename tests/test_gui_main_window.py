@@ -63,3 +63,23 @@ def test_refresh_ui_qactions_are_created() -> None:
     }
 
     assert refresh_actions <= created_actions
+
+
+def test_gui_backend_uses_internal_config_without_legacy_module() -> None:
+    """GUI backend configuration should not require an external pyloco_config.py."""
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path.cwd()))
+    from pyLOCO.gui.backend import _make_gui_config
+    from pyLOCO.gui.models.project import LocoConfiguration
+
+    sys.modules.pop("pyloco_config", None)
+    mapping = LocoConfiguration().to_backend_mapping()
+
+    config_module = _make_gui_config(mapping)
+
+    assert config_module.__name__ == "pyLOCO.config"
+    assert "pyloco_config" not in sys.modules
+    assert config_module.RMConfig(**mapping["RMConfig"]).dkick == (100e-6, 100e-6)
+    assert config_module.FitInitConfig(**mapping["FitInitConfig"]).fit_list == mapping["FitInitConfig"]["fit_list"]

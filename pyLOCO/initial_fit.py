@@ -1,6 +1,6 @@
 import numpy as np
 from collections import OrderedDict
-from pyloco_config import _cfg_get
+from .config import _cfg_get
 # at the top of initial_fit.py
 from typing import Optional, Tuple
 
