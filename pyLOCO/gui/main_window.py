@@ -7,11 +7,13 @@ numerical pyLOCO backend.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFormLayout,
@@ -23,14 +25,18 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QDoubleSpinBox,
+    QSpinBox,
     QStatusBar,
     QTabWidget,
+    QTextEdit,
     QToolBar,
     QVBoxLayout,
     QWidget,
 )
 
-from .models.project import ImportedDataset, LatticeSelection, ProjectMetadata
+from .models.project import ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata
 from .widgets.placeholders import PlaceholderPage
 from .widgets.project_explorer import ProjectExplorer
 
@@ -99,13 +105,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._project_page(), "Project")
         tabs.addTab(self._machine_page(), "Machine")
         tabs.addTab(self._measurements_page(), "Measurements")
-        tabs.addTab(
-            PlaceholderPage(
-                "Fit Preparation",
-                "Select fit settings in a later milestone; Run LOCO stays disabled until project validation passes.",
-            ),
-            "Fit",
-        )
+        tabs.addTab(self._fit_page(), "Fit")
         tabs.addTab(
             PlaceholderPage(
                 "Results Workspace",
@@ -175,6 +175,161 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.measurement_list)
         page.layout().addWidget(group)
         return page
+
+
+    def _fit_page(self) -> QWidget:
+        page = self._page("LOCO Configuration")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        self.rm_calculator = QComboBox()
+        self.rm_calculator.addItems(["Linear", "Tracking", "PyAT"])
+        self.rm_dispersion = QCheckBox("Include dispersion columns")
+        self.rm_coupling = QCheckBox("Include coupling ORM terms")
+        self.rm_bidirectional = QCheckBox("Use ± kicks and average response")
+        self.rm_vectorized = QCheckBox("Use vectorized response calculation")
+        self.rm_dkick_h = self._double_spin(1e-9, 1e-1, 100e-6, 9)
+        self.rm_dkick_v = self._double_spin(1e-9, 1e-1, 100e-6, 9)
+        self.rm_rf_step = self._double_spin(0.0, 1e9, 200.0, 3)
+        self.rm_delta_coupling = self._double_spin(0.0, 1.0, 1e-6, 9)
+        rm_form = QFormLayout()
+        for label, widget in (
+            ("Calculator", self.rm_calculator),
+            ("Horizontal kick", self.rm_dkick_h),
+            ("Vertical kick", self.rm_dkick_v),
+            ("RF step", self.rm_rf_step),
+            ("Coupling delta", self.rm_delta_coupling),
+        ):
+            rm_form.addRow(label, widget)
+        for widget in (self.rm_dispersion, self.rm_coupling, self.rm_bidirectional, self.rm_vectorized):
+            rm_form.addRow(widget)
+        rm_group = QGroupBox("Response Matrix")
+        rm_group.setLayout(rm_form)
+        layout.addWidget(rm_group)
+
+        self.solver_algorithm = QComboBox()
+        self.solver_algorithm.addItems(["lm", "gn"])
+        self.solver_n_iter = self._spin(1, 100, 1)
+        self.solver_lm_iter = self._spin(0, 100, 10)
+        self.solver_lambda = self._double_spin(0.0, 1e9, 1e-3, 9)
+        self.solver_max_lambda = self._double_spin(0.0, 1e9, 15.0, 3)
+        self.solver_scaled = QCheckBox("Solve with scaled variables")
+        solver_form = QFormLayout()
+        for label, widget in (
+            ("Algorithm", self.solver_algorithm),
+            ("Outer iterations", self.solver_n_iter),
+            ("LM inner iterations", self.solver_lm_iter),
+            ("Starting lambda", self.solver_lambda),
+            ("Maximum lambda", self.solver_max_lambda),
+        ):
+            solver_form.addRow(label, widget)
+        solver_form.addRow(self.solver_scaled)
+        solver_group = QGroupBox("Solver")
+        solver_group.setLayout(solver_form)
+        layout.addWidget(solver_group)
+
+        self.svd_method = QComboBox()
+        self.svd_method.addItems(["threshold", "rank", "auto"])
+        self.svd_threshold = self._double_spin(0.0, 1.0, 1e-7, 10)
+        self.svd_rank = self._spin(0, 100000, 500)
+        self.svd_plot = QCheckBox("Show SVD plot")
+        svd_form = QFormLayout()
+        svd_form.addRow("Selection method", self.svd_method)
+        svd_form.addRow("Threshold", self.svd_threshold)
+        svd_form.addRow("Rank/cut", self.svd_rank)
+        svd_form.addRow(self.svd_plot)
+        svd_group = QGroupBox("SVD")
+        svd_group.setLayout(svd_form)
+        layout.addWidget(svd_group)
+
+        self.outlier_enabled = QCheckBox("Reject outliers")
+        self.outlier_sigma = self._double_spin(0.0, 1e6, 10.0, 3)
+        self.norm_enabled = QCheckBox("Apply normalization")
+        self.norm_mode = QComboBox()
+        self.norm_mode.addItems(["component", "global", "none"])
+        self.auto_delta = QCheckBox("Auto-correct delta")
+        rej_form = QFormLayout()
+        rej_form.addRow(self.outlier_enabled)
+        rej_form.addRow("Sigma cut", self.outlier_sigma)
+        rej_form.addRow(self.norm_enabled)
+        rej_form.addRow("Normalization mode", self.norm_mode)
+        rej_form.addRow(self.auto_delta)
+        rej_group = QGroupBox("Iterations and Outlier Rejection")
+        rej_group.setLayout(rej_form)
+        layout.addWidget(rej_group)
+
+        self.constraint_enabled = QCheckBox("Enable constraints")
+        self.constraint_quad_sigma = self._double_spin(0.0, 1e12, 0.0, 6)
+        self.constraint_skew_sigma = self._double_spin(0.0, 1e12, 0.0, 6)
+        self.constraint_quad_weights = QLineEdit()
+        self.constraint_skew_weights = QLineEdit()
+        constraint_form = QFormLayout()
+        constraint_form.addRow(self.constraint_enabled)
+        constraint_form.addRow("Quadrupole sigma", self.constraint_quad_sigma)
+        constraint_form.addRow("Skew sigma", self.constraint_skew_sigma)
+        constraint_form.addRow("Quadrupole weights", self.constraint_quad_weights)
+        constraint_form.addRow("Skew weights", self.constraint_skew_weights)
+        constraint_group = QGroupBox("Constraints")
+        constraint_group.setLayout(constraint_form)
+        layout.addWidget(constraint_group)
+
+        self.parameter_checks = {}
+        param_group = QGroupBox("Parameter Selection")
+        param_layout = QVBoxLayout(param_group)
+        for key, label in (
+            ("quads", "Quadrupoles"), ("skew_quads", "Skew quadrupoles"), ("quads_tilt", "Quadrupole tilts"),
+            ("hbpm_gain", "Horizontal BPM gains"), ("vbpm_gain", "Vertical BPM gains"),
+            ("hbpm_coupling", "Horizontal BPM coupling"), ("vbpm_coupling", "Vertical BPM coupling"),
+            ("hcor_cal", "Horizontal corrector calibration"), ("vcor_cal", "Vertical corrector calibration"),
+            ("hcor_coupling", "Horizontal corrector coupling"), ("vcor_coupling", "Vertical corrector coupling"),
+            ("HCMEnergyShift", "Horizontal corrector energy shifts"), ("VCMEnergyShift", "Vertical corrector energy shifts"),
+            ("delta_rf", "RF frequency shift"),
+        ):
+            check = QCheckBox(label)
+            self.parameter_checks[key] = check
+            param_layout.addWidget(check)
+        self.params_individuals = QCheckBox("Fit individual elements instead of family groups")
+        param_layout.addWidget(self.params_individuals)
+        layout.addWidget(param_group)
+
+        button_row = QHBoxLayout()
+        import_button = QPushButton("Import configuration…")
+        import_button.clicked.connect(self.import_loco_configuration)
+        export_button = QPushButton("Export configuration…")
+        export_button.clicked.connect(self.export_loco_configuration)
+        button_row.addWidget(import_button)
+        button_row.addWidget(export_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.fit_summary = QTextEdit()
+        self.fit_summary.setReadOnly(True)
+        summary_group = QGroupBox("Live Backend-Compatible Summary")
+        summary_layout = QVBoxLayout(summary_group)
+        summary_layout.addWidget(self.fit_summary)
+        layout.addWidget(summary_group)
+        layout.addStretch(1)
+        scroll.setWidget(container)
+        page.layout().addWidget(scroll, 1)
+        self._connect_fit_controls()
+        self._load_config_to_widgets()
+        return page
+
+    def _spin(self, minimum: int, maximum: int, value: int) -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setValue(value)
+        return spin
+
+    def _double_spin(self, minimum: float, maximum: float, value: float, decimals: int) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(minimum, maximum)
+        spin.setDecimals(decimals)
+        spin.setValue(value)
+        spin.setSingleStep(value or 1.0)
+        return spin
 
     def _page(self, title: str) -> QWidget:
         page = QWidget()
@@ -262,11 +417,159 @@ class MainWindow(QMainWindow):
         status_bar.addPermanentWidget(self._mode_label)
         self.setStatusBar(status_bar)
 
+
+    def _connect_fit_controls(self) -> None:
+        widgets = [
+            self.rm_calculator, self.rm_dispersion, self.rm_coupling, self.rm_bidirectional,
+            self.rm_vectorized, self.rm_dkick_h, self.rm_dkick_v, self.rm_rf_step,
+            self.rm_delta_coupling, self.solver_algorithm, self.solver_n_iter,
+            self.solver_lm_iter, self.solver_lambda, self.solver_max_lambda,
+            self.solver_scaled, self.svd_method, self.svd_threshold, self.svd_rank,
+            self.svd_plot, self.outlier_enabled, self.outlier_sigma, self.norm_enabled,
+            self.norm_mode, self.auto_delta, self.constraint_enabled,
+            self.constraint_quad_sigma, self.constraint_skew_sigma,
+            self.constraint_quad_weights, self.constraint_skew_weights,
+            self.params_individuals,
+        ] + list(self.parameter_checks.values())
+        for widget in widgets:
+            if isinstance(widget, QComboBox):
+                widget.currentTextChanged.connect(self._on_fit_config_changed)
+            elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+                widget.valueChanged.connect(self._on_fit_config_changed)
+            elif isinstance(widget, QLineEdit):
+                widget.textChanged.connect(self._on_fit_config_changed)
+            elif isinstance(widget, QCheckBox):
+                widget.toggled.connect(self._on_fit_config_changed)
+
+    def _load_config_to_widgets(self) -> None:
+        cfg = self.project.loco_config
+        self.rm_calculator.setCurrentText(cfg.response_matrix.calculator)
+        self.rm_dispersion.setChecked(cfg.response_matrix.includeDispersion)
+        self.rm_coupling.setChecked(cfg.response_matrix.coupling_orm)
+        self.rm_bidirectional.setChecked(cfg.response_matrix.bidirectional)
+        self.rm_vectorized.setChecked(cfg.response_matrix.NewVectorizedMethod)
+        self.rm_dkick_h.setValue(cfg.response_matrix.dkick_h)
+        self.rm_dkick_v.setValue(cfg.response_matrix.dkick_v)
+        self.rm_rf_step.setValue(cfg.response_matrix.rfStep)
+        self.rm_delta_coupling.setValue(cfg.response_matrix.delta_coupling)
+        self.solver_algorithm.setCurrentText(cfg.solver.algorithm)
+        self.solver_n_iter.setValue(cfg.solver.nIter)
+        self.solver_lm_iter.setValue(cfg.solver.nLMIter)
+        self.solver_lambda.setValue(cfg.solver.Starting_Lambda)
+        self.solver_max_lambda.setValue(cfg.solver.max_lm_lambda)
+        self.solver_scaled.setChecked(cfg.solver.scaled)
+        self.svd_method.setCurrentText(cfg.svd.svd_selection_method)
+        self.svd_threshold.setValue(cfg.svd.svd_threshold)
+        self.svd_rank.setValue(cfg.svd.cut_)
+        self.svd_plot.setChecked(cfg.svd.show_svd_plot)
+        self.outlier_enabled.setChecked(cfg.rejection.outlier_rejection)
+        self.outlier_sigma.setValue(cfg.rejection.sigma_outlier)
+        self.norm_enabled.setChecked(cfg.rejection.apply_normalization)
+        self.norm_mode.setCurrentText(cfg.rejection.normalization_mode)
+        self.auto_delta.setChecked(cfg.rejection.auto_correct_delta)
+        self.constraint_enabled.setChecked(cfg.constraints.enable)
+        self.constraint_quad_sigma.setValue(cfg.constraints.quad_sigma)
+        self.constraint_skew_sigma.setValue(cfg.constraints.skew_sigma)
+        self.constraint_quad_weights.setText(cfg.constraints.quad_weights)
+        self.constraint_skew_weights.setText(cfg.constraints.skew_weights)
+        for name, check in self.parameter_checks.items():
+            check.setChecked(bool(getattr(cfg.parameters, name)))
+        self.params_individuals.setChecked(cfg.parameters.individuals)
+        self._update_fit_summary()
+
+    def _collect_loco_configuration(self) -> LocoConfiguration:
+        cfg = LocoConfiguration()
+        cfg.response_matrix.calculator = self.rm_calculator.currentText()
+        cfg.response_matrix.includeDispersion = self.rm_dispersion.isChecked()
+        cfg.response_matrix.coupling_orm = self.rm_coupling.isChecked()
+        cfg.response_matrix.bidirectional = self.rm_bidirectional.isChecked()
+        cfg.response_matrix.NewVectorizedMethod = self.rm_vectorized.isChecked()
+        cfg.response_matrix.dkick_h = self.rm_dkick_h.value()
+        cfg.response_matrix.dkick_v = self.rm_dkick_v.value()
+        cfg.response_matrix.rfStep = self.rm_rf_step.value()
+        cfg.response_matrix.delta_coupling = self.rm_delta_coupling.value()
+        cfg.solver.algorithm = self.solver_algorithm.currentText()
+        cfg.solver.nIter = self.solver_n_iter.value()
+        cfg.solver.nLMIter = self.solver_lm_iter.value()
+        cfg.solver.Starting_Lambda = self.solver_lambda.value()
+        cfg.solver.max_lm_lambda = self.solver_max_lambda.value()
+        cfg.solver.scaled = self.solver_scaled.isChecked()
+        cfg.svd.svd_selection_method = self.svd_method.currentText()
+        cfg.svd.svd_threshold = self.svd_threshold.value()
+        cfg.svd.cut_ = self.svd_rank.value()
+        cfg.svd.show_svd_plot = self.svd_plot.isChecked()
+        cfg.rejection.outlier_rejection = self.outlier_enabled.isChecked()
+        cfg.rejection.sigma_outlier = self.outlier_sigma.value()
+        cfg.rejection.apply_normalization = self.norm_enabled.isChecked()
+        cfg.rejection.normalization_mode = self.norm_mode.currentText()
+        cfg.rejection.auto_correct_delta = self.auto_delta.isChecked()
+        cfg.constraints.enable = self.constraint_enabled.isChecked()
+        cfg.constraints.quad_sigma = self.constraint_quad_sigma.value()
+        cfg.constraints.skew_sigma = self.constraint_skew_sigma.value()
+        cfg.constraints.quad_weights = self.constraint_quad_weights.text()
+        cfg.constraints.skew_weights = self.constraint_skew_weights.text()
+        for name, check in self.parameter_checks.items():
+            setattr(cfg.parameters, name, check.isChecked())
+        cfg.parameters.individuals = self.params_individuals.isChecked()
+        return cfg
+
+    @Slot()
+    def _on_fit_config_changed(self) -> None:
+        self.project.loco_config = self._collect_loco_configuration()
+        self.project.modified = True
+        self._update_fit_summary()
+        self._refresh_ui("LOCO configuration updated")
+
+    def _update_fit_summary(self) -> None:
+        if not hasattr(self, "fit_summary"):
+            return
+        cfg = self.project.loco_config
+        backend = json.dumps(cfg.to_backend_mapping(), indent=2)
+        self.fit_summary.setPlainText("\n".join(cfg.summary_lines()) + "\n\nBackend constructor mapping:\n" + backend)
+
+    @Slot()
+    def import_loco_configuration(self) -> None:
+        filename = QFileDialog.getOpenFileName(
+            self,
+            "Import LOCO configuration",
+            "",
+            "Configuration (*.json *.yaml *.yml);;JSON (*.json);;YAML (*.yaml *.yml)",
+        )[0]
+        if not filename:
+            return
+        try:
+            self.project.loco_config = LocoConfiguration.load(filename)
+        except (OSError, RuntimeError, ValueError, TypeError) as exc:
+            QMessageBox.warning(self, "Import failed", str(exc))
+            return
+        self.project.modified = True
+        self._load_config_to_widgets()
+        self._refresh_ui(f"Imported LOCO configuration {Path(filename).name}")
+
+    @Slot()
+    def export_loco_configuration(self) -> None:
+        filename = QFileDialog.getSaveFileName(
+            self,
+            "Export LOCO configuration",
+            f"{self.project.name}-loco-config.json",
+            "JSON (*.json);;YAML (*.yaml *.yml)",
+        )[0]
+        if not filename:
+            return
+        self.project.loco_config = self._collect_loco_configuration()
+        try:
+            target = self.project.loco_config.save(filename)
+        except (OSError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Export failed", str(exc))
+            return
+        self._refresh_ui(f"Exported LOCO configuration {target.name}")
+
     @Slot()
     def new_project(self) -> None:
         recent = self.project.recent_projects
         self.project = ProjectMetadata(recent_projects=recent)
         self.dashboard_name.setText(self.project.name)
+        self._load_config_to_widgets()
         self._refresh_ui("New project created")
 
     @Slot()
@@ -285,6 +588,7 @@ class MainWindow(QMainWindow):
             return
         self.project = ProjectMetadata.load(filename)
         self.dashboard_name.setText(self.project.name)
+        self._load_config_to_widgets()
         self._refresh_ui(f"Opened {filename}")
 
     @Slot()
