@@ -73,7 +73,7 @@ class LOCOOptions:
     fit_list: Sequence[str] = ("quads", "hbpm_gain", "vbpm_gain", "hcor_cal", "vcor_cal", "HCMEnergyShift")
     outlier_rejection: bool = True
     sigma_outlier: float = 10
-    apply_normalization: bool = True
+    apply_normalization: bool = False
     normalization_mode: str = "component"
     includeDispersion: bool = False
     hor_dispersion_weight: float = 1.0
