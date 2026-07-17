@@ -8,3 +8,6 @@ version = "0.0.1"
 
 [project.optional-dependencies]
 gui = ["PySide6"]
+
+[project.scripts]
+pyloco-gui = "pyLOCO.gui.app:main"
