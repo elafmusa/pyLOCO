@@ -7,6 +7,7 @@ backend-compatible LOCO configuration, and responsive execution monitoring.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot, QTimer
@@ -247,7 +248,7 @@ class MainWindow(QMainWindow):
         page = self._page("Measurement Import")
         self.measurement_role = QComboBox()
         self.measurement_role.addItems(
-            ["orm", "dispersion", "bpm_noise", "mask", "other"]
+            ["orm", "dispersion", "bpm_noise", "bad_bpms", "other"]
         )
         import_button = QPushButton("Import HDF5, MAT, NumPy…")
         import_button.clicked.connect(self.import_measurement)
@@ -803,8 +804,9 @@ class MainWindow(QMainWindow):
             "Measurement files (*.h5 *.hdf5 *.mat *.npy *.npz);;HDF5 (*.h5 *.hdf5);;MAT (*.mat);;NumPy (*.npy *.npz)",
         )[0]
         if filename:
-            path = Path(filename)
+            source = Path(filename)
             role = self.measurement_role.currentText()
+            path = self._store_imported_measurement(source, role)
             self.project.measurements[role] = ImportedDataset(
                 role=role,
                 path=str(path),
@@ -813,6 +815,20 @@ class MainWindow(QMainWindow):
             )
             self.project.modified = True
             self._refresh_ui(f"Imported {role}: {path.name}")
+
+
+    def _store_imported_measurement(self, source: Path, role: str) -> Path:
+        """Copy imported measurement data into the project folder when possible."""
+
+        if not self.project.path:
+            return source
+        project_dir = Path(self.project.path).expanduser().resolve().parent
+        data_dir = project_dir / "measurements"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        target = data_dir / f"{role}{source.suffix.lower()}"
+        if source.resolve() != target.resolve():
+            shutil.copy2(source, target)
+        return target
 
     def validate_project(self) -> None:
         messages = self.project.validation_messages()

@@ -48,3 +48,32 @@ pip install accelerator-commissioning
 # Questions or suggestions
 
 Please contact: <elaf.musa@desy.de>
+
+
+## GUI Bad BPM list
+
+The GUI measurement importer supports an optional **Bad BPM list** role. Import a
+`.npy`, `.npz`, `.h5`, `.hdf5`, or `.mat` file containing a one-dimensional array
+named `bad_bpm_positions` (preferred) or `bad_bpms`; if neither name is present,
+the first array/dataset in the file is used. Values are **0-based BPM positions**
+in the BPM list, not ORM row indices. For example:
+
+```python
+bad_bpm_positions = np.array([24, 104, 108, 111, 123, 138, 144, 153, 161, 162, 243])
+```
+
+Before the GUI calls `pyloco()`, the backend validates that the Bad BPM list is
+one-dimensional, integer-valued, unique, and within the valid BPM position range.
+When present, the same positions are removed from all BPM-indexed inputs so the
+LOCO fit dimensions stay consistent:
+
+- horizontal and vertical BPM noise arrays (`Noise_BPMx`, `Noise_BPMy`), followed
+  by reconstruction of the concatenated BPM weight vector;
+- `used_bpms_ords`, with `nHBPM` and `nVBPM` updated to the remaining BPM count;
+- horizontal and vertical measured dispersion (`measured_eta_x`,
+  `measured_eta_y`);
+- both horizontal and vertical BPM row blocks of the measured ORM via
+  `remove_bad_bpms(..., axis=0, input_type="positions")`.
+
+If no Bad BPM list is imported, the GUI backend preserves the existing workflow
+and passes the measurement arrays to `pyloco()` unchanged.
