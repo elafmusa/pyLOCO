@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 from .backend import LocoRunError, LocoRunRequest, run_loco_request
 from .models.project import ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata
 from .widgets.project_explorer import ProjectExplorer
+from .widgets.orm_comparison import OrmComparisonWindow
 
 APP_STYLESHEET = """
 QMainWindow { background: #f4f7fb; }
@@ -148,6 +149,8 @@ class MainWindow(QMainWindow):
         self._run_thread: QThread | None = None
         self._run_worker: LocoRunWorker | None = None
         self._run_started_at = 0.0
+        self._last_loco_result = None
+        self._orm_comparison_windows = []
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.timeout.connect(self._update_elapsed_time)
         self._workspace = self._create_workspace()
@@ -474,6 +477,8 @@ class MainWindow(QMainWindow):
         self.validate_project_action.triggered.connect(self.validate_project)
         self.run_loco_action = QAction("Run LOCO", self)
         self.run_loco_action.triggered.connect(self.run_loco)
+        self.compare_orms_action = QAction("Compare ORMs", self)
+        self.compare_orms_action.triggered.connect(self.compare_orms)
         self.exit_action = QAction("Exit", self)
         self.exit_action.setShortcut(QKeySequence.Quit)
         self.exit_action.triggered.connect(self.close)
@@ -501,6 +506,8 @@ class MainWindow(QMainWindow):
         project_menu = self.menuBar().addMenu("&Project")
         project_menu.addAction(self.validate_project_action)
         project_menu.addAction(self.run_loco_action)
+        analysis_menu = self.menuBar().addMenu("&Analysis")
+        analysis_menu.addAction(self.compare_orms_action)
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self._project_explorer.toggleViewAction())
         mode_menu = view_menu.addMenu("Workflow Mode")
@@ -519,6 +526,7 @@ class MainWindow(QMainWindow):
             self.save_project_action,
             self.validate_project_action,
             self.run_loco_action,
+            self.compare_orms_action,
         ):
             toolbar.addAction(action)
         toolbar.addSeparator()
@@ -874,6 +882,7 @@ class MainWindow(QMainWindow):
             "validationOk" if self.project.is_complete else "validationMissing"
         )
         self.run_loco_action.setEnabled(self.project.is_complete)
+        self.compare_orms_action.setEnabled(self._can_compare_orms())
         self.lattice_path.setText(self.project.lattice.path or "No lattice selected")
         self.lattice_type.setText(self.project.lattice.file_type or "—")
         self.lattice_elements.setText(
@@ -959,6 +968,8 @@ class MainWindow(QMainWindow):
         self.run_status_label.setText(f"Completed in {result.elapsed_seconds:.1f} s")
         self.run_output_dir.setText(result.results_dir)
         self._append_run_log("Saved outputs:\n" + "\n".join(result.output_files))
+        self._last_loco_result = result
+        self.compare_orms_action.setEnabled(self._can_compare_orms())
         QMessageBox.information(self, "LOCO complete", f"LOCO completed successfully.\n\nResults: {result.results_dir}")
 
     @Slot(object)
@@ -979,6 +990,7 @@ class MainWindow(QMainWindow):
         self._run_thread = None
         self._run_worker = None
         self.run_loco_action.setEnabled(self.project.is_complete)
+        self.compare_orms_action.setEnabled(self._can_compare_orms())
         self._refresh_ui("LOCO run finished")
 
     @Slot()
@@ -986,6 +998,70 @@ class MainWindow(QMainWindow):
         if self._run_started_at:
             elapsed = __import__("time").monotonic() - self._run_started_at
             self.run_elapsed_label.setText(f"Elapsed: {elapsed:.1f} s")
+
+
+    def _can_compare_orms(self) -> bool:
+        return "orm" in self.project.measurements and self._latest_model_orm_path() is not None
+
+    def _latest_model_orm_path(self) -> Path | None:
+        if self._last_loco_result is not None:
+            candidate = Path(self._last_loco_result.results_dir) / "loco_results.npz"
+            if candidate.exists():
+                return candidate
+        if not self.project.path:
+            return None
+        results_root = Path(self.project.path).expanduser().resolve().parent / "results"
+        if not results_root.exists():
+            return None
+        candidates = sorted(results_root.glob("*/loco_results.npz"), key=lambda path: path.stat().st_mtime, reverse=True)
+        return candidates[0] if candidates else None
+
+    def _load_measured_orm_for_comparison(self):
+        import h5py
+        import numpy as np
+
+        dataset = self.project.measurements["orm"]
+        path = Path(dataset.path).expanduser()
+        suffix = path.suffix.lower()
+        if suffix in {".h5", ".hdf5"}:
+            with h5py.File(path, "r") as handle:
+                if "response_matrix" in handle:
+                    return np.asarray(handle["response_matrix"])
+                keys = list(handle.keys())
+                if not keys:
+                    raise ValueError(f"ORM measurement file {path} contains no datasets.")
+                return np.asarray(handle[keys[0]])
+        if suffix == ".npy":
+            return np.load(path, allow_pickle=False)
+        if suffix == ".npz":
+            with np.load(path, allow_pickle=False) as archive:
+                key = "orm" if "orm" in archive else archive.files[0]
+                return np.asarray(archive[key])
+        raise ValueError(f"Unsupported ORM comparison file type: {suffix}")
+
+    def _load_model_orm_for_comparison(self):
+        import numpy as np
+
+        path = self._latest_model_orm_path()
+        if path is None:
+            raise ValueError("No completed LOCO result with loco_results.npz was found.")
+        with np.load(path, allow_pickle=True) as archive:
+            if "orm_model" not in archive:
+                raise ValueError(f"{path} does not contain an orm_model array.")
+            return np.asarray(archive["orm_model"])
+
+    @Slot()
+    def compare_orms(self) -> None:
+        try:
+            measured_orm = self._load_measured_orm_for_comparison()
+            model_orm = self._load_model_orm_for_comparison()
+            window = OrmComparisonWindow(measured_orm, model_orm, self)
+        except (OSError, RuntimeError, ValueError, KeyError, ImportError) as exc:
+            QMessageBox.warning(self, "ORM Comparison unavailable", str(exc))
+            return
+        self._orm_comparison_windows.append(window)
+        window.destroyed.connect(lambda _obj=None, w=window: self._orm_comparison_windows.remove(w) if w in self._orm_comparison_windows else None)
+        window.show()
 
     def _show_about_dialog(self) -> None:
         QMessageBox.about(

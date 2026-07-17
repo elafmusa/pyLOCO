@@ -136,3 +136,27 @@ def test_bad_bpm_validation_and_preprocessing() -> None:
         _as_bad_bpm_positions(np.array([1, 1]))
     with pytest.raises(ValueError, match="valid 0-based BPM position range"):
         _apply_bad_bpm_positions(measured, indices, np.array([5]), remove_bad_bpms)
+
+
+def test_orm_comparison_window_decimates_for_rendering() -> None:
+    """The ORM viewer should keep full arrays while rendering a smaller mesh."""
+    pytest.importorskip("PySide6")
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("matplotlib")
+    from PySide6.QtWidgets import QApplication
+
+    from pyLOCO.gui.widgets.orm_comparison import OrmComparisonWindow
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    measured = np.arange(300 * 500, dtype=float).reshape(300, 500)
+    model = measured + 1.0
+    window = OrmComparisonWindow(measured, model)
+    try:
+        rendered = window._decimate(measured, max_points=10_000)
+        assert window.measured_orm.shape == (300, 500)
+        assert window.difference_orm.shape == (300, 500)
+        assert rendered.values.size <= 10_000
+        assert "RMS" in window.rms_label.text()
+    finally:
+        window.close()

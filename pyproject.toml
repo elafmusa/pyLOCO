@@ -7,7 +7,7 @@ name = "pyLOCO"
 version = "0.3.0"
 
 [project.optional-dependencies]
-gui = ["PySide6"]
+gui = ["PySide6", "matplotlib"]
 
 [project.scripts]
 pyloco-gui = "pyLOCO.gui.app:main"
