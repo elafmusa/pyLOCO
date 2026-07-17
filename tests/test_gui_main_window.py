@@ -160,3 +160,37 @@ def test_orm_comparison_window_decimates_for_rendering() -> None:
         assert "RMS" in window.rms_label.text()
     finally:
         window.close()
+
+
+def _menu_titles(menu):
+    return [action.text().replace("&", "") for action in menu.actions() if action.menu() is not None]
+
+
+def test_theme_controls_are_exposed_in_menus_and_toolbar() -> None:
+    """Theme selection should be discoverable from the menu bar and toolbar."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication, QToolBar
+
+    from pyLOCO.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    window = MainWindow()
+    try:
+        top_level_menus = {action.text().replace("&", ""): action.menu() for action in window.menuBar().actions()}
+        assert "View" in top_level_menus
+        assert "Settings" in top_level_menus
+
+        view_menu = top_level_menus["View"]
+        settings_menu = top_level_menus["Settings"]
+        assert view_menu is not None
+        assert settings_menu is not None
+        assert "Theme" in _menu_titles(view_menu)
+        assert "Appearance" in _menu_titles(settings_menu)
+
+        toolbars = window.findChildren(QToolBar)
+        toolbar_actions = [action for toolbar in toolbars for action in toolbar.actions()]
+        assert window.toggle_theme_action in toolbar_actions
+        assert window.toggle_theme_action.text() in {"☀️ Light", "🌙 Dark"}
+    finally:
+        window.close()
