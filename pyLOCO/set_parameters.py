@@ -1,7 +1,7 @@
 import numpy as np
 from collections import defaultdict
 from typing import Optional, Sequence, Tuple, Any, Dict
-from pyloco_config import _cfg_get  # your helper
+from .config import _cfg_get  # your helper
 
 
 # ---------- helpers ----------

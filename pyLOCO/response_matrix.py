@@ -1,7 +1,7 @@
 import at
 import logging
-from pyloco_config import RMConfig as config
-from pyloco_config import _cfg_get, get_mcf, fixed_parameters
+from .config import RMConfig as config
+from .config import _cfg_get, get_mcf, fixed_parameters
 from typing import Optional, Union, List, Tuple
 import numpy as np
 

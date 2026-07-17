@@ -56,7 +56,7 @@ class ResponseMatrixConfig:
     log_info: bool = False
 
     def to_rm_config_kwargs(self) -> dict[str, Any]:
-        """Return keyword arguments compatible with pyloco_config.RMConfig."""
+        """Return keyword arguments compatible with pyLOCO.config.RMConfig."""
 
         return {
             "calculator": self.calculator,
