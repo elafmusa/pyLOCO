@@ -6,8 +6,8 @@
 
 Optional (creat vertual environment)
 ```
-python -m venv venv
-source venv/bin/activate
+python -m venv pyloco_venv
+source pyloco_venv/bin/activate
 ```
 
 ```
