@@ -43,34 +43,51 @@ class LatticeSelection:
 class ResponseMatrixConfig:
     """GUI state matching the backend RMConfig constructor fields."""
 
-    calculator: str = "Linear"
-    includeDispersion: bool = False
-    coupling_orm: bool = False
-    bidirectional: bool = True
-    NewVectorizedMethod: bool = True
+    bpm_ords: str = ""
+    cm_ords: str = ""
+    cav_ords: str = ""
     dkick_h: float = 1e-5
     dkick_v: float = 1e-5
+    bidirectional: bool = True
+    includeDispersion: bool = False
     rfStep: float = -3000.0
     delta_coupling: float = 1e-6
+    coupling_orm: bool = False
+    calculator: str = "Linear"
+    NewVectorizedMethod: bool = True
     fixedpathlength: bool = False
     log_info: bool = False
+    HCMCoupling: str = ""
+    VCMCoupling: str = ""
+    Frequency: str = ""
+    HarmNumber: str = ""
+    RFAttr: str = "Frequency"
 
     def to_rm_config_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments compatible with pyloco_config.RMConfig."""
 
         calculator = "Linear" if self.calculator == "Linear" else "Tracking"
-        return {
-            "calculator": calculator,
-            "includeDispersion": self.includeDispersion,
-            "coupling_orm": self.coupling_orm,
-            "bidirectional": self.bidirectional,
-            "NewVectorizedMethod": self.NewVectorizedMethod,
+        data = {
+            "bpm_ords": _literal_or_none(self.bpm_ords),
+            "cm_ords": _literal_or_none(self.cm_ords),
+            "cav_ords": _literal_or_none(self.cav_ords),
             "dkick": (self.dkick_h, self.dkick_v),
+            "bidirectional": self.bidirectional,
+            "includeDispersion": self.includeDispersion,
             "rfStep": self.rfStep,
             "delta_coupling": self.delta_coupling,
+            "coupling_orm": self.coupling_orm,
+            "calculator": calculator,
+            "NewVectorizedMethod": self.NewVectorizedMethod,
             "fixedpathlength": self.fixedpathlength,
             "log_info": self.log_info,
+            "HCMCoupling": _literal_or_none(self.HCMCoupling),
+            "VCMCoupling": _literal_or_none(self.VCMCoupling),
+            "Frequency": _literal_or_none(self.Frequency),
+            "HarmNumber": _literal_or_none(self.HarmNumber),
+            "RFAttr": self.RFAttr,
         }
+        return data
 
 
 @dataclass(slots=True)
@@ -91,7 +108,7 @@ class SVDConfig:
 
     svd_selection_method: str = "threshold"
     svd_threshold: float = 1e-7
-    cut_: int = 500
+    cut_: int = 397
     show_svd_plot: bool = True
 
 
@@ -101,9 +118,15 @@ class RejectionConfig:
 
     outlier_rejection: bool = True
     sigma_outlier: float = 10.0
-    apply_normalization: bool = True
+    apply_normalization: bool = False
     normalization_mode: str = "component"
+    includeDispersion: bool = False
+    hor_dispersion_weight: float = 1.0
+    ver_dispersion_weight: float = 1.0
     auto_correct_delta: bool = True
+    fixedpathlength: bool = False
+    individuals: bool = True
+    remove_coupling_: bool = True
     plot_fit_parameters: bool = False
 
 
@@ -142,10 +165,18 @@ class ParameterSelectionConfig:
     VCMEnergyShift: bool = False
     delta_rf: bool = False
     individuals: bool = True
+    init_policy: str = ""
+    CMstep_h: float = 1e-5
+    CMstep_v: float = 1e-5
+    rfStep: float = -3000.0
+    init: str = ""
     quads_attr: str = "PolynomB"
     quads_attr_index: int = 1
     skew_attr: str = "PolynomA"
     skew_attr_index: int = 1
+    quads_tilt_attr_R1: str = "R1"
+    quads_tilt_attr_R2: str = "R2"
+    quads_tilt_method: str = "set"
 
     def fit_list(self) -> list[str]:
         order = (
@@ -169,13 +200,54 @@ class ParameterSelectionConfig:
     def to_fit_init_config_kwargs(self) -> dict[str, Any]:
         return {
             "fit_list": self.fit_list(),
+            "init_policy": _literal_or_none(self.init_policy),
+            "CMstep": (self.CMstep_h, self.CMstep_v),
+            "rfStep": self.rfStep,
             "individuals": self.individuals,
+            "init": _literal_or_none(self.init),
             "quads_attr": self.quads_attr,
             "quads_attr_index": self.quads_attr_index,
             "skew_attr": self.skew_attr,
             "skew_attr_index": self.skew_attr_index,
+            "quads_tilt_attr_R1": self.quads_tilt_attr_R1,
+            "quads_tilt_attr_R2": self.quads_tilt_attr_R2,
+            "quads_tilt_method": self.quads_tilt_method,
         }
 
+
+
+
+def _literal_or_none(text: Any) -> Any:
+    """Parse an optional GUI literal while preserving blank values as None."""
+
+    if text is None or not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    if not stripped:
+        return None
+    import ast
+
+    try:
+        return ast.literal_eval(stripped)
+    except (SyntaxError, ValueError):
+        return stripped
+
+
+@dataclass(slots=True)
+class FixedParameterConfig:
+    """GUI state matching FixedParameters."""
+
+    Frequency: float = 499664399.4230182
+    HarmNumber: int = 3840
+    rfstep: float = -3000.0
+    dk: str = ""
+    delta_skew: float = 1e-3
+    delta_q_tilt: float = 1e-6
+
+    def to_fixed_parameters_kwargs(self) -> dict[str, Any]:
+        data = asdict(self)
+        data["dk"] = _literal_or_none(self.dk)
+        return data
 
 @dataclass(slots=True)
 class LocoConfiguration:
@@ -187,18 +259,20 @@ class LocoConfiguration:
     rejection: RejectionConfig = field(default_factory=RejectionConfig)
     constraints: ConstraintConfigState = field(default_factory=ConstraintConfigState)
     parameters: ParameterSelectionConfig = field(default_factory=ParameterSelectionConfig)
+    fixed_parameters: FixedParameterConfig = field(default_factory=FixedParameterConfig)
 
     def to_backend_mapping(self) -> dict[str, Any]:
         """Return a serializable mapping of backend-compatible constructor data."""
 
         options = asdict(self.solver) | asdict(self.svd) | asdict(self.rejection)
         options["fit_list"] = self.parameters.fit_list()
-        options["includeDispersion"] = self.response_matrix.includeDispersion
+        options["includeDispersion"] = self.rejection.includeDispersion
         return {
             "LOCOOptions": options,
             "RMConfig": self.response_matrix.to_rm_config_kwargs(),
             "FitInitConfig": self.parameters.to_fit_init_config_kwargs(),
             "ConstraintConfig": self.constraints.to_constraint_config_kwargs(),
+            "FixedParameters": self.fixed_parameters.to_fixed_parameters_kwargs(),
         }
 
     def summary_lines(self) -> list[str]:
@@ -247,6 +321,7 @@ class LocoConfiguration:
             rejection=RejectionConfig(**data.get("rejection", {})),
             constraints=ConstraintConfigState(**data.get("constraints", {})),
             parameters=ParameterSelectionConfig(**data.get("parameters", {})),
+            fixed_parameters=FixedParameterConfig(**data.get("fixed_parameters", {})),
         )
 
 

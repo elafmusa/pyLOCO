@@ -318,6 +318,16 @@ class MainWindow(QMainWindow):
         self.rm_dkick_v = self._double_spin(0.0, 1e-1, 1e-5, 9, " rad")
         self.rm_rf_step = self._double_spin(-1e9, 1e9, -3000.0, 9, " Hz")
         self.rm_delta_coupling = self._double_spin(-1.0, 1.0, 1e-6, 9)
+        self.rm_bpm_ords = QLineEdit()
+        self.rm_cm_ords = QLineEdit()
+        self.rm_cav_ords = QLineEdit()
+        self.rm_hcm_coupling = QLineEdit()
+        self.rm_vcm_coupling = QLineEdit()
+        self.rm_frequency = QLineEdit()
+        self.rm_harm_number = QLineEdit()
+        self.rm_rf_attr = QLineEdit("Frequency")
+        self.rm_fixedpath = QCheckBox("fixedpathlength")
+        self.rm_log_info = QCheckBox("log_info")
         self.rm_dkick_h.setToolTip("Horizontal corrector kick step in radians; scientific notation such as 1e-6 is accepted.")
         self.rm_dkick_v.setToolTip("Vertical corrector kick step in radians; scientific notation such as 5e-5 is accepted.")
         self.rm_rf_step.setToolTip("RF frequency step in Hz. Positive and negative shifts are supported and the sign is preserved.")
@@ -331,7 +341,18 @@ class MainWindow(QMainWindow):
             ("Coupling delta (dimensionless)", self.rm_delta_coupling),
         ):
             rm_form.addRow(label, widget)
-        for widget in (self.rm_dispersion, self.rm_coupling, self.rm_bidirectional, self.rm_vectorized):
+        for label, widget in (
+            ("bpm_ords", self.rm_bpm_ords),
+            ("cm_ords", self.rm_cm_ords),
+            ("cav_ords", self.rm_cav_ords),
+            ("HCMCoupling", self.rm_hcm_coupling),
+            ("VCMCoupling", self.rm_vcm_coupling),
+            ("Frequency", self.rm_frequency),
+            ("HarmNumber", self.rm_harm_number),
+            ("RFAttr", self.rm_rf_attr),
+        ):
+            rm_form.addRow(label, widget)
+        for widget in (self.rm_dispersion, self.rm_coupling, self.rm_bidirectional, self.rm_vectorized, self.rm_fixedpath, self.rm_log_info):
             rm_form.addRow(widget)
         rm_group = QGroupBox("Response Matrix")
         rm_group.setLayout(rm_form)
@@ -393,13 +414,23 @@ class MainWindow(QMainWindow):
         self.norm_enabled = QCheckBox("Apply normalization")
         self.norm_mode = QComboBox()
         self.norm_mode.addItems(["component", "global", "none"])
-        self.auto_delta = QCheckBox("Auto-correct delta")
+        self.loco_include_dispersion = QCheckBox("includeDispersion")
+        self.loco_hor_dispersion_weight = self._double_spin(0.0, 1e9, 1.0, 6)
+        self.loco_ver_dispersion_weight = self._double_spin(0.0, 1e9, 1.0, 6)
+        self.auto_delta = QCheckBox("auto_correct_delta")
+        self.loco_fixedpath = QCheckBox("fixedpathlength")
+        self.loco_individuals = QCheckBox("individuals")
+        self.loco_remove_coupling = QCheckBox("remove_coupling_")
+        self.loco_plot_fit_parameters = QCheckBox("plot_fit_parameters")
         rej_form = QFormLayout()
         rej_form.addRow(self.outlier_enabled)
         rej_form.addRow("Sigma cut", self.outlier_sigma)
         rej_form.addRow(self.norm_enabled)
         rej_form.addRow("Normalization mode", self.norm_mode)
-        rej_form.addRow(self.auto_delta)
+        rej_form.addRow("hor_dispersion_weight", self.loco_hor_dispersion_weight)
+        rej_form.addRow("ver_dispersion_weight", self.loco_ver_dispersion_weight)
+        for widget in (self.loco_include_dispersion, self.auto_delta, self.loco_fixedpath, self.loco_individuals, self.loco_remove_coupling, self.loco_plot_fit_parameters):
+            rej_form.addRow(widget)
         rej_group = QGroupBox("Iterations and Outlier Rejection")
         rej_group.setLayout(rej_form)
         layout.addWidget(rej_group)
@@ -434,9 +465,37 @@ class MainWindow(QMainWindow):
             check = QCheckBox(label)
             self.parameter_checks[key] = check
             param_layout.addWidget(check)
-        self.params_individuals = QCheckBox("Fit individual elements instead of family groups")
+        self.params_individuals = QCheckBox("individuals")
         param_layout.addWidget(self.params_individuals)
+        self.params_init_policy = QLineEdit()
+        self.params_cmstep_h = self._double_spin(0.0, 1e-1, 1e-5, 9)
+        self.params_cmstep_v = self._double_spin(0.0, 1e-1, 1e-5, 9)
+        self.params_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
+        self.params_init = QLineEdit()
+        self.params_quads_attr = QLineEdit("PolynomB")
+        self.params_quads_attr_index = self._spin(0, 100, 1)
+        self.params_skew_attr = QLineEdit("PolynomA")
+        self.params_skew_attr_index = self._spin(0, 100, 1)
+        self.params_tilt_attr_r1 = QLineEdit("R1")
+        self.params_tilt_attr_r2 = QLineEdit("R2")
+        self.params_tilt_method = QLineEdit("set")
+        param_form = QFormLayout()
+        for label, widget in (("init_policy", self.params_init_policy), ("CMstep H", self.params_cmstep_h), ("CMstep V", self.params_cmstep_v), ("rfStep", self.params_rfstep), ("init", self.params_init), ("quads_attr", self.params_quads_attr), ("quads_attr_index", self.params_quads_attr_index), ("skew_attr", self.params_skew_attr), ("skew_attr_index", self.params_skew_attr_index), ("quads_tilt_attr_R1", self.params_tilt_attr_r1), ("quads_tilt_attr_R2", self.params_tilt_attr_r2), ("quads_tilt_method", self.params_tilt_method)):
+            param_form.addRow(label, widget)
+        param_layout.addLayout(param_form)
         layout.addWidget(param_group)
+
+        self.fixed_group = QGroupBox("FixedParameters")
+        fixed_form = QFormLayout(self.fixed_group)
+        self.fixed_frequency = self._double_spin(0.0, 1e12, 499664399.4230182, 6)
+        self.fixed_harm_number = self._spin(0, 1000000, 3840)
+        self.fixed_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
+        self.fixed_dk = QLineEdit()
+        self.fixed_delta_skew = self._double_spin(-1.0, 1.0, 1e-3, 9)
+        self.fixed_delta_q_tilt = self._double_spin(-1.0, 1.0, 1e-6, 9)
+        for label, widget in (("Frequency", self.fixed_frequency), ("HarmNumber", self.fixed_harm_number), ("rfstep", self.fixed_rfstep), ("dk", self.fixed_dk), ("delta_skew", self.fixed_delta_skew), ("delta_q_tilt", self.fixed_delta_q_tilt)):
+            fixed_form.addRow(label, widget)
+        layout.addWidget(self.fixed_group)
 
         button_row = QHBoxLayout()
         import_button = QPushButton("Import configuration…")
@@ -596,14 +655,22 @@ class MainWindow(QMainWindow):
         widgets = [
             self.rm_calculator, self.rm_dispersion, self.rm_coupling, self.rm_bidirectional,
             self.rm_vectorized, self.rm_dkick_h, self.rm_dkick_v, self.rm_rf_step,
-            self.rm_delta_coupling, self.solver_algorithm, self.solver_n_iter,
+            self.rm_delta_coupling, self.rm_bpm_ords, self.rm_cm_ords, self.rm_cav_ords,
+            self.rm_hcm_coupling, self.rm_vcm_coupling, self.rm_frequency, self.rm_harm_number,
+            self.rm_rf_attr, self.rm_fixedpath, self.rm_log_info, self.solver_algorithm, self.solver_n_iter,
             self.solver_lm_iter, self.solver_lambda, self.solver_max_lambda,
             self.solver_scaled, self.svd_method, self.svd_threshold, self.svd_rank,
             self.svd_plot, self.outlier_enabled, self.outlier_sigma, self.norm_enabled,
-            self.norm_mode, self.auto_delta, self.constraint_enabled,
+            self.norm_mode, self.loco_include_dispersion, self.loco_hor_dispersion_weight,
+            self.loco_ver_dispersion_weight, self.auto_delta, self.loco_fixedpath, self.loco_individuals,
+            self.loco_remove_coupling, self.loco_plot_fit_parameters, self.constraint_enabled,
             self.constraint_quad_sigma, self.constraint_skew_sigma,
             self.constraint_quad_weights, self.constraint_skew_weights,
-            self.params_individuals,
+            self.params_individuals, self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v,
+            self.params_rfstep, self.params_init, self.params_quads_attr, self.params_quads_attr_index,
+            self.params_skew_attr, self.params_skew_attr_index, self.params_tilt_attr_r1,
+            self.params_tilt_attr_r2, self.params_tilt_method, self.fixed_frequency, self.fixed_harm_number,
+            self.fixed_rfstep, self.fixed_dk, self.fixed_delta_skew, self.fixed_delta_q_tilt,
         ] + list(self.parameter_checks.values())
         for widget in widgets:
             if isinstance(widget, QComboBox):
@@ -675,6 +742,16 @@ class MainWindow(QMainWindow):
         self.rm_dkick_v.setValue(cfg.response_matrix.dkick_v)
         self.rm_rf_step.setValue(cfg.response_matrix.rfStep)
         self.rm_delta_coupling.setValue(cfg.response_matrix.delta_coupling)
+        self.rm_bpm_ords.setText(cfg.response_matrix.bpm_ords)
+        self.rm_cm_ords.setText(cfg.response_matrix.cm_ords)
+        self.rm_cav_ords.setText(cfg.response_matrix.cav_ords)
+        self.rm_hcm_coupling.setText(cfg.response_matrix.HCMCoupling)
+        self.rm_vcm_coupling.setText(cfg.response_matrix.VCMCoupling)
+        self.rm_frequency.setText(cfg.response_matrix.Frequency)
+        self.rm_harm_number.setText(cfg.response_matrix.HarmNumber)
+        self.rm_rf_attr.setText(cfg.response_matrix.RFAttr)
+        self.rm_fixedpath.setChecked(cfg.response_matrix.fixedpathlength)
+        self.rm_log_info.setChecked(cfg.response_matrix.log_info)
         self._set_solver_algorithm_value(cfg.solver.algorithm)
         self.solver_n_iter.setValue(cfg.solver.nIter)
         self.solver_lm_iter.setValue(cfg.solver.nLMIter)
@@ -689,7 +766,14 @@ class MainWindow(QMainWindow):
         self.outlier_sigma.setValue(cfg.rejection.sigma_outlier)
         self.norm_enabled.setChecked(cfg.rejection.apply_normalization)
         self.norm_mode.setCurrentText(cfg.rejection.normalization_mode)
+        self.loco_include_dispersion.setChecked(cfg.rejection.includeDispersion)
+        self.loco_hor_dispersion_weight.setValue(cfg.rejection.hor_dispersion_weight)
+        self.loco_ver_dispersion_weight.setValue(cfg.rejection.ver_dispersion_weight)
         self.auto_delta.setChecked(cfg.rejection.auto_correct_delta)
+        self.loco_fixedpath.setChecked(cfg.rejection.fixedpathlength)
+        self.loco_individuals.setChecked(cfg.rejection.individuals)
+        self.loco_remove_coupling.setChecked(cfg.rejection.remove_coupling_)
+        self.loco_plot_fit_parameters.setChecked(cfg.rejection.plot_fit_parameters)
         self.constraint_enabled.setChecked(cfg.constraints.enable)
         self.constraint_quad_sigma.setValue(cfg.constraints.quad_sigma)
         self.constraint_skew_sigma.setValue(cfg.constraints.skew_sigma)
@@ -698,6 +782,25 @@ class MainWindow(QMainWindow):
         for name, check in self.parameter_checks.items():
             check.setChecked(bool(getattr(cfg.parameters, name)))
         self.params_individuals.setChecked(cfg.parameters.individuals)
+        self.params_init_policy.setText(cfg.parameters.init_policy)
+        self.params_cmstep_h.setValue(cfg.parameters.CMstep_h)
+        self.params_cmstep_v.setValue(cfg.parameters.CMstep_v)
+        self.params_rfstep.setValue(cfg.parameters.rfStep)
+        self.params_init.setText(cfg.parameters.init)
+        self.params_quads_attr.setText(cfg.parameters.quads_attr)
+        self.params_quads_attr_index.setValue(cfg.parameters.quads_attr_index)
+        self.params_skew_attr.setText(cfg.parameters.skew_attr)
+        self.params_skew_attr_index.setValue(cfg.parameters.skew_attr_index)
+        self.params_tilt_attr_r1.setText(cfg.parameters.quads_tilt_attr_R1)
+        self.params_tilt_attr_r2.setText(cfg.parameters.quads_tilt_attr_R2)
+        self.params_tilt_method.setText(cfg.parameters.quads_tilt_method)
+        self.fixed_frequency.setValue(cfg.fixed_parameters.Frequency)
+        self.fixed_harm_number.setValue(cfg.fixed_parameters.HarmNumber)
+        self.fixed_rfstep.setValue(cfg.fixed_parameters.rfstep)
+        self.fixed_dk.setText(cfg.fixed_parameters.dk)
+        self.fixed_delta_skew.setValue(cfg.fixed_parameters.delta_skew)
+        self.fixed_delta_q_tilt.setValue(cfg.fixed_parameters.delta_q_tilt)
+        self._apply_mode_visibility()
         self._update_svd_input_availability()
         self._update_fit_summary()
 
@@ -712,6 +815,16 @@ class MainWindow(QMainWindow):
         cfg.response_matrix.dkick_v = self.rm_dkick_v.value()
         cfg.response_matrix.rfStep = self.rm_rf_step.value()
         cfg.response_matrix.delta_coupling = self.rm_delta_coupling.value()
+        cfg.response_matrix.bpm_ords = self.rm_bpm_ords.text()
+        cfg.response_matrix.cm_ords = self.rm_cm_ords.text()
+        cfg.response_matrix.cav_ords = self.rm_cav_ords.text()
+        cfg.response_matrix.HCMCoupling = self.rm_hcm_coupling.text()
+        cfg.response_matrix.VCMCoupling = self.rm_vcm_coupling.text()
+        cfg.response_matrix.Frequency = self.rm_frequency.text()
+        cfg.response_matrix.HarmNumber = self.rm_harm_number.text()
+        cfg.response_matrix.RFAttr = self.rm_rf_attr.text()
+        cfg.response_matrix.fixedpathlength = self.rm_fixedpath.isChecked()
+        cfg.response_matrix.log_info = self.rm_log_info.isChecked()
         cfg.solver.algorithm = self._selected_solver_algorithm()
         cfg.solver.nIter = self.solver_n_iter.value()
         cfg.solver.nLMIter = self.solver_lm_iter.value()
@@ -726,7 +839,14 @@ class MainWindow(QMainWindow):
         cfg.rejection.sigma_outlier = self.outlier_sigma.value()
         cfg.rejection.apply_normalization = self.norm_enabled.isChecked()
         cfg.rejection.normalization_mode = self.norm_mode.currentText()
+        cfg.rejection.includeDispersion = self.loco_include_dispersion.isChecked()
+        cfg.rejection.hor_dispersion_weight = self.loco_hor_dispersion_weight.value()
+        cfg.rejection.ver_dispersion_weight = self.loco_ver_dispersion_weight.value()
         cfg.rejection.auto_correct_delta = self.auto_delta.isChecked()
+        cfg.rejection.fixedpathlength = self.loco_fixedpath.isChecked()
+        cfg.rejection.individuals = self.loco_individuals.isChecked()
+        cfg.rejection.remove_coupling_ = self.loco_remove_coupling.isChecked()
+        cfg.rejection.plot_fit_parameters = self.loco_plot_fit_parameters.isChecked()
         cfg.constraints.enable = self.constraint_enabled.isChecked()
         cfg.constraints.quad_sigma = self.constraint_quad_sigma.value()
         cfg.constraints.skew_sigma = self.constraint_skew_sigma.value()
@@ -735,6 +855,24 @@ class MainWindow(QMainWindow):
         for name, check in self.parameter_checks.items():
             setattr(cfg.parameters, name, check.isChecked())
         cfg.parameters.individuals = self.params_individuals.isChecked()
+        cfg.parameters.init_policy = self.params_init_policy.text()
+        cfg.parameters.CMstep_h = self.params_cmstep_h.value()
+        cfg.parameters.CMstep_v = self.params_cmstep_v.value()
+        cfg.parameters.rfStep = self.params_rfstep.value()
+        cfg.parameters.init = self.params_init.text()
+        cfg.parameters.quads_attr = self.params_quads_attr.text()
+        cfg.parameters.quads_attr_index = self.params_quads_attr_index.value()
+        cfg.parameters.skew_attr = self.params_skew_attr.text()
+        cfg.parameters.skew_attr_index = self.params_skew_attr_index.value()
+        cfg.parameters.quads_tilt_attr_R1 = self.params_tilt_attr_r1.text()
+        cfg.parameters.quads_tilt_attr_R2 = self.params_tilt_attr_r2.text()
+        cfg.parameters.quads_tilt_method = self.params_tilt_method.text()
+        cfg.fixed_parameters.Frequency = self.fixed_frequency.value()
+        cfg.fixed_parameters.HarmNumber = self.fixed_harm_number.value()
+        cfg.fixed_parameters.rfstep = self.fixed_rfstep.value()
+        cfg.fixed_parameters.dk = self.fixed_dk.text()
+        cfg.fixed_parameters.delta_skew = self.fixed_delta_skew.value()
+        cfg.fixed_parameters.delta_q_tilt = self.fixed_delta_q_tilt.value()
         return cfg
 
     @Slot()
@@ -927,6 +1065,25 @@ class MainWindow(QMainWindow):
             self.toggle_theme_action.setText("🌙 Dark")
             self.toggle_theme_action.setToolTip("Switch to the Dark theme")
 
+
+    def _apply_mode_visibility(self) -> None:
+        if not hasattr(self, "fixed_group"):
+            return
+        advanced = self.project.mode == "Advanced"
+        widgets = (
+            self.rm_bpm_ords, self.rm_cm_ords, self.rm_cav_ords, self.rm_hcm_coupling,
+            self.rm_vcm_coupling, self.rm_frequency, self.rm_harm_number, self.rm_rf_attr,
+            self.rm_fixedpath, self.rm_log_info, self.loco_include_dispersion,
+            self.loco_hor_dispersion_weight, self.loco_ver_dispersion_weight, self.loco_fixedpath,
+            self.loco_individuals, self.loco_remove_coupling, self.loco_plot_fit_parameters,
+            self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v, self.params_rfstep,
+            self.params_init, self.params_quads_attr, self.params_quads_attr_index, self.params_skew_attr,
+            self.params_skew_attr_index, self.params_tilt_attr_r1, self.params_tilt_attr_r2,
+            self.params_tilt_method, self.fixed_group,
+        )
+        for widget in widgets:
+            widget.setVisible(advanced)
+
     @Slot()
     def _toggle_theme(self) -> None:
         next_theme = "light" if self.current_theme.key == "dark" else "dark"
@@ -941,6 +1098,7 @@ class MainWindow(QMainWindow):
         self.project.mode = action.text()
         self.project.modified = True
         self._mode_label.setText(f"{self.project.mode} mode")
+        self._apply_mode_visibility()
         self._refresh_ui(f"{self.project.mode} mode selected")
 
     @Slot(int)

@@ -227,7 +227,7 @@ def _make_gui_config(mapping: dict[str, Any]):
     config_module.RMConfig = config_module.INTERNAL_RMConfig
     config_module.FitInitConfig = config_module.INTERNAL_FitInitConfig
     config_module.FixedParameters = config_module.INTERNAL_FixedParameters
-    config_module.fixed_parameters = GUIFixedParameters()
+    config_module.fixed_parameters = GUIFixedParameters(**mapping.get("FixedParameters", {}))
     config_module.loco_options = config_module.LOCOOptions(**mapping.get("LOCOOptions", {}))
     return config_module
 
