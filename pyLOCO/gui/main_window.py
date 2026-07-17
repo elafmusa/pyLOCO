@@ -307,12 +307,17 @@ class MainWindow(QMainWindow):
         layout.addWidget(rm_group)
 
         self.solver_algorithm = QComboBox()
-        self.solver_algorithm.addItems(["lm", "gn"])
+        self.solver_algorithm.addItem("Levenberg–Marquardt", "lm")
+        self.solver_algorithm.addItem("Gauss–Newton", "gn")
         self.solver_n_iter = self._spin(1, 100, 1)
         self.solver_lm_iter = self._spin(0, 100, 10)
         self.solver_lambda = self._double_spin(0.0, 1e9, 1e-3, 9)
         self.solver_max_lambda = self._double_spin(0.0, 1e9, 15.0, 3)
-        self.solver_scaled = QCheckBox("Solve with scaled variables")
+        self.solver_scaled = QCheckBox("Scaled Levenberg–Marquardt")
+        self.solver_scaled.setToolTip(
+            "Enable the scaled-variable formulation of the Levenberg–Marquardt "
+            "algorithm to improve conditioning when fit parameters have very different magnitudes."
+        )
         solver_form = QFormLayout()
         for label, widget in (
             ("Algorithm", self.solver_algorithm),
@@ -541,12 +546,25 @@ class MainWindow(QMainWindow):
                 widget.textChanged.connect(self._on_fit_config_changed)
             elif isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._on_fit_config_changed)
+        self.solver_algorithm.currentIndexChanged.connect(self._update_solver_scaled_availability)
 
     def _set_calculator_value(self, calculator: str) -> None:
         backend_value = "Linear" if calculator == "Linear" else "Tracking"
         index = self.rm_calculator.findData(backend_value)
         if index >= 0:
             self.rm_calculator.setCurrentIndex(index)
+
+    def _set_solver_algorithm_value(self, algorithm: str) -> None:
+        index = self.solver_algorithm.findData(algorithm)
+        if index >= 0:
+            self.solver_algorithm.setCurrentIndex(index)
+        self._update_solver_scaled_availability()
+
+    def _selected_solver_algorithm(self) -> str:
+        return self.solver_algorithm.currentData() or self.solver_algorithm.currentText()
+
+    def _update_solver_scaled_availability(self) -> None:
+        self.solver_scaled.setEnabled(self._selected_solver_algorithm() == "lm")
 
     def _load_config_to_widgets(self) -> None:
         cfg = self.project.loco_config
@@ -559,7 +577,7 @@ class MainWindow(QMainWindow):
         self.rm_dkick_v.setValue(cfg.response_matrix.dkick_v)
         self.rm_rf_step.setValue(cfg.response_matrix.rfStep)
         self.rm_delta_coupling.setValue(cfg.response_matrix.delta_coupling)
-        self.solver_algorithm.setCurrentText(cfg.solver.algorithm)
+        self._set_solver_algorithm_value(cfg.solver.algorithm)
         self.solver_n_iter.setValue(cfg.solver.nIter)
         self.solver_lm_iter.setValue(cfg.solver.nLMIter)
         self.solver_lambda.setValue(cfg.solver.Starting_Lambda)
@@ -595,12 +613,12 @@ class MainWindow(QMainWindow):
         cfg.response_matrix.dkick_v = self.rm_dkick_v.value()
         cfg.response_matrix.rfStep = self.rm_rf_step.value()
         cfg.response_matrix.delta_coupling = self.rm_delta_coupling.value()
-        cfg.solver.algorithm = self.solver_algorithm.currentText()
+        cfg.solver.algorithm = self._selected_solver_algorithm()
         cfg.solver.nIter = self.solver_n_iter.value()
         cfg.solver.nLMIter = self.solver_lm_iter.value()
         cfg.solver.Starting_Lambda = self.solver_lambda.value()
         cfg.solver.max_lm_lambda = self.solver_max_lambda.value()
-        cfg.solver.scaled = self.solver_scaled.isChecked()
+        cfg.solver.scaled = self.solver_scaled.isChecked() and cfg.solver.algorithm == "lm"
         cfg.svd.svd_selection_method = self.svd_method.currentText()
         cfg.svd.svd_threshold = self.svd_threshold.value()
         cfg.svd.cut_ = self.svd_rank.value()
