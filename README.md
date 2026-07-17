@@ -27,7 +27,7 @@ pip install -e ".[gui]"
 
 Launch the GUI:
 ```
-python -m pyLOCO.gui.app
+pyloco-gui
 ```
 **pyLOCO** is primarily designed for LOCO analysis using experimental measurements.
 
