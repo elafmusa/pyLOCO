@@ -94,7 +94,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
     if cancelled():
         raise RuntimeError("LOCO run cancelled before backend execution started.")
 
-    config_module = _load_or_install_config(request)
+    config_module = _make_gui_config(request.backend_mapping)
     try:
         import at
         from pyLOCO.pyloco import pyloco, save_fit_dict
@@ -148,57 +148,29 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         raise
 
 
-def _load_or_install_config(request: LocoRunRequest):
-    """Load a nearby pyloco_config.py when available, otherwise install a GUI shim."""
+def _make_gui_config(mapping: dict[str, Any]):
+    """Return the internal pyLOCO config module configured from GUI state."""
 
-    candidates = []
-    if request.project_path:
-        candidates.append(Path(request.project_path).expanduser().resolve().parent / "pyloco_config.py")
-    lattice_path = Path(request.lattice_path).expanduser().resolve()
-    candidates.extend(parent / "pyloco_config.py" for parent in (lattice_path.parent, *lattice_path.parents))
-    for candidate in dict.fromkeys(candidates):
-        if candidate.is_file():
-            from pyLOCO.helpers import load_config
-
-            return load_config(config_path=str(candidate))
-    return _install_gui_pyloco_config(request.backend_mapping)
-
-
-def _install_gui_pyloco_config(mapping: dict[str, Any]):
     from dataclasses import dataclass
-    import sys
-    import types
 
-    module = types.ModuleType("pyloco_config")
-
-    def _cfg_get(cfg, name, current):
-        return cfg.get(name, current) if isinstance(cfg, dict) else getattr(cfg, name, current) if cfg is not None else current
+    import pyLOCO.config as config_module
 
     @dataclass
-    class RMConfig:
-        bpm_ords: Any = None; cm_ords: Any = None; cav_ords: Any = None; dkick: Any = 1e-5
-        bidirectional: bool = True; includeDispersion: bool = False; rfStep: float = -3000.0
-        delta_coupling: float = 1e-6; coupling_orm: bool = False; calculator: str = "Linear"
-        NewVectorizedMethod: bool = True; fixedpathlength: bool = False; log_info: bool = False
-        HCMCoupling: Any = None; VCMCoupling: Any = None; Frequency: Any = None; HarmNumber: Any = None; RFAttr: str = "Frequency"
+    class GUIFixedParameters:
+        Frequency: float = 499664399.4230182
+        HarmNumber: int = 3840
+        rfstep: float = -3000.0
+        dk: Any = None
+        delta_skew: float = 1e-3
+        delta_q_tilt: float = 1e-6
 
-    @dataclass
-    class FitInitConfig:
-        fit_list: Any = None; block_order: Any = None; init_policy: Any = None; CMstep: Any = (1e-5, 1e-5)
-        rfStep: float = -3000.0; individuals: bool = True; init: Any = None
-        quads_attr: str = "PolynomB"; quads_attr_index: Any = 1; skew_attr: str = "PolynomA"; skew_attr_index: Any = 1
-        quads_tilt_attr_R1: str = "R1"; quads_tilt_attr_R2: str = "R2"; quads_tilt_method: str = "set"
-
-    @dataclass
-    class FixedParameters:
-        Frequency: float = 499664399.4230182; HarmNumber: int = 3840; rfstep: float = -3000.0
-        dk: Any = None; delta_skew: float = 1e-3; delta_q_tilt: float = 1e-6
-
-    module.RMConfig = RMConfig; module.FitInitConfig = FitInitConfig; module.fixed_parameters = FixedParameters(); module._cfg_get = _cfg_get
-    module.get_mcf = lambda ring: __import__("at").get_mcf(ring)
-    module.loco_options = type("LOCOOptions", (), mapping.get("LOCOOptions", {}))()
-    sys.modules["pyloco_config"] = module
-    return module
+    config_module.LOCOOptions = config_module.INTERNAL_LOCOOptions
+    config_module.RMConfig = config_module.INTERNAL_RMConfig
+    config_module.FitInitConfig = config_module.INTERNAL_FitInitConfig
+    config_module.FixedParameters = config_module.INTERNAL_FixedParameters
+    config_module.fixed_parameters = GUIFixedParameters()
+    config_module.loco_options = config_module.LOCOOptions(**mapping.get("LOCOOptions", {}))
+    return config_module
 
 
 def _load_measurements(paths: dict[str, str]) -> dict[str, Any]:

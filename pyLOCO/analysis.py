@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 LOGGER = logging.getLogger(__name__)
 import time
 import json
-from pyloco_config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
+from .config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
 from .response_matrix import response_matrix
 fit_cfg = FitInitConfig()
 import at
