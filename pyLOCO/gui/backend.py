@@ -144,6 +144,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
             measured=measured,
             indices=indices,
         )
+        kwargs["initial_model_orm_callback"] = lambda orm: _save_initial_model_orm(results_dir, orm)
         (results_dir / "run_request.json").write_text(
             json.dumps(_jsonable(asdict(request)), indent=2), encoding="utf-8"
         )
@@ -412,10 +413,24 @@ def _make_results_dir(request: LocoRunRequest) -> Path:
     return path
 
 
+def _save_initial_model_orm(results_dir: Path, orm_model) -> Path:
+    import h5py
+    import numpy as np
+
+    path = results_dir / "model_orm_initial.h5"
+    with h5py.File(path, "w") as handle:
+        handle.create_dataset("response_matrix", data=np.asarray(orm_model), compression="gzip")
+        handle.attrs["description"] = "Initial model ORM used for the first chi-squared evaluation"
+    return path
+
+
 def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict):
     import numpy as np
 
     files = []
+    initial_orm = results_dir / "model_orm_initial.h5"
+    if initial_orm.exists():
+        files.append(str(initial_orm))
     npz = results_dir / "loco_results.npz"
     np.savez_compressed(npz, fit_results=np.asarray(fit_results, dtype=object), orm_model=orm_model, c_bpms=c_bpms, chi2_history=np.asarray(chi2_history), delta_chi2_history=np.asarray(delta_chi2_history, dtype=object))
     files.append(str(npz))

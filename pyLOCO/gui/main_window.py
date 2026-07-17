@@ -43,27 +43,48 @@ from .widgets.project_explorer import ProjectExplorer
 from .widgets.orm_comparison import OrmComparisonWindow
 
 APP_STYLESHEET = """
-QMainWindow { background: #f4f7fb; }
-QMenuBar, QToolBar#mainToolbar, QStatusBar { background: #ffffff; }
-QToolBar#mainToolbar { border: 0; border-bottom: 1px solid #d9e2ef; spacing: 8px; padding: 8px 12px; }
-QToolButton, QPushButton { border: 1px solid #c8d8ec; border-radius: 6px; color: #1f3b57; font-weight: 600; padding: 6px 10px; background: #ffffff; }
-QToolButton:hover, QPushButton:hover { background: #eef5ff; }
-QToolButton:checked { background: #2463a6; color: #ffffff; }
-QTabWidget::pane { background: #f4f7fb; border: 0; padding-top: 10px; }
-QTabBar::tab { background: #e8eef7; border: 1px solid #d3deec; border-bottom: 0; border-top-left-radius: 8px; border-top-right-radius: 8px; color: #2f4b66; margin-right: 4px; padding: 10px 18px; }
-QTabBar::tab:selected { background: #ffffff; color: #12365f; font-weight: 700; }
-QDockWidget::title { background: #183b66; color: #ffffff; font-weight: 700; padding: 8px 10px; }
-QTreeWidget#projectExplorerTree, QGroupBox { background: #ffffff; border: 1px solid #d8e1ee; border-radius: 8px; margin: 8px; padding: 10px; }
-QGroupBox::title { color: #1b426d; font-weight: 700; subcontrol-origin: margin; left: 12px; padding: 0 4px; }
-QLabel#statusPill { background: #e8f0fe; border: 1px solid #cbdcf4; border-radius: 9px; color: #174a7c; font-weight: 700; padding: 3px 10px; }
-QLabel#pageTitle { color: #14395f; font-size: 24px; font-weight: 700; }
-QLabel#validationOk { color: #1f7a3f; font-weight: 700; }
-QLabel#validationMissing { color: #9a4b00; font-weight: 700; }
-QWidget#placeholderPageCard { background: #ffffff; border: 1px solid #d9e2ef; border-radius: 14px; }
-QLabel#placeholderTitle { color: #14395f; font-size: 26px; font-weight: 700; }
-QLabel#placeholderDescription, QLabel#dashboardCardText { color: #52677d; font-size: 14px; }
-QWidget#dashboardCard { background: #f8fbff; border: 1px solid #d9e6f5; border-radius: 10px; }
-QLabel#dashboardCardTitle { color: #1b426d; font-size: 15px; font-weight: 700; }
+* { font-family: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif; font-size: 13px; }
+QMainWindow, QDialog { background: #1E1E2E; color: #DDE3F0; }
+QMenuBar, QMenu, QToolBar#mainToolbar, QStatusBar { background: #25283A; color: #E7EAF3; border: 0; }
+QMenuBar::item:selected, QMenu::item:selected { background: #3B315A; color: #FFFFFF; }
+QMenu { border: 1px solid #3C4058; padding: 6px; }
+QToolBar#mainToolbar { border-bottom: 1px solid #3C4058; spacing: 10px; padding: 8px 12px; }
+QToolButton, QPushButton { background: #2F3347; border: 1px solid #4A4F68; border-radius: 8px; color: #F4F6FB; font-weight: 600; padding: 7px 12px; }
+QToolButton:hover, QPushButton:hover { background: #3B315A; border-color: #8A63D2; }
+QToolButton:pressed, QPushButton:pressed, QToolButton:checked { background: #8A63D2; border-color: #A78BFA; color: #FFFFFF; }
+QPushButton:disabled, QToolButton:disabled { background: #25283A; color: #737993; border-color: #34384D; }
+QTabWidget::pane { background: #1E1E2E; border: 1px solid #34384D; border-radius: 10px; padding-top: 8px; }
+QTabBar::tab { background: #25283A; border: 1px solid #34384D; border-bottom: 0; border-top-left-radius: 8px; border-top-right-radius: 8px; color: #BFC7D8; margin-right: 4px; padding: 10px 18px; }
+QTabBar::tab:selected { background: #2A2D3E; color: #FFFFFF; border-color: #8A63D2; font-weight: 700; }
+QDockWidget::title { background: #2A2D3E; color: #FFFFFF; font-weight: 700; padding: 8px 10px; border-bottom: 1px solid #8A63D2; }
+QTreeWidget#projectExplorerTree, QTreeView, QTableView, QListWidget, QTextEdit { background: #202334; alternate-background-color: #25283A; border: 1px solid #3C4058; border-radius: 8px; color: #DDE3F0; selection-background-color: #5E45A0; selection-color: #FFFFFF; }
+QHeaderView::section { background: #2A2D3E; color: #E7EAF3; border: 0; border-right: 1px solid #3C4058; padding: 6px; font-weight: 700; }
+QGroupBox { background: #2A2D3E; border: 1px solid #3C4058; border-radius: 10px; color: #E7EAF3; margin: 10px; padding: 14px; }
+QGroupBox::title { color: #C4B5FD; font-weight: 700; subcontrol-origin: margin; left: 12px; padding: 0 6px; }
+QLabel { color: #DDE3F0; }
+QLabel#statusPill { background: #312A4A; border: 1px solid #8A63D2; border-radius: 10px; color: #EDE9FE; font-weight: 700; padding: 4px 11px; }
+QLabel#pageTitle { color: #FFFFFF; font-size: 24px; font-weight: 750; }
+QLabel#validationOk { color: #6EE7B7; font-weight: 700; }
+QLabel#validationMissing { color: #FBBF24; font-weight: 700; }
+QWidget#placeholderPageCard, QWidget#dashboardCard { background: #2A2D3E; border: 1px solid #3C4058; border-radius: 14px; }
+QLabel#placeholderTitle { color: #FFFFFF; font-size: 26px; font-weight: 750; }
+QLabel#placeholderDescription, QLabel#dashboardCardText { color: #BFC7D8; font-size: 14px; }
+QLabel#dashboardCardTitle { color: #C4B5FD; font-size: 15px; font-weight: 700; }
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: #202334; color: #F4F6FB; border: 1px solid #4A4F68; border-radius: 7px; padding: 6px 8px; selection-background-color: #8A63D2; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus { border-color: #A78BFA; }
+QComboBox::drop-down { border: 0; width: 24px; }
+QComboBox QAbstractItemView { background: #25283A; color: #F4F6FB; border: 1px solid #8A63D2; selection-background-color: #5E45A0; }
+QCheckBox, QRadioButton { color: #DDE3F0; spacing: 8px; }
+QCheckBox::indicator, QRadioButton::indicator { width: 16px; height: 16px; border: 1px solid #6B7280; background: #202334; }
+QCheckBox::indicator { border-radius: 4px; }
+QRadioButton::indicator { border-radius: 8px; }
+QCheckBox::indicator:checked, QRadioButton::indicator:checked { background: #8A63D2; border-color: #C4B5FD; }
+QProgressBar { background: #202334; color: #FFFFFF; border: 1px solid #3C4058; border-radius: 7px; text-align: center; }
+QProgressBar::chunk { background: #8A63D2; border-radius: 7px; }
+QScrollArea { background: #1E1E2E; border: 0; }
+QScrollBar:vertical, QScrollBar:horizontal { background: #1E1E2E; width: 12px; height: 12px; }
+QScrollBar::handle { background: #4A4F68; border-radius: 6px; }
+QScrollBar::handle:hover { background: #8A63D2; }
 """
 
 
@@ -1004,16 +1025,20 @@ class MainWindow(QMainWindow):
         return "orm" in self.project.measurements and self._latest_model_orm_path() is not None
 
     def _latest_model_orm_path(self) -> Path | None:
+        names = ("loco_results.npz", "model_orm_initial.h5")
         if self._last_loco_result is not None:
-            candidate = Path(self._last_loco_result.results_dir) / "loco_results.npz"
-            if candidate.exists():
-                return candidate
+            result_dir = Path(self._last_loco_result.results_dir)
+            for name in names:
+                candidate = result_dir / name
+                if candidate.exists():
+                    return candidate
         if not self.project.path:
             return None
         results_root = Path(self.project.path).expanduser().resolve().parent / "results"
         if not results_root.exists():
             return None
-        candidates = sorted(results_root.glob("*/loco_results.npz"), key=lambda path: path.stat().st_mtime, reverse=True)
+        candidates = [path for name in names for path in results_root.glob(f"*/{name}")]
+        candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
         return candidates[0] if candidates else None
 
     def _load_measured_orm_for_comparison(self):
@@ -1044,7 +1069,14 @@ class MainWindow(QMainWindow):
 
         path = self._latest_model_orm_path()
         if path is None:
-            raise ValueError("No completed LOCO result with loco_results.npz was found.")
+            raise ValueError("No initial or final model ORM result was found.")
+        if path.suffix.lower() in {".h5", ".hdf5"}:
+            import h5py
+
+            with h5py.File(path, "r") as handle:
+                if "response_matrix" not in handle:
+                    raise ValueError(f"{path} does not contain a response_matrix dataset.")
+                return np.asarray(handle["response_matrix"])
         with np.load(path, allow_pickle=True) as archive:
             if "orm_model" not in archive:
                 raise ValueError(f"{path} does not contain an orm_model array.")
