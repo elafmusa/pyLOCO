@@ -48,9 +48,9 @@ class ResponseMatrixConfig:
     coupling_orm: bool = False
     bidirectional: bool = True
     NewVectorizedMethod: bool = True
-    dkick_h: float = 100e-6
-    dkick_v: float = 100e-6
-    rfStep: float = 200.0
+    dkick_h: float = 1e-5
+    dkick_v: float = 1e-5
+    rfStep: float = -3000.0
     delta_coupling: float = 1e-6
     fixedpathlength: bool = False
     log_info: bool = False
@@ -58,8 +58,9 @@ class ResponseMatrixConfig:
     def to_rm_config_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments compatible with pyloco_config.RMConfig."""
 
+        calculator = "Linear" if self.calculator == "Linear" else "Tracking"
         return {
-            "calculator": self.calculator,
+            "calculator": calculator,
             "includeDispersion": self.includeDispersion,
             "coupling_orm": self.coupling_orm,
             "bidirectional": self.bidirectional,
