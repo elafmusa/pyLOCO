@@ -29,6 +29,9 @@ Launch the GUI:
 ```
 pyloco-gui
 ```
+
+# Examples
+
 **pyLOCO** is primarily designed for LOCO analysis using experimental measurements.
 
 The repository also includes examples that demonstrate how to use **pyLOCO** with simulated commissioning, for example with **pySC**. To install pySC:
