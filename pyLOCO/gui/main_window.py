@@ -524,6 +524,9 @@ class MainWindow(QMainWindow):
             self.theme_action_group.addAction(action)
             self.theme_actions[key] = action
         self.theme_action_group.triggered.connect(self._on_theme_changed)
+        self.toggle_theme_action = QAction(self)
+        self.toggle_theme_action.triggered.connect(self._toggle_theme)
+        self._update_toggle_theme_action()
         self.about_action = QAction("About pyLOCO GUI", self)
         self.about_action.triggered.connect(self._show_about_dialog)
 
@@ -575,6 +578,8 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.basic_mode_action)
         toolbar.addAction(self.advanced_mode_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.toggle_theme_action)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
     def _create_status_bar(self) -> None:
@@ -901,16 +906,35 @@ class MainWindow(QMainWindow):
         self.project.modified = True
         self._refresh_ui("Project renamed")
 
-    @Slot(QAction)
-    def _on_theme_changed(self, action: QAction) -> None:
-        self.current_theme = theme_for_key(action.data())
+    def _apply_theme_selection(self, theme_key: str | None) -> None:
+        self.current_theme = theme_for_key(theme_key)
         apply_application_theme(QApplication.instance(), self.current_theme)
         self._settings.setValue("appearance/theme", self.current_theme.key)
         self._settings.sync()
+        for key, action in self.theme_actions.items():
+            action.setChecked(key == self.current_theme.key)
+        self._update_toggle_theme_action()
         for window in self._orm_comparison_windows:
             if hasattr(window, "apply_theme"):
                 window.apply_theme(self.current_theme)
         self._refresh_ui(f"{self.current_theme.display_name} theme selected")
+
+    def _update_toggle_theme_action(self) -> None:
+        if self.current_theme.key == "dark":
+            self.toggle_theme_action.setText("☀️ Light")
+            self.toggle_theme_action.setToolTip("Switch to the Light theme")
+        else:
+            self.toggle_theme_action.setText("🌙 Dark")
+            self.toggle_theme_action.setToolTip("Switch to the Dark theme")
+
+    @Slot()
+    def _toggle_theme(self) -> None:
+        next_theme = "light" if self.current_theme.key == "dark" else "dark"
+        self._apply_theme_selection(next_theme)
+
+    @Slot(QAction)
+    def _on_theme_changed(self, action: QAction) -> None:
+        self._apply_theme_selection(action.data())
 
     @Slot(QAction)
     def _on_mode_changed(self, action: QAction) -> None:
