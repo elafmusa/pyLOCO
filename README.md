@@ -2,10 +2,6 @@
 
 - Safranek, J. (1997). Experimental determination of storage ring optics using orbit response measurements. *Nuclear Instruments and Methods in Physics Research Section A*, **388**, 27–36. https://doi.org/10.1016/S0168-9002(97)00309-4
 
-# Questions or suggestions
-
-Please contact: <elaf.musa@desy.de>
-
 # Installation
 
 Optional (creat vertual environment)
@@ -40,3 +36,7 @@ The repository also includes examples that demonstrate how to use **pyLOCO** wit
 ```bash
 pip install accelerator-commissioning
 ```
+
+# Questions or suggestions
+
+Please contact: <elaf.musa@desy.de>
