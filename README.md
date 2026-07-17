@@ -14,7 +14,7 @@ python -m venv venv
 source venv/bin/activate
 ```
 
-```bash
+```
 git clone https://github.com/elafmusa/pyLOCO
 cd pyLOCO
 pip install -e .    # or: pip install .
@@ -25,14 +25,14 @@ pip install -e .    # or: pip install .
 The developmet of the GUI is currently ongoing.
 Install the optional GUI dependencies:
 
-```bash
+```
 pip install -e ".[gui]"
 ```
-```bash
+
 Launch the GUI:
 ```
 python -m pyLOCO.gui.app
-
+```
 **pyLOCO** is primarily designed for LOCO analysis using experimental measurements.
 
 The repository also includes examples that demonstrate how to use **pyLOCO** with simulated commissioning, for example with **pySC**. To install pySC:
