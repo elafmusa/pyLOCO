@@ -333,7 +333,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(solver_group)
 
         self.svd_method = QComboBox()
-        self.svd_method.addItems(["threshold", "rank", "auto"])
+        for label, method in (
+            ("Threshold", "threshold"),
+            ("Rank", "rank"),
+            ("User-defined cut", "user_input"),
+            ("Interactive", "interactive"),
+        ):
+            self.svd_method.addItem(label, method)
         self.svd_threshold = self._double_spin(0.0, 1.0, 1e-7, 10)
         self.svd_rank = self._spin(0, 100000, 500)
         self.svd_plot = QCheckBox("Show SVD plot")
@@ -547,6 +553,7 @@ class MainWindow(QMainWindow):
             elif isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._on_fit_config_changed)
         self.solver_algorithm.currentIndexChanged.connect(self._update_solver_scaled_availability)
+        self.svd_method.currentIndexChanged.connect(self._update_svd_input_availability)
 
     def _set_calculator_value(self, calculator: str) -> None:
         backend_value = "Linear" if calculator == "Linear" else "Tracking"
@@ -566,6 +573,25 @@ class MainWindow(QMainWindow):
     def _update_solver_scaled_availability(self) -> None:
         self.solver_scaled.setEnabled(self._selected_solver_algorithm() == "lm")
 
+    def _selected_svd_method(self) -> str:
+        return self.svd_method.currentData() or self.svd_method.currentText()
+
+    def _set_svd_method_value(self, method: str) -> None:
+        index = self.svd_method.findData(method)
+        if index >= 0:
+            self.svd_method.setCurrentIndex(index)
+        else:
+            self.svd_method.setCurrentText(method)
+        self._update_svd_input_availability()
+
+    def _update_svd_input_availability(self) -> None:
+        method = self._selected_svd_method()
+        self.svd_threshold.setEnabled(method == "threshold")
+        self.svd_rank.setEnabled(method == "user_input")
+        self.svd_plot.setEnabled(method != "interactive")
+        if method == "interactive":
+            self.svd_plot.setChecked(True)
+
     def _load_config_to_widgets(self) -> None:
         cfg = self.project.loco_config
         self._set_calculator_value(cfg.response_matrix.calculator)
@@ -583,7 +609,7 @@ class MainWindow(QMainWindow):
         self.solver_lambda.setValue(cfg.solver.Starting_Lambda)
         self.solver_max_lambda.setValue(cfg.solver.max_lm_lambda)
         self.solver_scaled.setChecked(cfg.solver.scaled)
-        self.svd_method.setCurrentText(cfg.svd.svd_selection_method)
+        self._set_svd_method_value(cfg.svd.svd_selection_method)
         self.svd_threshold.setValue(cfg.svd.svd_threshold)
         self.svd_rank.setValue(cfg.svd.cut_)
         self.svd_plot.setChecked(cfg.svd.show_svd_plot)
@@ -600,6 +626,7 @@ class MainWindow(QMainWindow):
         for name, check in self.parameter_checks.items():
             check.setChecked(bool(getattr(cfg.parameters, name)))
         self.params_individuals.setChecked(cfg.parameters.individuals)
+        self._update_svd_input_availability()
         self._update_fit_summary()
 
     def _collect_loco_configuration(self) -> LocoConfiguration:
@@ -619,7 +646,7 @@ class MainWindow(QMainWindow):
         cfg.solver.Starting_Lambda = self.solver_lambda.value()
         cfg.solver.max_lm_lambda = self.solver_max_lambda.value()
         cfg.solver.scaled = self.solver_scaled.isChecked() and cfg.solver.algorithm == "lm"
-        cfg.svd.svd_selection_method = self.svd_method.currentText()
+        cfg.svd.svd_selection_method = self._selected_svd_method()
         cfg.svd.svd_threshold = self.svd_threshold.value()
         cfg.svd.cut_ = self.svd_rank.value()
         cfg.svd.show_svd_plot = self.svd_plot.isChecked()
