@@ -27,8 +27,13 @@ pip install -e ".[gui]"
 
 Launch the GUI:
 ```
+python -m pyLOCO.gui.app
+```
+or directly
+```
 pyloco-gui
 ```
+
 
 # Examples
 
