@@ -194,3 +194,28 @@ def test_theme_controls_are_exposed_in_menus_and_toolbar() -> None:
         assert window.toggle_theme_action.text() in {"☀️ Light", "🌙 Dark"}
     finally:
         window.close()
+
+
+def test_orm_comparison_preprocesses_bad_bpms() -> None:
+    """Measured ORM comparison should mirror LOCO fit Bad BPM preprocessing."""
+    import ast
+    from pathlib import Path
+
+    source = Path("pyLOCO/gui/main_window.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    method = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_load_measured_orm_for_comparison"
+    )
+
+    calls = [node for node in ast.walk(method) if isinstance(node, ast.Call)]
+    remove_calls = [call for call in calls if isinstance(call.func, ast.Name) and call.func.id == "remove_bad_bpms"]
+    assert remove_calls, "_load_measured_orm_for_comparison must call remove_bad_bpms"
+    keywords = {
+        keyword.arg: ast.literal_eval(keyword.value)
+        for keyword in remove_calls[0].keywords
+        if keyword.arg in {"axis", "input_type"}
+    }
+    assert keywords == {"axis": 0, "input_type": "positions"}
+    assert any(isinstance(call.func, ast.Name) and call.func.id == "_load_bad_bpm_positions" for call in calls)
