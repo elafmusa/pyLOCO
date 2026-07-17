@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .backend import LocoRunRequest, run_loco_request
+from .backend import LocoRunError, LocoRunRequest, run_loco_request
 from .models.project import ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata
 from .widgets.project_explorer import ProjectExplorer
 
@@ -68,7 +68,7 @@ QLabel#dashboardCardTitle { color: #1b426d; font-size: 15px; font-weight: 700; }
 class LocoRunWorker(QObject):
     log = Signal(str)
     finished = Signal(object)
-    failed = Signal(str)
+    failed = Signal(object)
 
     def __init__(self, request: LocoRunRequest) -> None:
         super().__init__()
@@ -84,7 +84,9 @@ class LocoRunWorker(QObject):
                 cancel_callback=lambda: self.cancel_requested,
             )
         except Exception as exc:
-            self.failed.emit(str(exc))
+            import traceback
+
+            self.failed.emit(LocoRunError(str(exc), traceback.format_exc()))
         else:
             self.finished.emit(result)
 
@@ -800,6 +802,8 @@ class MainWindow(QMainWindow):
         self._run_worker.failed.connect(self._on_loco_failed)
         self._run_worker.finished.connect(self._cleanup_run_thread)
         self._run_worker.failed.connect(self._cleanup_run_thread)
+        self._run_thread.finished.connect(self._run_worker.deleteLater)
+        self._run_thread.finished.connect(self._run_thread.deleteLater)
         self._run_thread.start()
         self._elapsed_timer.start(500)
         self._refresh_ui("LOCO run started")
@@ -826,12 +830,13 @@ class MainWindow(QMainWindow):
         self._append_run_log("Saved outputs:\n" + "\n".join(result.output_files))
         QMessageBox.information(self, "LOCO complete", f"LOCO completed successfully.\n\nResults: {result.results_dir}")
 
-    @Slot(str)
-    def _on_loco_failed(self, message: str) -> None:
+    @Slot(object)
+    def _on_loco_failed(self, error: LocoRunError) -> None:
         self.run_progress.setRange(0, 1)
         self.run_progress.setValue(0)
         self.run_status_label.setText("Failed")
-        QMessageBox.critical(self, "LOCO failed", f"The backend reported an error:\n\n{message}")
+        self._append_run_log(error.traceback)
+        QMessageBox.critical(self, "LOCO failed", f"The backend reported an error:\n\n{error.message}")
 
     @Slot()
     def _cleanup_run_thread(self) -> None:
