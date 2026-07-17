@@ -16,8 +16,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import numpy as np
-
 from .models.project import ProjectMetadata
 
 
@@ -96,7 +94,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
     if cancelled():
         raise RuntimeError("LOCO run cancelled before backend execution started.")
 
-    config_module = _install_gui_pyloco_config(request.backend_mapping)
+    config_module = _load_or_install_config(request)
     try:
         import at
         from pyLOCO.pyloco import pyloco, save_fit_dict
@@ -150,6 +148,22 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         raise
 
 
+def _load_or_install_config(request: LocoRunRequest):
+    """Load a nearby pyloco_config.py when available, otherwise install a GUI shim."""
+
+    candidates = []
+    if request.project_path:
+        candidates.append(Path(request.project_path).expanduser().resolve().parent / "pyloco_config.py")
+    lattice_path = Path(request.lattice_path).expanduser().resolve()
+    candidates.extend(parent / "pyloco_config.py" for parent in (lattice_path.parent, *lattice_path.parents))
+    for candidate in dict.fromkeys(candidates):
+        if candidate.is_file():
+            from pyLOCO.helpers import load_config
+
+            return load_config(config_path=str(candidate))
+    return _install_gui_pyloco_config(request.backend_mapping)
+
+
 def _install_gui_pyloco_config(mapping: dict[str, Any]):
     from dataclasses import dataclass
     import sys
@@ -187,8 +201,9 @@ def _install_gui_pyloco_config(mapping: dict[str, Any]):
     return module
 
 
-def _load_measurements(paths: dict[str, str]) -> dict[str, np.ndarray]:
+def _load_measurements(paths: dict[str, str]) -> dict[str, Any]:
     import h5py
+    import numpy as np
 
     data = {}
     with h5py.File(paths["orm"], "r") as f:
@@ -214,8 +229,9 @@ def _dataset(handle, *names: str, fallback_index: int = 0):
     return handle[keys[fallback_index]]
 
 
-def _derive_indices(ring, measured: dict[str, np.ndarray]) -> dict[str, Any]:
+def _derive_indices(ring, measured: dict[str, Any]) -> dict[str, Any]:
     import at
+    import numpy as np
 
     n_bpms = measured["orm"].shape[0] // 2
     n_cors = measured["orm"].shape[1]
@@ -230,6 +246,8 @@ def _derive_indices(ring, measured: dict[str, np.ndarray]) -> dict[str, Any]:
 
 
 def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixed_parameters, measured, indices):
+    import numpy as np
+
     sigma_w = np.concatenate((measured["noise_x"], measured["noise_y"]))[:, np.newaxis]
     cmstep = rm_cfg.dkick if isinstance(rm_cfg.dkick, (list, tuple)) else (rm_cfg.dkick, rm_cfg.dkick)
     return dict(
@@ -262,6 +280,8 @@ def _make_results_dir(request: LocoRunRequest) -> Path:
 
 
 def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict):
+    import numpy as np
+
     files = []
     npz = results_dir / "loco_results.npz"
     np.savez_compressed(npz, fit_results=np.asarray(fit_results, dtype=object), orm_model=orm_model, c_bpms=c_bpms, chi2_history=np.asarray(chi2_history), delta_chi2_history=np.asarray(delta_chi2_history, dtype=object))
@@ -283,6 +303,8 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
 
 
 def _jsonable(value):
+    import numpy as np
+
     if isinstance(value, np.ndarray):
         return value.tolist()
     if isinstance(value, (np.integer,)): return int(value)
