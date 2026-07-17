@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
     QWidget,
+    QApplication,
 )
 
 
@@ -61,6 +62,7 @@ class OrmComparisonWindow(QDialog):
         self.difference_orm = self.measured_orm - self.model_orm
         self._syncing_view = False
         self._last_limits: tuple[float, float] | None = None
+        self._theme = self._theme_from_application()
 
         self.setWindowTitle("ORM Comparison")
         self.resize(1500, 900)
@@ -69,7 +71,7 @@ class OrmComparisonWindow(QDialog):
         self.rms_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.rms_label)
         layout.addLayout(self._controls())
-        self.figure = self.Figure(figsize=(12, 6), constrained_layout=True, facecolor="#1E1E2E")
+        self.figure = self.Figure(figsize=(12, 6), constrained_layout=True, facecolor=self._theme["face"])
         self.canvas = self.FigureCanvasQTAgg(self.figure)
         self.toolbar = self.NavigationToolbar2QT(self.canvas, self)
         layout.addWidget(self.toolbar)
@@ -79,6 +81,18 @@ class OrmComparisonWindow(QDialog):
         layout.addWidget(buttons)
         self.canvas.mpl_connect("button_release_event", self._sync_3d_views)
         self.canvas.mpl_connect("scroll_event", self._sync_3d_views)
+        self._redraw()
+
+    @staticmethod
+    def _theme_from_application() -> dict[str, str]:
+        app = QApplication.instance()
+        theme = app.property("pyLOCOThemePlot") if app is not None else None
+        if isinstance(theme, dict):
+            return theme
+        return {"face": "#2B2D42", "axes": "#34374E", "text": "#F5F5F5", "grid": "#8C92A8", "spine": "#5A6078", "colormap": "viridis"}
+
+    def apply_theme(self, _theme=None) -> None:
+        self._theme = self._theme_from_application()
         self._redraw()
 
     def _controls(self) -> QHBoxLayout:
@@ -152,7 +166,8 @@ class OrmComparisonWindow(QDialog):
 
     def _redraw(self) -> None:
         self.figure.clear()
-        self.figure.patch.set_facecolor("#1E1E2E")
+        self._theme = self._theme_from_application()
+        self.figure.patch.set_facecolor(self._theme["face"])
         matrices = [("Measured ORM", self.measured_orm), ("Model ORM", self.model_orm), ("Difference (Measured − Model)", self.difference_orm)]
         is_surface = self.plot_mode.currentText().startswith("3D")
         axes = []
@@ -163,39 +178,43 @@ class OrmComparisonWindow(QDialog):
             rendered = self._decimate(matrix)
             if is_surface:
                 x, y = np.meshgrid(rendered.correctors, rendered.bpms)
-                artist = ax.plot_surface(x, y, rendered.values, cmap="viridis", vmin=vmin, vmax=vmax, linewidth=0, antialiased=False, rcount=rendered.values.shape[0], ccount=rendered.values.shape[1])
-                ax.set_zlabel("ORM value (m/rad)", color="#DDE3F0", labelpad=8)
+                artist = ax.plot_surface(x, y, rendered.values, cmap=self._theme["colormap"], vmin=vmin, vmax=vmax, linewidth=0, antialiased=False, rcount=rendered.values.shape[0], ccount=rendered.values.shape[1])
+                ax.set_zlabel("ORM value (m/rad)", color=self._theme["text"], labelpad=8)
                 ax.zaxis.label.set_fontsize(10)
             else:
-                artist = ax.imshow(rendered.values, aspect="auto", origin="lower", cmap="viridis", vmin=vmin, vmax=vmax, extent=[rendered.correctors[0], rendered.correctors[-1], rendered.bpms[0], rendered.bpms[-1]])
+                artist = ax.imshow(rendered.values, aspect="auto", origin="lower", cmap=self._theme["colormap"], vmin=vmin, vmax=vmax, extent=[rendered.correctors[0], rendered.correctors[-1], rendered.bpms[0], rendered.bpms[-1]])
             self._style_axes(ax, is_surface)
-            ax.set_title(title, color="#FFFFFF", fontsize=12, fontweight="bold", pad=12)
-            ax.set_xlabel("Correctors", color="#DDE3F0", labelpad=8)
-            ax.set_ylabel("BPMs", color="#DDE3F0", labelpad=8)
+            ax.set_title(title, color=self._theme["text"], fontsize=12, fontweight="bold", pad=12)
+            ax.set_xlabel("Correctors", color=self._theme["text"], labelpad=8)
+            ax.set_ylabel("BPMs", color=self._theme["text"], labelpad=8)
             colorbar = self.figure.colorbar(artist, ax=ax, shrink=0.72, label="ORM (m/rad)")
-            colorbar.ax.yaxis.label.set_color("#DDE3F0")
-            colorbar.ax.tick_params(colors="#DDE3F0", labelsize=9)
-            colorbar.outline.set_edgecolor("#4A4F68")
+            colorbar.ax.yaxis.label.set_color(self._theme["text"])
+            colorbar.ax.tick_params(colors=self._theme["text"], labelsize=9)
+            colorbar.outline.set_edgecolor(self._theme["spine"])
         self._axes = axes
         self.canvas.draw_idle()
 
 
-    @staticmethod
-    def _style_axes(ax, is_surface: bool) -> None:
-        ax.set_facecolor("#25283A")
-        ax.tick_params(colors="#DDE3F0", labelsize=9)
+    def _style_axes(self, ax, is_surface: bool) -> None:
+        ax.set_facecolor(self._theme["axes"])
+        ax.tick_params(colors=self._theme["text"], labelsize=9)
         for spine in getattr(ax, "spines", {}).values():
-            spine.set_color("#4A4F68")
+            spine.set_color(self._theme["spine"])
         ax.xaxis.label.set_fontsize(10)
         ax.yaxis.label.set_fontsize(10)
         ax.ticklabel_format(axis="both", style="sci", scilimits=(-3, 3), useMathText=True)
         if is_surface:
             for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
-                axis.set_pane_color((0.157, 0.173, 0.243, 1.0))
-                axis._axinfo["grid"]["color"] = (0.36, 0.39, 0.52, 0.45)
-            ax.zaxis.set_tick_params(colors="#DDE3F0", labelsize=9)
+                axis.set_pane_color((*self._hex_to_rgb(self._theme["axes"]), 1.0))
+                axis._axinfo["grid"]["color"] = (*self._hex_to_rgb(self._theme["grid"]), 0.45)
+            ax.zaxis.set_tick_params(colors=self._theme["text"], labelsize=9)
         else:
-            ax.grid(color="#4A4F68", alpha=0.28, linewidth=0.6)
+            ax.grid(color=self._theme["grid"], alpha=0.32, linewidth=0.6)
+
+    @staticmethod
+    def _hex_to_rgb(value: str) -> tuple[float, float, float]:
+        value = value.lstrip("#")
+        return tuple(int(value[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
 
     def _sync_3d_views(self, event) -> None:
         if self._syncing_view or not hasattr(self, "_axes") or not self.plot_mode.currentText().startswith("3D"):

@@ -10,7 +10,7 @@ import json
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot, QTimer
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QDoubleValidator, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -35,12 +35,14 @@ from PySide6.QtWidgets import (
     QToolBar,
     QVBoxLayout,
     QWidget,
+    QApplication,
 )
 
 from .backend import LocoRunError, LocoRunRequest, run_loco_request
 from .models.project import ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata
 from .widgets.project_explorer import ProjectExplorer
 from .widgets.orm_comparison import OrmComparisonWindow
+from .themes import THEMES, apply_application_theme, configure_item_view, theme_for_key
 
 APP_STYLESHEET = """
 * { font-family: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif; font-size: 13px; }
@@ -158,7 +160,9 @@ class MainWindow(QMainWindow):
         self.setObjectName("pyLocoMainWindow")
         self.setWindowTitle("pyLOCO GUI")
         self.resize(1320, 860)
-        self.setStyleSheet(APP_STYLESHEET)
+        self._settings = QSettings()
+        self.current_theme = theme_for_key(self._settings.value("appearance/theme", "dark"))
+        apply_application_theme(QApplication.instance(), self.current_theme)
 
         self._mode_label = QLabel("Basic mode")
         self._mode_label.setObjectName("statusPill")
@@ -193,6 +197,7 @@ class MainWindow(QMainWindow):
         self.dashboard_name.editingFinished.connect(self._rename_project)
         self.dashboard_summary = QLabel()
         self.recent_list = QListWidget()
+        configure_item_view(self.recent_list)
         tabs.addTab(self._project_page(), "Project")
         tabs.addTab(self._machine_page(), "Machine")
         tabs.addTab(self._measurements_page(), "Measurements")
@@ -277,6 +282,7 @@ class MainWindow(QMainWindow):
         import_button = QPushButton("Import HDF5, MAT, NumPy…")
         import_button.clicked.connect(self.import_measurement)
         self.measurement_list = QListWidget()
+        configure_item_view(self.measurement_list)
         row = QHBoxLayout()
         row.addWidget(QLabel("Dataset role"))
         row.addWidget(self.measurement_role)
@@ -509,6 +515,15 @@ class MainWindow(QMainWindow):
         self.mode_action_group.addAction(self.basic_mode_action)
         self.mode_action_group.addAction(self.advanced_mode_action)
         self.mode_action_group.triggered.connect(self._on_mode_changed)
+        self.theme_action_group = QActionGroup(self, exclusive=True)
+        self.theme_actions = {}
+        for key, theme in THEMES.items():
+            action = QAction(theme.display_name, self, checkable=True)
+            action.setData(key)
+            action.setChecked(key == self.current_theme.key)
+            self.theme_action_group.addAction(action)
+            self.theme_actions[key] = action
+        self.theme_action_group.triggered.connect(self._on_theme_changed)
         self.about_action = QAction("About pyLOCO GUI", self)
         self.about_action.triggered.connect(self._show_about_dialog)
 
@@ -534,6 +549,13 @@ class MainWindow(QMainWindow):
         mode_menu = view_menu.addMenu("Workflow Mode")
         mode_menu.addAction(self.basic_mode_action)
         mode_menu.addAction(self.advanced_mode_action)
+        theme_menu = view_menu.addMenu("Theme")
+        for action in self.theme_actions.values():
+            theme_menu.addAction(action)
+        settings_menu = self.menuBar().addMenu("&Settings")
+        appearance_menu = settings_menu.addMenu("Appearance")
+        for action in self.theme_actions.values():
+            appearance_menu.addAction(action)
         self.menuBar().addMenu("&Help").addAction(self.about_action)
 
     def _create_toolbar(self) -> None:
@@ -878,6 +900,17 @@ class MainWindow(QMainWindow):
         )
         self.project.modified = True
         self._refresh_ui("Project renamed")
+
+    @Slot(QAction)
+    def _on_theme_changed(self, action: QAction) -> None:
+        self.current_theme = theme_for_key(action.data())
+        apply_application_theme(QApplication.instance(), self.current_theme)
+        self._settings.setValue("appearance/theme", self.current_theme.key)
+        self._settings.sync()
+        for window in self._orm_comparison_windows:
+            if hasattr(window, "apply_theme"):
+                window.apply_theme(self.current_theme)
+        self._refresh_ui(f"{self.current_theme.display_name} theme selected")
 
     @Slot(QAction)
     def _on_mode_changed(self, action: QAction) -> None:

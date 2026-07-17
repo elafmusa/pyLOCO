@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QDockWidget, QTreeWidget, QTreeWidgetItem, QWidget
 
 from ..models.project import ProjectMetadata, REQUIRED_MEASUREMENTS
+from ..themes import configure_item_view
 
 
 class ProjectExplorer(QDockWidget):
@@ -24,6 +25,7 @@ class ProjectExplorer(QDockWidget):
         self._tree.setColumnWidth(0, 205)
         self._tree.setIndentation(18)
         self._tree.setRootIsDecorated(True)
+        configure_item_view(self._tree)
         self.setWidget(self._tree)
 
         self._mode_item: QTreeWidgetItem | None = None
@@ -43,7 +45,7 @@ class ProjectExplorer(QDockWidget):
         if project.modified:
             root_status += " *"
         root = QTreeWidgetItem([project.name, root_status])
-        self._style_item(root, bold=True, color="#12365f")
+        self._style_item(root, bold=True)
         self._tree.addTopLevelItem(root)
 
         machine = self._add_group(
@@ -100,7 +102,7 @@ class ProjectExplorer(QDockWidget):
         self, parent: QTreeWidgetItem, label: str, status: str
     ) -> QTreeWidgetItem:
         item = QTreeWidgetItem([label, status])
-        self._style_item(item, bold=True, color="#1b426d")
+        self._style_item(item, bold=True)
         parent.addChild(item)
         return item
 
@@ -108,14 +110,13 @@ class ProjectExplorer(QDockWidget):
         self, parent: QTreeWidgetItem, label: str, status: str
     ) -> QTreeWidgetItem:
         item = QTreeWidgetItem([label, status])
-        self._style_item(item, bold=False, color="#40576e")
+        self._style_item(item, bold=False)
         parent.addChild(item)
         return item
 
     @staticmethod
-    def _style_item(item: QTreeWidgetItem, *, bold: bool, color: str) -> None:
+    def _style_item(item: QTreeWidgetItem, *, bold: bool) -> None:
         font = QFont()
         font.setBold(bold)
         for column in range(2):
             item.setFont(column, font)
-            item.setForeground(column, QBrush(QColor(color)))
