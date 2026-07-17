@@ -99,3 +99,40 @@ def test_response_matrix_config_preserves_backend_ranges_and_legacy_calculators(
     defaults = LocoConfiguration().to_backend_mapping()["RMConfig"]
     assert defaults["dkick"] == (1e-5, 1e-5)
     assert defaults["rfStep"] == -3000.0
+
+
+def test_bad_bpm_validation_and_preprocessing() -> None:
+    np = pytest.importorskip("numpy")
+
+    from pyLOCO.gui.backend import _apply_bad_bpm_positions, _as_bad_bpm_positions
+    from pyLOCO.pyloco import remove_bad_bpms
+
+    positions = _as_bad_bpm_positions(np.array([1, 3]))
+    measured = {
+        "noise_x": np.arange(5),
+        "noise_y": np.arange(10, 15),
+        "eta_x": np.arange(20, 25),
+        "eta_y": np.arange(30, 35),
+        "orm": np.arange(10 * 4).reshape(10, 4),
+    }
+    indices = {"used_bpms_ords": np.arange(100, 105), "nHBPM": 5, "nVBPM": 5}
+
+    cleaned, cleaned_indices = _apply_bad_bpm_positions(measured, indices, positions, remove_bad_bpms)
+
+    assert cleaned_indices["used_bpms_ords"].tolist() == [100, 102, 104]
+    assert cleaned_indices["nHBPM"] == 3
+    assert cleaned_indices["nVBPM"] == 3
+    assert cleaned["noise_x"].tolist() == [0, 2, 4]
+    assert cleaned["noise_y"].tolist() == [10, 12, 14]
+    assert cleaned["eta_x"].tolist() == [20, 22, 24]
+    assert cleaned["eta_y"].tolist() == [30, 32, 34]
+    assert cleaned["orm"].shape == (6, 4)
+
+    with pytest.raises(ValueError, match="one-dimensional"):
+        _as_bad_bpm_positions(np.ones((2, 2), dtype=int))
+    with pytest.raises(ValueError, match="integer"):
+        _as_bad_bpm_positions(np.array([1.2]))
+    with pytest.raises(ValueError, match="unique"):
+        _as_bad_bpm_positions(np.array([1, 1]))
+    with pytest.raises(ValueError, match="valid 0-based BPM position range"):
+        _apply_bad_bpm_positions(measured, indices, np.array([5]), remove_bad_bpms)

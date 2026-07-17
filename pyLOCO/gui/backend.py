@@ -112,13 +112,17 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         _configure_worker_matplotlib()
     try:
         import at
-        from pyLOCO.pyloco import pyloco, save_fit_dict
+        from pyLOCO.pyloco import pyloco, remove_bad_bpms, save_fit_dict
 
         ring = at.load_lattice(request.lattice_path)
         log(f"Loaded lattice: {request.lattice_path}")
         measured = _load_measurements(request.measurements)
         log("Loaded measurement files.")
         indices = _derive_indices(ring, measured)
+        bad_bpm_positions = _load_bad_bpm_positions(request.measurements)
+        if bad_bpm_positions is not None:
+            measured, indices = _apply_bad_bpm_positions(measured, indices, bad_bpm_positions, remove_bad_bpms)
+            log(f"Applied Bad BPM list: removed {len(bad_bpm_positions)} BPM position(s).")
         log(
             "Using %d BPMs, %d horizontal correctors, %d vertical correctors."
             % (indices["nHBPM"], indices["nHorCOR"], indices["nVerCOR"])
@@ -241,6 +245,109 @@ def _load_measurements(paths: dict[str, str]) -> dict[str, Any]:
         data["noise_x"] = np.array(_dataset(f, "Noise_BPMx", "noise_x"))
         data["noise_y"] = np.array(_dataset(f, "Noise_BPMy", "noise_y", fallback_index=1))
     return data
+
+
+def _load_bad_bpm_positions(paths: dict[str, str]):
+    """Load an optional Bad BPM list from project measurements.
+
+    Files may be .npy, .npz, .h5/.hdf5, or .mat and must contain a one-dimensional
+    integer array of 0-based BPM positions. Preferred dataset/variable names are
+    ``bad_bpm_positions`` or ``bad_bpms``; otherwise the first data array is used.
+    """
+
+    path = paths.get("bad_bpms")
+    if not path:
+        return None
+
+    import h5py
+    import numpy as np
+
+    source = Path(path).expanduser()
+    suffix = source.suffix.lower()
+    if suffix == ".npy":
+        values = np.load(source, allow_pickle=False)
+    elif suffix == ".npz":
+        with np.load(source, allow_pickle=False) as archive:
+            key = _first_named_key(archive.keys(), "bad_bpm_positions", "bad_bpms")
+            values = np.array(archive[key])
+    elif suffix in {".h5", ".hdf5"}:
+        with h5py.File(source, "r") as handle:
+            dataset = _first_hdf5_dataset(handle, "bad_bpm_positions", "bad_bpms")
+            values = np.array(dataset)
+    elif suffix == ".mat":
+        if importlib.util.find_spec("scipy") is None:
+            raise RuntimeError("SciPy is required to import MATLAB Bad BPM list files (.mat).")
+        from scipy.io import loadmat
+
+        mat = {key: value for key, value in loadmat(source).items() if not key.startswith("__")}
+        key = _first_named_key(mat.keys(), "bad_bpm_positions", "bad_bpms")
+        values = mat[key]
+    else:
+        raise ValueError(f"Unsupported Bad BPM list file type '{suffix}'.")
+    return _as_bad_bpm_positions(values)
+
+
+def _first_named_key(keys, *preferred: str) -> str:
+    keys = list(keys)
+    for name in preferred:
+        if name in keys:
+            return name
+    if not keys:
+        raise ValueError("Bad BPM list file contains no arrays/datasets.")
+    return keys[0]
+
+
+def _first_hdf5_dataset(handle, *preferred: str):
+    for name in preferred:
+        if name in handle:
+            return handle[name]
+    datasets = []
+    handle.visititems(lambda _name, obj: datasets.append(obj) if hasattr(obj, "shape") else None)
+    if not datasets:
+        raise ValueError(f"Bad BPM list file {handle.filename} contains no datasets.")
+    return datasets[0]
+
+
+def _as_bad_bpm_positions(values):
+    import numpy as np
+
+    array = np.asarray(values)
+    array = np.squeeze(array)
+    if array.ndim != 1:
+        raise ValueError(f"Bad BPM list must be one-dimensional; got shape {array.shape}.")
+    if not np.issubdtype(array.dtype, np.integer):
+        if np.issubdtype(array.dtype, np.floating) and np.all(np.isfinite(array)) and np.all(array == np.floor(array)):
+            array = array.astype(np.int64)
+        else:
+            raise ValueError("Bad BPM list must contain integer BPM positions.")
+    array = array.astype(np.int64, copy=False)
+    if len(np.unique(array)) != len(array):
+        raise ValueError("Bad BPM list must contain unique BPM positions; duplicate indices were found.")
+    return array
+
+
+def _apply_bad_bpm_positions(measured: dict[str, Any], indices: dict[str, Any], bad_bpm_positions, remove_bad_bpms):
+    import numpy as np
+
+    total_bpms = len(indices["used_bpms_ords"])
+    if np.any(bad_bpm_positions < 0) or np.any(bad_bpm_positions >= total_bpms):
+        raise ValueError(
+            "Bad BPM list contains indices outside the valid 0-based BPM position range "
+            f"[0, {total_bpms - 1}]."
+        )
+    updated_measured = dict(measured)
+    updated_indices = dict(indices)
+    updated_measured["noise_x"] = np.delete(updated_measured["noise_x"], bad_bpm_positions)
+    updated_measured["noise_y"] = np.delete(updated_measured["noise_y"], bad_bpm_positions)
+    updated_measured["eta_x"] = np.delete(updated_measured["eta_x"], bad_bpm_positions)
+    updated_measured["eta_y"] = np.delete(updated_measured["eta_y"], bad_bpm_positions)
+    updated_measured["orm"], _removed = remove_bad_bpms(
+        updated_measured["orm"], bad_bpm_positions, total_bpms=total_bpms, axis=0, input_type="positions"
+    )
+    updated_indices["used_bpms_ords"] = np.delete(updated_indices["used_bpms_ords"], bad_bpm_positions)
+    updated_indices["nHBPM"] = len(updated_indices["used_bpms_ords"])
+    updated_indices["nVBPM"] = len(updated_indices["used_bpms_ords"])
+    return updated_measured, updated_indices
 
 
 def _dataset(handle, *names: str, fallback_index: int = 0):
