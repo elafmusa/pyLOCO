@@ -2252,7 +2252,8 @@ def pyloco(
         previous_fit_results=None,
         previous_fit_dict=None,
         previous_ring=None,
-        calculate_delta_chi2=False
+        calculate_delta_chi2=False,
+        initial_model_orm_callback=None
 
 ):
 
@@ -2450,6 +2451,9 @@ def pyloco(
         weights_flat_, weights_flat_chi_ = weight_matrix(weights, includeDispersion,
                                                          hor_dispersion_weight, ver_dispersion_weight,
                                                          nHBPM, nVBPM, nHorCOR, nVerCOR)
+        if it == 0 and initial_model_orm_callback is not None:
+            initial_model_orm_callback(orm_model.copy())
+
         y_meas_ = orm_measured.reshape(-1, 1, order="F")
         y_model_ = orm_model.reshape(-1, 1, order="F")
         J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")

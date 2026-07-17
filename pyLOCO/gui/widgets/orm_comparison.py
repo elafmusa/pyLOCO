@@ -69,7 +69,7 @@ class OrmComparisonWindow(QDialog):
         self.rms_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.rms_label)
         layout.addLayout(self._controls())
-        self.figure = self.Figure(figsize=(12, 6), constrained_layout=True)
+        self.figure = self.Figure(figsize=(12, 6), constrained_layout=True, facecolor="#1E1E2E")
         self.canvas = self.FigureCanvasQTAgg(self.figure)
         self.toolbar = self.NavigationToolbar2QT(self.canvas, self)
         layout.addWidget(self.toolbar)
@@ -152,6 +152,7 @@ class OrmComparisonWindow(QDialog):
 
     def _redraw(self) -> None:
         self.figure.clear()
+        self.figure.patch.set_facecolor("#1E1E2E")
         matrices = [("Measured ORM", self.measured_orm), ("Model ORM", self.model_orm), ("Difference (Measured − Model)", self.difference_orm)]
         is_surface = self.plot_mode.currentText().startswith("3D")
         axes = []
@@ -163,15 +164,38 @@ class OrmComparisonWindow(QDialog):
             if is_surface:
                 x, y = np.meshgrid(rendered.correctors, rendered.bpms)
                 artist = ax.plot_surface(x, y, rendered.values, cmap="viridis", vmin=vmin, vmax=vmax, linewidth=0, antialiased=False, rcount=rendered.values.shape[0], ccount=rendered.values.shape[1])
-                ax.set_zlabel("ORM value (m/rad)")
+                ax.set_zlabel("ORM value (m/rad)", color="#DDE3F0", labelpad=8)
+                ax.zaxis.label.set_fontsize(10)
             else:
                 artist = ax.imshow(rendered.values, aspect="auto", origin="lower", cmap="viridis", vmin=vmin, vmax=vmax, extent=[rendered.correctors[0], rendered.correctors[-1], rendered.bpms[0], rendered.bpms[-1]])
-            ax.set_title(title)
-            ax.set_xlabel("Correctors")
-            ax.set_ylabel("BPMs")
-            self.figure.colorbar(artist, ax=ax, shrink=0.72, label="m/rad")
+            self._style_axes(ax, is_surface)
+            ax.set_title(title, color="#FFFFFF", fontsize=12, fontweight="bold", pad=12)
+            ax.set_xlabel("Correctors", color="#DDE3F0", labelpad=8)
+            ax.set_ylabel("BPMs", color="#DDE3F0", labelpad=8)
+            colorbar = self.figure.colorbar(artist, ax=ax, shrink=0.72, label="ORM (m/rad)")
+            colorbar.ax.yaxis.label.set_color("#DDE3F0")
+            colorbar.ax.tick_params(colors="#DDE3F0", labelsize=9)
+            colorbar.outline.set_edgecolor("#4A4F68")
         self._axes = axes
         self.canvas.draw_idle()
+
+
+    @staticmethod
+    def _style_axes(ax, is_surface: bool) -> None:
+        ax.set_facecolor("#25283A")
+        ax.tick_params(colors="#DDE3F0", labelsize=9)
+        for spine in getattr(ax, "spines", {}).values():
+            spine.set_color("#4A4F68")
+        ax.xaxis.label.set_fontsize(10)
+        ax.yaxis.label.set_fontsize(10)
+        ax.ticklabel_format(axis="both", style="sci", scilimits=(-3, 3), useMathText=True)
+        if is_surface:
+            for axis in (ax.xaxis, ax.yaxis, ax.zaxis):
+                axis.set_pane_color((0.157, 0.173, 0.243, 1.0))
+                axis._axinfo["grid"]["color"] = (0.36, 0.39, 0.52, 0.45)
+            ax.zaxis.set_tick_params(colors="#DDE3F0", labelsize=9)
+        else:
+            ax.grid(color="#4A4F68", alpha=0.28, linewidth=0.6)
 
     def _sync_3d_views(self, event) -> None:
         if self._syncing_view or not hasattr(self, "_axes") or not self.plot_mode.currentText().startswith("3D"):
