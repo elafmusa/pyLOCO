@@ -313,8 +313,8 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         scroll.setWidget(container)
         page.layout().addWidget(scroll, 1)
-        self._connect_fit_controls()
         self._load_config_to_widgets()
+        self._connect_fit_controls()
         return page
 
     def _spin(self, minimum: int, maximum: int, value: int) -> QSpinBox:
