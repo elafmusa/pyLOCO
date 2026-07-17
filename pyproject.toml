@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyLOCO"
-version = "0.0.1"
+version = "0.3.0"
 
 [project.optional-dependencies]
 gui = ["PySide6"]
