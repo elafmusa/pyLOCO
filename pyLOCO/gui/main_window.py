@@ -342,11 +342,16 @@ class MainWindow(QMainWindow):
             self.svd_method.addItem(label, method)
         self.svd_threshold = self._double_spin(0.0, 1.0, 1e-7, 10)
         self.svd_rank = self._spin(0, 100000, 500)
+        self.svd_parameter_label = QLabel("Threshold")
+        self.svd_parameter_input = QWidget()
+        svd_parameter_layout = QHBoxLayout(self.svd_parameter_input)
+        svd_parameter_layout.setContentsMargins(0, 0, 0, 0)
+        svd_parameter_layout.addWidget(self.svd_threshold)
+        svd_parameter_layout.addWidget(self.svd_rank)
         self.svd_plot = QCheckBox("Show SVD plot")
         svd_form = QFormLayout()
         svd_form.addRow("Selection method", self.svd_method)
-        svd_form.addRow("Threshold", self.svd_threshold)
-        svd_form.addRow("Rank/cut", self.svd_rank)
+        svd_form.addRow(self.svd_parameter_label, self.svd_parameter_input)
         svd_form.addRow(self.svd_plot)
         svd_group = QGroupBox("SVD")
         svd_group.setLayout(svd_form)
@@ -586,8 +591,18 @@ class MainWindow(QMainWindow):
 
     def _update_svd_input_availability(self) -> None:
         method = self._selected_svd_method()
+        parameter_labels = {
+            "threshold": "Threshold",
+            "rank": "Rank",
+            "user_input": "Number of singular values to keep",
+            "interactive": "Number of singular values to keep",
+        }
+        self.svd_parameter_label.setText(parameter_labels.get(method, "SVD parameter"))
+        self.svd_threshold.setVisible(method == "threshold")
         self.svd_threshold.setEnabled(method == "threshold")
-        self.svd_rank.setEnabled(method == "user_input")
+        self.svd_rank.setVisible(method in {"rank", "user_input", "interactive"})
+        self.svd_rank.setEnabled(method in {"rank", "user_input"})
+        self.svd_parameter_input.setEnabled(method != "interactive")
         self.svd_plot.setEnabled(method != "interactive")
         if method == "interactive":
             self.svd_plot.setChecked(True)
