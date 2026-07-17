@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import at
-from matplotlib.cm import get_cmap
+from matplotlib.pyplot import get_cmap
 from pySC.tuning.response_measurements import measure_RFFrequencyOrbitResponse
 import logging
 LOGGER = logging.getLogger(__name__)
