@@ -81,5 +81,21 @@ def test_gui_backend_uses_internal_config_without_legacy_module() -> None:
 
     assert config_module.__name__ == "pyLOCO.config"
     assert "pyloco_config" not in sys.modules
-    assert config_module.RMConfig(**mapping["RMConfig"]).dkick == (100e-6, 100e-6)
+    assert config_module.RMConfig(**mapping["RMConfig"]).dkick == (1e-5, 1e-5)
     assert config_module.FitInitConfig(**mapping["FitInitConfig"]).fit_list == mapping["FitInitConfig"]["fit_list"]
+
+
+def test_response_matrix_config_preserves_backend_ranges_and_legacy_calculators() -> None:
+    """GUI RM configuration should match backend defaults and normalize equivalent algorithms."""
+    from pyLOCO.gui.models.project import LocoConfiguration, ResponseMatrixConfig
+
+    cfg = ResponseMatrixConfig(calculator="PyAT", rfStep=-1234.5, dkick_h=1e-6, dkick_v=2.5e-4)
+    kwargs = cfg.to_rm_config_kwargs()
+
+    assert kwargs["calculator"] == "Tracking"
+    assert kwargs["rfStep"] == -1234.5
+    assert kwargs["dkick"] == (1e-6, 2.5e-4)
+
+    defaults = LocoConfiguration().to_backend_mapping()["RMConfig"]
+    assert defaults["dkick"] == (1e-5, 1e-5)
+    assert defaults["rfStep"] == -3000.0

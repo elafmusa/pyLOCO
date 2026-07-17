@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QDoubleValidator, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -63,6 +63,41 @@ QLabel#placeholderDescription, QLabel#dashboardCardText { color: #52677d; font-s
 QWidget#dashboardCard { background: #f8fbff; border: 1px solid #d9e6f5; border-radius: 10px; }
 QLabel#dashboardCardTitle { color: #1b426d; font-size: 15px; font-weight: 700; }
 """
+
+
+class ScientificDoubleSpinBox(QDoubleSpinBox):
+    """Double spin box that accepts and displays scientific notation."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._validator = QDoubleValidator(self)
+        self._validator.setNotation(QDoubleValidator.ScientificNotation)
+
+    def validate(self, text: str, pos: int):  # type: ignore[override]
+        suffix = self.suffix()
+        candidate = text.strip()
+        if suffix and candidate.endswith(suffix):
+            candidate = candidate[: -len(suffix)].strip()
+        if candidate in {"", "+", "-", ".", "+.", "-."}:
+            return QDoubleValidator.Intermediate, text, pos
+        state, _, _ = self._validator.validate(candidate, pos)
+        try:
+            value = float(candidate)
+        except ValueError:
+            return state, text, pos
+        if self.minimum() <= value <= self.maximum():
+            return state, text, pos
+        return QDoubleValidator.Invalid, text, pos
+
+    def valueFromText(self, text: str) -> float:  # type: ignore[override]
+        suffix = self.suffix()
+        candidate = text.strip()
+        if suffix and candidate.endswith(suffix):
+            candidate = candidate[: -len(suffix)].strip()
+        return float(candidate)
+
+    def textFromValue(self, value: float) -> str:  # type: ignore[override]
+        return f"{value:.{self.decimals()}g}"
 
 
 class LocoRunWorker(QObject):
@@ -237,22 +272,32 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
 
         self.rm_calculator = QComboBox()
-        self.rm_calculator.addItems(["Linear", "Tracking", "PyAT"])
-        self.rm_dispersion = QCheckBox("Include dispersion columns")
+        self.rm_calculator.addItem("Linear ORM (analytic)", "Linear")
+        self.rm_calculator.addItem("Numerical ORM (tracking)", "Tracking")
+        self.rm_calculator.setToolTip("Choose the backend ORM implementation: linear analytic calculation or numerical tracking.")
+        self.rm_dispersion = QCheckBox("Include dispersion/RF response column")
+        self.rm_dispersion.setToolTip("Append the response to an RF frequency shift to the ORM.")
         self.rm_coupling = QCheckBox("Include coupling ORM terms")
-        self.rm_bidirectional = QCheckBox("Use ± kicks and average response")
+        self.rm_coupling.setToolTip("Include cross-plane response blocks in the ORM.")
+        self.rm_bidirectional = QCheckBox("Bidirectional (+/- delta kick)")
+        self.rm_bidirectional.setToolTip("Compute the ORM using positive and negative perturbations (central difference) instead of a single perturbation. This generally improves numerical accuracy.")
         self.rm_vectorized = QCheckBox("Use vectorized response calculation")
-        self.rm_dkick_h = self._double_spin(1e-9, 1e-1, 100e-6, 9)
-        self.rm_dkick_v = self._double_spin(1e-9, 1e-1, 100e-6, 9)
-        self.rm_rf_step = self._double_spin(0.0, 1e9, 200.0, 3)
-        self.rm_delta_coupling = self._double_spin(0.0, 1.0, 1e-6, 9)
+        self.rm_vectorized.setToolTip("Use the backend vectorized ORM path where available.")
+        self.rm_dkick_h = self._double_spin(0.0, 1e-1, 1e-5, 9, " rad")
+        self.rm_dkick_v = self._double_spin(0.0, 1e-1, 1e-5, 9, " rad")
+        self.rm_rf_step = self._double_spin(-1e9, 1e9, -3000.0, 9, " Hz")
+        self.rm_delta_coupling = self._double_spin(-1.0, 1.0, 1e-6, 9)
+        self.rm_dkick_h.setToolTip("Horizontal corrector kick step in radians; scientific notation such as 1e-6 is accepted.")
+        self.rm_dkick_v.setToolTip("Vertical corrector kick step in radians; scientific notation such as 5e-5 is accepted.")
+        self.rm_rf_step.setToolTip("RF frequency step in Hz. Positive and negative shifts are supported and the sign is preserved.")
+        self.rm_delta_coupling.setToolTip("Small dimensionless delta used to evaluate corrector coupling terms; scientific notation is accepted.")
         rm_form = QFormLayout()
         for label, widget in (
-            ("Calculator", self.rm_calculator),
-            ("Horizontal kick", self.rm_dkick_h),
-            ("Vertical kick", self.rm_dkick_v),
-            ("RF step", self.rm_rf_step),
-            ("Coupling delta", self.rm_delta_coupling),
+            ("ORM calculation method", self.rm_calculator),
+            ("Horizontal kick step", self.rm_dkick_h),
+            ("Vertical kick step", self.rm_dkick_v),
+            ("RF frequency step", self.rm_rf_step),
+            ("Coupling delta (dimensionless)", self.rm_delta_coupling),
         ):
             rm_form.addRow(label, widget)
         for widget in (self.rm_dispersion, self.rm_coupling, self.rm_bidirectional, self.rm_vectorized):
@@ -375,12 +420,16 @@ class MainWindow(QMainWindow):
         spin.setValue(value)
         return spin
 
-    def _double_spin(self, minimum: float, maximum: float, value: float, decimals: int) -> QDoubleSpinBox:
-        spin = QDoubleSpinBox()
+    def _double_spin(
+        self, minimum: float, maximum: float, value: float, decimals: int, suffix: str = ""
+    ) -> QDoubleSpinBox:
+        spin = ScientificDoubleSpinBox()
         spin.setRange(minimum, maximum)
         spin.setDecimals(decimals)
+        spin.setSuffix(suffix)
+        spin.setKeyboardTracking(False)
         spin.setValue(value)
-        spin.setSingleStep(value or 1.0)
+        spin.setSingleStep(abs(value) or 1.0)
         return spin
 
     def _page(self, title: str) -> QWidget:
@@ -493,9 +542,15 @@ class MainWindow(QMainWindow):
             elif isinstance(widget, QCheckBox):
                 widget.toggled.connect(self._on_fit_config_changed)
 
+    def _set_calculator_value(self, calculator: str) -> None:
+        backend_value = "Linear" if calculator == "Linear" else "Tracking"
+        index = self.rm_calculator.findData(backend_value)
+        if index >= 0:
+            self.rm_calculator.setCurrentIndex(index)
+
     def _load_config_to_widgets(self) -> None:
         cfg = self.project.loco_config
-        self.rm_calculator.setCurrentText(cfg.response_matrix.calculator)
+        self._set_calculator_value(cfg.response_matrix.calculator)
         self.rm_dispersion.setChecked(cfg.response_matrix.includeDispersion)
         self.rm_coupling.setChecked(cfg.response_matrix.coupling_orm)
         self.rm_bidirectional.setChecked(cfg.response_matrix.bidirectional)
@@ -531,7 +586,7 @@ class MainWindow(QMainWindow):
 
     def _collect_loco_configuration(self) -> LocoConfiguration:
         cfg = LocoConfiguration()
-        cfg.response_matrix.calculator = self.rm_calculator.currentText()
+        cfg.response_matrix.calculator = self.rm_calculator.currentData() or self.rm_calculator.currentText()
         cfg.response_matrix.includeDispersion = self.rm_dispersion.isChecked()
         cfg.response_matrix.coupling_orm = self.rm_coupling.isChecked()
         cfg.response_matrix.bidirectional = self.rm_bidirectional.isChecked()
