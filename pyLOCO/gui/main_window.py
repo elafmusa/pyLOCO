@@ -10,7 +10,7 @@ import json
 import shutil
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot, QTimer
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QDoubleValidator, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -27,6 +27,9 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QDoubleSpinBox,
+    QDialog,
+    QRadioButton,
+    QButtonGroup,
     QSpinBox,
     QProgressBar,
     QStatusBar,
@@ -35,12 +38,14 @@ from PySide6.QtWidgets import (
     QToolBar,
     QVBoxLayout,
     QWidget,
+    QApplication,
 )
 
 from .backend import LocoRunError, LocoRunRequest, run_loco_request
 from .models.project import ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata
 from .widgets.project_explorer import ProjectExplorer
 from .widgets.orm_comparison import OrmComparisonWindow
+from .themes import THEMES, apply_application_theme, configure_item_view, theme_for_key
 
 APP_STYLESHEET = """
 * { font-family: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif; font-size: 13px; }
@@ -158,7 +163,9 @@ class MainWindow(QMainWindow):
         self.setObjectName("pyLocoMainWindow")
         self.setWindowTitle("pyLOCO GUI")
         self.resize(1320, 860)
-        self.setStyleSheet(APP_STYLESHEET)
+        self._settings = QSettings()
+        self.current_theme = theme_for_key(self._settings.value("appearance/theme", "dark"))
+        apply_application_theme(QApplication.instance(), self.current_theme)
 
         self._mode_label = QLabel("Basic mode")
         self._mode_label.setObjectName("statusPill")
@@ -177,6 +184,9 @@ class MainWindow(QMainWindow):
         self._workspace = self._create_workspace()
 
         self.setCentralWidget(self._workspace)
+        self.menuBar().setNativeMenuBar(False)
+        self._native_menu_bar_forced = not self.menuBar().isNativeMenuBar()
+        self._menu_bar_created = False
         self.addDockWidget(Qt.LeftDockWidgetArea, self._project_explorer)
         self._create_actions()
         self._create_menu_bar()
@@ -193,6 +203,7 @@ class MainWindow(QMainWindow):
         self.dashboard_name.editingFinished.connect(self._rename_project)
         self.dashboard_summary = QLabel()
         self.recent_list = QListWidget()
+        configure_item_view(self.recent_list)
         tabs.addTab(self._project_page(), "Project")
         tabs.addTab(self._machine_page(), "Machine")
         tabs.addTab(self._measurements_page(), "Measurements")
@@ -277,6 +288,7 @@ class MainWindow(QMainWindow):
         import_button = QPushButton("Import HDF5, MAT, NumPy…")
         import_button.clicked.connect(self.import_measurement)
         self.measurement_list = QListWidget()
+        configure_item_view(self.measurement_list)
         row = QHBoxLayout()
         row.addWidget(QLabel("Dataset role"))
         row.addWidget(self.measurement_role)
@@ -509,10 +521,25 @@ class MainWindow(QMainWindow):
         self.mode_action_group.addAction(self.basic_mode_action)
         self.mode_action_group.addAction(self.advanced_mode_action)
         self.mode_action_group.triggered.connect(self._on_mode_changed)
+        self.theme_action_group = QActionGroup(self, exclusive=True)
+        self.theme_actions = {}
+        for key, theme in THEMES.items():
+            action = QAction(theme.display_name, self, checkable=True)
+            action.setData(key)
+            action.setChecked(key == self.current_theme.key)
+            self.theme_action_group.addAction(action)
+            self.theme_actions[key] = action
+        self.theme_action_group.triggered.connect(self._on_theme_changed)
+        self.toggle_theme_action = QAction(self)
+        self.toggle_theme_action.triggered.connect(self._toggle_theme)
+        self._update_theme_toggle_action()
+        self.appearance_action = QAction("Appearance…", self)
+        self.appearance_action.triggered.connect(self._show_appearance_dialog)
         self.about_action = QAction("About pyLOCO GUI", self)
         self.about_action.triggered.connect(self._show_about_dialog)
 
     def _create_menu_bar(self) -> None:
+        self._menu_bar_created = True
         file_menu = self.menuBar().addMenu("&File")
         for action in (
             self.new_project_action,
@@ -534,7 +561,52 @@ class MainWindow(QMainWindow):
         mode_menu = view_menu.addMenu("Workflow Mode")
         mode_menu.addAction(self.basic_mode_action)
         mode_menu.addAction(self.advanced_mode_action)
+        theme_menu = view_menu.addMenu("Theme")
+        for action in self.theme_actions.values():
+            theme_menu.addAction(action)
+        settings_menu = self.menuBar().addMenu("&Settings")
+        settings_menu.addAction(self.appearance_action)
+        appearance_menu = settings_menu.addMenu("Appearance")
+        for action in self.theme_actions.values():
+            appearance_menu.addAction(action)
         self.menuBar().addMenu("&Help").addAction(self.about_action)
+
+    def menu_structure_for_diagnostics(self) -> list[dict[str, object]]:
+        """Return a serializable snapshot of the menu bar for startup diagnostics."""
+
+        def action_label(action: QAction) -> str:
+            return action.text().replace("&", "") or "<separator>"
+
+        structure: list[dict[str, object]] = []
+        for top_action in self.menuBar().actions():
+            menu = top_action.menu()
+            entry: dict[str, object] = {"title": action_label(top_action), "actions": []}
+            if menu is not None:
+                actions = []
+                for action in menu.actions():
+                    submenu = action.menu()
+                    if submenu is None:
+                        actions.append(action_label(action))
+                    else:
+                        actions.append({
+                            "title": action_label(action),
+                            "actions": [action_label(child) for child in submenu.actions()],
+                        })
+                entry["actions"] = actions
+            structure.append(entry)
+        return structure
+
+    def startup_diagnostics(self) -> dict[str, object]:
+        """Return runtime facts that help identify stale installs or Qt menu issues."""
+
+        return {
+            "main_window_path": str(Path(__file__).resolve()),
+            "create_menu_bar_executed": self._menu_bar_created,
+            "native_menu_bar_disabled": self._native_menu_bar_forced,
+            "menu_titles": [action.text().replace("&", "") for action in self.menuBar().actions()],
+            "menu_structure": self.menu_structure_for_diagnostics(),
+            "toolbar_actions": [action.text() for action in self.findChild(QToolBar, "mainToolbar").actions()],
+        }
 
     def _create_toolbar(self) -> None:
         toolbar = QToolBar("Main Toolbar", self)
@@ -553,6 +625,8 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.basic_mode_action)
         toolbar.addAction(self.advanced_mode_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.toggle_theme_action)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
 
     def _create_status_bar(self) -> None:
@@ -878,6 +952,61 @@ class MainWindow(QMainWindow):
         )
         self.project.modified = True
         self._refresh_ui("Project renamed")
+
+    def _update_theme_toggle_action(self) -> None:
+        next_theme = "light" if self.current_theme.key == "dark" else "dark"
+        icon = "☀️" if next_theme == "light" else "🌙"
+        name = THEMES[next_theme].display_name
+        self.toggle_theme_action.setText(f"{icon} {name}")
+        self.toggle_theme_action.setToolTip(f"Switch to the {name} theme")
+
+    @Slot()
+    def _toggle_theme(self) -> None:
+        next_theme = "light" if self.current_theme.key == "dark" else "dark"
+        self._apply_theme_key(next_theme)
+
+    @Slot()
+    def _show_appearance_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Appearance")
+        layout = QVBoxLayout(dialog)
+        title = QLabel("Appearance")
+        title.setObjectName("pageTitle")
+        layout.addWidget(title)
+        layout.addWidget(QLabel("Choose the application theme. Your choice is saved for future sessions."))
+        group = QGroupBox("Theme")
+        group_layout = QVBoxLayout(group)
+        buttons = QButtonGroup(dialog)
+        for key, theme in THEMES.items():
+            radio = QRadioButton(theme.display_name)
+            radio.setChecked(key == self.current_theme.key)
+            radio.toggled.connect(lambda checked, value=key: checked and self._apply_theme_key(value))
+            buttons.addButton(radio)
+            group_layout.addWidget(radio)
+        layout.addWidget(group)
+        close_row = QHBoxLayout()
+        close_row.addStretch(1)
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(dialog.accept)
+        close_row.addWidget(close_button)
+        layout.addLayout(close_row)
+        dialog.exec()
+
+    def _apply_theme_key(self, key: str) -> None:
+        self.current_theme = theme_for_key(key)
+        self.theme_actions[self.current_theme.key].setChecked(True)
+        apply_application_theme(QApplication.instance(), self.current_theme)
+        self._settings.setValue("appearance/theme", self.current_theme.key)
+        self._settings.sync()
+        self._update_theme_toggle_action()
+        for window in self._orm_comparison_windows:
+            if hasattr(window, "apply_theme"):
+                window.apply_theme(self.current_theme)
+        self._refresh_ui(f"{self.current_theme.display_name} theme selected")
+
+    @Slot(QAction)
+    def _on_theme_changed(self, action: QAction) -> None:
+        self._apply_theme_key(action.data())
 
     @Slot(QAction)
     def _on_mode_changed(self, action: QAction) -> None:

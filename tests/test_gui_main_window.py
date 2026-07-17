@@ -65,6 +65,45 @@ def test_refresh_ui_qactions_are_created() -> None:
     assert refresh_actions <= created_actions
 
 
+
+
+def test_gui_debug_argument_is_removed_before_qt() -> None:
+    """The GUI debug flag should enable diagnostics without being passed to Qt."""
+    import sys
+    from pathlib import Path
+
+    pytest.importorskip("PySide6")
+    sys.path.insert(0, str(Path.cwd()))
+    from pyLOCO.gui.app import DEBUG_GUI_FLAG, _debug_requested, _qt_argv
+
+    argv = ["pyloco-gui", DEBUG_GUI_FLAG, "--platform", "offscreen"]
+
+    assert _debug_requested(argv) is True
+    assert _qt_argv(argv) == ["pyloco-gui", "--platform", "offscreen"]
+
+def test_theme_controls_are_exposed_in_menus_and_toolbar() -> None:
+    """Theme switching should be discoverable from View, Settings, and the toolbar."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+
+    from pyLOCO.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    window = MainWindow()
+    try:
+        menu_titles = [action.text().replace("&", "") for action in window.menuBar().actions()]
+        assert "View" in menu_titles
+        assert "Settings" in menu_titles
+
+        assert window.menuBar().isNativeMenuBar() is False
+        assert hasattr(window, "theme_actions")
+        assert {action.text() for action in window.theme_actions.values()} == {"Light", "Dark"}
+        assert window.toggle_theme_action.text().startswith(("☀️", "🌙"))
+        assert window.appearance_action.text() == "Appearance…"
+    finally:
+        window.close()
+
 def test_gui_backend_uses_internal_config_without_legacy_module() -> None:
     """GUI backend configuration should not require an external pyloco_config.py."""
     import sys
