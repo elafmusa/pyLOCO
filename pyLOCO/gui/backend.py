@@ -106,7 +106,10 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         raise RuntimeError("LOCO run cancelled before backend execution started.")
 
     config_module = _make_gui_config(request.backend_mapping)
-    _configure_worker_matplotlib()
+    options = dict(request.backend_mapping["LOCOOptions"])
+    interactive_svd = options.get("svd_selection_method") == "interactive"
+    if not interactive_svd:
+        _configure_worker_matplotlib()
     try:
         import at
         from pyLOCO.pyloco import pyloco, save_fit_dict
@@ -124,9 +127,8 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         fit_cfg = config_module.FitInitConfig(**request.backend_mapping["FitInitConfig"])
         rm_cfg = config_module.RMConfig(**request.backend_mapping["RMConfig"])
         constraint_cfg = _make_constraint_config(request.backend_mapping["ConstraintConfig"])
-        options = dict(request.backend_mapping["LOCOOptions"])
         options.setdefault("fit_list", fit_cfg.fit_list or ())
-        _disable_worker_ui_options(options, log)
+        _disable_worker_ui_options(options, log, preserve_svd_ui=interactive_svd)
 
         kwargs = _build_pyloco_kwargs(
             ring=ring,
@@ -181,11 +183,12 @@ def _configure_worker_matplotlib() -> None:
     matplotlib.use("Agg", force=True)
 
 
-def _disable_worker_ui_options(options: dict[str, Any], log) -> None:
+def _disable_worker_ui_options(options: dict[str, Any], log, preserve_svd_ui: bool = False) -> None:
     """Disable backend options that would create interactive windows."""
 
     disabled = []
-    for key in ("show_svd_plot", "plot_fit_parameters"):
+    keys = ["plot_fit_parameters"] if preserve_svd_ui else ["show_svd_plot", "plot_fit_parameters"]
+    for key in keys:
         if options.get(key):
             options[key] = False
             disabled.append(key)
