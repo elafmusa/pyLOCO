@@ -1,8 +1,7 @@
-"""Main window for the Milestone 2 pyLOCO GUI.
+"""Main window for the pyLOCO GUI.
 
 The GUI manages project state, lattice metadata, imported measurement files,
-and validation readiness only. It deliberately does not import or execute the
-numerical pyLOCO backend.
+backend-compatible LOCO configuration, and responsive execution monitoring.
 """
 
 from __future__ import annotations
@@ -10,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -28,6 +27,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QDoubleSpinBox,
     QSpinBox,
+    QProgressBar,
     QStatusBar,
     QTabWidget,
     QTextEdit,
@@ -36,8 +36,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .backend import LocoRunRequest, run_loco_request
 from .models.project import ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata
-from .widgets.placeholders import PlaceholderPage
 from .widgets.project_explorer import ProjectExplorer
 
 APP_STYLESHEET = """
@@ -65,6 +65,30 @@ QLabel#dashboardCardTitle { color: #1b426d; font-size: 15px; font-weight: 700; }
 """
 
 
+class LocoRunWorker(QObject):
+    log = Signal(str)
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, request: LocoRunRequest) -> None:
+        super().__init__()
+        self.request = request
+        self.cancel_requested = False
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = run_loco_request(
+                self.request,
+                log_callback=self.log.emit,
+                cancel_callback=lambda: self.cancel_requested,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.finished.emit(result)
+
+
 class MainWindow(QMainWindow):
     """Top-level pyLOCO GUI window for project management and data import."""
 
@@ -83,6 +107,11 @@ class MainWindow(QMainWindow):
         self._backend_label = QLabel("Backend: unchanged")
         self._validation_label = QLabel()
         self._project_explorer = ProjectExplorer()
+        self._run_thread: QThread | None = None
+        self._run_worker: LocoRunWorker | None = None
+        self._run_started_at = 0.0
+        self._elapsed_timer = QTimer(self)
+        self._elapsed_timer.timeout.connect(self._update_elapsed_time)
         self._workspace = self._create_workspace()
 
         self.setCentralWidget(self._workspace)
@@ -106,14 +135,35 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._machine_page(), "Machine")
         tabs.addTab(self._measurements_page(), "Measurements")
         tabs.addTab(self._fit_page(), "Fit")
-        tabs.addTab(
-            PlaceholderPage(
-                "Results Workspace",
-                "Run summaries and exports will appear after execution milestones are implemented.",
-            ),
-            "Results",
-        )
+        self.results_page = self._results_page()
+        tabs.addTab(self.results_page, "Results")
         return tabs
+
+
+    def _results_page(self) -> QWidget:
+        page = self._page("Results Workspace")
+        self.run_status_label = QLabel("No LOCO run has been started.")
+        self.run_elapsed_label = QLabel("Elapsed: 0.0 s")
+        self.run_progress = QProgressBar()
+        self.run_progress.setRange(0, 1)
+        self.run_progress.setValue(0)
+        self.run_output_dir = QLabel("—")
+        self.run_log = QTextEdit()
+        self.run_log.setReadOnly(True)
+        self.cancel_loco_button = QPushButton("Cancel Run")
+        self.cancel_loco_button.setEnabled(False)
+        self.cancel_loco_button.clicked.connect(self.cancel_loco_run)
+        form = QFormLayout()
+        form.addRow("Status", self.run_status_label)
+        form.addRow("Elapsed", self.run_elapsed_label)
+        form.addRow("Progress", self.run_progress)
+        form.addRow("Results directory", self.run_output_dir)
+        group = QGroupBox("Backend Run Monitor")
+        group.setLayout(form)
+        page.layout().addWidget(group)
+        page.layout().addWidget(self.cancel_loco_button)
+        page.layout().addWidget(self.run_log, 1)
+        return page
 
     def _project_page(self) -> QWidget:
         page = self._page("Project Dashboard")
@@ -355,7 +405,7 @@ class MainWindow(QMainWindow):
         self.validate_project_action = QAction("Validate", self)
         self.validate_project_action.triggered.connect(self.validate_project)
         self.run_loco_action = QAction("Run LOCO", self)
-        self.run_loco_action.triggered.connect(self._run_loco_notice)
+        self.run_loco_action.triggered.connect(self.run_loco)
         self.exit_action = QAction("Exit", self)
         self.exit_action.setShortcut(QKeySequence.Quit)
         self.exit_action.triggered.connect(self.close)
@@ -720,12 +770,86 @@ class MainWindow(QMainWindow):
         self._project_explorer.update_project(self.project)
         self.statusBar().showMessage(message, 4000)
 
-    def _run_loco_notice(self) -> None:
-        QMessageBox.information(
-            self,
-            "Run LOCO",
-            "Project inputs are complete. Numerical LOCO execution is reserved for a later milestone and the backend remains unchanged.",
-        )
+
+
+    @Slot()
+    def run_loco(self) -> None:
+        messages = self.project.validation_messages()
+        if messages:
+            QMessageBox.warning(self, "Cannot run LOCO", "Missing required inputs:\n\n" + "\n".join(messages))
+            return
+        if self._run_thread is not None:
+            QMessageBox.information(self, "LOCO already running", "A LOCO run is already in progress.")
+            return
+        self.project.loco_config = self._collect_loco_configuration()
+        request = LocoRunRequest.from_project(self.project)
+        self._run_started_at = __import__("time").monotonic()
+        self.run_log.clear()
+        self.run_status_label.setText("Running pyLOCO backend...")
+        self.run_progress.setRange(0, 0)
+        self.run_output_dir.setText("Preparing results directory...")
+        self.cancel_loco_button.setEnabled(True)
+        self.run_loco_action.setEnabled(False)
+        self._workspace.setCurrentIndex(self._workspace.indexOf(self.results_page))
+        self._run_thread = QThread(self)
+        self._run_worker = LocoRunWorker(request)
+        self._run_worker.moveToThread(self._run_thread)
+        self._run_thread.started.connect(self._run_worker.run)
+        self._run_worker.log.connect(self._append_run_log)
+        self._run_worker.finished.connect(self._on_loco_finished)
+        self._run_worker.failed.connect(self._on_loco_failed)
+        self._run_worker.finished.connect(self._cleanup_run_thread)
+        self._run_worker.failed.connect(self._cleanup_run_thread)
+        self._run_thread.start()
+        self._elapsed_timer.start(500)
+        self._refresh_ui("LOCO run started")
+
+    @Slot()
+    def cancel_loco_run(self) -> None:
+        if self._run_worker is not None:
+            self._run_worker.cancel_requested = True
+            self.cancel_loco_button.setEnabled(False)
+            self._append_run_log("Cancellation requested. The current backend step will finish before stopping if cancellation is feasible.")
+
+    @Slot(str)
+    def _append_run_log(self, message: str) -> None:
+        self.run_log.append(message)
+        if message.startswith("Results directory:"):
+            self.run_output_dir.setText(message.split(":", 1)[1].strip())
+
+    @Slot(object)
+    def _on_loco_finished(self, result) -> None:
+        self.run_progress.setRange(0, 1)
+        self.run_progress.setValue(1)
+        self.run_status_label.setText(f"Completed in {result.elapsed_seconds:.1f} s")
+        self.run_output_dir.setText(result.results_dir)
+        self._append_run_log("Saved outputs:\n" + "\n".join(result.output_files))
+        QMessageBox.information(self, "LOCO complete", f"LOCO completed successfully.\n\nResults: {result.results_dir}")
+
+    @Slot(str)
+    def _on_loco_failed(self, message: str) -> None:
+        self.run_progress.setRange(0, 1)
+        self.run_progress.setValue(0)
+        self.run_status_label.setText("Failed")
+        QMessageBox.critical(self, "LOCO failed", f"The backend reported an error:\n\n{message}")
+
+    @Slot()
+    def _cleanup_run_thread(self) -> None:
+        self._elapsed_timer.stop()
+        self.cancel_loco_button.setEnabled(False)
+        if self._run_thread is not None:
+            self._run_thread.quit()
+            self._run_thread.wait()
+        self._run_thread = None
+        self._run_worker = None
+        self.run_loco_action.setEnabled(self.project.is_complete)
+        self._refresh_ui("LOCO run finished")
+
+    @Slot()
+    def _update_elapsed_time(self) -> None:
+        if self._run_started_at:
+            elapsed = __import__("time").monotonic() - self._run_started_at
+            self.run_elapsed_label.setText(f"Elapsed: {elapsed:.1f} s")
 
     def _show_about_dialog(self) -> None:
         QMessageBox.about(
