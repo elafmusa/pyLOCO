@@ -128,6 +128,17 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
             % (indices["nHBPM"], indices["nHorCOR"], indices["nVerCOR"])
         )
 
+        mcf_cfg = request.backend_mapping.get("MomentumCompaction", {"source": "automatic"})
+        try:
+            import numpy as np
+            mcf_value = np.asarray(config_module.get_mcf(ring), dtype=float)
+            if mcf_value.size != 1 or not np.isfinite(mcf_value).all():
+                raise ValueError("momentum compaction factor must be a finite scalar")
+            log(f"Momentum compaction source: {mcf_cfg.get('source', 'automatic')}")
+            log(f"Momentum compaction factor: {float(mcf_value.ravel()[0]):.6e}")
+        except Exception as exc:
+            raise ValueError(f"Unable to resolve momentum compaction factor: {exc}") from exc
+
         fit_cfg = config_module.FitInitConfig(**request.backend_mapping["FitInitConfig"])
         rm_cfg = config_module.RMConfig(**request.backend_mapping["RMConfig"])
         indices = _apply_machine_element_selections(indices, request.backend_mapping.get("MachineElements", {}), rm_cfg)
@@ -229,6 +240,12 @@ def _make_gui_config(mapping: dict[str, Any]):
     config_module.FitInitConfig = config_module.INTERNAL_FitInitConfig
     config_module.FixedParameters = config_module.INTERNAL_FixedParameters
     config_module.fixed_parameters = GUIFixedParameters(**mapping.get("FixedParameters", {}))
+    mcf = mapping.get("MomentumCompaction", {"source": "automatic"})
+    if mcf.get("source") == "user":
+        value = float(mcf["value"])
+        config_module.BACKEND = config_module.LOCOAPI(get_mcf=lambda ring, value=value: value)
+    else:
+        config_module.BACKEND = config_module.LOCOAPI()
     config_module.loco_options = config_module.LOCOOptions(**mapping.get("LOCOOptions", {}))
     return config_module
 

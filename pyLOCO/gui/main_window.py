@@ -647,9 +647,14 @@ class MainWindow(QMainWindow):
             param_layout.addWidget(check)
         self.params_individuals = QCheckBox("individuals")
         param_layout.addWidget(self.params_individuals)
+        self.cmstep_mode = QComboBox()
+        self.cmstep_mode.addItem("Uniform", "uniform")
+        self.cmstep_mode.addItem("Load from file", "file")
         self.params_init_policy = QLineEdit()
-        self.params_cmstep_h = self._double_spin(0.0, 1e-1, 1e-5, 9)
-        self.params_cmstep_v = self._double_spin(0.0, 1e-1, 1e-5, 9)
+        self.params_init_policy.setPlaceholderText("Uses DEFAULT_INIT_POLICY unless overridden")
+        self.params_cmstep_h = QLineEdit("1e-5")
+        self.params_cmstep_v = QLineEdit("1e-5")
+        self.params_cmstep_file = QLineEdit()
         self.params_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
         self.params_init = QLineEdit()
         self.params_quads_attr = QLineEdit("PolynomB")
@@ -659,21 +664,39 @@ class MainWindow(QMainWindow):
         self.params_tilt_attr_r1 = QLineEdit("R1")
         self.params_tilt_attr_r2 = QLineEdit("R2")
         self.params_tilt_method = QLineEdit("set")
-        param_form = QFormLayout()
-        for label, widget in (("init_policy", self.params_init_policy), ("CMstep H", self.params_cmstep_h), ("CMstep V", self.params_cmstep_v), ("rfStep", self.params_rfstep), ("init", self.params_init), ("quads_attr", self.params_quads_attr), ("quads_attr_index", self.params_quads_attr_index), ("skew_attr", self.params_skew_attr), ("skew_attr_index", self.params_skew_attr_index), ("quads_tilt_attr_R1", self.params_tilt_attr_r1), ("quads_tilt_attr_R2", self.params_tilt_attr_r2), ("quads_tilt_method", self.params_tilt_method)):
+        cm_group = QGroupBox("Corrector Steps")
+        cm_form = QFormLayout(cm_group)
+        cm_form.addRow("Corrector step mode", self.cmstep_mode)
+        cm_form.addRow("Horizontal step [rad]", self.params_cmstep_h)
+        cm_form.addRow("Vertical step [rad]", self.params_cmstep_v)
+        cm_form.addRow("CM-step .npz file", self.params_cmstep_file)
+        param_layout.addWidget(cm_group)
+
+        init_group = QGroupBox("Fit Initialization")
+        param_form = QFormLayout(init_group)
+        for label, widget in (("Initialization policy overrides", self.params_init_policy), ("Explicit initial values", self.params_init), ("Normal quadrupole attribute", self.params_quads_attr), ("Normal quadrupole attribute index", self.params_quads_attr_index), ("Skew quadrupole attribute", self.params_skew_attr), ("Skew quadrupole attribute index", self.params_skew_attr_index), ("Tilt R1 attribute", self.params_tilt_attr_r1), ("Tilt R2 attribute", self.params_tilt_attr_r2), ("Tilt update method", self.params_tilt_method)):
             param_form.addRow(label, widget)
-        param_layout.addLayout(param_form)
+        param_layout.addWidget(init_group)
         layout.addWidget(param_group)
 
-        self.fixed_group = QGroupBox("FixedParameters")
+        self.fixed_group = QGroupBox("RF and Momentum Compaction")
         fixed_form = QFormLayout(self.fixed_group)
-        self.fixed_frequency = self._double_spin(0.0, 1e12, 499664399.4230182, 6)
-        self.fixed_harm_number = self._spin(0, 1000000, 3840)
+        self.fixed_frequency = QLineEdit("499664399.4230182")
+        self.fixed_harm_number = self._spin(1, 1000000, 3840)
         self.fixed_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
         self.fixed_dk = QLineEdit()
         self.fixed_delta_skew = self._double_spin(-1.0, 1.0, 1e-3, 9)
         self.fixed_delta_q_tilt = self._double_spin(-1.0, 1.0, 1e-6, 9)
-        for label, widget in (("Frequency", self.fixed_frequency), ("HarmNumber", self.fixed_harm_number), ("rfstep", self.fixed_rfstep), ("dk", self.fixed_dk), ("delta_skew", self.fixed_delta_skew), ("delta_q_tilt", self.fixed_delta_q_tilt)):
+        jac_group = QGroupBox("Jacobian Perturbations")
+        jac_form = QFormLayout(jac_group)
+        for label, widget in (("Normal quadrupole Jacobian step", self.fixed_dk), ("Skew quadrupole Jacobian step", self.fixed_delta_skew), ("Quadrupole tilt Jacobian step", self.fixed_delta_q_tilt)):
+            jac_form.addRow(label, widget)
+        layout.addWidget(jac_group)
+        self.mcf_source = QComboBox()
+        self.mcf_source.addItem("Automatic from lattice", "automatic")
+        self.mcf_source.addItem("User-defined value", "user")
+        self.mcf_user_value = QLineEdit()
+        for label, widget in (("RF frequency [Hz]", self.fixed_frequency), ("Harmonic number", self.fixed_harm_number), ("RF frequency attribute", self.rm_rf_attr), ("rfStep", self.fixed_rfstep), ("Momentum compaction source", self.mcf_source), ("Momentum compaction factor", self.mcf_user_value)):
             fixed_form.addRow(label, widget)
         layout.addWidget(self.fixed_group)
 
@@ -844,11 +867,11 @@ class MainWindow(QMainWindow):
             self.loco_remove_coupling, self.loco_plot_fit_parameters, self.constraint_enabled,
             self.constraint_quad_sigma, self.constraint_skew_sigma,
             self.constraint_quad_weights, self.constraint_skew_weights,
-            self.params_individuals, self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v,
-            self.params_rfstep, self.params_init, self.params_quads_attr, self.params_quads_attr_index,
+            self.params_individuals, self.cmstep_mode, self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v,
+            self.params_cmstep_file, self.params_rfstep, self.params_init, self.params_quads_attr, self.params_quads_attr_index,
             self.params_skew_attr, self.params_skew_attr_index, self.params_tilt_attr_r1,
             self.params_tilt_attr_r2, self.params_tilt_method, self.fixed_frequency, self.fixed_harm_number,
-            self.fixed_rfstep, self.fixed_dk, self.fixed_delta_skew, self.fixed_delta_q_tilt,
+            self.fixed_rfstep, self.fixed_dk, self.fixed_delta_skew, self.fixed_delta_q_tilt, self.mcf_source, self.mcf_user_value,
         ] + list(self.parameter_checks.values())
         for widget in widgets:
             if isinstance(widget, QComboBox):
@@ -953,9 +976,11 @@ class MainWindow(QMainWindow):
         for name, check in self.parameter_checks.items():
             check.setChecked(bool(getattr(cfg.parameters, name)))
         self.params_individuals.setChecked(cfg.parameters.individuals)
+        self.cmstep_mode.setCurrentIndex(max(0, self.cmstep_mode.findData(cfg.parameters.CMstep_mode)))
         self.params_init_policy.setText(cfg.parameters.init_policy)
-        self.params_cmstep_h.setValue(cfg.parameters.CMstep_h)
-        self.params_cmstep_v.setValue(cfg.parameters.CMstep_v)
+        self.params_cmstep_h.setText(str(cfg.parameters.CMstep_h))
+        self.params_cmstep_v.setText(str(cfg.parameters.CMstep_v))
+        self.params_cmstep_file.setText(cfg.parameters.CMstep_file)
         self.params_rfstep.setValue(cfg.parameters.rfStep)
         self.params_init.setText(cfg.parameters.init)
         self.params_quads_attr.setText(cfg.parameters.quads_attr)
@@ -965,12 +990,14 @@ class MainWindow(QMainWindow):
         self.params_tilt_attr_r1.setText(cfg.parameters.quads_tilt_attr_R1)
         self.params_tilt_attr_r2.setText(cfg.parameters.quads_tilt_attr_R2)
         self.params_tilt_method.setText(cfg.parameters.quads_tilt_method)
-        self.fixed_frequency.setValue(cfg.fixed_parameters.Frequency)
+        self.fixed_frequency.setText(str(cfg.fixed_parameters.Frequency))
         self.fixed_harm_number.setValue(cfg.fixed_parameters.HarmNumber)
         self.fixed_rfstep.setValue(cfg.fixed_parameters.rfstep)
         self.fixed_dk.setText(cfg.fixed_parameters.dk)
         self.fixed_delta_skew.setValue(cfg.fixed_parameters.delta_skew)
         self.fixed_delta_q_tilt.setValue(cfg.fixed_parameters.delta_q_tilt)
+        self.mcf_source.setCurrentIndex(max(0, self.mcf_source.findData(cfg.mcf_source)))
+        self.mcf_user_value.setText(cfg.mcf_user_value)
         self._apply_mode_visibility()
         self._update_svd_input_availability()
         self._update_fit_summary()
@@ -1020,9 +1047,11 @@ class MainWindow(QMainWindow):
         for name, check in self.parameter_checks.items():
             setattr(cfg.parameters, name, check.isChecked())
         cfg.parameters.individuals = self.params_individuals.isChecked()
+        cfg.parameters.CMstep_mode = self.cmstep_mode.currentData() or "uniform"
         cfg.parameters.init_policy = self.params_init_policy.text()
-        cfg.parameters.CMstep_h = self.params_cmstep_h.value()
-        cfg.parameters.CMstep_v = self.params_cmstep_v.value()
+        cfg.parameters.CMstep_h = self.params_cmstep_h.text()
+        cfg.parameters.CMstep_v = self.params_cmstep_v.text()
+        cfg.parameters.CMstep_file = self.params_cmstep_file.text()
         cfg.parameters.rfStep = self.params_rfstep.value()
         cfg.parameters.init = self.params_init.text()
         cfg.parameters.quads_attr = self.params_quads_attr.text()
@@ -1032,12 +1061,14 @@ class MainWindow(QMainWindow):
         cfg.parameters.quads_tilt_attr_R1 = self.params_tilt_attr_r1.text()
         cfg.parameters.quads_tilt_attr_R2 = self.params_tilt_attr_r2.text()
         cfg.parameters.quads_tilt_method = self.params_tilt_method.text()
-        cfg.fixed_parameters.Frequency = self.fixed_frequency.value()
+        cfg.fixed_parameters.Frequency = self.fixed_frequency.text()
         cfg.fixed_parameters.HarmNumber = self.fixed_harm_number.value()
         cfg.fixed_parameters.rfstep = self.fixed_rfstep.value()
         cfg.fixed_parameters.dk = self.fixed_dk.text()
         cfg.fixed_parameters.delta_skew = self.fixed_delta_skew.value()
         cfg.fixed_parameters.delta_q_tilt = self.fixed_delta_q_tilt.value()
+        cfg.mcf_source = self.mcf_source.currentData() or "automatic"
+        cfg.mcf_user_value = self.mcf_user_value.text()
         return cfg
 
     @Slot()

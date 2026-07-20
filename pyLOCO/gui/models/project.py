@@ -8,6 +8,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pyLOCO.config import DEFAULT_INIT_POLICY
+
 PROJECT_FILE_SUFFIX = ".pyloco.json"
 REQUIRED_MEASUREMENTS = ("orm", "dispersion", "bpm_noise")
 
@@ -65,8 +67,8 @@ class ResponseMatrixConfig:
     bpm_ords: list[int] = field(default_factory=list)
     cm_ords: tuple[list[int], list[int]] = field(default_factory=lambda: ([], []))
     cav_ords: list[int] = field(default_factory=list)
-    dkick_h: float = 1e-5
-    dkick_v: float = 1e-5
+    dkick_h: str = "1e-5"
+    dkick_v: str = "1e-5"
     bidirectional: bool = True
     includeDispersion: bool = False
     rfStep: float = -3000.0
@@ -90,7 +92,7 @@ class ResponseMatrixConfig:
             "bpm_ords": list(self.bpm_ords),
             "cm_ords": (list(self.cm_ords[0]), list(self.cm_ords[1])),
             "cav_ords": list(self.cav_ords),
-            "dkick": (self.dkick_h, self.dkick_v),
+            "dkick": self.dkick_value(),
             "bidirectional": self.bidirectional,
             "includeDispersion": self.includeDispersion,
             "rfStep": self.rfStep,
@@ -107,6 +109,9 @@ class ResponseMatrixConfig:
             "RFAttr": self.RFAttr,
         }
         return data
+
+    def dkick_value(self) -> Any:
+        return (_parse_float(self.dkick_h, "horizontal corrector step"), _parse_float(self.dkick_v, "vertical corrector step"))
 
 
 @dataclass(slots=True)
@@ -185,8 +190,11 @@ class ParameterSelectionConfig:
     delta_rf: bool = False
     individuals: bool = True
     init_policy: str = ""
-    CMstep_h: float = 1e-5
-    CMstep_v: float = 1e-5
+    init_policy_overrides: dict[str, str] = field(default_factory=dict)
+    CMstep_mode: str = "uniform"
+    CMstep_h: str = "1e-5"
+    CMstep_v: str = "1e-5"
+    CMstep_file: str = ""
     rfStep: float = -3000.0
     init: str = ""
     quads_attr: str = "PolynomB"
@@ -219,8 +227,8 @@ class ParameterSelectionConfig:
     def to_fit_init_config_kwargs(self) -> dict[str, Any]:
         return {
             "fit_list": self.fit_list(),
-            "init_policy": _literal_or_none(self.init_policy),
-            "CMstep": (self.CMstep_h, self.CMstep_v),
+            "init_policy": self.init_policy_value(),
+            "CMstep": self.cmstep_value(),
             "rfStep": self.rfStep,
             "individuals": self.individuals,
             "init": _literal_or_none(self.init),
@@ -233,7 +241,56 @@ class ParameterSelectionConfig:
             "quads_tilt_method": self.quads_tilt_method,
         }
 
+    def init_policy_value(self) -> dict[str, str] | None:
+        if self.init_policy.strip():
+            value = _literal_or_none(self.init_policy)
+            if not isinstance(value, dict):
+                raise ValueError("init_policy must be a dictionary when edited as a literal")
+            return value
+        policy = dict(DEFAULT_INIT_POLICY)
+        for key, value in self.init_policy_overrides.items():
+            if str(value).strip():
+                policy[key] = str(value).strip()
+        return policy
 
+    def cmstep_value(self, n_hcor: int | None = None, n_vcor: int | None = None) -> Any:
+        if self.CMstep_mode == "file":
+            return load_cmstep_npz(self.CMstep_file, n_hcor, n_vcor)
+        return (_parse_float(self.CMstep_h, "horizontal corrector step"), _parse_float(self.CMstep_v, "vertical corrector step"))
+
+
+def _parse_float(text: Any, label: str) -> float:
+    try:
+        value = float(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a finite number") from exc
+    import math
+    if not math.isfinite(value):
+        raise ValueError(f"{label} must be finite")
+    return value
+
+
+def load_cmstep_npz(path: str | Path, n_hcor: int | None = None, n_vcor: int | None = None) -> list[Any]:
+    import numpy as np
+    source = Path(path).expanduser()
+    with np.load(source) as data:
+        missing = [name for name in ("hor", "ver") if name not in data]
+        if missing:
+            raise ValueError("CM-step file must contain datasets: hor and ver")
+        values = []
+        for name, expected in (("hor", n_hcor), ("ver", n_vcor)):
+            arr = np.asarray(data[name])
+            if arr.ndim != 1:
+                raise ValueError(f"CM-step dataset {name!r} must be one-dimensional")
+            if not np.issubdtype(arr.dtype, np.number):
+                raise ValueError(f"CM-step dataset {name!r} must be numeric")
+            arr = arr.astype(float, copy=False)
+            if expected is not None and arr.size != expected:
+                raise ValueError(f"CM-step dataset {name!r} length {arr.size} does not match selected corrector count {expected}")
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(f"CM-step dataset {name!r} must contain only finite values")
+            values.append(arr)
+    return values
 
 
 def _literal_or_none(text: Any) -> Any:
@@ -256,7 +313,7 @@ def _literal_or_none(text: Any) -> Any:
 class FixedParameterConfig:
     """GUI state matching FixedParameters."""
 
-    Frequency: float = 499664399.4230182
+    Frequency: str = "499664399.4230182"
     HarmNumber: int = 3840
     rfstep: float = -3000.0
     dk: str = ""
@@ -265,6 +322,10 @@ class FixedParameterConfig:
 
     def to_fixed_parameters_kwargs(self) -> dict[str, Any]:
         data = asdict(self)
+        data["Frequency"] = _parse_float(self.Frequency, "RF frequency")
+        if int(self.HarmNumber) <= 0:
+            raise ValueError("Harmonic number must be a positive integer")
+        data["HarmNumber"] = int(self.HarmNumber)
         data["dk"] = _literal_or_none(self.dk)
         return data
 
@@ -280,6 +341,8 @@ class LocoConfiguration:
     constraints: ConstraintConfigState = field(default_factory=ConstraintConfigState)
     parameters: ParameterSelectionConfig = field(default_factory=ParameterSelectionConfig)
     fixed_parameters: FixedParameterConfig = field(default_factory=FixedParameterConfig)
+    mcf_source: str = "automatic"
+    mcf_user_value: str = ""
 
     def to_backend_mapping(self) -> dict[str, Any]:
         """Return a serializable mapping of backend-compatible constructor data."""
@@ -288,14 +351,21 @@ class LocoConfiguration:
         options["fit_list"] = self.parameters.fit_list()
         options["includeDispersion"] = self.rejection.includeDispersion
         self._sync_response_matrix_elements()
+        cmstep = self.parameters.cmstep_value(len(self.machine_elements.horizontal_corrector_ords) or None, len(self.machine_elements.vertical_corrector_ords) or None)
         return {
             "LOCOOptions": options,
-            "RMConfig": self.response_matrix.to_rm_config_kwargs(),
+            "RMConfig": self.response_matrix.to_rm_config_kwargs() | {"dkick": cmstep, "Frequency": self.fixed_parameters.to_fixed_parameters_kwargs()["Frequency"], "HarmNumber": self.fixed_parameters.to_fixed_parameters_kwargs()["HarmNumber"]},
             "MachineElements": asdict(self.machine_elements),
             "FitInitConfig": self.parameters.to_fit_init_config_kwargs(),
             "ConstraintConfig": self.constraints.to_constraint_config_kwargs(),
             "FixedParameters": self.fixed_parameters.to_fixed_parameters_kwargs(),
+            "MomentumCompaction": self.to_mcf_kwargs(),
         }
+
+    def to_mcf_kwargs(self) -> dict[str, Any]:
+        if self.mcf_source == "user":
+            return {"source": "user", "value": _parse_float(self.mcf_user_value, "momentum compaction factor")}
+        return {"source": "automatic", "value": None}
 
     def _sync_response_matrix_elements(self) -> None:
         self.response_matrix.bpm_ords = list(self.machine_elements.bpm_ords)
@@ -354,6 +424,8 @@ class LocoConfiguration:
             constraints=ConstraintConfigState(**data.get("constraints", {})),
             parameters=ParameterSelectionConfig(**data.get("parameters", {})),
             fixed_parameters=FixedParameterConfig(**data.get("fixed_parameters", {})),
+            mcf_source=data.get("mcf_source", "automatic"),
+            mcf_user_value=data.get("mcf_user_value", ""),
         )
 
 
