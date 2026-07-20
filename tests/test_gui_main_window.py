@@ -219,3 +219,79 @@ def test_orm_comparison_preprocesses_bad_bpms() -> None:
     }
     assert keywords == {"axis": 0, "input_type": "positions"}
     assert any(isinstance(call.func, ast.Name) and call.func.id == "_load_bad_bpm_positions" for call in calls)
+
+
+def test_cmstep_uniform_and_scientific_notation_are_synchronized() -> None:
+    from pyLOCO.gui.models.project import LocoConfiguration
+
+    cfg = LocoConfiguration()
+    cfg.machine_elements.horizontal_corrector_ords = [1, 2]
+    cfg.machine_elements.vertical_corrector_ords = [3]
+    cfg.parameters.CMstep_h = "100e-6"
+    cfg.parameters.CMstep_v = "-2.5e-4"
+    mapping = cfg.to_backend_mapping()
+
+    assert mapping["FitInitConfig"]["CMstep"] == (100e-6, -2.5e-4)
+    assert mapping["RMConfig"]["dkick"] == mapping["FitInitConfig"]["CMstep"]
+
+
+def test_cmstep_npz_loading_and_validation(tmp_path) -> None:
+    np = pytest.importorskip("numpy")
+    from pyLOCO.gui.models.project import LocoConfiguration
+
+    path = tmp_path / "CMstep.npz"
+    np.savez(path, hor=np.array([1e-5, -2e-5]), ver=np.array([3e-5]))
+    cfg = LocoConfiguration()
+    cfg.machine_elements.horizontal_corrector_ords = [1, 2]
+    cfg.machine_elements.vertical_corrector_ords = [3]
+    cfg.parameters.CMstep_mode = "file"
+    cfg.parameters.CMstep_file = str(path)
+
+    cmstep = cfg.to_backend_mapping()["FitInitConfig"]["CMstep"]
+    assert cmstep[0].tolist() == [1e-5, -2e-5]
+    assert cmstep[1].tolist() == [3e-5]
+
+    bad = tmp_path / "bad.npz"
+    np.savez(bad, hor=np.array([1.0]))
+    cfg.parameters.CMstep_file = str(bad)
+    with pytest.raises(ValueError, match="hor and ver"):
+        cfg.to_backend_mapping()
+
+    np.savez(bad, hor=np.array([1.0]), ver=np.array([2.0, 3.0]))
+    with pytest.raises(ValueError, match="length"):
+        cfg.to_backend_mapping()
+
+
+def test_rf_mcf_init_policy_and_round_trip(tmp_path) -> None:
+    from pyLOCO.gui.backend import _make_gui_config
+    from pyLOCO.gui.models.project import LocoConfiguration
+
+    cfg = LocoConfiguration()
+    cfg.fixed_parameters.Frequency = "4.996643994230182e8"
+    cfg.fixed_parameters.HarmNumber = 3840
+    cfg.mcf_source = "user"
+    cfg.mcf_user_value = "1e-3"
+    cfg.parameters.init_policy_overrides = {"quads": "zeros"}
+    cfg.parameters.init = "{'quads': [0.0, 0.1]}"
+    path = cfg.save(tmp_path / "project.pyloco.json")
+    loaded = LocoConfiguration.load(path)
+    mapping = loaded.to_backend_mapping()
+
+    assert mapping["FixedParameters"]["Frequency"] == pytest.approx(499664399.4230182)
+    assert mapping["RMConfig"]["Frequency"] == mapping["FixedParameters"]["Frequency"]
+    assert mapping["FixedParameters"]["HarmNumber"] == 3840
+    assert mapping["FitInitConfig"]["init_policy"]["quads"] == "zeros"
+    assert mapping["FitInitConfig"]["init"] == {"quads": [0.0, 0.1]}
+    assert mapping["MomentumCompaction"] == {"source": "user", "value": 1e-3}
+
+    config_module = _make_gui_config(mapping)
+    assert config_module.get_mcf(object()) == pytest.approx(1e-3)
+
+
+def test_defaults_without_explicit_new_settings() -> None:
+    from pyLOCO.gui.models.project import LocoConfiguration
+    cfg = LocoConfiguration.from_dict({})
+    mapping = cfg.to_backend_mapping()
+    assert mapping["FitInitConfig"]["CMstep"] == (1e-5, 1e-5)
+    assert mapping["RMConfig"]["dkick"] == (1e-5, 1e-5)
+    assert mapping["MomentumCompaction"]["source"] == "automatic"
