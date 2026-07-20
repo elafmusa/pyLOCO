@@ -67,8 +67,8 @@ class ResponseMatrixConfig:
     bpm_ords: list[int] = field(default_factory=list)
     cm_ords: tuple[list[int], list[int]] = field(default_factory=lambda: ([], []))
     cav_ords: list[int] = field(default_factory=list)
-    dkick_h: str = "1e-5"
-    dkick_v: str = "1e-5"
+    dkick_h: float = 1e-5
+    dkick_v: float = 1e-5
     bidirectional: bool = True
     includeDispersion: bool = False
     rfStep: float = -3000.0
@@ -111,7 +111,7 @@ class ResponseMatrixConfig:
         return data
 
     def dkick_value(self) -> Any:
-        return (_parse_float(self.dkick_h, "horizontal corrector step"), _parse_float(self.dkick_v, "vertical corrector step"))
+        return (float(self.dkick_h), float(self.dkick_v))
 
 
 @dataclass(slots=True)
@@ -170,6 +170,22 @@ class ConstraintConfigState:
         return asdict(self)
 
 
+
+@dataclass(slots=True)
+class CMStepConfig:
+    """Corrector-step source and values for LOCO initialization."""
+
+    mode: str = "uniform"
+    horizontal: float = 1e-5
+    vertical: float = 1e-5
+    file: str = ""
+
+    def value(self, n_hcor: int | None = None, n_vcor: int | None = None) -> Any:
+        if self.mode == "file":
+            return load_cmstep_npz(self.file, n_hcor, n_vcor)
+        return (float(self.horizontal), float(self.vertical))
+
+
 @dataclass(slots=True)
 class ParameterSelectionConfig:
     """Selected LOCO fit blocks compatible with FitInitConfig.fit_list."""
@@ -191,10 +207,7 @@ class ParameterSelectionConfig:
     individuals: bool = True
     init_policy: str = ""
     init_policy_overrides: dict[str, str] = field(default_factory=dict)
-    CMstep_mode: str = "uniform"
-    CMstep_h: str = "1e-5"
-    CMstep_v: str = "1e-5"
-    CMstep_file: str = ""
+    cmstep: CMStepConfig = field(default_factory=CMStepConfig)
     rfStep: float = -3000.0
     init: str = ""
     quads_attr: str = "PolynomB"
@@ -254,9 +267,39 @@ class ParameterSelectionConfig:
         return policy
 
     def cmstep_value(self, n_hcor: int | None = None, n_vcor: int | None = None) -> Any:
-        if self.CMstep_mode == "file":
-            return load_cmstep_npz(self.CMstep_file, n_hcor, n_vcor)
-        return (_parse_float(self.CMstep_h, "horizontal corrector step"), _parse_float(self.CMstep_v, "vertical corrector step"))
+        return self.cmstep.value(n_hcor, n_vcor)
+
+    @property
+    def CMstep_mode(self) -> str:
+        return self.cmstep.mode
+
+    @CMstep_mode.setter
+    def CMstep_mode(self, value: str) -> None:
+        self.cmstep.mode = value
+
+    @property
+    def CMstep_h(self) -> float:
+        return self.cmstep.horizontal
+
+    @CMstep_h.setter
+    def CMstep_h(self, value: Any) -> None:
+        self.cmstep.horizontal = _parse_float(value, "horizontal corrector step")
+
+    @property
+    def CMstep_v(self) -> float:
+        return self.cmstep.vertical
+
+    @CMstep_v.setter
+    def CMstep_v(self, value: Any) -> None:
+        self.cmstep.vertical = _parse_float(value, "vertical corrector step")
+
+    @property
+    def CMstep_file(self) -> str:
+        return self.cmstep.file
+
+    @CMstep_file.setter
+    def CMstep_file(self, value: str) -> None:
+        self.cmstep.file = value
 
 
 def _parse_float(text: Any, label: str) -> float:
@@ -415,14 +458,35 @@ class LocoConfiguration:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "LocoConfiguration":
+        response_matrix = dict(data.get("response_matrix", {}))
+        for key, label in (("dkick_h", "horizontal response-matrix kick step"), ("dkick_v", "vertical response-matrix kick step")):
+            if key in response_matrix:
+                response_matrix[key] = _parse_float(response_matrix[key], label)
+
+        parameters = dict(data.get("parameters", {}))
+        cmstep = dict(parameters.get("cmstep", {}))
+        legacy_cmstep = {
+            "CMstep_mode": "mode",
+            "CMstep_h": "horizontal",
+            "CMstep_v": "vertical",
+            "CMstep_file": "file",
+        }
+        for legacy_key, cmstep_key in legacy_cmstep.items():
+            if legacy_key in parameters:
+                cmstep[cmstep_key] = parameters.pop(legacy_key)
+        for key, label in (("horizontal", "horizontal corrector step"), ("vertical", "vertical corrector step")):
+            if key in cmstep:
+                cmstep[key] = _parse_float(cmstep[key], label)
+        parameters["cmstep"] = CMStepConfig(**cmstep)
+
         return cls(
             machine_elements=MachineElementsConfig(**data.get("machine_elements", {})),
-            response_matrix=ResponseMatrixConfig(**data.get("response_matrix", {})),
+            response_matrix=ResponseMatrixConfig(**response_matrix),
             solver=SolverConfig(**data.get("solver", {})),
             svd=SVDConfig(**data.get("svd", {})),
             rejection=RejectionConfig(**data.get("rejection", {})),
             constraints=ConstraintConfigState(**data.get("constraints", {})),
-            parameters=ParameterSelectionConfig(**data.get("parameters", {})),
+            parameters=ParameterSelectionConfig(**parameters),
             fixed_parameters=FixedParameterConfig(**data.get("fixed_parameters", {})),
             mcf_source=data.get("mcf_source", "automatic"),
             mcf_user_value=data.get("mcf_user_value", ""),
