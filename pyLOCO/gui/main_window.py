@@ -652,9 +652,16 @@ class MainWindow(QMainWindow):
         self.cmstep_mode.addItem("Load from file", "file")
         self.params_init_policy = QLineEdit()
         self.params_init_policy.setPlaceholderText("Uses DEFAULT_INIT_POLICY unless overridden")
-        self.params_cmstep_h = QLineEdit("1e-5")
-        self.params_cmstep_v = QLineEdit("1e-5")
+        self.params_cmstep_h = self._double_spin(-1e-1, 1e-1, 1e-5, 9, " rad")
+        self.params_cmstep_v = self._double_spin(-1e-1, 1e-1, 1e-5, 9, " rad")
         self.params_cmstep_file = QLineEdit()
+        self.params_cmstep_browse = QPushButton("Browse…")
+        self.params_cmstep_browse.clicked.connect(self._browse_cmstep_file)
+        self.params_cmstep_file_row = QWidget()
+        cmstep_file_layout = QHBoxLayout(self.params_cmstep_file_row)
+        cmstep_file_layout.setContentsMargins(0, 0, 0, 0)
+        cmstep_file_layout.addWidget(self.params_cmstep_file, 1)
+        cmstep_file_layout.addWidget(self.params_cmstep_browse)
         self.params_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
         self.params_init = QLineEdit()
         self.params_quads_attr = QLineEdit("PolynomB")
@@ -669,7 +676,7 @@ class MainWindow(QMainWindow):
         cm_form.addRow("Corrector step mode", self.cmstep_mode)
         cm_form.addRow("Horizontal step [rad]", self.params_cmstep_h)
         cm_form.addRow("Vertical step [rad]", self.params_cmstep_v)
-        cm_form.addRow("CM-step .npz file", self.params_cmstep_file)
+        cm_form.addRow("CM-step .npz file", self.params_cmstep_file_row)
         param_layout.addWidget(cm_group)
 
         init_group = QGroupBox("Fit Initialization")
@@ -868,7 +875,7 @@ class MainWindow(QMainWindow):
             self.constraint_quad_sigma, self.constraint_skew_sigma,
             self.constraint_quad_weights, self.constraint_skew_weights,
             self.params_individuals, self.cmstep_mode, self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v,
-            self.params_cmstep_file, self.params_rfstep, self.params_init, self.params_quads_attr, self.params_quads_attr_index,
+            self.params_cmstep_file, self.params_cmstep_browse, self.params_rfstep, self.params_init, self.params_quads_attr, self.params_quads_attr_index,
             self.params_skew_attr, self.params_skew_attr_index, self.params_tilt_attr_r1,
             self.params_tilt_attr_r2, self.params_tilt_method, self.fixed_frequency, self.fixed_harm_number,
             self.fixed_rfstep, self.fixed_dk, self.fixed_delta_skew, self.fixed_delta_q_tilt, self.mcf_source, self.mcf_user_value,
@@ -884,6 +891,7 @@ class MainWindow(QMainWindow):
                 widget.toggled.connect(self._on_fit_config_changed)
         self.solver_algorithm.currentIndexChanged.connect(self._update_solver_scaled_availability)
         self.svd_method.currentIndexChanged.connect(self._update_svd_input_availability)
+        self.cmstep_mode.currentIndexChanged.connect(self._update_cmstep_input_availability)
 
     def _set_calculator_value(self, calculator: str) -> None:
         backend_value = "Linear" if calculator == "Linear" else "Tracking"
@@ -932,6 +940,25 @@ class MainWindow(QMainWindow):
         if method == "interactive":
             self.svd_plot.setChecked(True)
 
+    def _update_cmstep_input_availability(self) -> None:
+        is_uniform = (self.cmstep_mode.currentData() or "uniform") == "uniform"
+        self.params_cmstep_h.setEnabled(is_uniform)
+        self.params_cmstep_v.setEnabled(is_uniform)
+        self.params_cmstep_file.setEnabled(not is_uniform)
+        self.params_cmstep_browse.setEnabled(not is_uniform)
+
+
+    @Slot()
+    def _browse_cmstep_file(self) -> None:
+        filename = QFileDialog.getOpenFileName(
+            self,
+            "Load corrector-step file",
+            "",
+            "NumPy archives (*.npz);;All files (*)",
+        )[0]
+        if filename:
+            self.params_cmstep_file.setText(filename)
+
     def _load_config_to_widgets(self) -> None:
         cfg = self.project.loco_config
         self._set_calculator_value(cfg.response_matrix.calculator)
@@ -978,8 +1005,8 @@ class MainWindow(QMainWindow):
         self.params_individuals.setChecked(cfg.parameters.individuals)
         self.cmstep_mode.setCurrentIndex(max(0, self.cmstep_mode.findData(cfg.parameters.CMstep_mode)))
         self.params_init_policy.setText(cfg.parameters.init_policy)
-        self.params_cmstep_h.setText(str(cfg.parameters.CMstep_h))
-        self.params_cmstep_v.setText(str(cfg.parameters.CMstep_v))
+        self.params_cmstep_h.setValue(float(cfg.parameters.CMstep_h))
+        self.params_cmstep_v.setValue(float(cfg.parameters.CMstep_v))
         self.params_cmstep_file.setText(cfg.parameters.CMstep_file)
         self.params_rfstep.setValue(cfg.parameters.rfStep)
         self.params_init.setText(cfg.parameters.init)
@@ -1000,6 +1027,7 @@ class MainWindow(QMainWindow):
         self.mcf_user_value.setText(cfg.mcf_user_value)
         self._apply_mode_visibility()
         self._update_svd_input_availability()
+        self._update_cmstep_input_availability()
         self._update_fit_summary()
 
     def _collect_loco_configuration(self) -> LocoConfiguration:
@@ -1049,8 +1077,8 @@ class MainWindow(QMainWindow):
         cfg.parameters.individuals = self.params_individuals.isChecked()
         cfg.parameters.CMstep_mode = self.cmstep_mode.currentData() or "uniform"
         cfg.parameters.init_policy = self.params_init_policy.text()
-        cfg.parameters.CMstep_h = self.params_cmstep_h.text()
-        cfg.parameters.CMstep_v = self.params_cmstep_v.text()
+        cfg.parameters.CMstep_h = self.params_cmstep_h.value()
+        cfg.parameters.CMstep_v = self.params_cmstep_v.value()
         cfg.parameters.CMstep_file = self.params_cmstep_file.text()
         cfg.parameters.rfStep = self.params_rfstep.value()
         cfg.parameters.init = self.params_init.text()
@@ -1326,7 +1354,7 @@ class MainWindow(QMainWindow):
             self.rm_fixedpath, self.rm_log_info, self.loco_include_dispersion,
             self.loco_hor_dispersion_weight, self.loco_ver_dispersion_weight, self.loco_fixedpath,
             self.loco_individuals, self.loco_remove_coupling, self.loco_plot_fit_parameters,
-            self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v, self.params_rfstep,
+            self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v, self.params_cmstep_file_row, self.params_rfstep,
             self.params_init, self.params_quads_attr, self.params_quads_attr_index, self.params_skew_attr,
             self.params_skew_attr_index, self.params_tilt_attr_r1, self.params_tilt_attr_r2,
             self.params_tilt_method, self.fixed_group,

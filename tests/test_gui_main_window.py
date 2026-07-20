@@ -227,8 +227,8 @@ def test_cmstep_uniform_and_scientific_notation_are_synchronized() -> None:
     cfg = LocoConfiguration()
     cfg.machine_elements.horizontal_corrector_ords = [1, 2]
     cfg.machine_elements.vertical_corrector_ords = [3]
-    cfg.parameters.CMstep_h = "100e-6"
-    cfg.parameters.CMstep_v = "-2.5e-4"
+    cfg.parameters.CMstep_h = 100e-6
+    cfg.parameters.CMstep_v = -2.5e-4
     mapping = cfg.to_backend_mapping()
 
     assert mapping["FitInitConfig"]["CMstep"] == (100e-6, -2.5e-4)
@@ -286,6 +286,22 @@ def test_rf_mcf_init_policy_and_round_trip(tmp_path) -> None:
 
     config_module = _make_gui_config(mapping)
     assert config_module.get_mcf(object()) == pytest.approx(1e-3)
+
+
+def test_legacy_string_steps_load_as_floats() -> None:
+    from pyLOCO.gui.models.project import LocoConfiguration
+
+    cfg = LocoConfiguration.from_dict({
+        "response_matrix": {"dkick_h": "100e-6", "dkick_v": "2e-5"},
+        "parameters": {"CMstep_h": "100e-6", "CMstep_v": "2e-5"},
+    })
+
+    assert isinstance(cfg.response_matrix.dkick_h, float)
+    assert isinstance(cfg.response_matrix.dkick_v, float)
+    assert isinstance(cfg.parameters.CMstep_h, float)
+    assert isinstance(cfg.parameters.CMstep_v, float)
+    assert cfg.response_matrix.dkick_value() == (100e-6, 2e-5)
+    assert cfg.parameters.cmstep_value() == (100e-6, 2e-5)
 
 
 def test_defaults_without_explicit_new_settings() -> None:
