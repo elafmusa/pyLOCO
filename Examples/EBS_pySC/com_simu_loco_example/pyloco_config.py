@@ -59,16 +59,16 @@ DEFAULT_INIT_POLICY: Dict[str, str] = {
 class LOCOOptions:
     # --- main control ---
     algorithm: str = "lm"
-    nIter: int = 1
+    nIter: int = 5
     nLMIter: int = 10
     Starting_Lambda: float = 1e-3
     max_lm_lambda: float = 15
     scaled: bool = True
 
     # --- SVD control ---
-    svd_selection_method: str = "threshold"
+    svd_selection_method: str = "user_input" # "threshold", "user_input", "interactive",
     svd_threshold: float = 1e-7
-    cut_: int = 96
+    cut_: int = 500
     show_svd_plot: bool = True
 
     # --- fitting list ---
@@ -89,7 +89,9 @@ class LOCOOptions:
     plot_fit_parameters: bool = False
     auto_correct_delta: bool = True
     fixedpathlength: bool = False
-    individuals: bool = True
+    quad_individuals: bool=True,
+    skew_individuals: bool=True,
+    tilt_individuals: bool=True,
     remove_coupling_: bool = True
 
 loco_options = LOCOOptions()

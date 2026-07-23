@@ -105,7 +105,9 @@ def run_pyloco_from_model(measured_orm, sigma_w,  measured_eta_x,  measured_eta_
 
         # --- features ---
         fit_list = fit_list,
-        individuals=loco_options.individuals,
+        quad_individuals=loco_options.quad_individuals,
+        skew_individuals=loco_options.skew_individuals,
+        tilt_individuals=loco_options.tilt_individuals,
         remove_coupling_=remove_coupling_,
 
         # --- outliers & normalization ---

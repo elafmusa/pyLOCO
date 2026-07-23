@@ -1,0 +1,67 @@
+{
+  "response_matrix": {
+    "calculator": "Linear",
+    "includeDispersion": false,
+    "coupling_orm": false,
+    "bidirectional": true,
+    "NewVectorizedMethod": true,
+    "dkick_h": 0.0001,
+    "dkick_v": 0.0001,
+    "rfStep": -3000.0,
+    "delta_coupling": 1e-06,
+    "fixedpathlength": false,
+    "log_info": false
+  },
+  "solver": {
+    "algorithm": "lm",
+    "nIter": 1,
+    "nLMIter": 10,
+    "Starting_Lambda": 0.001,
+    "max_lm_lambda": 15.0,
+    "scaled": true
+  },
+  "svd": {
+    "svd_selection_method": "threshold",
+    "svd_threshold": 1e-07,
+    "cut_": 500,
+    "show_svd_plot": true
+  },
+  "rejection": {
+    "outlier_rejection": true,
+    "sigma_outlier": 10.0,
+    "apply_normalization": true,
+    "normalization_mode": "component",
+    "auto_correct_delta": true,
+    "plot_fit_parameters": false
+  },
+  "constraints": {
+    "enable": false,
+    "quad_sigma": 0.0,
+    "skew_sigma": 0.0,
+    "quad_weights": "",
+    "skew_weights": "",
+    "quad_mask": "",
+    "skew_mask": ""
+  },
+  "parameters": {
+    "quads": true,
+    "skew_quads": false,
+    "quads_tilt": false,
+    "hbpm_gain": true,
+    "vbpm_gain": true,
+    "hbpm_coupling": false,
+    "vbpm_coupling": false,
+    "hcor_cal": true,
+    "vcor_cal": true,
+    "hcor_coupling": false,
+    "vcor_coupling": false,
+    "HCMEnergyShift": true,
+    "VCMEnergyShift": false,
+    "delta_rf": false,
+    "individuals": true,
+    "quads_attr": "PolynomB",
+    "quads_attr_index": 1,
+    "skew_attr": "PolynomA",
+    "skew_attr_index": 1
+  }
+}

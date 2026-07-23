@@ -89,7 +89,10 @@ class LOCOOptions:
     plot_fit_parameters: bool = False
     auto_correct_delta: bool = True
     fixedpathlength: bool = False
-    individuals: bool = True
+    quad_individuals: bool=True,
+    skew_individuals: bool=True,
+    tilt_individuals: bool=True,
+
     remove_coupling_: bool = True
 
 loco_options = LOCOOptions()
