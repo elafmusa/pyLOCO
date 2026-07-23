@@ -24,15 +24,26 @@ def _normalize_cmstep(CMstep, nHorCOR, nVerCOR):
 
 def build_initial_fit_parameters(
     ring, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
-    quads_ords, CMstep, individuals=True, skew_ords=None, rfStep=None, quads_tilt=None,
+    quads_ords, CMstep, quad_individuals=False,
+    skew_individuals=True,
+    tilt_individuals=True, skew_ords=None, rfStep=None, quads_tilt=None,
     config=None,
 ):
-    cfg_fit_list    = _cfg_get(config, "fit_list",    fit_list)
+    #cfg_fit_list    = _cfg_get(config, "fit_list",    fit_list)
+    cfg_fit_list = fit_list
     block_order     = _cfg_get(config, "block_order", None)
     init_policy     = _cfg_get(config, "init_policy", None)
-    cfg_CMstep      = _cfg_get(config, "CMstep",      CMstep)
-    cfg_rfStep      = _cfg_get(config, "rfStep",      rfStep)
-    cfg_individual  = _cfg_get(config, "individuals", individuals)
+    cfg_CMstep = CMstep
+    cfg_rfStep = rfStep
+    def _is_individual(block_name):
+        if block_name == "quads":
+            return quad_individuals
+        elif block_name == "skew_quads":
+            return skew_individuals
+        elif block_name == "quads_tilt":
+            return tilt_individuals
+        return False
+    #cfg_individual = individuals
     init_overrides  = _cfg_get(config, "init",        {}) or {}
 
     # NEW: which attribute (and optional index) to read for quads policy
@@ -87,6 +98,20 @@ def build_initial_fit_parameters(
         if name == "delta_rf":
             return 1
         if name == "quads":
+            if quad_individuals:
+                if len(quads_ords) == 0:
+                    return 0
+
+                first = quads_ords[0]
+
+                # Flat list/array of individual quadrupoles
+                if np.ndim(first) == 0:
+                    return len(quads_ords)
+
+                # List of quadrupole families
+                return len(np.concatenate(quads_ords))
+
+            # Family fitting
             return len(quads_ords)
         if name == "skew_quads":
             return 0 if skew_ords is None else len(skew_ords)
@@ -135,10 +160,29 @@ def build_initial_fit_parameters(
                 attr_name, idx_from_spec = _parse_attr_and_index(token)
                 idx_final = idx_from_spec
 
-            if not cfg_individual:
-                base = [_get_attr_value(ring[g[0]], attr_name, idx_final) for g in quads_ords]
+            individual = _is_individual(name)
+
+            individual = _is_individual(name)
+
+            if not individual:
+                base = [
+                    _get_attr_value(ring[group[0]], attr_name, idx_final)
+                    for group in quads_ords
+                ]
+
             else:
-                base = [_get_attr_value(ring[q],    attr_name, idx_final) for q in quads_ords]
+                first = quads_ords[0]
+
+                if np.ndim(first) == 0:
+                    quad_indices = quads_ords
+                else:
+                    quad_indices = np.concatenate(quads_ords)
+
+                base = [
+                    _get_attr_value(ring[int(q)], attr_name, idx_final)
+                    for q in quad_indices
+                ]
+
             return np.asarray(base, dtype=float)
 
         if pol == "tilts:zeros":
@@ -159,7 +203,7 @@ def build_initial_fit_parameters(
             if callable(val):
                 val = val(length=length, ring=ring, quads_ords=quads_ords,
                           skew_ords=skew_ords, CMstep=cfg_CMstep, rfStep=cfg_rfStep,
-                          individuals=cfg_individual)
+                          individuals=_is_individual(name))
             arr = _to_len(val, length)
         return arr
 

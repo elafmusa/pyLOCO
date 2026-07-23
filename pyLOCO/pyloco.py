@@ -987,48 +987,96 @@ def generating_quads_response_matrices(
     np.save(f'output/debug/step_{quad_index}.npy', step)
     return (C_measured - G_CMODEL) / step, delta_local, logs
 
-
 def calculate_quads_tilt_jacobian(
-
         ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C, individuals,
         HCMCoupling, VCMCoupling, rf_step, auto_correct_delta=True,
         processes=None, includeDispersion=False,
-        log_filename="quads_tilt_jacobian_logs.txt", quads_tilt_fit=None, fit_cfg=None
+        log_filename="quads_tilt_jacobian_logs.txt",
+        quads_tilt_fit=None, fit_cfg=None
 ):
+    import time
+
+    print(
+        f"\n========== Starting quadrupole tilt Jacobian "
+        f"for {len(quads_ind)} quadrupoles =========="
+    )
+    t_start = time.perf_counter()
+
     shm_C = shared_memory.SharedMemory(create=True, size=C.nbytes)
     C_sh = np.ndarray(C.shape, dtype=C.dtype, buffer=shm_C.buf)
     C_sh[:] = C
+
     shm_Cm = shared_memory.SharedMemory(create=True, size=C_model.nbytes)
-    Cmodel_sh = np.ndarray(C_model.shape, dtype=C_model.dtype, buffer=shm_Cm.buf)
+    Cmodel_sh = np.ndarray(
+        C_model.shape,
+        dtype=C_model.dtype,
+        buffer=shm_Cm.buf
+    )
     Cmodel_sh[:] = C_model
 
     all_logs = []
 
     ctx = mp.get_context("spawn")
-    try:
 
-        assert len(quads_tilt_fit) == len(quads_ind), \
-            f"Length mismatch: {len(quads_tilt_fit)=} vs {len(quads_ind)=}"
+    try:
+        assert len(quads_tilt_fit) == len(quads_ind), (
+            f"Length mismatch: {len(quads_tilt_fit)=} "
+            f"vs {len(quads_ind)=}"
+        )
 
         quad_args = []
         fit_cfg_dict = fit_cfg.__dict__.copy()
+
         for i, quad_index in enumerate(quads_ind):
             tilt_fit_i = quads_tilt_fit[i]
+
             quad_args.append((
-                quad_index, ring, dkick, bpm_indexes, used_cor_ind, dk, individuals
-                , auto_correct_delta,
-                HCMCoupling, VCMCoupling, rf_step,
-                tilt_fit_i, fit_cfg_dict, includeDispersion
+                quad_index,
+                ring,
+                dkick,
+                bpm_indexes,
+                used_cor_ind,
+                dk,
+                individuals,
+                auto_correct_delta,
+                HCMCoupling,
+                VCMCoupling,
+                rf_step,
+                tilt_fit_i,
+                fit_cfg_dict,
+                includeDispersion
             ))
+
+        #print(
+        #    f"[quads_tilt] Starting multiprocessing pool "
+        #    f"with processes={processes}"
+        #)
+        pool_start = time.perf_counter()
 
         with ctx.Pool(
                 processes=processes,
                 initializer=_init_shared,
-                initargs=(shm_C.name, C.shape, C.dtype.str,
-                          shm_Cm.name, C_model.shape, C_model.dtype.str),
+                initargs=(
+                    shm_C.name,
+                    C.shape,
+                    C.dtype.str,
+                    shm_Cm.name,
+                    C_model.shape,
+                    C_model.dtype.str
+                ),
                 maxtasksperchild=64,
         ) as pool:
-            results = pool.starmap(generating_quads_tilt_response_matrices, quad_args, chunksize=1)
+
+            results = pool.starmap(
+                generating_quads_tilt_response_matrices,
+                quad_args,
+                chunksize=1
+            )
+
+        #print(
+        #    f"[quads_tilt] Multiprocessing completed in "
+        #    f"{time.perf_counter() - pool_start:.1f} s"
+        #)
 
         if results:
             J_blocks, deltas, logs_lists = zip(*results)
@@ -1040,7 +1088,10 @@ def calculate_quads_tilt_jacobian(
             J_blocks = [np.asarray(blk) for blk in J_blocks]
             J_quad = np.stack(J_blocks, axis=0)
 
-            delta_vec = np.concatenate([np.atleast_1d(d) for d in deltas])
+            delta_vec = np.concatenate([
+                np.atleast_1d(d) for d in deltas
+            ])
+
         else:
             J_quad = np.empty((0, C.shape[0], C.shape[1]))
             delta_vec = np.empty((0,))
@@ -1048,31 +1099,41 @@ def calculate_quads_tilt_jacobian(
         if all_logs:
             try:
                 os.makedirs("output", exist_ok=True)
-
                 log_path = os.path.join("output", log_filename)
 
                 with open(log_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(all_logs) + "\n")
 
-                print(f"[calculate_quads_jacobian] Logs saved to '{os.path.abspath(log_path)}'")
+                print(
+                    f"[calculate_quads_tilt_jacobian] Logs saved to "
+                    f"'{os.path.abspath(log_path)}'"
+                )
 
             except Exception as e:
-                print(f"[calculate_quads_jacobian] Could not write logs: {e}")
+                print(
+                    "[calculate_quads_tilt_jacobian] "
+                    f"Could not write logs: {e}"
+                )
+
+        #print(
+        #    f"========== Finished quadrupole tilt Jacobian in "
+        #    f"{time.perf_counter() - t_start:.1f} s ==========\n"
+        #)
 
         return J_quad, delta_vec
 
     finally:
         try:
-            shm_C.close();
+            shm_C.close()
             shm_C.unlink()
         except Exception:
             pass
+
         try:
-            shm_Cm.close();
+            shm_Cm.close()
             shm_Cm.unlink()
         except Exception:
             pass
-
 
 def generating_quads_tilt_response_matrices(
         quad_index, ring, dkick, bpm_indexes, cor_indexes, delta_init, individuals,
