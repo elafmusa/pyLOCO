@@ -15,7 +15,7 @@ import multiprocessing as mp
 from multiprocessing import shared_memory
 from .config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
 from .response_matrix import response_matrix
-
+import time
 fit_cfg = FitInitConfig()
 import warnings
 
@@ -350,7 +350,9 @@ def compute_delta_chi2(
     fit_list,
     nHBPM, nVBPM, nHorCOR, nVerCOR,
     quads_ords, quads_tilt_ind, skew_ords,
-    individuals, fit_cfg,
+    quad_individuals,
+    skew_individuals,
+    tilt_individuals, fit_cfg,
     used_bpms_ords, used_cor_ords,
     CMstep, rfStep,
     HCMCoupling, VCMCoupling,
@@ -415,7 +417,9 @@ def compute_delta_chi2(
             quads_ords=quads_ords,
             quads_tilt_ind=quads_tilt_ind,
             skew_ords=skew_ords,
-            individuals=individuals,
+            quad_individuals=quad_individuals,
+            skew_individuals=skew_individuals,
+            tilt_individuals=tilt_individuals, 
             fit_cfg=fit_cfg,
             used_bpms_ords=used_bpms_ords,
             used_cor_ords=used_cor_ords,
@@ -484,8 +488,10 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                      include_cor_kick=False, include_cor_coupling=False, include_bpm_coupling=False,
                      quads_tilt_ind=None,
                      include_delta_RF_frequency=False, include_HCMEnergyShift=False, include_VCMEnergyShift=False,
-                     rf_step=fixed_parameters.rfstep
-                     , individuals=False, auto_correct_delta=True, HCMCoupling=None, VCMCoupling=None,
+                     rf_step=fixed_parameters.rfstep,
+                     quad_individuals=False,
+                     skew_individuals=True,
+                     tilt_individuals=True, auto_correct_delta=True, HCMCoupling=None, VCMCoupling=None,
                      measured_eta_x=None, measured_eta_y=None, quads_tilt_fit=None,
                      Frequency=fixed_parameters.Frequency, fit_cfg=None, iteration=1, quad_jacobian_file=None,
                      skew_jacobian_file=None, quads_tilt_jacobian_file=None, force_recompute=True):
@@ -534,14 +540,16 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                     f"[Jacobian] Ignoring existing auto file; computing new normal-quadrupole Jacobian (iteration {iteration}).")
             else:
                 print(f"[Jacobian] Computing normal-quadrupole Jacobian (iteration {iteration})...")
+            t = time.perf_counter()
 
             J_quad, delta = calculate_quads_jacobian(
                 ring, C_model, dkick, CMords, bpm_indexes, quads_ind, dk, C,
-                individuals, HCMCoupling, VCMCoupling, rf_step, block="quads",
+                quad_individuals, HCMCoupling, VCMCoupling, rf_step, block="quads",
                 auto_correct_delta=auto_correct_delta,
                 fit_cfg=fit_cfg, includeDispersion=includeDispersion,
                 log_filename="quad_jacobian_logs2.txt"
             )
+            print(f"Normal quad Jacobian: {time.perf_counter()-t:.1f} s")
 
             # Save
             if iteration == 1:
@@ -589,14 +597,15 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                     f"[Jacobian] Ignoring existing auto file; computing new skew-quadrupole Jacobian (iteration {iteration}).")
             else:
                 print(f"[Jacobian] Computing skew-quadrupole Jacobian (iteration {iteration})...")
-
+            t = time.perf_counter()
             J_skew, delta_skew = calculate_quads_jacobian(
                 ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
-                individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
+                skew_individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
                 auto_correct_delta=auto_correct_delta,
                 fit_cfg=fit_cfg, includeDispersion=includeDispersion,
                 log_filename="skew_jacobian_logs.txt"
             )
+            print(f"Skew quad Jacobian: {time.perf_counter()-t:.1f} s")
             if iteration == 1:
                 # --- Save the computed Jacobian ---
                 with h5py.File(J_path_skew, "w") as f:
@@ -644,13 +653,14 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                     f"[Jacobian] Ignoring existing auto file; computing new quadrupole-tilt Jacobian (iteration {iteration}).")
             else:
                 print(f"[Jacobian] Computing quadrupole-tilt Jacobian (iteration {iteration})...")
-
+            t = time.perf_counter()
             J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
-                ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, individuals,
+                ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, tilt_individuals,
                 HCMCoupling, VCMCoupling, rf_step, auto_correct_delta=auto_correct_delta,
                 includeDispersion=includeDispersion,
                 log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
             )
+            print(f"Quad tilt Jacobian: {time.perf_counter()-t:.1f} s")
 
             # --- Save the computed Jacobian ---
             if iteration == 1:
@@ -886,197 +896,47 @@ def calculate_quads_jacobian(
 G_C = None
 G_CMODEL = None
 
-
-def _init_shared(shm_name_C, shape_C, dtype_C, shm_name_Cm, shape_Cm, dtype_Cm):
-    global G_C, G_CMODEL, _shm_C, _shm_Cm
-    _shm_C = shared_memory.SharedMemory(name=shm_name_C)
-    _shm_Cm = shared_memory.SharedMemory(name=shm_name_Cm)
-    G_C = np.ndarray(shape_C, dtype=np.dtype(dtype_C), buffer=_shm_C.buf)
-    G_CMODEL = np.ndarray(shape_Cm, dtype=np.dtype(dtype_Cm), buffer=_shm_Cm.buf)
-
-
-def generating_quads_response_matrices(
-        quad_index, ring, dkick, cor_indexes, bpm_indexes, delta_init, individuals,
-        HCMCoupling, VCMCoupling, rf_step, auto_correct_delta, block, fit_cfg, includeDispersion
-):
-    logs = []
-
-    attr_name, attr_idx = _resolve_attr_for_block_read(block, fit_cfg)
-    group = [int(quad_index)] if np.isscalar(quad_index) else [int(q) for q in quad_index]
-
-    k0_list = np.fromiter(
-        (_get_attr_scalar(ring[q], attr_name, attr_idx) for q in group),
-        dtype=float,
-        count=len(group)
-    )
-
-    # choose delta
-    if delta_init is None:
-        delta_local = 1e-3 * k0_list
-        delta_local[delta_local == 0] = 1e-3 #
-    else:
-        delta_local = np.atleast_1d(delta_init)[:len(group)].astype(float)
-
-    RMSGoal = 1e-6
-    RMSTol = 10.0
-    while True:
-        dk = k0_list + delta_local
-
-        set_correction(ring, dk, group, block=block, config=fit_cfg)
-
-        #  ORM with current dk
-        cfg = RMConfig(dkick=dkick, bpm_ords=bpm_indexes, cm_ords=cor_indexes,
-                       HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, includeDispersion=includeDispersion,
-                       rfStep=rf_step)
-
-        C_measured = response_matrix(ring, config=cfg)
-
-        C_measured = G_C @ C_measured
-
-        if includeDispersion == True:
-            # exclude last column (dispersion)
-            Mdiff_no_disp = (
-                    C_measured[:, :-1] - G_CMODEL[:, :-1]
-            ).ravel(order='F')
-
-            RMSDelta = float(
-                np.sqrt(np.sum(Mdiff_no_disp ** 2) / max(1, Mdiff_no_disp.size))
-            )
-        else:
-            Mdiff = (C_measured - G_CMODEL).ravel(order='F')
-            RMSDelta = float(np.sqrt(np.sum(Mdiff ** 2) / max(1, Mdiff.size)))
-
-        if not np.isfinite(RMSDelta) or RMSDelta == 0:
-            raise ValueError(f"LOCO error: RMS difference invalid for group {group}")
-
-        if auto_correct_delta:
-            if RMSDelta < RMSGoal / RMSTol:
-                for idx, q in enumerate(group):
-                    logs.append(f"Param #{q}: delta too small; RMS={1000 * RMSDelta:0.5g} mm")
-                # restore to nominal before changing step
-                set_correction(ring, k0_list, group, individuals=individuals, block=block, config=fit_cfg)
-                scale = (RMSGoal / RMSDelta)
-                delta_local *= scale
-            elif RMSDelta > RMSGoal * RMSTol / 3.0:
-                for idx, q in enumerate(group):
-                    logs.append(f"Param #{q}: delta too big; RMS={1000 * RMSDelta:0.5g} mm")
-                set_correction(ring, k0_list, group, individuals=individuals, block=block, config=fit_cfg)
-                scale = (RMSGoal / RMSDelta)
-                delta_local *= scale
-            else:
-                for idx, q in enumerate(group):
-                    logs.append(f"Param #{q}: delta OK; RMS={1000 * RMSDelta:0.5g} mm")
-                # keep last delta_local used
-                break
-        else:
-            # not auto-correcting; one pass only
-            break
-
-    # restore nominal lattice before returning
-    set_correction(ring, k0_list, group, block=block, config=fit_cfg)
-
-    step = float(delta_local[0]) if delta_local.size else 1.0
-    if step == 0.0:
-        step = 1.0  # avoid division by zero
-    import os
-
-    base_path = os.path.abspath("output/debug")
-    os.makedirs(base_path, exist_ok=True)
-    np.save(f'output/debug/C_measured_{quad_index}.npy', C_measured)
-    np.save(f'output/debug/G_CMODEL_{quad_index}.npy', G_CMODEL)
-    np.save(f'output/debug/step_{quad_index}.npy', step)
-    return (C_measured - G_CMODEL) / step, delta_local, logs
-
 def calculate_quads_tilt_jacobian(
+
         ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C, individuals,
         HCMCoupling, VCMCoupling, rf_step, auto_correct_delta=True,
         processes=None, includeDispersion=False,
-        log_filename="quads_tilt_jacobian_logs.txt",
-        quads_tilt_fit=None, fit_cfg=None
+        log_filename="quads_tilt_jacobian_logs.txt", quads_tilt_fit=None, fit_cfg=None
 ):
-    import time
-
-    print(
-        f"\n========== Starting quadrupole tilt Jacobian "
-        f"for {len(quads_ind)} quadrupoles =========="
-    )
-    t_start = time.perf_counter()
-
     shm_C = shared_memory.SharedMemory(create=True, size=C.nbytes)
     C_sh = np.ndarray(C.shape, dtype=C.dtype, buffer=shm_C.buf)
     C_sh[:] = C
-
     shm_Cm = shared_memory.SharedMemory(create=True, size=C_model.nbytes)
-    Cmodel_sh = np.ndarray(
-        C_model.shape,
-        dtype=C_model.dtype,
-        buffer=shm_Cm.buf
-    )
+    Cmodel_sh = np.ndarray(C_model.shape, dtype=C_model.dtype, buffer=shm_Cm.buf)
     Cmodel_sh[:] = C_model
 
     all_logs = []
 
     ctx = mp.get_context("spawn")
-
     try:
-        assert len(quads_tilt_fit) == len(quads_ind), (
-            f"Length mismatch: {len(quads_tilt_fit)=} "
-            f"vs {len(quads_ind)=}"
-        )
+
+        assert len(quads_tilt_fit) == len(quads_ind), \
+            f"Length mismatch: {len(quads_tilt_fit)=} vs {len(quads_ind)=}"
 
         quad_args = []
         fit_cfg_dict = fit_cfg.__dict__.copy()
-
         for i, quad_index in enumerate(quads_ind):
             tilt_fit_i = quads_tilt_fit[i]
-
             quad_args.append((
-                quad_index,
-                ring,
-                dkick,
-                bpm_indexes,
-                used_cor_ind,
-                dk,
-                individuals,
-                auto_correct_delta,
-                HCMCoupling,
-                VCMCoupling,
-                rf_step,
-                tilt_fit_i,
-                fit_cfg_dict,
-                includeDispersion
+                quad_index, ring, dkick, bpm_indexes, used_cor_ind, dk, individuals
+                , auto_correct_delta,
+                HCMCoupling, VCMCoupling, rf_step,
+                tilt_fit_i, fit_cfg_dict, includeDispersion
             ))
-
-        #print(
-        #    f"[quads_tilt] Starting multiprocessing pool "
-        #    f"with processes={processes}"
-        #)
-        pool_start = time.perf_counter()
 
         with ctx.Pool(
                 processes=processes,
                 initializer=_init_shared,
-                initargs=(
-                    shm_C.name,
-                    C.shape,
-                    C.dtype.str,
-                    shm_Cm.name,
-                    C_model.shape,
-                    C_model.dtype.str
-                ),
+                initargs=(shm_C.name, C.shape, C.dtype.str,
+                          shm_Cm.name, C_model.shape, C_model.dtype.str),
                 maxtasksperchild=64,
         ) as pool:
-
-            results = pool.starmap(
-                generating_quads_tilt_response_matrices,
-                quad_args,
-                chunksize=1
-            )
-
-        #print(
-        #    f"[quads_tilt] Multiprocessing completed in "
-        #    f"{time.perf_counter() - pool_start:.1f} s"
-        #)
+            results = pool.starmap(generating_quads_tilt_response_matrices, quad_args, chunksize=1)
 
         if results:
             J_blocks, deltas, logs_lists = zip(*results)
@@ -1088,10 +948,7 @@ def calculate_quads_tilt_jacobian(
             J_blocks = [np.asarray(blk) for blk in J_blocks]
             J_quad = np.stack(J_blocks, axis=0)
 
-            delta_vec = np.concatenate([
-                np.atleast_1d(d) for d in deltas
-            ])
-
+            delta_vec = np.concatenate([np.atleast_1d(d) for d in deltas])
         else:
             J_quad = np.empty((0, C.shape[0], C.shape[1]))
             delta_vec = np.empty((0,))
@@ -1099,116 +956,394 @@ def calculate_quads_tilt_jacobian(
         if all_logs:
             try:
                 os.makedirs("output", exist_ok=True)
+
                 log_path = os.path.join("output", log_filename)
 
                 with open(log_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(all_logs) + "\n")
 
-                print(
-                    f"[calculate_quads_tilt_jacobian] Logs saved to "
-                    f"'{os.path.abspath(log_path)}'"
-                )
+                print(f"[calculate_quads_jacobian] Logs saved to '{os.path.abspath(log_path)}'")
 
             except Exception as e:
-                print(
-                    "[calculate_quads_tilt_jacobian] "
-                    f"Could not write logs: {e}"
-                )
-
-        #print(
-        #    f"========== Finished quadrupole tilt Jacobian in "
-        #    f"{time.perf_counter() - t_start:.1f} s ==========\n"
-        #)
+                print(f"[calculate_quads_jacobian] Could not write logs: {e}")
 
         return J_quad, delta_vec
 
     finally:
         try:
-            shm_C.close()
+            shm_C.close();
             shm_C.unlink()
         except Exception:
             pass
-
         try:
-            shm_Cm.close()
+            shm_Cm.close();
             shm_Cm.unlink()
         except Exception:
             pass
 
-def generating_quads_tilt_response_matrices(
-        quad_index, ring, dkick, bpm_indexes, cor_indexes, delta_init, individuals,
-        auto_correct_delta, HCMCoupling, VCMCoupling, rf_step, quads_tilt_fit, fit_cfg, includeDispersion
+def _init_shared(shm_name_C, shape_C, dtype_C, shm_name_Cm, shape_Cm, dtype_Cm):
+    global G_C, G_CMODEL, _shm_C, _shm_Cm
+    _shm_C = shared_memory.SharedMemory(name=shm_name_C)
+    _shm_Cm = shared_memory.SharedMemory(name=shm_name_Cm)
+    G_C = np.ndarray(shape_C, dtype=np.dtype(dtype_C), buffer=_shm_C.buf)
+    G_CMODEL = np.ndarray(shape_Cm, dtype=np.dtype(dtype_Cm), buffer=_shm_Cm.buf)
+
+
+def generating_quads_response_matrices(
+        quad_index, ring, dkick, cor_indexes, bpm_indexes,
+        delta_init, individuals, HCMCoupling, VCMCoupling,
+        rf_step, auto_correct_delta, block, fit_cfg,
+        includeDispersion
 ):
     logs = []
 
-    group = [int(quad_index)] if isinstance(quad_index, (np.integer, int)) else [int(q) for q in quad_index]
-    delta_local = np.atleast_1d(delta_init)[:len(group)].astype(float)
+    attr_name, attr_idx = _resolve_attr_for_block_read(block, fit_cfg)
+
+    # quad_index may be:
+    #   int              for individual fitting
+    #   list[int]        for family fitting
+    group = (
+        [int(quad_index)]
+        if np.isscalar(quad_index)
+        else [int(q) for q in quad_index]
+    )
+
+    # Read nominal values of all magnets in this group
+    k0_each = np.asarray(
+        [
+            _get_attr_scalar(ring[q], attr_name, attr_idx)
+            for q in group
+        ],
+        dtype=float,
+    )
+
+    if individuals:
+        # Individual parameter
+        correction_indices = group
+        nominal_values = k0_each
+
+        if delta_init is None:
+            delta_local = 1e-3 * nominal_values
+            delta_local[delta_local == 0.0] = 1e-3
+        else:
+            delta_local = np.atleast_1d(
+                delta_init
+            ).astype(float)[:len(group)]
+
+    else:
+        # Family parameter: one strength value for the whole family
+        correction_indices = [group]
+        nominal_values = np.asarray([k0_each[0]], dtype=float)
+
+        # Family fitting assumes the magnets have the same nominal strength
+        if not np.allclose(
+            k0_each,
+            k0_each[0],
+            rtol=1e-10,
+            atol=1e-14,
+        ):
+            raise ValueError(
+                f"Family {group} contains different nominal strengths: "
+                f"{k0_each}"
+            )
+
+        if delta_init is None:
+            delta_value = 1e-3 * nominal_values[0]
+            if delta_value == 0.0:
+                delta_value = 1e-3
+        else:
+            delta_value = float(
+                np.atleast_1d(delta_init).ravel()[0]
+            )
+
+        delta_local = np.asarray([delta_value], dtype=float)
 
     RMSGoal = 1e-6
     RMSTol = 10.0
-    DeltaCheckFlag = True
 
-    while DeltaCheckFlag:
+    while True:
+        perturbed_values = nominal_values + delta_local
 
-        set_correction_tilt(ring, psi_values=delta_local + quads_tilt_fit,
-                            elem_ind=group, individuals=individuals, config=fit_cfg)
+        set_correction(
+            ring,
+            perturbed_values,
+            correction_indices,
+            individuals=individuals,
+            block=block,
+            config=fit_cfg,
+        )
 
-        cfg = RMConfig(dkick=dkick, bpm_ords=bpm_indexes, cm_ords=cor_indexes, HCMCoupling=HCMCoupling,
-                       VCMCoupling=VCMCoupling, includeDispersion=includeDispersion, rfStep=rf_step)
+        cfg = RMConfig(
+            dkick=dkick,
+            bpm_ords=bpm_indexes,
+            cm_ords=cor_indexes,
+            HCMCoupling=HCMCoupling,
+            VCMCoupling=VCMCoupling,
+            includeDispersion=includeDispersion,
+            rfStep=rf_step,
+        )
+
         C_measured = response_matrix(ring, config=cfg)
-
         C_measured = G_C @ C_measured
 
-        if includeDispersion == True:
-            # exclude last column (dispersion)
-            Mdiff_no_disp = (
-                    C_measured[:, :-1] - G_CMODEL[:, :-1]
-            ).ravel(order='F')
+        if includeDispersion:
+            difference = (
+                C_measured[:, :-1] -
+                G_CMODEL[:, :-1]
+            ).ravel(order="F")
+        else:
+            difference = (
+                C_measured -
+                G_CMODEL
+            ).ravel(order="F")
 
-            RMSDelta = float(
-                np.sqrt(np.sum(Mdiff_no_disp ** 2) / max(1, Mdiff_no_disp.size))
+        RMSDelta = float(
+            np.sqrt(
+                np.sum(difference**2) /
+                max(1, difference.size)
             )
-        else:
-            Mdiff = (C_measured - G_CMODEL).ravel(order='F')
-            RMSDelta = float(np.sqrt(np.sum(Mdiff ** 2) / max(1, Mdiff.size)))
+        )
 
-        logs.append(f"quads_tilt_fit #{quads_tilt_fit}")
-        logs.append(f"delta_local #{delta_local}")
-        logs.append(f"R1 #{ring[quad_index].R1}")
-        logs.append(f"R2 #{ring[quad_index].R2}")
+        if not np.isfinite(RMSDelta) or RMSDelta == 0.0:
+            raise ValueError(
+                f"LOCO error: RMS difference invalid "
+                f"for group {group}"
+            )
 
-        if not np.isfinite(RMSDelta) or RMSDelta == 0:
-            raise ValueError(f"LOCO error: RMS difference invalid for group {group}")
-
-        if auto_correct_delta:
-            if RMSDelta < RMSGoal / RMSTol:
-                for idx, q in enumerate(group):
-                    logs.append(f"Param #{q}: delta too small; RMS={1000 * RMSDelta:0.5g} mm")
-                # restore to nominal before changing step
-                set_correction_tilt(ring, psi_values=quads_tilt_fit,
-                                    elem_ind=group, individuals=individuals, config=fit_cfg)
-                scale = (RMSGoal / RMSDelta)
-                delta_local *= scale
-            elif RMSDelta > RMSGoal * RMSTol / 3.0:
-                for idx, q in enumerate(group):
-                    logs.append(f"Param #{q}: delta too big; RMS={1000 * RMSDelta:0.5g} mm")
-                set_correction_tilt(ring, psi_values=quads_tilt_fit,
-                                    elem_ind=group, individuals=individuals, config=fit_cfg)
-                scale = (RMSGoal / RMSDelta)
-                delta_local *= scale
-            else:
-                for idx, q in enumerate(group):
-                    logs.append(f"Param #{q}: delta OK; RMS={1000 * RMSDelta:0.5g} mm")
-                # keep last delta_local used
-                break
-        else:
-            # not auto-correcting; one pass only
+        if not auto_correct_delta:
             break
 
-    set_correction_tilt(ring, psi_values=quads_tilt_fit,
-                        elem_ind=group, individuals=individuals, config=fit_cfg)
+        if RMSDelta < RMSGoal / RMSTol:
+            logs.append(
+                f"Group {group}: delta too small; "
+                f"RMS={1000 * RMSDelta:0.5g} mm"
+            )
 
-    return (C_measured - G_CMODEL) / delta_local[0], delta_local, logs
+            set_correction(
+                ring,
+                nominal_values,
+                correction_indices,
+                individuals=individuals,
+                block=block,
+                config=fit_cfg,
+            )
+
+            delta_local *= RMSGoal / RMSDelta
+
+        elif RMSDelta > RMSGoal * RMSTol / 3.0:
+            logs.append(
+                f"Group {group}: delta too large; "
+                f"RMS={1000 * RMSDelta:0.5g} mm"
+            )
+
+            set_correction(
+                ring,
+                nominal_values,
+                correction_indices,
+                individuals=individuals,
+                block=block,
+                config=fit_cfg,
+            )
+
+            delta_local *= RMSGoal / RMSDelta
+
+        else:
+            logs.append(
+                f"Group {group}: delta OK; "
+                f"RMS={1000 * RMSDelta:0.5g} mm"
+            )
+            break
+
+    # Restore nominal lattice
+    set_correction(
+        ring,
+        nominal_values,
+        correction_indices,
+        individuals=individuals,
+        block=block,
+        config=fit_cfg,
+    )
+
+    step = float(delta_local[0])
+
+    if step == 0.0:
+        raise ValueError(
+            f"Zero Jacobian step for group {group}"
+        )
+
+    return (
+        (C_measured - G_CMODEL) / step,
+        delta_local,
+        logs,
+    )
+
+def generating_quads_tilt_response_matrices(
+        quad_index,
+        ring,
+        dkick,
+        bpm_indexes,
+        cor_indexes,
+        delta_init,
+        individuals,
+        auto_correct_delta,
+        HCMCoupling,
+        VCMCoupling,
+        rf_step,
+        quads_tilt_fit,
+        fit_cfg,
+        includeDispersion,
+):
+    logs = []
+
+    # -------------------------------------------------------------
+    # Build group
+    # -------------------------------------------------------------
+    group = (
+        [int(quad_index)]
+        if np.isscalar(quad_index)
+        else [int(q) for q in quad_index]
+    )
+
+    # -------------------------------------------------------------
+    # Individual vs family handling
+    # -------------------------------------------------------------
+    if individuals:
+
+        correction_indices = group
+
+        nominal_values = np.asarray(quads_tilt_fit, dtype=float)
+
+        if delta_init is None:
+            delta_local = np.full(len(group), 1e-6)
+        else:
+            delta_local = np.atleast_1d(delta_init).astype(float)[:len(group)]
+
+    else:
+
+        correction_indices = [group]
+
+        nominal_values = np.asarray(
+            [np.asarray(quads_tilt_fit).ravel()[0]],
+            dtype=float,
+        )
+
+        if delta_init is None:
+            delta_local = np.asarray([1e-6], dtype=float)
+        else:
+            delta_local = np.asarray(
+                [float(np.atleast_1d(delta_init).ravel()[0])],
+                dtype=float,
+            )
+
+    RMSGoal = 1e-6
+    RMSTol = 10.0
+
+    while True:
+
+        set_correction_tilt(
+            ring,
+            psi_values = nominal_values + delta_local,
+            elem_ind=correction_indices,
+            individuals=individuals,
+            config=fit_cfg,
+        )
+
+        cfg = RMConfig(
+            dkick=dkick,
+            bpm_ords=bpm_indexes,
+            cm_ords=cor_indexes,
+            HCMCoupling=HCMCoupling,
+            VCMCoupling=VCMCoupling,
+            includeDispersion=includeDispersion,
+            rfStep=rf_step,
+        )
+
+        C_measured = response_matrix(ring, config=cfg)
+        C_measured = G_C @ C_measured
+
+        if includeDispersion:
+            diff = (
+                C_measured[:, :-1]
+                - G_CMODEL[:, :-1]
+            ).ravel(order="F")
+        else:
+            diff = (
+                C_measured
+                - G_CMODEL
+            ).ravel(order="F")
+
+        RMSDelta = np.sqrt(np.mean(diff ** 2))
+
+        if not np.isfinite(RMSDelta) or RMSDelta == 0:
+            raise ValueError(
+                f"Invalid RMS difference for tilt group {group}"
+            )
+
+        if not auto_correct_delta:
+            break
+
+        if RMSDelta < RMSGoal / RMSTol:
+
+            logs.append(
+                f"Group {group}: delta too small; "
+                f"RMS={1000*RMSDelta:.5g} mm"
+            )
+
+            set_correction_tilt(
+                ring,
+                psi_values=nominal_values,
+                elem_ind=correction_indices,
+                individuals=individuals,
+                config=fit_cfg,
+            )
+
+            delta_local *= RMSGoal / RMSDelta
+
+        elif RMSDelta > RMSGoal * RMSTol / 3:
+
+            logs.append(
+                f"Group {group}: delta too large; "
+                f"RMS={1000*RMSDelta:.5g} mm"
+            )
+
+            set_correction_tilt(
+                ring,
+                psi_values=nominal_values,
+                elem_ind=correction_indices,
+                individuals=individuals,
+                config=fit_cfg,
+            )
+
+            delta_local *= RMSGoal / RMSDelta
+
+        else:
+
+            logs.append(
+                f"Group {group}: delta OK; "
+                f"RMS={1000*RMSDelta:.5g} mm"
+            )
+
+            break
+
+    # -------------------------------------------------------------
+    # Restore nominal lattice
+    # -------------------------------------------------------------
+    set_correction_tilt(
+        ring,
+        psi_values=nominal_values,
+        elem_ind=correction_indices,
+        individuals=individuals,
+        config=fit_cfg,
+    )
+
+    step = delta_local.item()
+
+    return (
+        (C_measured - G_CMODEL) / step,
+        delta_local,
+        logs,
+    )
+
 
 
 def calculate_bpm_gain_jacobian(C_model, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion, fit_bpms_coupling):
@@ -2054,7 +2189,8 @@ def _svd_select_indices(
 
 def _prepare_ring_and_rmconfig(
         base_ring, fit_vec, *, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
-        quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg,
+        quads_ords, quads_tilt_ind, skew_ords, quad_individuals,
+        skew_individuals, tilt_individuals, fit_cfg,
         used_bpms_ords, used_cor_ords, CMstep, rfStep,
         HCMCoupling, VCMCoupling,
         hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain,
@@ -2074,7 +2210,9 @@ def _prepare_ring_and_rmconfig(
     # Copy ring and apply trial lattice changes
     import copy
     ring_tmp = copy.deepcopy(base_ring)
-    _apply_fit_to_ring(ring_tmp, prop, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg)
+    _apply_fit_to_ring(ring_tmp, prop, quads_ords, quads_tilt_ind, skew_ords, quad_individuals,
+    skew_individuals,
+    tilt_individuals, fit_cfg)
 
     dkick_H = np.asarray(prop.get('hcor_cal', CMstep[0]), dtype=float).ravel()
     dkick_V = np.asarray(prop.get('vcor_cal', CMstep[1]), dtype=float).ravel()
@@ -2158,16 +2296,16 @@ def build_full_fit_state(
     }
 
 
-def _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg):
+def _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, quad_individuals,skew_individuals,tilt_individuals, fit_cfg):
     if 'quads' in fit_dict:
         set_correction(ring, np.asarray(fit_dict['quads']).ravel(),
-                       quads_ords, individuals=individuals, block='quads', config=fit_cfg)
+                       quads_ords, individuals=quad_individuals, block='quads', config=fit_cfg)
     if 'skew_quads' in fit_dict:
         set_correction(ring, np.asarray(fit_dict['skew_quads']).ravel(),
-                       skew_ords, individuals=individuals, block='skew_quads', config=fit_cfg)
+                       skew_ords, individuals=skew_individuals, block='skew_quads', config=fit_cfg)
     if 'quads_tilt' in fit_dict:
         set_correction_tilt(ring, np.asarray(fit_dict['quads_tilt']).ravel(),
-                            quads_tilt_ind, config=fit_cfg)
+                            quads_tilt_ind, individuals=tilt_individuals, config=fit_cfg)
 
 
 # ----------------------- SOLVERS -----------------------
@@ -2290,7 +2428,9 @@ def pyloco(
         # Correctors kicks & RF steps
         CMstep=None, rfStep=None, Frequency=fixed_parameters.Frequency,
         # features
-        fit_list=(), individuals=True, remove_coupling_=True,
+        fit_list=(), quad_individuals=True,
+            skew_individuals=True,
+            tilt_individuals=True, remove_coupling_=True,
         # outliers & normalization
         outlier_rejection=False, sigma_outlier=10,
         apply_normalization=False, normalization_mode='global',
@@ -2328,24 +2468,44 @@ def pyloco(
     HCMCoupling = np.zeros(nHorCOR)
     VCMCoupling = np.zeros(nVerCOR)
 
-    deltaqt = np.zeros(len(quads_ords)) if ('quads_tilt' in fit_list) else None
+    deltaqt = np.zeros(len(quads_tilt_ind)) if ('quads_tilt' in fit_list) else None
 
 
     quads_fit, _ = build_initial_fit_parameters(
-        ring=ring,
-        fit_list=['quads'],
-        nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
-        quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
-        CMstep=CMstep, rfStep=rfStep,
-        individuals=individuals)
+    ring=ring,
+    fit_list=["quads"],
+    nHBPM=nHBPM,
+    nVBPM=nVBPM,
+    nHorCOR=nHorCOR,
+    nVerCOR=nVerCOR,
+    quads_ords=quads_ords,
+    skew_ords=skew_ords,
+    quads_tilt=quads_tilt_ind,
+    CMstep=CMstep,
+    rfStep=rfStep,
+    quad_individuals=quad_individuals,
+    skew_individuals=skew_individuals,
+    tilt_individuals=tilt_individuals,
+    config=fit_cfg,
+    )
 
     skew_quads_fit, _ = build_initial_fit_parameters(
         ring=ring,
-        fit_list=['skew_quads'],
-        nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
-        quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
-        CMstep=CMstep, rfStep=rfStep,
-        individuals=individuals)
+        fit_list=["skew_quads"],
+        nHBPM=nHBPM,
+        nVBPM=nVBPM,
+        nHorCOR=nHorCOR,
+        nVerCOR=nVerCOR,
+        quads_ords=quads_ords,
+        skew_ords=skew_ords,
+        quads_tilt=quads_tilt_ind,
+        CMstep=CMstep,
+        rfStep=rfStep,
+        quad_individuals=quad_individuals,
+        skew_individuals=skew_individuals,
+        tilt_individuals=tilt_individuals,
+        config=fit_cfg,
+    )
 
     iOut_coupled_persistent = np.array([], dtype=int)
     iNoCoupling_chi_persistent = np.array([], dtype=int)
@@ -2398,7 +2558,10 @@ def pyloco(
             nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
             quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
             CMstep=CMstep, rfStep=rfStep,
-            individuals=individuals)
+            quad_individuals=quad_individuals,
+            skew_individuals=skew_individuals,
+            tilt_individuals=tilt_individuals,
+            )
     # elif continue_from_previous and previous_fit_results is not None:
     #     inetial_fit_parameters = np.asarray(previous_fit_results[-1]).copy()
     elif continue_from_previous and previous_fit_dict is not None:
@@ -2412,7 +2575,9 @@ def pyloco(
             nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
             quads_ords=quads_ords, skew_ords=skew_ords, quads_tilt=quads_tilt_ind,
             CMstep=CMstep, rfStep=rfStep,
-            individuals=individuals,
+            quad_individuals=quad_individuals,
+            skew_individuals=skew_individuals,
+            tilt_individuals=tilt_individuals,
         )
 
         # Overwrite any parameters that were fitted before
@@ -2466,7 +2631,9 @@ def pyloco(
             dk=fixed_parameters.dk,
             skew_ind=skew_ords, quads_tilt_ind=quads_tilt_ind,
             includeDispersion=includeDispersion,
-            individuals=individuals,
+            quad_individuals=quad_individuals,
+            skew_individuals=skew_individuals,
+            tilt_individuals=tilt_individuals,
             delta_skew_=fixed_parameters.delta_skew,
             delta_q_tilt=getattr(fixed_parameters, "delta_q_tilt", 1e-6),
             include_quads=include_quads,
@@ -2672,7 +2839,9 @@ def pyloco(
                     ring, new_vec,
                     fit_list=fit_list, nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
                     quads_ords=quads_ords, quads_tilt_ind=quads_tilt_ind, skew_ords=skew_ords,
-                    individuals=individuals, fit_cfg=fit_cfg,
+                    quad_individuals=quad_individuals,
+                    skew_individuals=skew_individuals,
+                    tilt_individuals=tilt_individuals, fit_cfg=fit_cfg,
                     used_bpms_ords=used_bpms_ords, used_cor_ords=used_cor_ords,
                     CMstep=CMstep, rfStep=rfStep,
                     HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
@@ -2828,7 +2997,8 @@ def pyloco(
                 skew_quads_fit = np.asarray(fit_dict['skew_quads']).ravel()
 
             # 5) Apply lattice changes to ring
-            _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, individuals, fit_cfg)
+            _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, quad_individuals,
+            skew_individuals, tilt_individuals,fit_cfg)
 
 
 
