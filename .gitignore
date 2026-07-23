@@ -20,3 +20,15 @@ Examples/PETRAIII/output/
 
 **/output/jacobians/
 
+# Local files
+measurements/
+output/
+results/
+
+# Local configuration files
+PETRAIII_example.pyloco.json
+p3_loco_test-loco-config.json
+p3_loco_test.pyloco.json
+
+# Generated example outputs
+Examples/**/output/
