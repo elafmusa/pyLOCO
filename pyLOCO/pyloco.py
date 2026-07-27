@@ -494,7 +494,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                      tilt_individuals=True, auto_correct_delta=True, HCMCoupling=None, VCMCoupling=None,
                      measured_eta_x=None, measured_eta_y=None, quads_tilt_fit=None,
                      Frequency=fixed_parameters.Frequency, fit_cfg=None, iteration=1, quad_jacobian_file=None,
-                     skew_jacobian_file=None, quads_tilt_jacobian_file=None, force_recompute=True):
+                     skew_jacobian_file=None, quads_tilt_jacobian_file=None, force_recompute=True, output_dir='output'):
     """
     Master function to compute full LOCO Jacobian including:
     - Quadrupole strengths
@@ -502,6 +502,9 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
     - Corrector gains/coupling
     - etc.
     """
+    from pathlib import Path
+    output_dir = Path(output_dir)
+
     nCOR = nHorCOR + nVerCOR
     C_inv = np.linalg.inv(C)
 
@@ -521,21 +524,33 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
     J_quad, delta = None, None
     if include_quads:
 
+
         user_provided = quad_jacobian_file is not None
-        J_path = quad_jacobian_file if user_provided else f"output/jacobians/quads/J_quads_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
-        os.makedirs(os.path.dirname(J_path), exist_ok=True)
+
+        quad_dir = output_dir / "jacobians" / "quads"
+        quad_dir.mkdir(parents=True, exist_ok=True)
+
+        J_path = (
+            Path(quad_jacobian_file)
+            if user_provided
+            else quad_dir / (
+                f"J_quads_iter{iteration}_{dkick[0][0]}urad_"
+                f"{fixed_parameters.rfstep}Hz.h5"
+            )
+        )
+        #J_path = quad_jacobian_file if user_provided else f"output/jacobians/quads/J_quads_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
 
         # --- logic ---
-        if os.path.exists(J_path) and not force_recompute and user_provided and iteration == 1:
+        if J_path.exists() and not force_recompute and user_provided and iteration == 1:
 
             print(f"[Jacobian] Loading user-specified normal-quadrupole Jacobian from {J_path}")
             with h5py.File(J_path, "r") as f:
                 J_quad = np.array(f["J_quads"])
                 delta = None
         else:
-            if os.path.exists(J_path) and force_recompute:
+            if J_path.exists() and force_recompute:
                 print(f"[Jacobian] File exists, but recomputing as requested (force_recompute=True).")
-            elif os.path.exists(J_path) and not user_provided:
+            elif J_path.exists() and not user_provided:
                 print(
                     f"[Jacobian] Ignoring existing auto file; computing new normal-quadrupole Jacobian (iteration {iteration}).")
             else:
@@ -547,6 +562,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                 quad_individuals, HCMCoupling, VCMCoupling, rf_step, block="quads",
                 auto_correct_delta=auto_correct_delta,
                 fit_cfg=fit_cfg, includeDispersion=includeDispersion,
+                output_dir=output_dir,
                 log_filename="quad_jacobian_logs2.txt"
             )
             print(f"Normal quad Jacobian: {time.perf_counter()-t:.1f} s")
@@ -579,20 +595,21 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
 
         # Determine file path
         user_provided = skew_jacobian_file is not None
-        J_path_skew = skew_jacobian_file if user_provided else f"output/jacobians/skew/J_skew_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
+        skew_dir = output_dir / "jacobians" / "skew"
+        skew_dir.mkdir(parents=True, exist_ok=True)
+        J_path_skew = Path(skew_jacobian_file) if user_provided else skew_dir / f"J_skew_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
 
-        os.makedirs(os.path.dirname(J_path_skew), exist_ok=True)
 
         # --- logic ---
-        if os.path.exists(J_path_skew) and not force_recompute and user_provided and iteration == 1:
+        if J_path_skew.exists() and not force_recompute and user_provided and iteration == 1:
             print(f"[Jacobian] Loading user-specified skew-quadrupole Jacobian from {J_path_skew}")
             with h5py.File(J_path_skew, "r") as f:
                 J_skew = np.array(f["J_skew"])
                 delta_skew = None
         else:
-            if os.path.exists(J_path_skew) and force_recompute:
+            if J_path_skew.exists() and force_recompute:
                 print(f"[Jacobian] File exists, but recomputing as requested (force_recompute=True).")
-            elif os.path.exists(J_path_skew) and not user_provided:
+            elif J_path_skew.exists() and not user_provided:
                 print(
                     f"[Jacobian] Ignoring existing auto file; computing new skew-quadrupole Jacobian (iteration {iteration}).")
             else:
@@ -602,7 +619,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                 ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
                 skew_individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
                 auto_correct_delta=auto_correct_delta,
-                fit_cfg=fit_cfg, includeDispersion=includeDispersion,
+                fit_cfg=fit_cfg, includeDispersion=includeDispersion, output_dir=output_dir,
                 log_filename="skew_jacobian_logs.txt"
             )
             print(f"Skew quad Jacobian: {time.perf_counter()-t:.1f} s")
@@ -635,20 +652,25 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
 
         # Determine file path
         user_provided = quads_tilt_jacobian_file is not None
-        J_path_tilt = quads_tilt_jacobian_file if user_provided else f"output/jacobians/tilt/J_tilt_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
+        tilt_dir = output_dir / "jacobians" / "tilt"
+        tilt_dir.mkdir(parents=True, exist_ok=True)
 
-        os.makedirs(os.path.dirname(J_path_tilt), exist_ok=True)
+        J_path_tilt = (
+            Path(quads_tilt_jacobian_file)
+            if user_provided
+            else tilt_dir / f"J_tilt_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
+        )
 
         # --- logic ---
-        if os.path.exists(J_path_tilt) and not force_recompute and user_provided and iteration == 1:
+        if J_path_tilt.exists() and not force_recompute and user_provided and iteration == 1:
             print(f"[Jacobian] Loading user-specified quadrupole-tilt Jacobian from {J_path_tilt}")
             with h5py.File(J_path_tilt, "r") as f:
                 J_quad_tilt = np.array(f["J_quads_tilt"])
                 delta_quads_tilt = None
         else:
-            if os.path.exists(J_path_tilt) and force_recompute:
+            if J_path_tilt.exists() and force_recompute:
                 print(f"[Jacobian] File exists, but recomputing as requested (force_recompute=True).")
-            elif os.path.exists(J_path_tilt) and not user_provided:
+            elif J_path_tilt.exists() and not user_provided:
                 print(
                     f"[Jacobian] Ignoring existing auto file; computing new quadrupole-tilt Jacobian (iteration {iteration}).")
             else:
@@ -657,7 +679,7 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
             J_quad_tilt, delta_quads_tilt = calculate_quads_tilt_jacobian(
                 ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, tilt_individuals,
                 HCMCoupling, VCMCoupling, rf_step, auto_correct_delta=auto_correct_delta,
-                includeDispersion=includeDispersion,
+                includeDispersion=includeDispersion, output_dir=output_dir,
                 log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
             )
             print(f"Quad tilt Jacobian: {time.perf_counter()-t:.1f} s")
@@ -822,9 +844,12 @@ def calculate_quads_jacobian(
         ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C,
         individuals, HCMCoupling, VCMCoupling, rf_step, block,
         auto_correct_delta=True,
-        fit_cfg=None,
+        fit_cfg=None, output_dir="output",
         log_filename="quad_jacobian_logs.txt", processes=None, includeDispersion=False
 ):
+    from pathlib import Path
+
+    output_dir = Path(output_dir)
     # Shared matrices (read-only)
     shm_C = shared_memory.SharedMemory(create=True, size=C.nbytes)
     C_sh = np.ndarray(C.shape, dtype=C.dtype, buffer=shm_C.buf);
@@ -870,14 +895,15 @@ def calculate_quads_jacobian(
 
         if all_logs:
             try:
-                os.makedirs("output", exist_ok=True)
+                log_dir = output_dir / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
 
-                log_path = os.path.join("output", log_filename)
+                log_path = log_dir / log_filename
 
                 with open(log_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(all_logs) + "\n")
 
-                print(f"[calculate_quads_jacobian] Logs saved to '{os.path.abspath(log_path)}'")
+                print(f"[calculate_quads_jacobian] Logs saved to '{log_path.resolve()}'")
 
             except Exception as e:
                 print(f"[calculate_quads_jacobian] Could not write logs: {e}")
@@ -897,12 +923,30 @@ G_C = None
 G_CMODEL = None
 
 def calculate_quads_tilt_jacobian(
-
-        ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C, individuals,
-        HCMCoupling, VCMCoupling, rf_step, auto_correct_delta=True,
-        processes=None, includeDispersion=False,
-        log_filename="quads_tilt_jacobian_logs.txt", quads_tilt_fit=None, fit_cfg=None
+    ring,
+    C_model,
+    dkick,
+    used_cor_ind,
+    bpm_indexes,
+    quads_ind,
+    dk,
+    C,
+    individuals,
+    HCMCoupling,
+    VCMCoupling,
+    rf_step,
+    auto_correct_delta=True,
+    processes=None,
+    includeDispersion=False,
+    output_dir="output",
+    log_filename="quads_tilt_jacobian_logs.txt",
+    quads_tilt_fit=None,
+    fit_cfg=None,
 ):
+
+    from pathlib import Path
+    output_dir = Path(output_dir)
+
     shm_C = shared_memory.SharedMemory(create=True, size=C.nbytes)
     C_sh = np.ndarray(C.shape, dtype=C.dtype, buffer=shm_C.buf)
     C_sh[:] = C
@@ -955,17 +999,19 @@ def calculate_quads_tilt_jacobian(
 
         if all_logs:
             try:
-                os.makedirs("output", exist_ok=True)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                log_dir = output_dir / "logs"
+                log_dir.mkdir(parents=True, exist_ok=True)
 
-                log_path = os.path.join("output", log_filename)
+                log_path = log_dir / log_filename
 
                 with open(log_path, "w", encoding="utf-8") as f:
                     f.write("\n".join(all_logs) + "\n")
 
-                print(f"[calculate_quads_jacobian] Logs saved to '{os.path.abspath(log_path)}'")
+                print(f"[calculate_quads_tilt_jacobian] Logs saved to '{log_path.resolve()}'")
 
             except Exception as e:
-                print(f"[calculate_quads_jacobian] Could not write logs: {e}")
+                print(f"[calculate_quads_tilt_jacobian] Could not write logs: {e}")
 
         return J_quad, delta_vec
 
@@ -2454,7 +2500,8 @@ def pyloco(
         previous_fit_dict=None,
         previous_ring=None,
         calculate_delta_chi2=False,
-        initial_model_orm_callback=None
+        initial_model_orm_callback=None,
+        output_dir='output'
 
 ):
 
@@ -2657,7 +2704,8 @@ def pyloco(
             quad_jacobian_file=quad_jacobian_file,
             skew_jacobian_file=skew_jacobian_file,
             quads_tilt_jacobian_file=quads_tilt_jacobian_file,
-            force_recompute=force_recompute
+            force_recompute=force_recompute,
+            output_dir=output_dir
 
         )
         if fixedmomentum == True:

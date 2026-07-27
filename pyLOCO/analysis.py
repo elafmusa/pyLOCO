@@ -1,18 +1,13 @@
 import numpy as np
-from numpy.linalg import svd
 import logging
 import matplotlib.pyplot as plt
 LOGGER = logging.getLogger(__name__)
-import time
-import json
 from .config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
-from .response_matrix import response_matrix
-fit_cfg = FitInitConfig()
 import at
 
 # ----------------------- PLOTING OPTICS AND ORMs -----------------------
 
-def plot_beta(s_pos, bx, by):
+def plot_beta(s_pos, bx, by, save_path=None):
     def rms(x):
         return np.sqrt(np.mean(x ** 2))
     fig, axes = plt.subplots(
@@ -65,11 +60,15 @@ def plot_beta(s_pos, bx, by):
     )
 
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {save_path}")
     plt.show()
+    plt.close(fig)
 
 
 
-def plot_eta(s_pos, dx, dy):
+def plot_eta(s_pos, dx, dy, save_path=None):
     def rms(x):
         return np.sqrt(np.mean(x ** 2))
     fig, axes = plt.subplots(
@@ -122,8 +121,11 @@ def plot_eta(s_pos, dx, dy):
     )
 
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {save_path}")
     plt.show()
-
+    plt.close(fig)
 
 def calculate_dispersion(ring, fixed_parameters, bpm_ords, calculator = 'Linear', rfStep = 200, RFAttr = "Frequency"):
 
@@ -225,18 +227,20 @@ def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d', save_p
 
     plt.tight_layout()
 
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        print(f"Plot saved to: {save_path}")
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {save_path}")
 
     plt.show()
+    plt.close(fig)
 
 def plot_orm_bars_simone_style(
     R_dir, R_coup,
     R_model=None,
     labels=None,
     title="Steerers response",
-    ylabel="std [m/rad]"
+    ylabel="std [m/rad]",
+    save_path=None
 ):
 
     std_dir = np.std(R_dir , axis=0)
@@ -293,4 +297,8 @@ def plot_orm_bars_simone_style(
     ax.grid(axis="y", alpha=0.3)
 
     plt.tight_layout()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"Saved: {save_path}")
     plt.show()
+    plt.close(fig)
