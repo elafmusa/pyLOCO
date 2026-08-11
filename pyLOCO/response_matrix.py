@@ -273,53 +273,70 @@ def response_matrix(
                 else:
                     this_dkick = float(dkick)
 
-                if n_dim == 0:  # Horizontal
-                    base_kick = ring[cm_ord].PolynomB[0]
-                else:  # Vertical
-                    base_kick = ring[cm_ord].PolynomA[0]
+                corrector = ring[cm_ord]
+
+                # AT Corrector elements store physical kicks in KickAngle,
+                # while thin-multipole correctors use PolynomB/A. Support
+                # both representations in the numerical ORM calculator.
+                if hasattr(corrector, "KickAngle"):
+                    kick_attribute = "KickAngle"
+                    kick_index = n_dim
+                    other_attribute = "KickAngle"
+                    other_index = other_dim
+                elif n_dim == 0 and hasattr(corrector, "PolynomB"):
+                    kick_attribute = "PolynomB"
+                    kick_index = 0
+                    other_attribute = "PolynomA"
+                    other_index = 0
+                elif n_dim == 1 and hasattr(corrector, "PolynomA"):
+                    kick_attribute = "PolynomA"
+                    kick_index = 0
+                    other_attribute = "PolynomB"
+                    other_index = 0
+                else:
+                    raise TypeError(
+                        f"Corrector at index {cm_ord} must provide KickAngle "
+                        "or PolynomA/PolynomB for numerical ORM calculation."
+                    )
+
+                kick_array = getattr(corrector, kick_attribute)
+                base_kick = kick_array[kick_index]
+                other_array = getattr(corrector, other_attribute)
+                other_kick = other_array[other_index]
 
                 if bidirectional:
 
                     # +delta
-                    if n_dim == 0:
-                        ring[cm_ord].PolynomB[0] = base_kick + this_dkick / 2
-                    else:
-                        ring[cm_ord].PolynomA[0] = base_kick + this_dkick / 2
+                    kick_array[kick_index] = base_kick + this_dkick / 2
 
                     _, orbit = at.find_orbit4(ring, 0, bpm_ords)
                     orbit_plus_x = orbit[:, 0]
                     orbit_plus_y = orbit[:, 2]
 
                     # -delta
-                    if n_dim == 0:
-                        ring[cm_ord].PolynomB[0] = base_kick - this_dkick / 2
-                    else:
-                        ring[cm_ord].PolynomA[0] = base_kick - this_dkick / 2
+                    kick_array[kick_index] = base_kick - this_dkick / 2
 
                     _, orbit = at.find_orbit4(ring, 0, bpm_ords)
                     orbit_minus_x = orbit[:, 0]
                     orbit_minus_y = orbit[:, 2]
 
                     # Reset
-                    if n_dim == 0:
-                        ring[cm_ord].PolynomB[0] = base_kick
-                    else:
-                        ring[cm_ord].PolynomA[0] = base_kick
+                    kick_array[kick_index] = base_kick
 
                     dx = orbit_plus_x - orbit_minus_x
                     dy = orbit_plus_y - orbit_minus_y
                 else:
 
-                    ring[cm_ord].KickAngle[n_dim] = base_kick + this_dkick
+                    kick_array[kick_index] = base_kick + this_dkick
                     if coupling_orm and delta_coupling:
-                        ring[cm_ord].KickAngle[other_dim] = kick1 + this_dkick * delta_coupling
+                        other_array[other_index] = other_kick + this_dkick * delta_coupling
 
                     _,orbit = at.find_orbit4(ring, 0, bpm_ords)
                     orbit_new_x = orbit[:,0]
                     orbit_new_y = orbit[:,2]
 
-                    ring[cm_ord].KickAngle[n_dim] = base_kick
-                    ring[cm_ord].KickAngle[other_dim] = kick1
+                    kick_array[kick_index] = base_kick
+                    other_array[other_index] = other_kick
 
                     dx = orbit_new_x - orbit0_x
                     dy = orbit_new_y - orbit0_y
