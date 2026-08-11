@@ -8,23 +8,39 @@ Each main example has three files:
 
 ## Which example should I start with?
 
-Start with the **EBS single-quadrupole example**. It is the smallest example and
-shows the basic idea of LOCO without requiring pySC or measured machine data.
+For a guided introduction, start with the **Summer Project FODO notebooks**.
+They begin with a familiar Accelerator Toolbox lattice and introduce pyLOCO and
+Jacobian calculations gradually.
+
+For a complete application script, start with the **EBS single-quadrupole
+example**. It shows the basic LOCO workflow without requiring pySC or measured
+machine data.
 
 ## Available examples
 
-### 1. FODO ring: from Accelerator Toolbox to pyLOCO
+### 1. Summer Project: FODO tutorials
 
-Notebook: `Summer_project/from_fodo_to_pyloco.ipynb`
+Location: `Summer_project/`
 
-This self-contained tutorial is the recommended bridge for a student who
-already understands the FODO and ORM exercises in the Accelerator Toolbox
-Primer. It builds the familiar FODO ring, adds BPMs and correctors, creates one
-known quadrupole error, exposes pyLOCO's numerical Jacobian convention, fits
-only that quadrupole, applies the correction, and verifies the ORM and optics.
+These educational notebooks use the simple FODO ring from the Accelerator
+Toolbox Primer:
 
-It deliberately does not introduce analytical Jacobians, noise, coupling,
-calibration errors, RF fitting, or external data files.
+- `from_fodo_to_pyloco.ipynb` introduces the complete basic workflow: create an
+  ORM, assign one quadrupole error, fit it with pyLOCO, apply the correction,
+  and verify the ORM and optics.
+- `FODO_Jacobian/01_fodo_jacobian_methods.ipynb` asks the student to calculate
+  a numerical Jacobian and compare it with pyLOCO and the ESRF analytical
+  formula.
+- `FODO_Jacobian/02_fodo_jacobian_with_errors.ipynb` repeats the Jacobian
+  comparison around a lattice that already contains quadrupole errors.
+- `FODO_Jacobian/03_fodo_iterative_loco_comparison.ipynb` introduces the full
+  iterative LOCO comparison and the requirements for integrating an analytical
+  Jacobian into pyLOCO.
+
+Run these notebooks in the listed order. The numbered Jacobian notebooks are
+student exercises: cells marked `STUDENT TASK — YOUR CODE HERE` are
+intentionally incomplete. The analytical support module must remain in the
+`FODO_Jacobian/` directory beside them.
 
 ### 2. EBS: one quadrupole error
 
