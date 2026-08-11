@@ -13,7 +13,20 @@ shows the basic idea of LOCO without requiring pySC or measured machine data.
 
 ## Available examples
 
-### 1. EBS: one quadrupole error
+### 1. FODO ring: from Accelerator Toolbox to pyLOCO
+
+Notebook: `Summer_project/from_fodo_to_pyloco.ipynb`
+
+This self-contained tutorial is the recommended bridge for a student who
+already understands the FODO and ORM exercises in the Accelerator Toolbox
+Primer. It builds the familiar FODO ring, adds BPMs and correctors, creates one
+known quadrupole error, exposes pyLOCO's numerical Jacobian convention, fits
+only that quadrupole, applies the correction, and verifies the ORM and optics.
+
+It deliberately does not introduce analytical Jacobians, noise, coupling,
+calibration errors, RF fitting, or external data files.
+
+### 2. EBS: one quadrupole error
 
 Location: `reconstruct_quadrupoles_errors_examples/reconstruct_one_quad_errors/`
 
@@ -28,7 +41,7 @@ This example:
 
 Use this example to learn the basic pyLOCO workflow.
 
-### 2. EBS: multiple quadrupole errors
+### 3. EBS: multiple quadrupole errors
 
 Location: `reconstruct_quadrupoles_errors_examples/reconstruct_multiple_quad_errors/`
 
@@ -38,7 +51,7 @@ beta beating, fit convergence, and corrected machine.
 
 Use this example after the single-error tutorial.
 
-### 3. EBS: simulated commissioning with pySC
+### 4. EBS: simulated commissioning with pySC
 
 Location: `EBS_pySC/com_simu_loco_example/`
 
@@ -56,7 +69,7 @@ This example demonstrates how pySC and pyLOCO work together:
 This example requires pySC. Set `measurement.source: cached` in its YAML file
 to use the preserved pySC measurement instead of simulating a new one.
 
-### 4. PETRA III: measured ORM
+### 5. PETRA III: measured ORM
 
 Files: `PETRAIII/example_measured_orm.py` and
 `PETRAIII/example_measured_orm.ipynb`
@@ -67,7 +80,7 @@ and validation of the fitted response.
 
 Use this example to learn how pyLOCO is applied to real machine data.
 
-### 5. PETRA III: coupling fit
+### 6. PETRA III: coupling fit
 
 Files: `PETRAIII/example_measured_coupling.py` and
 `PETRAIII/example_measured_coupling.ipynb`
@@ -76,7 +89,7 @@ This example keeps the cross-plane ORM blocks and fits coupling-related
 parameters such as skew quadrupoles, quadrupole tilts, and BPM/corrector
 coupling. It is a more advanced measured-data workflow.
 
-### 6. PETRA III: comparison with MATLAB LOCO
+### 7. PETRA III: comparison with MATLAB LOCO
 
 Files: `PETRAIII/example_matlab_comparison.py` and
 `PETRAIII/example_matlab_comparison.ipynb`
