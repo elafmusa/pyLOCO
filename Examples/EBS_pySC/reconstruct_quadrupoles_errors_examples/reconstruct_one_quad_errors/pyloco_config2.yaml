@@ -1,0 +1,116 @@
+# pyloco_config.yaml
+# Single source of truth for all pyLOCO run options.
+# Read by run_pyloco_yaml.py via load_yaml_config().
+
+# ── Lattice ──────────────────────────────────────────────────────────────
+lattice:
+  file: betamodel.mat
+  use:  betamodel
+
+# ── Element selectors (AT patterns / element types) ──────────────────────
+elements:
+  bpm_type:         Monitor       # at.elements.Monitor
+  corrector_pattern: "S[HFDIJ]*"
+  cavity_type:      RFCavity      # at.elements.RFCavity
+  skew_pattern:     "S[HFDIJ]*"
+  # Quadrupole families to fit — concatenated and sorted before use
+  quad_groups:
+    - "QD3[AE]*"
+    - "QF4[ABDE]*"
+    - "QD5[BD]*"
+
+# ── Bad BPMs (zero-based indices into the full BPM array) ────────────────
+bad_bpms: [27, 58, 157, 286]
+
+# ── Corrector step size ───────────────────────────────────────────────────
+cm_step: 100.0e-6          # rad  (same for H and V)
+
+# ── Machine fixed parameters ─────────────────────────────────────────────
+fixed_parameters:
+  Frequency:   352372169.3993786   # Hz
+  HarmNumber:  992
+  rfstep:      200.0               # Hz
+  delta_skew:  1.0e-3
+  delta_q_tilt: 1.0e-6
+
+# ── LOCO algorithm options ────────────────────────────────────────────────
+loco:
+  algorithm:   lm
+  nIter:       2
+  nLMIter:     10
+  Starting_Lambda: 1.0e-3
+  max_lm_lambda:   15.0
+  scaled:      true
+
+  # SVD
+  svd_selection_method: user_input   # threshold | user_input | interactive
+  svd_threshold: 1.0e-7
+  cut_:          500
+  show_svd_plot: true
+
+  # What to fit
+  fit_list:
+    - quads
+
+  # Outliers & normalisation
+  outlier_rejection:   true
+  sigma_outlier:       10.0
+  apply_normalization: true
+  normalization_mode:  component
+
+  # Dispersion
+  includeDispersion:       false
+  hor_dispersion_weight:   1.0
+  ver_dispersion_weight:   1.0
+
+  # Miscellaneous
+  plot_fit_parameters: false
+  auto_correct_delta:  true
+  fixedpathlength:     false
+  individuals:         true
+  remove_coupling_:    true
+
+# ── Fit initialisation ────────────────────────────────────────────────────
+fit_init:
+  block_order:
+    - hbpm_gain
+    - hbpm_coupling
+    - vbpm_coupling
+    - vbpm_gain
+    - hcor_cal
+    - vcor_cal
+    - hcor_coupling
+    - vcor_coupling
+    - HCMEnergyShift
+    - VCMEnergyShift
+    - delta_rf
+    - quads
+    - skew_quads
+    - quads_tilt
+  init_policy:
+    hbpm_gain:      ones
+    hbpm_coupling:  zeros
+    vbpm_coupling:  zeros
+    vbpm_gain:      ones
+    hcor_cal:       "cmstep:h"
+    vcor_cal:       "cmstep:v"
+    hcor_coupling:  zeros
+    vcor_coupling:  zeros
+    HCMEnergyShift: zeros
+    VCMEnergyShift: zeros
+    delta_rf:       rfstep
+    quads:          "quads:K"
+    skew_quads:     zeros
+    quads_tilt:     "tilts:zeros"
+  quads_attr:           PolynomB
+  quads_attr_index:     1
+  skew_attr:            PolynomA
+  skew_attr_index:      1
+  quads_tilt_attr_R1:   R1
+  quads_tilt_attr_R2:   R2
+  quads_tilt_method:    set
+
+# ── Output ────────────────────────────────────────────────────────────────
+output:
+  ring_file: ./output/ring_pyloco.mat
+  mat_key:   ring

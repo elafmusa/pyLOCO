@@ -5,12 +5,13 @@ This module replaces the historical requirement for an importable
 ``pyLOCO.helpers.load_config`` for backwards compatibility, but the backend and
 GUI can now run with these built-in defaults.
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
-
+import numpy as np
+from dataclasses import dataclass
+from typing import Optional
 
 
 def _cfg_get(cfg: Any, name: str, current: Any) -> Any:
@@ -164,6 +165,20 @@ class FixedParameters:
     dk: Any = None
     delta_skew: float = 1e-3
     delta_q_tilt: float = 1e-6
+
+
+@dataclass
+class ConstraintConfig:
+    enable: bool = True
+
+    quad_sigma: float | np.ndarray = 0.01
+    quad_weights: Optional[np.ndarray] = None
+    quad_mask: Optional[np.ndarray] = None
+
+    skew_sigma: float | np.ndarray = 0.001
+    skew_weights: Optional[np.ndarray] = None
+    skew_mask: Optional[np.ndarray] = None
+
 
 
 fixed_parameters = FixedParameters()
