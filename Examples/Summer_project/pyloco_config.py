@@ -59,16 +59,16 @@ DEFAULT_INIT_POLICY: Dict[str, str] = {
 class LOCOOptions:
     # --- main control ---
     algorithm: str = "lm"
-    nIter: int = 5
+    nIter: int = 1
     nLMIter: int = 10
     Starting_Lambda: float = 1e-3
     max_lm_lambda: float = 15
     scaled: bool = True
 
     # --- SVD control ---
-    svd_selection_method: str = "user_input" # "threshold", "user_input", "interactive",
+    svd_selection_method: str = "threshold"
     svd_threshold: float = 1e-7
-    cut_: int = 500
+    cut_: int = 397
     show_svd_plot: bool = True
 
     # --- fitting list ---
@@ -92,6 +92,7 @@ class LOCOOptions:
     quad_individuals: bool=True,
     skew_individuals: bool=True,
     tilt_individuals: bool=True,
+
     remove_coupling_: bool = True
 
 loco_options = LOCOOptions()
@@ -102,10 +103,10 @@ class RMConfig:
     bpm_ords: Optional[Sequence[int]] = None
     cm_ords: Optional[Tuple[Sequence[int], Sequence[int]]] = None
     cav_ords: Optional[Sequence[int]] = None
-    dkick: Union[float, tuple, list, np.ndarray] = 100e-6
+    dkick: Union[float, tuple, list, np.ndarray] = 1e-5
     bidirectional: bool = True
     includeDispersion: bool = False
-    rfStep: float = 200
+    rfStep: float = -3000
     delta_coupling: float = 1e-6
     coupling_orm: bool = False
     calculator: str = "Linear"
@@ -123,15 +124,15 @@ class FitInitConfig:
     fit_list: Optional[Sequence[str]] = None
     block_order: Sequence[str] = BLOCK_ORDER
     init_policy: Dict[str, str] = None
-    CMstep: Union[tuple, list, np.ndarray] = (100e-6, 100e-6)
-    rfStep: float = 200
+    CMstep: Union[tuple, list, np.ndarray] = (1e-5, 1e-5)
+    rfStep: float = -3000
     individuals: bool = True
     init: Optional[Dict[str, Any]] = None
 
     # what to read/write for each block
     quads_attr: str = "PolynomB"   # default quad strength holder
     quads_attr_index: Optional[int] = 1
-    skew_attr: str = "PolynomA"    # you want skew to use A? set it here.
+    skew_attr: str = "PolynomB"    # you want skew to use A? set it here.
     skew_attr_index: Optional[int] = 1
 
     quads_tilt_attr_R1: str = "R1"
@@ -177,9 +178,9 @@ def get_mcf(ring):
 
 @dataclass
 class FixedParameters:
-    Frequency: float = 352372169.3993786
-    HarmNumber: int = 992
-    rfstep: float = 200
+    Frequency: float = 499664399.4230182 
+    HarmNumber: int = 3840
+    rfstep: float = -3000.0
     dk: [float] = None
     delta_skew: float = 1e-3
     delta_q_tilt: float = 1e-6

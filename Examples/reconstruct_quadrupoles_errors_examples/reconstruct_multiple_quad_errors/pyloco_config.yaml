@@ -1,4 +1,4 @@
-# User-facing values for example_one_quad_error.py.
+# User-facing values for example_multiple_quad_errors.py.
 # Python defaults and configuration classes remain in pyLOCO/config.py.
 
 lattice:
@@ -13,19 +13,26 @@ elements:
     - "QF4[ABDE]*"
     - "QD5[BD]*"
 
-injected_error:
-  # Zero-based AT lattice index. Element 42 is QF4B in betamodel.mat and is
-  # included in the quadrupoles fitted below.
-  quad_index: 42
-  relative_error: 0.05       # (K_machine - K_ideal) / K_ideal
+assigned_errors:
+  # Zero-based AT lattice indices. The magnets are well separated around EBS.
+  # relative_error = (K_machine - K_ideal) / K_ideal
+  - quad_index: 42
+    relative_error: 0.05
+  - quad_index: 1512
+    relative_error: -0.03
+  - quad_index: 2948
+    relative_error: 0.02
 
 measurement:
   corrector_kick_rad: 100.0e-6
   bpm_noise_rms_m: 0.10e-6   # 0.10 µm RMS independently on every ORM entry
   random_seed: 20260811
-  # pyLOCO currently requires an RF step for fixed-momentum bookkeeping even
-  # though dispersion and RF parameters are not fitted in this example.
-  rf_step_hz: -3000.0
+
+# ESRF-EBS RF values. The step is required by pyLOCO's fixed-momentum
+# bookkeeping even though this example does not fit RF or dispersion.
+rf:
+  frequency_hz: 352372169.3993786
+  step_hz: 200.0
 
 loco:
   nIter: 3
@@ -41,4 +48,4 @@ loco:
   normalization_mode: component
 
 output:
-  directory: output/one_quad_error
+  directory: output/multiple_quad_errors

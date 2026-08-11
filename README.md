@@ -37,9 +37,24 @@ pyloco-gui
 
 # Examples
 
-**pyLOCO** is primarily designed for LOCO analysis using experimental measurements.
+The repository contains examples for both simulated and measured machines:
 
-The repository also includes examples that demonstrate how to use **pyLOCO** with simulated commissioning, for example with **pySC**. To install pySC:
+- **EBS single quadrupole error:** the simplest introduction to reconstructing
+  and correcting a known optics error.
+- **EBS multiple quadrupole errors:** reconstruction and correction of several
+  simultaneous errors.
+- **EBS with pySC:** pySC performs simulated measurements, pyLOCO reconstructs
+  the errors, and the fitted correction is applied back to the pySC machine.
+- **PETRA III measured ORM:** fitting real machine-response data, including bad
+  BPM handling and measurement uncertainty.
+- **PETRA III coupling:** an advanced fit of the cross-plane response.
+- **PETRA III MATLAB comparison:** comparison of all fitted pyLOCO parameters
+  with a preserved MATLAB LOCO result.
+
+See [Examples/README.md](Examples/README.md) for a simple description of every
+workflow and guidance on which example to run first.
+
+The pySC example requires the optional pySC package:
 
 ```bash
 pip install accelerator-commissioning
@@ -48,5 +63,4 @@ pip install accelerator-commissioning
 # Questions or suggestions
 
 Please contact: <elaf.musa@desy.de>
-
 
