@@ -195,35 +195,136 @@ def calculate_dispersion(ring, fixed_parameters, bpm_ords, calculator = 'Linear'
     return dispersion_meas
 
 
-def plot_matrices(*matrices, titles=None, cmap='viridis', plot_type='2d', save_path=None):
+import numpy as np
+import matplotlib.pyplot as plt
+
+
+def plot_matrices(
+    *matrices,
+    titles=None,
+    cmap="viridis",
+    plot_type="2d",
+    save_path=None,
+    same_scale=True,
+):
+    """
+    Plot one or more matrices in either 2D or 3D.
+
+    Parameters
+    ----------
+    matrices : ndarray
+        Matrices to plot.
+    titles : list of str, optional
+        Titles of each subplot.
+    cmap : str
+        Matplotlib colormap.
+    plot_type : {"2d", "3d"}
+        Type of visualization.
+    save_path : str or Path, optional
+        Save figure if provided.
+    same_scale : bool
+        Use the same color scale for all matrices.
+    """
+
     n = len(matrices)
+
     if n == 0:
         raise ValueError("At least one matrix must be provided.")
 
     if titles is None:
-        titles = [f"Matrix {i + 1}" for i in range(n)]
+        titles = [f"Matrix {i+1}" for i in range(n)]
     elif len(titles) < n:
-        titles += [f"Matrix {i + 1}" for i in range(len(titles), n)]
+        titles += [f"Matrix {i+1}" for i in range(len(titles), n)]
 
-    fig = plt.figure(figsize=(6 * n, 5))
+    # -------------------------------------------------------
+    # Same color scale for all matrices
+    # -------------------------------------------------------
+    if same_scale:
+        vmin = min(np.nanmin(m) for m in matrices)
+        vmax = max(np.nanmax(m) for m in matrices)
+    else:
+        vmin = vmax = None
+
+    fig = plt.figure(figsize=(7 * n, 6))
 
     for i, matrix in enumerate(matrices):
-        if plot_type == '3d':
-            ax = fig.add_subplot(1, n, i + 1, projection='3d')
-            X, Y = np.meshgrid(np.arange(matrix.shape[1]), np.arange(matrix.shape[0]))
-            surf = ax.plot_surface(X, Y, matrix, cmap=cmap, edgecolor='none')
-            ax.set_title(titles[i])
-            ax.set_xlabel('Correctors')
-            ax.set_ylabel('BPMs')
-            ax.set_zlabel('[m]')
-            fig.colorbar(surf, ax=ax, shrink=0.5, aspect=10)
+
+        if plot_type.lower() == "3d":
+
+            ax = fig.add_subplot(1, n, i + 1, projection="3d")
+
+            X, Y = np.meshgrid(
+                np.arange(matrix.shape[1]),
+                np.arange(matrix.shape[0])
+            )
+
+            surf = ax.plot_surface(
+                X,
+                Y,
+                matrix,
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                linewidth=0,
+                antialiased=True,
+                shade=True,
+                rcount=min(250, matrix.shape[0]),
+                ccount=min(250, matrix.shape[1]),
+            )
+
+            ax.view_init(elev=28, azim=-60)
+
+            ax.set_title(titles[i], fontsize=15, weight="bold")
+
+            ax.set_xlabel("Correctors", fontsize=12, labelpad=10)
+            ax.set_ylabel("BPMs", fontsize=12, labelpad=10)
+            ax.set_zlabel("Response [m]", fontsize=12, labelpad=10)
+
+            ax.tick_params(labelsize=10)
+
+            # cleaner background
+            ax.xaxis.pane.fill = False
+            ax.yaxis.pane.fill = False
+            ax.zaxis.pane.fill = False
+
+            ax.grid(True, alpha=0.3)
+
+            cbar = fig.colorbar(
+                surf,
+                ax=ax,
+                shrink=0.75,
+                aspect=25,
+                pad=0.08,
+            )
+            cbar.set_label("Response [m]", fontsize=11)
+
         else:
+
             ax = fig.add_subplot(1, n, i + 1)
-            im = ax.imshow(matrix, aspect='auto', cmap=cmap)
-            ax.set_title(titles[i])
-            ax.set_xlabel('Correctors')
-            ax.set_ylabel('BPMs')
-            fig.colorbar(im, ax=ax)
+
+            im = ax.imshow(
+                matrix,
+                aspect="auto",
+                cmap=cmap,
+                interpolation="nearest",
+                vmin=vmin,
+                vmax=vmax,
+                origin="lower",
+            )
+
+            ax.set_title(titles[i], fontsize=15, weight="bold")
+            ax.set_xlabel("Correctors", fontsize=12)
+            ax.set_ylabel("BPMs", fontsize=12)
+
+            ax.tick_params(labelsize=10)
+
+            cbar = fig.colorbar(
+                im,
+                ax=ax,
+                fraction=0.046,
+                pad=0.04,
+            )
+            cbar.set_label("Response [m]", fontsize=11)
 
     plt.tight_layout()
 

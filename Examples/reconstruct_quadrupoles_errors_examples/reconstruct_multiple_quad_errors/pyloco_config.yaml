@@ -1,0 +1,51 @@
+# User-facing values for example_multiple_quad_errors.py.
+# Python defaults and configuration classes remain in pyLOCO/config.py.
+
+lattice:
+  file: betamodel.mat
+  use: betamodel
+
+elements:
+  bpm_type: Monitor
+  corrector_pattern: "S[HFDIJ]*"
+  quad_groups:
+    - "QD3[AE]*"
+    - "QF4[ABDE]*"
+    - "QD5[BD]*"
+
+assigned_errors:
+  # Zero-based AT lattice indices. The magnets are well separated around EBS.
+  # relative_error = (K_machine - K_ideal) / K_ideal
+  - quad_index: 42
+    relative_error: 0.05
+  - quad_index: 1512
+    relative_error: -0.03
+  - quad_index: 2948
+    relative_error: 0.02
+
+measurement:
+  corrector_kick_rad: 100.0e-6
+  bpm_noise_rms_m: 0.10e-6   # 0.10 µm RMS independently on every ORM entry
+  random_seed: 20260811
+
+# ESRF-EBS RF values. The step is required by pyLOCO's fixed-momentum
+# bookkeeping even though this example does not fit RF or dispersion.
+rf:
+  frequency_hz: 352372169.3993786
+  step_hz: 200.0
+
+loco:
+  nIter: 3
+  nLMIter: 8
+  Starting_Lambda: 1.0e-3
+  max_lm_lambda: 15.0
+  scaled: true
+  svd_selection_method: threshold
+  svd_threshold: 1.0e-7
+  cut: null
+  remove_coupling: true
+  apply_normalization: false
+  normalization_mode: component
+
+output:
+  directory: output/multiple_quad_errors
