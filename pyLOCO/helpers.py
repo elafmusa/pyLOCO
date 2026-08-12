@@ -21,6 +21,7 @@ _CONFIG_EXPORTS = (
     "loco_options",
     "RMConfig",
     "FitInitConfig",
+    "FitResumeConfig",
     "LOCOAPI",
     "BACKEND",
     "get_mcf",

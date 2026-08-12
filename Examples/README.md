@@ -95,6 +95,16 @@ Paths in a YAML file are resolved relative to that file, and `output.directory`
 lets each machine study keep its results separate without copying the Python
 workflow.
 
+To continue a PETRA III fit from a previous stage, enable the `resume` section
+in the YAML and point `resume.directory` at the earlier run directory (the one
+containing `results/`) or directly at its `results/` directory. The workflow
+starts from `ring_pyloco.mat`, restores the final values in `fit_dict.pkl`, and
+uses the current YAML fit list and solver settings. Parameters newly added to
+the second-stage fit list use their normal initial values; overlapping blocks
+use their values from the previous fit. Run the same example command with the
+new configuration, and choose a different `output.directory` or `run_name` so
+the earlier result is not overwritten.
+
 ### 6. PETRA III: coupling fit
 
 Files: `PETRAIII/example_measured_coupling.py` and

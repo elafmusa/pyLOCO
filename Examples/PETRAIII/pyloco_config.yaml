@@ -56,6 +56,15 @@ loco:
 constraints:
   enable: false
 
+# Continue from a previously saved run. The directory can be either the run
+# directory (containing results/) or the results directory itself.
+resume:
+  enabled: false
+  directory: output/measured_orm
+  ring_file: ring_pyloco.mat
+  fit_dict_file: fit_dict.pkl
+  fit_results_file: fit_results.npy
+
 output:
   run_name: default_measurement
   standard: output/measured_orm

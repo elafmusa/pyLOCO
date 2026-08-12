@@ -2506,6 +2506,24 @@ def pyloco(
 
 ):
 
+    if fit_cfg is None:
+        fit_cfg = FitInitConfig(fit_list=fit_list, CMstep=CMstep, rfStep=rfStep,
+                                individuals=quad_individuals)
+    if CMstep is not None:
+        CMstep = [np.asarray(step, dtype=float).copy() for step in CMstep]
+    if continue_from_previous:
+        if previous_ring is None and previous_fit_dict is None and previous_fit_results is None:
+            raise ValueError(
+                "continue_from_previous requires previous_ring, previous_fit_dict, "
+                "or previous_fit_results"
+            )
+        # Activate the fitted lattice before constructing lattice-backed
+        # initial parameters (quadrupoles, skews, and tilts).
+        if previous_ring is not None:
+            ring = previous_ring
+        if isinstance(previous_fit_dict, np.ndarray) and previous_fit_dict.shape == ():
+            previous_fit_dict = previous_fit_dict.item()
+
 
     hbpm_gain = np.ones(nHBPM)
     vbpm_gain = np.ones(nVBPM)
@@ -2562,12 +2580,10 @@ def pyloco(
     # --- Resume from previous fit if requested ---
     if continue_from_previous:
         print("[pyloco] Continuing from previous iteration set...")
-        if previous_ring is not None:
-            ring = previous_ring
         if previous_fit_results is not None:
             current_fit_parameters = np.asarray(previous_fit_results[-1]).copy()
         if previous_fit_dict is not None and len(previous_fit_dict) > 0:
-            last_fit = previous_fit_dict[max(previous_fit_dict.keys())]  ## last by order
+            last_fit = last_by_sorted_key(previous_fit_dict)
             # Restore key parameters
             hbpm_gain = last_fit.get("hbpm_gain", hbpm_gain)
             vbpm_gain = last_fit.get("vbpm_gain", vbpm_gain)
@@ -2589,6 +2605,11 @@ def pyloco(
                 quads_fit = np.asarray(last_fit['quads']).ravel()
             if 'skew_quads' in last_fit:
                 skew_quads_fit = np.asarray(last_fit['skew_quads']).ravel()
+            if previous_ring is None:
+                _apply_fit_to_ring(
+                    ring, last_fit, quads_ords, quads_tilt_ind, skew_ords,
+                    quad_individuals, skew_individuals, tilt_individuals, fit_cfg,
+                )
 
     if fixedmomentum and \
             'HCMEnergyShift' not in fit_list and \
@@ -2599,7 +2620,7 @@ def pyloco(
     if fixedpathlength == False or 'HCMEnergyShift' in fit_list or 'VCMEnergyShift' in fit_list:
         fixedmomentum = True
 
-    if inetial_fit_parameters is None and not continue_from_previous:
+    if inetial_fit_parameters is None and (not continue_from_previous or not previous_fit_dict):
         inetial_fit_parameters, blocks = build_initial_fit_parameters(
             ring=ring,
             fit_list=fit_list,
@@ -2609,12 +2630,13 @@ def pyloco(
             quad_individuals=quad_individuals,
             skew_individuals=skew_individuals,
             tilt_individuals=tilt_individuals,
+            config=fit_cfg,
             )
     # elif continue_from_previous and previous_fit_results is not None:
     #     inetial_fit_parameters = np.asarray(previous_fit_results[-1]).copy()
     elif continue_from_previous and previous_fit_dict is not None:
         print("[pyloco] Building initial vector from previous stage...")
-        last_fit = previous_fit_dict[max(previous_fit_dict.keys())]
+        last_fit = last_by_sorted_key(previous_fit_dict)
 
         # Build new vector with the current fit_list structure
         inetial_fit_parameters, blocks = build_initial_fit_parameters(
@@ -2626,6 +2648,7 @@ def pyloco(
             quad_individuals=quad_individuals,
             skew_individuals=skew_individuals,
             tilt_individuals=tilt_individuals,
+            config=fit_cfg,
         )
 
         # Overwrite any parameters that were fitted before
@@ -2634,7 +2657,23 @@ def pyloco(
                 print(f"[pyloco] Restoring previous values for {key}...")
                 arr = np.asarray(last_fit[key]).ravel()
                 sl = blocks[key]  # use the slice directly
-                inetial_fit_parameters[sl] = arr[: sl.stop - sl.start]
+                expected = sl.stop - sl.start
+                if arr.size != expected:
+                    raise ValueError(
+                        f"Previous block {key!r} has {arr.size} values; expected {expected}"
+                    )
+                inetial_fit_parameters[sl] = arr
+
+    if (continue_from_previous and previous_fit_results is not None
+            and not previous_fit_dict and inetial_fit_parameters is not None):
+        previous_vector = np.asarray(previous_fit_results[-1]).ravel()
+        expected = np.asarray(inetial_fit_parameters).size
+        if previous_vector.size != expected:
+            raise ValueError(
+                "The previous fit vector does not match the current fit list; "
+                "provide previous_fit_dict to resume across different fit lists"
+            )
+        inetial_fit_parameters = previous_vector.copy()
 
     inetial_fit_parameters = np.asarray(inetial_fit_parameters).ravel()
     current_fit_parameters = inetial_fit_parameters.copy()
@@ -3332,6 +3371,3 @@ def get_fit_param_block(fit_dict, name):
         )
 
     return np.asarray(inner[name], dtype=float)
-
-
-

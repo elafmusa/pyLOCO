@@ -15,6 +15,7 @@ from petra_workflow import (  # noqa: E402
     _load_family_groups,
     _require_datasets,
     build_constraint_config,
+    load_resume_state,
     output_directory,
 )
 
@@ -111,3 +112,13 @@ def test_output_root_uses_run_name(tmp_path):
     config = tmp_path / "configs" / "case.yaml"
     data = {"config_path": config, "cfg": {"output": {"root": "../output", "run_name": "after_fit"}}}
     assert output_directory(data, coupling=True, constrained=True) == (tmp_path / "output" / "after_fit").resolve()
+
+
+def test_resume_is_optional(tmp_path):
+    assert load_resume_state(None, tmp_path) is None
+    assert load_resume_state({"enabled": False}, tmp_path) is None
+
+
+def test_resume_reports_missing_saved_state(tmp_path):
+    with pytest.raises(FileNotFoundError, match="ring_pyloco.mat.*fit_dict.pkl"):
+        load_resume_state({"enabled": True, "directory": "first_stage"}, tmp_path)

@@ -8,10 +8,9 @@ GUI can now run with these built-in defaults.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple, Union
 import numpy as np
-from dataclasses import dataclass
-from typing import Optional
 
 
 def _cfg_get(cfg: Any, name: str, current: Any) -> Any:
@@ -131,6 +130,21 @@ class FitInitConfig:
     def __post_init__(self) -> None:
         if self.init_policy is None:
             self.init_policy = dict(DEFAULT_INIT_POLICY)
+
+
+@dataclass
+class FitResumeConfig:
+    """Files used to continue a fit saved by a previous pyLOCO run."""
+
+    enabled: bool = False
+    directory: Optional[Union[str, Path]] = None
+    ring_file: str = "ring_pyloco.mat"
+    fit_dict_file: str = "fit_dict.pkl"
+    fit_results_file: Optional[str] = "fit_results.npy"
+
+    def __post_init__(self) -> None:
+        if self.enabled and self.directory is None:
+            raise ValueError("FitResumeConfig.directory is required when resume is enabled")
 
 
 @dataclass

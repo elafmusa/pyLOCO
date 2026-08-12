@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import pickle
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -11,7 +12,7 @@ import h5py
 import numpy as np
 import yaml
 
-from pyLOCO.config import ConstraintConfig, FitInitConfig, RMConfig, fixed_parameters
+from pyLOCO.config import ConstraintConfig, FitInitConfig, FitResumeConfig, RMConfig, fixed_parameters
 from pyLOCO.pyloco import pyloco, remove_bad_bpms
 from pyLOCO.response_matrix import response_matrix
 from petra_diagnostics import make_diagnostic_plots, save_run_results
@@ -177,7 +178,43 @@ def prepare_measurement(config_path: Path) -> dict[str, Any]:
             raise ValueError(
                 f"Expected {expected_count} {name.replace('_', ' ')}, found {actual_counts[name]}"
             )
+    result["resume"] = load_resume_state(cfg.get("resume"), base)
+    if result["resume"] is not None:
+        result["ring"] = result["resume"]["ring"]
     return result
+
+
+def load_resume_state(value: Any, base: Path) -> dict[str, Any] | None:
+    """Load the fitted lattice and parameters from a previous example run."""
+    raw = value or {}
+    resume = FitResumeConfig(
+        enabled=bool(raw.get("enabled", False)), directory=raw.get("directory"),
+        ring_file=str(raw.get("ring_file", "ring_pyloco.mat")),
+        fit_dict_file=str(raw.get("fit_dict_file", "fit_dict.pkl")),
+        fit_results_file=raw.get("fit_results_file", "fit_results.npy"),
+    )
+    if not resume.enabled:
+        return None
+    directory = (base / Path(resume.directory)).resolve()
+    results = directory if directory.name == "results" else directory / "results"
+    ring_path = results / resume.ring_file
+    fit_dict_path = results / resume.fit_dict_file
+    missing = [str(path) for path in (ring_path, fit_dict_path) if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("Previous fit is missing: " + ", ".join(missing))
+    ring = at.load_lattice(ring_path)
+    ring.disable_6d()
+    with fit_dict_path.open("rb") as stream:
+        fit_dict = pickle.load(stream)
+    if not isinstance(fit_dict, dict) or not fit_dict:
+        raise ValueError(f"Previous fit dictionary {fit_dict_path} is empty or invalid")
+    fit_results = None
+    if resume.fit_results_file:
+        fit_results_path = results / resume.fit_results_file
+        if fit_results_path.is_file():
+            fit_results = np.load(fit_results_path, allow_pickle=True).tolist()
+    return {"ring": ring, "fit_dict": fit_dict, "fit_results": fit_results,
+            "results_directory": results}
 
 
 def build_constraint_config(data: dict[str, Any]) -> ConstraintConfig | None:
@@ -364,6 +401,13 @@ def run_fit(data: dict[str, Any], *, coupling: bool, constrained: bool = False) 
             fixedmomentum=False, fit_cfg=fit_cfg, constraint_cfg=constraint_cfg,
             calculate_delta_chi2=bool(loco.get("calculate_delta_chi2", False)),
             initial_chi2_callback=initial_chi2.append,
+            continue_from_previous=data.get("resume") is not None,
+            previous_ring=(copy.deepcopy(data["resume"]["ring"])
+                           if data.get("resume") is not None else None),
+            previous_fit_dict=(data["resume"]["fit_dict"]
+                               if data.get("resume") is not None else None),
+            previous_fit_results=(data["resume"]["fit_results"]
+                                  if data.get("resume") is not None else None),
             output_dir=temporary.name,
         )
     finally:
@@ -383,6 +427,8 @@ def run_fit(data: dict[str, Any], *, coupling: bool, constrained: bool = False) 
             "constraint_cfg": constraint_cfg, "constrained": constrained,
             "c_bpms": c_bpms, "delta_chi2": delta_chi2, "blocks": blocks,
             "initial_chi2": initial_chi2[0] if initial_chi2 else None,
+            "resumed_from": (str(data["resume"]["results_directory"])
+                             if data.get("resume") is not None else None),
             "initial_dispersion": model_dispersion(data, data["ring"]),
             "fitted_dispersion": fitted_dispersion}
 
@@ -419,6 +465,8 @@ def print_summary(data: dict[str, Any], initial_orm: np.ndarray, fit: dict[str, 
     print(f"Retained BPMs      : {len(data['bpms'])} per plane")
     print(f"Correctors         : {len(data['correctors'][0])} H, {len(data['correctors'][1])} V")
     print(f"Fitted parameters  : {', '.join(fit['fit_list'])}")
+    if fit.get("resumed_from"):
+        print(f"Resumed from       : {fit['resumed_from']}")
     print(f"ORM RMS before     : {1e6*before:.6f} µm")
     print(f"ORM RMS after      : {1e6*after:.6f} µm")
     print(f"Improvement        : {before/after:.3f}x")

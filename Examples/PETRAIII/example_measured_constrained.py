@@ -23,5 +23,5 @@ def main(config_path: Path) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=HERE / "configs" / "constrained.yaml")
+    parser.add_argument("--config", type=Path, default=HERE / "configs" / "measurement_28July_after_loco_constrained_old.yaml")
     main(parser.parse_args().config.resolve())
