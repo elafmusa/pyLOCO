@@ -1,11 +1,21 @@
+import os
+
 import numpy as np
 import pydoocs
 import time
+import h5py
+import matplotlib.pyplot as plt
 from getset import get_setpoint, set_setpoint
 
+from pathlib import Path
+from datetime import datetime
+measurement_name = "after_loco"
+measurement_label = "FullORM_100urad"
 
-#BPM_ADDRESS_X = 'PETRA/REFORBIT/*/SA_X_BBAGO'
-#BPM_ADDRESS_Y = 'PETRA/REFORBIT/*/SA_Y_BBAGO'
+measurement_dir = Path("measurements") / measurement_name
+measurement_dir.mkdir(parents=True, exist_ok=True)
+
+print(f"Saving data to:\n{measurement_dir.resolve()}")
 
 NM_TO_M = 1e-9
 BPM_ADDRESS_X = 'PETRA/REFORBIT/*/SA_X_RAW'
@@ -45,8 +55,6 @@ def get_average_orbit(n_orbits=10, dt=0.1):
 
 
 
-
-
 def read_all_non_strength(magnet: str):
     """Return dict of all magnet channels except STRENGTH."""
     base = f'PETRA/MAGNET.ML/{magnet}'
@@ -59,8 +67,73 @@ def read_all_non_strength(magnet: str):
         "CURRENT_RBV": rd('CURRENT.RBV'),
     }
 
+def save_checkpoint(
+    filename,
+    RM,
+    logs,
+    bpm_names,
+    cm_names,
+    dkick,
+    measurement_name,
+    measurement_label,
+    start_timestamp,
+    n_orbits,
+    dt,
+    bidirectional,
+    scaled,
+    executing_time,
+):
+
+    tmp_filename = str(filename) + ".tmp"
+    try:
+        with h5py.File(tmp_filename, "w") as f:
+            f.create_dataset("response_matrix", data=RM)
+            f.attrs["dkick_rad"] = dkick
+            f.attrs["dkick_urad"] = dkick * 1e6
+
+            f.attrs["measurement_name"] = measurement_name
+            f.attrs["measurement_label"] = measurement_label
+            f.attrs["timestamp"] = start_timestamp
+
+            f.attrs["n_orbits"] = n_orbits
+            f.attrs["dt"] = dt
+
+            f.attrs["bidirectional"] = bidirectional
+            f.attrs["scaled"] = scaled
+            f.attrs["response_matrix_unit"] = "m" if not scaled else "m/rad"
+
+            f.attrs["execution_time_sec"] = executing_time
+
+            logs_group = f.create_group("logs")
+            for key, value in logs.items():
+                logs_group.create_dataset(key, data=value)
+
+            f.create_dataset(
+            "bpm_names",
+            data=np.array(bpm_names, dtype=h5py.string_dtype())
+        )
+
+            f.create_dataset(
+                "hcor_names",
+                data=np.array(cm_names[0], dtype=h5py.string_dtype())
+            )
+
+            f.create_dataset(
+                "vcor_names",
+                data=np.array(cm_names[1], dtype=h5py.string_dtype())
+            ) 
+        os.replace(tmp_filename, filename)    
+
+    except Exception as e:
+        print(f"Failed to save checkpoint to {tmp_filename}: {e}")
+        if os.path.exists(tmp_filename):
+            os.remove(tmp_filename)
+        raise  
+
+
 
 def response_matrix(
+        orm_file,
     bpm_names,
     cm_names,
     dkick=100e-6,
@@ -74,16 +147,14 @@ def response_matrix(
     n_hcor, n_vcor = len(cm_names[0]), len(cm_names[1])
     n_cm = n_hcor + n_vcor
     RM = np.full((2 * n_bpm, n_cm), np.nan)
+    n_orbits=10
+    dt=0.1
 
-
-    orbit_x0, orbit_y0, std_orbit_x0, std_orbit_y0 = get_average_orbit(n_orbits=10, dt=0.1)
+    orbit_x0, orbit_y0, std_orbit_x0, std_orbit_y0 = get_average_orbit(n_orbits=n_orbits, dt=dt)
     print(f"ref orbit x = {orbit_x0[:3]}")
     print(f"ref orbit y = {orbit_y0[:3]}")
 
     logs = {
-        "bpm_names": bpm_names,
-        "hcor_names": cm_names[0],
-        "vcor_names": cm_names[1],
 
         "orbit0_x": orbit_x0,
         "orbit0_y": orbit_y0,
@@ -170,7 +241,7 @@ def response_matrix(
                 logs["CURRENT_RBV_p"][cnt] = rp["CURRENT_RBV"]
 
 
-                orbit_plus_x, orbit_plus_y, std_plus_x, std_plus_y = get_average_orbit(n_orbits=10, dt=0.1)
+                orbit_plus_x, orbit_plus_y, std_plus_x, std_plus_y = get_average_orbit(n_orbits=n_orbits, dt=dt)
                 logs["orbit_plus_x"][:, cnt] = orbit_plus_x
                 logs["orbit_plus_y"][:, cnt] = orbit_plus_y
                 logs["std_orbit_plus_x"][:, cnt] = std_plus_x
@@ -192,7 +263,7 @@ def response_matrix(
 
 
 
-                orbit_minus_x, orbit_minus_y, std_minus_x, std_minus_y = get_average_orbit(n_orbits=10, dt=0.1)
+                orbit_minus_x, orbit_minus_y, std_minus_x, std_minus_y = get_average_orbit(n_orbits=n_orbits, dt=dt)
                 logs["orbit_minus_x"][:, cnt] = orbit_minus_x
                 logs["orbit_minus_y"][:, cnt] = orbit_minus_y
                 logs["std_orbit_minus_x"][:, cnt] = std_minus_x
@@ -213,7 +284,7 @@ def response_matrix(
                 dy = (orbit_plus_y - orbit_minus_y) #- orbit_y0
 
             else:
-                orbit_x0, orbit_y0, std_orbit_x0, std_orbit_y0 = get_average_orbit(n_orbits=10, dt=0.1)
+                orbit_x0, orbit_y0, std_orbit_x0, std_orbit_y0 = get_average_orbit(n_orbits=n_orbits, dt=dt)
                 kick_value = kick0 + this_dkick
                 set_setpoint(magnet=cm_name, value=kick_value, kick=True)
                 kick_read_p = get_setpoint(cm_name, kick=True)
@@ -225,7 +296,7 @@ def response_matrix(
                 logs["CURRENT_SP_p"][cnt] = rp["CURRENT_SP"]
                 logs["CURRENT_RBV_p"][cnt] = rp["CURRENT_RBV"]
 
-                orbit_x, orbit_y, std_x, std_y = get_average_orbit(n_orbits=10, dt=0.1)
+                orbit_x, orbit_y, std_x, std_y = get_average_orbit(n_orbits=n_orbits, dt=dt)
                 logs["orbit_plus_x"][:, cnt] = orbit_x
                 logs["orbit_plus_y"][:, cnt] = orbit_y
                 logs["std_orbit_plus_x"][:, cnt] = std_x
@@ -246,6 +317,25 @@ def response_matrix(
                 dy = orbit_y - orbit_y0
 
             RM[:, cnt] = np.concatenate((dx, dy))
+            try:
+                save_checkpoint(
+                    orm_file,
+                    RM,
+                    logs,
+                    bpm_names,
+                    cm_names,
+                    dkick,
+                    measurement_name,
+                    measurement_label,
+                    start_timestamp,
+                    n_orbits,
+                    dt,
+                    bidirectional,
+                    scaled,
+                    time.time() - start_time,
+                )
+            except Exception as e:
+                print(f"Checkpoint failed: {e}")
             cnt += 1
 
     if scaled:
@@ -264,61 +354,102 @@ def load_names(filename):
         names = [line.strip() for line in file.readlines()]
     return names
 
-HCM_names = load_names("HCM_names2.txt")
-VCM_names = load_names("VCM_names2.txt")
+HCM_names = load_names("HCM_names_control.txt")
+VCM_names = load_names("VCM_names_control.txt")
 BPM_names = load_names("BPM_names.txt")
 
-HCM_names_10 = [HCM_names[ii] for ii in np.linspace(0, len(HCM_names), 50, dtype=int, endpoint=False)]
-VCM_names_10 = [VCM_names[ii] for ii in np.linspace(0, len(VCM_names), 50, dtype=int, endpoint=False)]
-
+HCM_names_10 = [HCM_names[ii] for ii in np.linspace(0, len(HCM_names), 10, dtype=int, endpoint=False)]
+VCM_names_10 = [VCM_names[ii] for ii in np.linspace(0, len(VCM_names), 10, dtype=int, endpoint=False)]
 
 cm_names = [HCM_names_10, VCM_names_10]
+#cm_names = [HCM_names, VCM_names]
 
 
-
+start_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 start_time = time.time()
 
+dkick = 100e-6  # 100 urad
+n_orbits=10
+dt=0.1
+bidirectional = True
+includeDispersion = False
+scaled = False
+hor_dispersion_weight=1,
+ver_dispersion_weight=1,
+orm_file = measurement_dir / f"ORM_{measurement_label}_{start_timestamp}.h5"
+
 RM, logs = response_matrix(
-    BPM_names,
-    cm_names,
-    dkick=100e-6,
-    bidirectional=True,
-    includeDispersion=False,
-    hor_dispersion_weight=1,
-    ver_dispersion_weight=1,
-    scaled=True
+    orm_file=orm_file,
+    bpm_names=BPM_names,
+    cm_names=cm_names,
+    dkick=dkick,
+    bidirectional=bidirectional,
+    includeDispersion=includeDispersion,
+    hor_dispersion_weight=hor_dispersion_weight,
+    ver_dispersion_weight=ver_dispersion_weight,
+    scaled=scaled
 )
+
+
 
 end_time = time.time()
 executing_time = end_time - start_time
+
 print(f"\ntime: {executing_time:.3f} seconds")
 
-import h5py
-#with h5py.File("orm_8july26_50cor_quads_error.h5", "w") as f:
-    # Main dataset
-#    f.create_dataset("response_matrix", data=RM)
-#    f.create_dataset("dkick", data=100e-6)
-#    f.attrs["n_orbits"] = 10
-#    f.attrs["dt"] = 0.1
-#    f.attrs["bidirectional"] = True
-#    f.attrs["scaled"] = True
-#    f.attrs["execution_time_sec"] = executing_time
 
 
-with h5py.File("orm_8july26_50cor_quads_error.h5", "w") as f:
-    f.create_dataset("response_matrix", data=RM)
+try:
+    save_checkpoint(
+        orm_file,
+        RM,
+        logs,
+        BPM_names,
+        cm_names,
+        dkick,
+        measurement_name,
+        measurement_label,
+        start_timestamp,
+        n_orbits,
+        dt,
+        bidirectional,
+        scaled,
+        time.time() - start_time,
+    )
+except Exception as e:
+    print(f"Checkpoint failed: {e}")
 
-    log_group = f.create_group("logs")
-    for key, value in logs.items():
-        if isinstance(value, list):
-            value = np.array(value, dtype="S")
-        elif isinstance(value, np.ndarray) and value.dtype.kind in {"U", "O"}:
-            value = value.astype("S")
 
-        log_group.create_dataset(key, data=value)
 
-    f.attrs["n_orbits"] = 10
-    f.attrs["dt"] = 0.1
-    f.attrs["bidirectional"] = True
-    f.attrs["scaled"] = True
-    f.attrs["execution_time_sec"] = executing_time    
+print(f"\nMeasurement completed in {executing_time:.2f} s")
+
+fig, ax = plt.subplots(figsize=(10, 8), constrained_layout=True)
+
+im = ax.imshow(
+    RM,
+    aspect="auto",
+    origin="lower",
+    cmap="RdBu_r"
+)
+
+ax.set_title(
+    f"{measurement_name} | {measurement_label}\n"
+    f"{start_timestamp}\n"
+    f"Kick = {dkick*1e6:.0f} µrad"
+)
+
+ax.set_xlabel("Corrector")
+ax.set_ylabel("BPM")
+
+plt.colorbar(im, ax=ax, label="Response [m]")
+
+plot_file = measurement_dir / f"ORM_{measurement_label}_{start_timestamp}.png"
+
+try:
+    plt.savefig(plot_file, dpi=300)
+except Exception as e:
+    print(f"Failed to save plot: {e}")
+plt.show()
+
+print(f"Saved ORM : {orm_file.name}")
+print(f"Saved plot: {plot_file.name}")

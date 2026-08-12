@@ -15,6 +15,7 @@ import os
 import sys
 import time
 import traceback
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,9 @@ class LocoRunRequest:
 
     @property
     def results_root(self) -> Path:
+        output = self.backend_mapping.get("Output", {}).get("directory")
+        if output:
+            return Path(output).expanduser().resolve()
         if self.project_path:
             return Path(self.project_path).expanduser().resolve().parent / "results"
         return Path.cwd() / "results"
@@ -98,7 +102,13 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
     """
 
     start = time.monotonic()
-    log = log_callback or (lambda message: None)
+    live_log = log_callback or (lambda message: None)
+    log_lines: list[str] = []
+
+    def log(message) -> None:
+        text = str(message)
+        log_lines.append(text)
+        live_log(text)
     cancelled = cancel_callback or (lambda: False)
     results_dir = _make_results_dir(request)
     log(f"Results directory: {results_dir}")
@@ -120,6 +130,8 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         log("Loaded measurement files.")
         indices = _derive_indices(ring, measured)
         bad_bpm_positions = _load_bad_bpm_positions(request.measurements)
+        if bad_bpm_positions is None and request.backend_mapping.get("BadBPMPositions"):
+            bad_bpm_positions = _as_bad_bpm_positions(request.backend_mapping["BadBPMPositions"])
         if bad_bpm_positions is not None:
             measured, indices = _apply_bad_bpm_positions(measured, indices, bad_bpm_positions, remove_bad_bpms)
             log(f"Applied Bad BPM list: removed {len(bad_bpm_positions)} BPM position(s).")
@@ -142,6 +154,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         fit_cfg = config_module.FitInitConfig(**request.backend_mapping["FitInitConfig"])
         rm_cfg = config_module.RMConfig(**request.backend_mapping["RMConfig"])
         indices = _apply_machine_element_selections(indices, request.backend_mapping.get("MachineElements", {}), rm_cfg)
+        _validate_indices(ring, indices, fit_cfg.fit_list or ())
         constraint_cfg = _make_constraint_config(request.backend_mapping["ConstraintConfig"])
         options.setdefault("fit_list", fit_cfg.fit_list or ())
         _disable_worker_ui_options(options, log, preserve_svd_ui=interactive_svd)
@@ -169,14 +182,20 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
             log("Cancellation was requested; backend finished before it could be interrupted.")
 
         fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks = result_tuple
-        output_files = _save_outputs(
-            results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict
-        )
         elapsed = time.monotonic() - start
+        initial_chi2 = _initial_chi2_from_log(log_lines)
+        output_files = _save_outputs(
+            results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms,
+            chi2_history, delta_chi2_history, blocks, save_fit_dict,
+            initial_chi2=initial_chi2, runtime_seconds=elapsed,
+        )
         log(f"LOCO run completed in {elapsed:.1f} s.")
+        log_path = _save_backend_log(results_dir, log_lines)
+        output_files.append(str(log_path))
         return LocoRunResult(str(results_dir), elapsed, [float(x) for x in chi2_history], output_files)
     except Exception:
         log(traceback.format_exc())
+        _save_backend_log(results_dir, log_lines)
         raise
     finally:
         _close_worker_matplotlib_figures()
@@ -251,19 +270,86 @@ def _make_gui_config(mapping: dict[str, Any]):
 
 
 def _load_measurements(paths: dict[str, str]) -> dict[str, Any]:
+    import numpy as np
+
+    if "orm" not in paths:
+        raise ValueError("An ORM measurement file is required.")
+    orm_arrays = _load_array_mapping(paths["orm"])
+    data = {"orm": np.asarray(_pick_array(orm_arrays, "response_matrix", "orm"), dtype=float)}
+    if data["orm"].ndim != 2 or data["orm"].shape[0] % 2:
+        raise ValueError(f"ORM must be a two-dimensional array with an even row count; got {data['orm'].shape}.")
+    n_bpms = data["orm"].shape[0] // 2
+    if "dispersion" in paths:
+        arrays = _load_array_mapping(paths["dispersion"])
+        data["eta_x"] = np.ravel(_pick_array(arrays, "measured_eta_x", "eta_x", fallback_index=0)).astype(float)
+        data["eta_y"] = np.ravel(_pick_array(arrays, "measured_eta_y", "eta_y", fallback_index=1)).astype(float)
+    else:
+        data["eta_x"] = np.zeros(n_bpms)
+        data["eta_y"] = np.zeros(n_bpms)
+    data["dispersion_supplied"] = "dispersion" in paths
+    if "bpm_noise" in paths:
+        arrays = _load_array_mapping(paths["bpm_noise"])
+        data["noise_x"] = np.ravel(_pick_array(arrays, "Noise_BPMx", "noise_x", fallback_index=0)).astype(float)
+        data["noise_y"] = np.ravel(_pick_array(arrays, "Noise_BPMy", "noise_y", fallback_index=1)).astype(float)
+    else:
+        data["noise_x"] = np.ones(n_bpms)
+        data["noise_y"] = np.ones(n_bpms)
+    for name in ("eta_x", "eta_y", "noise_x", "noise_y"):
+        if data[name].size != n_bpms:
+            raise ValueError(f"{name} length {data[name].size} does not match ORM BPM count {n_bpms}.")
+        if not np.all(np.isfinite(data[name])):
+            raise ValueError(f"{name} contains non-finite values.")
+    return data
+
+
+def _load_array_mapping(path: str | Path) -> dict[str, Any]:
+    """Read supported scientific array containers without guessing physics."""
     import h5py
     import numpy as np
 
-    data = {}
-    with h5py.File(paths["orm"], "r") as f:
-        data["orm"] = np.array(_dataset(f, "response_matrix"))
-    with h5py.File(paths["dispersion"], "r") as f:
-        data["eta_x"] = np.array(_dataset(f, "measured_eta_x", "eta_x"))
-        data["eta_y"] = np.array(_dataset(f, "measured_eta_y", "eta_y", fallback_index=1))
-    with h5py.File(paths["bpm_noise"], "r") as f:
-        data["noise_x"] = np.array(_dataset(f, "Noise_BPMx", "noise_x"))
-        data["noise_y"] = np.array(_dataset(f, "Noise_BPMy", "noise_y", fallback_index=1))
-    return data
+    source = Path(path).expanduser()
+    if not source.exists():
+        raise ValueError(f"Measurement file does not exist: {source}")
+    suffix = source.suffix.lower()
+    if suffix == ".npy":
+        return {"array": np.load(source, allow_pickle=False)}
+    if suffix == ".npz":
+        with np.load(source, allow_pickle=False) as archive:
+            return {key: np.array(archive[key]) for key in archive.files}
+    if suffix in {".h5", ".hdf5"}:
+        result = {}
+        with h5py.File(source, "r") as handle:
+            def collect_dataset(name, obj):
+                # h5py stops traversal when a visitor returns a non-None value.
+                # Store the dataset and return None explicitly so sibling
+                # datasets (for example eta_x and eta_y) are also collected.
+                if hasattr(obj, "shape"):
+                    result[name] = np.array(obj)
+                return None
+
+            handle.visititems(collect_dataset)
+        if not result:
+            raise ValueError(f"Measurement file {source} contains no datasets.")
+        return result
+    if suffix == ".mat":
+        if importlib.util.find_spec("scipy") is None:
+            raise RuntimeError("SciPy is required to import MATLAB measurement files (.mat).")
+        from scipy.io import loadmat
+        return {key: value for key, value in loadmat(source).items() if not key.startswith("__")}
+    raise ValueError(f"Unsupported measurement file type '{suffix}'. Use HDF5, MAT, NPY, or NPZ.")
+
+
+def _pick_array(mapping: dict[str, Any], *names: str, fallback_index: int = 0):
+    for name in names:
+        if name in mapping:
+            return mapping[name]
+        matches = [value for key, value in mapping.items() if key.rsplit("/", 1)[-1] == name]
+        if matches:
+            return matches[0]
+    values = list(mapping.values())
+    if fallback_index >= len(values):
+        raise ValueError(f"File does not contain an array for {names!r}.")
+    return values[fallback_index]
 
 
 def _load_bad_bpm_positions(paths: dict[str, str]):
@@ -332,6 +418,8 @@ def _as_bad_bpm_positions(values):
 
     array = np.asarray(values)
     array = np.squeeze(array)
+    if array.ndim == 0:
+        array = array.reshape(1)
     if array.ndim != 1:
         raise ValueError(f"Bad BPM list must be one-dimensional; got shape {array.shape}.")
     if not np.issubdtype(array.dtype, np.integer):
@@ -429,18 +517,56 @@ def _apply_machine_element_selections(indices: dict[str, Any], selections: dict[
     return updated
 
 
+def _validate_indices(ring, indices: dict[str, Any], fit_list) -> None:
+    import numpy as np
+
+    if indices["nHBPM"] <= 0:
+        raise ValueError("No BPMs are selected or available in the lattice.")
+    if indices["nHorCOR"] <= 0 or indices["nVerCOR"] <= 0:
+        raise ValueError("Both horizontal and vertical correctors must be selected.")
+    if "quads" in fit_list and _selection_size(indices.get("quads_ords")) == 0:
+        raise ValueError("Quadrupole fitting was requested but no quadrupoles are selected.")
+    if "skew_quads" in fit_list and _selection_size(indices.get("skew_ords")) == 0:
+        raise ValueError("Skew-quadrupole fitting was requested but no skew quadrupoles are selected.")
+    for label, values in (
+        ("BPM", indices["used_bpms_ords"]),
+        ("horizontal corrector", indices["used_cor_ords"][0]),
+        ("vertical corrector", indices["used_cor_ords"][1]),
+        ("quadrupole", indices.get("quads_ords")),
+        ("skew quadrupole", indices.get("skew_ords")),
+        ("cavity", indices.get("CAVords")),
+    ):
+        if values is None:
+            continue
+        array = np.asarray(values, dtype=int)
+        if np.any(array < 0) or np.any(array >= len(ring)):
+            raise ValueError(f"Selected {label} ordinal is outside the lattice range 0..{len(ring)-1}.")
+
+
+def _selection_size(values) -> int:
+    return 0 if values is None else len(values)
+
+
 def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixed_parameters, measured, indices):
     import numpy as np
 
     sigma_w = np.concatenate((measured["noise_x"], measured["noise_y"]))[:, np.newaxis]
     cmstep = rm_cfg.dkick if isinstance(rm_cfg.dkick, (list, tuple)) else (rm_cfg.dkick, rm_cfg.dkick)
+    hstep = _corrector_steps(cmstep[0], indices["nHorCOR"], "horizontal")
+    vstep = _corrector_steps(cmstep[1], indices["nVerCOR"], "vertical")
+    expected_shape = (indices["nHBPM"] + indices["nVBPM"], indices["nHorCOR"] + indices["nVerCOR"])
+    if measured["orm"].shape != expected_shape:
+        raise ValueError(f"ORM shape {measured['orm'].shape} is incompatible with selected elements; expected {expected_shape}.")
+    if options.get("includeDispersion", rm_cfg.includeDispersion) and not measured.get("dispersion_supplied", True):
+        raise ValueError("Dispersion fitting was requested but no dispersion measurement file was supplied.")
     return dict(
         algorithm=options.get("algorithm", "lm"), nIter=options.get("nIter", 1), **indices,
         orm_measured=measured["orm"], weights=sigma_w, includeDispersion=options.get("includeDispersion", rm_cfg.includeDispersion),
         measured_eta_x=measured["eta_x"], measured_eta_y=measured["eta_y"],
         hor_dispersion_weight=options.get("hor_dispersion_weight", 1.0), ver_dispersion_weight=options.get("ver_dispersion_weight", 1.0),
-        CMstep=[np.full(indices["nHorCOR"], cmstep[0]), np.full(indices["nVerCOR"], cmstep[1])], rfStep=rm_cfg.rfStep or fixed_parameters.rfstep,
-        Frequency=fixed_parameters.Frequency, fit_list=options.get("fit_list", ()), individuals=fit_cfg.individuals,
+        CMstep=[hstep, vstep], rfStep=rm_cfg.rfStep if rm_cfg.rfStep is not None else fixed_parameters.rfstep,
+        Frequency=fixed_parameters.Frequency, fit_list=options.get("fit_list", ()),
+        quad_individuals=fit_cfg.individuals, skew_individuals=fit_cfg.individuals, tilt_individuals=fit_cfg.individuals,
         remove_coupling_=options.get("remove_coupling_", True), outlier_rejection=options.get("outlier_rejection", False),
         sigma_outlier=options.get("sigma_outlier", 10), apply_normalization=options.get("apply_normalization", False),
         normalization_mode=options.get("normalization_mode", "global"), svd_selection_method=options.get("svd_selection_method", "threshold"),
@@ -449,6 +575,19 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
         max_lm_lambda=options.get("max_lm_lambda", 15), scaled=options.get("scaled", True), plot_fit_parameters=options.get("plot_fit_parameters", False),
         auto_correct_delta=options.get("auto_correct_delta", True), fixedpathlength=rm_cfg.fixedpathlength, fit_cfg=fit_cfg,
     )
+
+
+def _corrector_steps(value, expected: int, plane: str):
+    import numpy as np
+    array = np.asarray(value, dtype=float)
+    if array.ndim == 0:
+        return np.full(expected, float(array))
+    array = np.ravel(array)
+    if array.size != expected:
+        raise ValueError(f"{plane.title()} corrector-step length {array.size} does not match selected corrector count {expected}.")
+    if not np.all(np.isfinite(array)):
+        raise ValueError(f"{plane.title()} corrector steps must be finite.")
+    return array
 
 
 def _make_constraint_config(data: dict[str, Any]):
@@ -474,7 +613,7 @@ def _save_initial_model_orm(results_dir: Path, orm_model) -> Path:
     return path
 
 
-def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict):
+def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict, *, initial_chi2=None, runtime_seconds=None):
     import numpy as np
 
     files = []
@@ -488,7 +627,12 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
     save_fit_dict(fit_dict, fit_json)
     files.append(str(fit_json))
     summary = results_dir / "summary.json"
-    summary.write_text(json.dumps({"chi2_history": _jsonable(chi2_history), "blocks": _jsonable(blocks)}, indent=2), encoding="utf-8")
+    summary.write_text(json.dumps({
+        "initial_chi2": initial_chi2,
+        "chi2_history": _jsonable(chi2_history),
+        "blocks": _jsonable(blocks),
+        "runtime_seconds": runtime_seconds,
+    }, indent=2), encoding="utf-8")
     files.append(str(summary))
     try:
         import at
@@ -498,6 +642,25 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
     except Exception:
         pass
     return files
+
+
+def _initial_chi2_from_log(lines: list[str]) -> float | None:
+    """Extract the exact value already printed by pyloco; never recompute χ²."""
+    pattern = re.compile(r"^\s*Initial Chi²:\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$")
+    for line in lines:
+        match = pattern.search(line)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                return None
+    return None
+
+
+def _save_backend_log(results_dir: Path, lines: list[str]) -> Path:
+    path = results_dir / "backend.log"
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
+    return path
 
 
 def _jsonable(value):

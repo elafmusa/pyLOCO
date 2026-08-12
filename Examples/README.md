@@ -8,23 +8,39 @@ Each main example has three files:
 
 ## Which example should I start with?
 
-Start with the **EBS single-quadrupole example**. It is the smallest example and
-shows the basic idea of LOCO without requiring pySC or measured machine data.
+For a guided introduction, start with the **Summer Project FODO notebooks**.
+They begin with a familiar Accelerator Toolbox lattice and introduce pyLOCO and
+Jacobian calculations gradually.
+
+For a complete application script, start with the **EBS single-quadrupole
+example**. It shows the basic LOCO workflow without requiring pySC or measured
+machine data.
 
 ## Available examples
 
-### 1. FODO ring: from Accelerator Toolbox to pyLOCO
+### 1. Summer Project: FODO tutorials
 
-Notebook: `Summer_project/from_fodo_to_pyloco.ipynb`
+Location: `Summer_project/`
 
-This self-contained tutorial is the recommended bridge for a student who
-already understands the FODO and ORM exercises in the Accelerator Toolbox
-Primer. It builds the familiar FODO ring, adds BPMs and correctors, creates one
-known quadrupole error, exposes pyLOCO's numerical Jacobian convention, fits
-only that quadrupole, applies the correction, and verifies the ORM and optics.
+These educational notebooks use the simple FODO ring from the Accelerator
+Toolbox Primer:
 
-It deliberately does not introduce analytical Jacobians, noise, coupling,
-calibration errors, RF fitting, or external data files.
+- `from_fodo_to_pyloco.ipynb` introduces the complete basic workflow: create an
+  ORM, assign one quadrupole error, fit it with pyLOCO, apply the correction,
+  and verify the ORM and optics.
+- `FODO_Jacobian/01_fodo_jacobian_methods.ipynb` asks the student to calculate
+  a numerical Jacobian and compare it with pyLOCO and the ESRF analytical
+  formula.
+- `FODO_Jacobian/02_fodo_jacobian_with_errors.ipynb` repeats the Jacobian
+  comparison around a lattice that already contains quadrupole errors.
+- `FODO_Jacobian/03_fodo_iterative_loco_comparison.ipynb` introduces the full
+  iterative LOCO comparison and the requirements for integrating an analytical
+  Jacobian into pyLOCO.
+
+Run these notebooks in the listed order. The numbered Jacobian notebooks are
+student exercises: cells marked `STUDENT TASK — YOUR CODE HERE` are
+intentionally incomplete. The analytical support module must remain in the
+`FODO_Jacobian/` directory beside them.
 
 ### 2. EBS: one quadrupole error
 
@@ -80,6 +96,12 @@ and validation of the fitted response.
 
 Use this example to learn how pyLOCO is applied to real machine data.
 
+All PETRA III scripts accept an alternate measurement configuration, for
+example `python example_measured_orm.py --config configs/before_correction.yaml`.
+Paths in a YAML file are resolved relative to that file, and `output.directory`
+lets each machine study keep its results separate without copying the Python
+workflow.
+
 ### 6. PETRA III: coupling fit
 
 Files: `PETRAIII/example_measured_coupling.py` and
@@ -89,7 +111,34 @@ This example keeps the cross-plane ORM blocks and fits coupling-related
 parameters such as skew quadrupoles, quadrupole tilts, and BPM/corrector
 coupling. It is a more advanced measured-data workflow.
 
-### 7. PETRA III: comparison with MATLAB LOCO
+### 7. PETRA III: constrained fit
+
+Files: `PETRAIII/example_measured_constrained.py` and
+`PETRAIII/configs/constrained.yaml`
+
+This thin example uses the same measured-data workflow with dispersion and
+`ConstraintConfig`. The YAML controls the fit list, constraint sigmas and
+weights, and output directory. The bundled constrained configuration uses the
+PETRA III machine-study family groups; setting `data.quadrupole_mode:
+individual` preserves the individual-quadrupole path used by the standard fit.
+The run saves the constraint settings and quadrupole corrections alongside the
+standard residual, convergence, optics, and coupling plots.
+
+Each measured-data run creates `plots/`, `correction/`, and `results/` below
+its configured output directory. The correction folder separates the direct
+family solution (`delta_q_families.npy` and
+`quadrupole_family_corrections.csv`) from its mapping to physical magnets
+(`delta_q_expanded.npy` and `quadrupole_corrections_expanded.csv`). The latter
+is an expansion of the family fit, not an individual-quadrupole refit.
+
+To add another machine measurement, copy the concise constrained YAML (or the
+default `pyloco_config.yaml`) and change `lattice.file`, the paths under
+`data`, `bad_bpm_positions`, `rf`, and `output`. Fit parameter lists and solver
+settings live under `loco`; family mode is selected with
+`data.quadrupole_mode: family` plus `data.quadrupole_family_groups`; priors live
+under `constraints`. No Python example needs to be copied.
+
+### 8. PETRA III: comparison with MATLAB LOCO
 
 Files: `PETRAIII/example_matlab_comparison.py` and
 `PETRAIII/example_matlab_comparison.ipynb`

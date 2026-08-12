@@ -24,6 +24,8 @@ Examples/PETRAIII/output/
 measurements/
 output/
 results/
+!pyLOCO/gui/results/
+!pyLOCO/gui/results/*.py
 
 # Local configuration files
 PETRAIII_example.pyloco.json
