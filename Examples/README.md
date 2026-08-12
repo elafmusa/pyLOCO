@@ -96,6 +96,12 @@ and validation of the fitted response.
 
 Use this example to learn how pyLOCO is applied to real machine data.
 
+All PETRA III scripts accept an alternate measurement configuration, for
+example `python example_measured_orm.py --config configs/before_correction.yaml`.
+Paths in a YAML file are resolved relative to that file, and `output.directory`
+lets each machine study keep its results separate without copying the Python
+workflow.
+
 ### 6. PETRA III: coupling fit
 
 Files: `PETRAIII/example_measured_coupling.py` and
@@ -105,7 +111,34 @@ This example keeps the cross-plane ORM blocks and fits coupling-related
 parameters such as skew quadrupoles, quadrupole tilts, and BPM/corrector
 coupling. It is a more advanced measured-data workflow.
 
-### 7. PETRA III: comparison with MATLAB LOCO
+### 7. PETRA III: constrained fit
+
+Files: `PETRAIII/example_measured_constrained.py` and
+`PETRAIII/configs/constrained.yaml`
+
+This thin example uses the same measured-data workflow with dispersion and
+`ConstraintConfig`. The YAML controls the fit list, constraint sigmas and
+weights, and output directory. The bundled constrained configuration uses the
+PETRA III machine-study family groups; setting `data.quadrupole_mode:
+individual` preserves the individual-quadrupole path used by the standard fit.
+The run saves the constraint settings and quadrupole corrections alongside the
+standard residual, convergence, optics, and coupling plots.
+
+Each measured-data run creates `plots/`, `correction/`, and `results/` below
+its configured output directory. The correction folder separates the direct
+family solution (`delta_q_families.npy` and
+`quadrupole_family_corrections.csv`) from its mapping to physical magnets
+(`delta_q_expanded.npy` and `quadrupole_corrections_expanded.csv`). The latter
+is an expansion of the family fit, not an individual-quadrupole refit.
+
+To add another machine measurement, copy the concise constrained YAML (or the
+default `pyloco_config.yaml`) and change `lattice.file`, the paths under
+`data`, `bad_bpm_positions`, `rf`, and `output`. Fit parameter lists and solver
+settings live under `loco`; family mode is selected with
+`data.quadrupole_mode: family` plus `data.quadrupole_family_groups`; priors live
+under `constraints`. No Python example needs to be copied.
+
+### 8. PETRA III: comparison with MATLAB LOCO
 
 Files: `PETRAIII/example_matlab_comparison.py` and
 `PETRAIII/example_matlab_comparison.ipynb`

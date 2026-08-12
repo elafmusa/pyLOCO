@@ -43,8 +43,10 @@ def response_matrix(
     log_info = _cfg_get(config, "log_info", log_info)
     HCMCoupling = _cfg_get(config, "HCMCoupling", HCMCoupling)
     VCMCoupling = _cfg_get(config, "VCMCoupling", VCMCoupling)
-    Frequency = fixed_parameters.Frequency
-    HarmNumber = fixed_parameters.HarmNumber
+    Frequency = _cfg_get(config, "Frequency", Frequency)
+    HarmNumber = _cfg_get(config, "HarmNumber", HarmNumber)
+    Frequency = fixed_parameters.Frequency if Frequency is None else Frequency
+    HarmNumber = fixed_parameters.HarmNumber if HarmNumber is None else HarmNumber
     RFAttr = _cfg_get(config, "RFAttr", "Frequency")
 
 

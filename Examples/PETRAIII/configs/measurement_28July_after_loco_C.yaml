@@ -1,0 +1,195 @@
+# Self-contained migration of Run_LOCO/C.ipynb, "Constrain_case 3_new".
+lattice:
+  file: ../data/p3_v24_C_original.mat
+
+data:
+  orm: ../data/measurement_28July_after_loco_C/ORM_before_LOCO_merged.h5
+  dispersion: ../data/measurement_28July_after_loco_C/Dispersion_RF_difference.h5
+  dispersion_datasets:
+    horizontal: mean_orbit_x
+    vertical: mean_orbit_y
+  bpm_noise: ../data/measurement_28July_after_loco_C/BPM_noise_2026-07-28_11-11-15.h5
+  bpm_noise_datasets:
+    horizontal: std_orbit_x
+    vertical: std_orbit_y
+  corrector_steps:
+    horizontal_rad: 1.0e-4
+    vertical_rad: 1.0e-4
+  horizontal_corrector_names: ../data/HCM_names_control.txt
+  vertical_corrector_names: ../data/VCM_names_control.txt
+  bpm_names: ../data/BPM_names.txt
+  quadrupole_indices: ../data/quad_ind_2024.npy
+  skew_indices: ../data/skew_ind_2026.npy
+  quadrupole_mode: family
+  quadrupole_family_groups: ../data/quad_family_groups_new.npy
+
+expected_counts:
+  bpms_before_removal: 246
+  bpms_after_removal: 238
+  horizontal_correctors: 184
+  vertical_correctors: 193
+  quadrupole_families: 193
+  physical_quadrupoles: 398
+  skew_quadrupoles: 16
+
+# Zero-based positions in the ordered BPM-name selection, exactly as in C.ipynb.
+bad_bpm_positions: [71, 104, 108, 123, 138, 153, 161, 243]
+
+rf:
+  frequency_hz: 499664399.4230182
+  harmonic_number: 3840
+  step_hz: -3000.0
+
+loco:
+  algorithm: lm
+  nIter: 8
+  nLMIter: 10
+  Starting_Lambda: 1.0e-3
+  max_lm_lambda: 15.0
+  scaled: true
+  svd_selection_method: threshold
+  svd_threshold: 1.0e-7
+  cut: 397
+  show_svd_plot: true
+  outlier_rejection: true
+  sigma_outlier: 10.0
+  apply_normalization: true
+  normalization_mode: component
+  include_dispersion: true
+  horizontal_dispersion_weight: 5.0
+  vertical_dispersion_weight: 5.0
+  remove_coupling: false
+  skew_individuals: true
+  tilt_individuals: true
+  calculate_delta_chi2: false
+  plot_fit_parameters: false
+  auto_correct_delta: true
+  fixedpathlength: false
+
+  # C.ipynb's FitInitConfig fits the skew block through PolynomB[1], but its
+  # machine correction is referenced to the initial PolynomA[1]. Keeping these
+  # separate reproduces the notebook rather than silently changing convention.
+  skew_attribute: PolynomB
+  skew_correction_reference_attribute: PolynomA
+
+  constrained_fit_list: [quads, skew_quads, quads_tilt, hbpm_gain, vbpm_gain, hcor_cal, vcor_cal, HCMEnergyShift, hbpm_coupling, vbpm_coupling, hcor_coupling, vcor_coupling]
+
+
+
+
+constraints:
+  enable: true
+
+  quadrupoles:
+    relative_sigma: 1.0e-4
+    minimum_sigma: 1.0e-12
+
+    # All quadrupoles are unconstrained by default
+    default_weight: 0.0
+
+    # Common weight for the selected DBA quadrupoles
+    selected_weight: 5.0   
+
+    selected_families:
+      - 23
+      - 29
+      - 31
+      - 33
+      - 35
+      - 39
+      - 40
+      - 44
+      - 47
+      - 48
+      - 51
+      - 52
+      - 53
+      - 54
+      - 56
+      - 57
+      - 60
+      - 61
+      - 62
+      - 72
+      - 73
+      - 75
+      - 78
+      - 79
+      - 81
+      - 83
+      - 85
+      - 87
+      - 91
+      - 92
+      - 93
+      - 94
+      - 95
+      - 97
+      - 98
+      - 100
+      - 101
+      - 103
+      - 104
+      - 105
+      - 108
+      - 109
+      - 112
+      - 113
+      - 116
+      - 117
+      - 118
+      - 120
+      - 121
+      - 122
+      - 123
+      - 124
+      - 125
+      - 126
+      - 127
+      - 129
+      - 134
+      - 136
+      - 137
+      - 138
+      - 139
+      - 140
+      - 141
+      - 143
+      - 145
+      - 150
+      - 151
+      - 152
+      - 153
+      - 154
+      - 155
+      - 156
+      - 157
+      - 158
+      - 159
+      - 162
+      - 163
+      - 164
+      - 166
+      - 168
+      - 169
+      - 174
+      - 175
+      - 176
+      - 177
+      - 179
+      - 180
+      - 181
+      - 184
+      - 185
+      - 187
+      - 189
+      - 191
+      - 192
+
+  skew_quadrupoles:
+    sigma: 1.0e-4
+    default_weight: 0.0    
+
+output:
+  root: ../output
+  run_name: measurement_28July_after_loco_C

@@ -2501,6 +2501,7 @@ def pyloco(
         previous_ring=None,
         calculate_delta_chi2=False,
         initial_model_orm_callback=None,
+        initial_chi2_callback=None,
         output_dir='output'
 
 ):
@@ -2854,6 +2855,8 @@ def pyloco(
             n_fit_parameters=J_
         )
         print(f"Initial Chi²: {chi2_before:.4e}")
+        if it == 0 and initial_chi2_callback is not None:
+            initial_chi2_callback(float(chi2_before))
 
         if algorithm.lower() == "lm":
             # LM inner loop with accept/reject and lambda updates
@@ -3329,7 +3332,6 @@ def get_fit_param_block(fit_dict, name):
         )
 
     return np.asarray(inner[name], dtype=float)
-
 
 
 

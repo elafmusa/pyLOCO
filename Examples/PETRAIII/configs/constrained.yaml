@@ -1,0 +1,71 @@
+# Constrained PETRA III machine-study example. Paths are relative to this file.
+lattice:
+  file: ../data/p3_low_beta.mat
+
+data:
+  orm: ../data/measured_orm_loco.h5
+  dispersion: ../data/measured_dispersion_loco.h5
+  bpm_noise: ../data/measured_BPM_noise_loco.h5
+  corrector_steps: ../data/CMstep.npz
+  horizontal_corrector_names: ../data/HCM_names.txt
+  vertical_corrector_names: ../data/VCM_names.txt
+  bpm_names: ../data/BPM_names.txt
+  quadrupole_indices: ../data/quad_ind_2024.npy
+  skew_indices: ../data/skew_ind_2026.npy
+  quadrupole_mode: family
+  quadrupole_family_groups: ../data/quad_family_groups_new.npy
+
+bad_bpm_positions: [24, 104, 108, 111, 123, 138, 144, 153, 161, 162, 243]
+
+rf:
+  frequency_hz: 499664399.4230182
+  harmonic_number: 3840
+  step_hz: -3000.0
+
+loco:
+  nIter: 1
+  nLMIter: 10
+  Starting_Lambda: 1.0e-3
+  max_lm_lambda: 15.0
+  scaled: true
+  svd_selection_method: threshold
+  svd_threshold: 1.0e-7
+  cut: 397
+  show_svd_plot: false
+  outlier_rejection: true
+  sigma_outlier: 10.0
+  apply_normalization: true
+  normalization_mode: component
+  remove_coupling: false
+  skew_individuals: true
+  tilt_individuals: true
+  # The old machine-study correction convention used PolynomA[1].
+  skew_attribute: PolynomA
+  calculate_delta_chi2: false
+  include_dispersion: true
+  horizontal_dispersion_weight: 5.0
+  vertical_dispersion_weight: 1.0
+  constrained_fit_list: [quads, skew_quads, quads_tilt, hbpm_gain, vbpm_gain, hcor_cal, vcor_cal, HCMEnergyShift, hbpm_coupling, vbpm_coupling, hcor_coupling, vcor_coupling]
+
+constraints:
+  enable: true
+  quadrupoles:
+    relative_sigma: 1.0e-4
+    minimum_sigma: 1.0e-12
+    default_weight: 1.0
+    # Keys are zero-based family positions, not lattice indices.
+    weighted_families:
+      56: 5.0
+      57: 5.0
+      121: 5.0
+      122: 5.0
+      176: 5.0
+      177: 5.0
+  skew_quadrupoles:
+    sigma: 1.0e-4
+    default_weight: 0.0
+
+output:
+  run_name: constrained_case
+  # root/run_name receives plots/, correction/, and results/ subdirectories.
+  root: ../output

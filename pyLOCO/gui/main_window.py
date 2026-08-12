@@ -46,10 +46,14 @@ from PySide6.QtWidgets import (
 )
 
 from .backend import LocoRunError, LocoRunRequest, run_loco_request, _load_bad_bpm_positions
-from .models.project import ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata
+from .models.project import (
+    ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata,
+    load_example_project_data, resolve_element_name_file, resolve_example_machine_elements,
+)
 from .widgets.project_explorer import ProjectExplorer
 from .widgets.orm_comparison import OrmComparisonWindow
 from .themes import THEMES, apply_application_theme, configure_item_view, theme_for_key
+from .results.results_workspace import ResultsWorkspace
 
 APP_STYLESHEET = """
 * { font-family: "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif; font-size: 13px; }
@@ -185,10 +189,11 @@ class ElementSelectionDialog(QDialog):
         self.auto_radio = QRadioButton("Automatic detection")
         self.type_radio = QRadioButton("AT element type")
         self.pattern_radio = QRadioButton("Family/name pattern")
+        self.name_file_radio = QRadioButton("Load name file")
         self.file_radio = QRadioButton("Load index file")
         self.manual_radio = QRadioButton("Manual indices")
         self.manual_radio.setChecked(True)
-        for button in (self.auto_radio, self.type_radio, self.pattern_radio, self.file_radio, self.manual_radio):
+        for button in (self.auto_radio, self.type_radio, self.pattern_radio, self.name_file_radio, self.file_radio, self.manual_radio):
             mode_row.addWidget(button)
         layout.addLayout(mode_row)
 
@@ -199,10 +204,19 @@ class ElementSelectionDialog(QDialog):
         file_button = QPushButton("Browse…")
         file_button.clicked.connect(self._browse_index_file)
         file_row = QHBoxLayout(); file_row.addWidget(self.file_edit); file_row.addWidget(file_button)
+        self.name_file_edit = QLineEdit()
+        self.name_attribute = QComboBox()
+        for label, value in (("Auto-detect attribute", "auto"), ("CommonName", "CommonName"), ("FamName", "FamName"), ("Name", "Name"), ("name", "name")):
+            self.name_attribute.addItem(label, value)
+        name_file_button = QPushButton("Browse…")
+        name_file_button.clicked.connect(self._browse_name_file)
+        name_file_row = QHBoxLayout(); name_file_row.addWidget(self.name_file_edit); name_file_row.addWidget(name_file_button)
         self.manual_edit = QPlainTextEdit(", ".join(str(i) for i in current))
         self.manual_edit.setPlaceholderText("Enter integer lattice ordinals separated by commas, spaces, or new lines.")
         form.addRow("AT class/type contains", self.type_edit)
         form.addRow("Family/name regex", self.pattern_edit)
+        form.addRow("Element-name file", name_file_row)
+        form.addRow("Name attribute", self.name_attribute)
         form.addRow("Index file", file_row)
         form.addRow("Manual lattice ordinals", self.manual_edit)
         layout.addLayout(form)
@@ -211,7 +225,7 @@ class ElementSelectionDialog(QDialog):
         preview_button.clicked.connect(self._preview)
         layout.addWidget(preview_button)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Selection position", "Lattice ordinal", "Family/name", "Element class"])
+        self.table.setHorizontalHeaderLabels(["Selection position", "Lattice ordinal", "Element name(s)", "Element class"])
         configure_item_view(self.table)
         layout.addWidget(self.table, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
@@ -230,7 +244,12 @@ class ElementSelectionDialog(QDialog):
         return list(enumerate(self._lattice or []))
 
     def _element_name(self, elem) -> str:
-        return str(getattr(elem, "FamName", getattr(elem, "name", getattr(elem, "Name", ""))))
+        values = []
+        for attribute in ("CommonName", "FamName", "Name", "name"):
+            value = getattr(elem, attribute, None)
+            if value is not None and str(value) not in values:
+                values.append(str(value))
+        return " / ".join(values)
 
     def _element_class(self, elem) -> str:
         return type(elem).__name__
@@ -239,6 +258,11 @@ class ElementSelectionDialog(QDialog):
         filename = QFileDialog.getOpenFileName(self, "Load lattice-index array", "", "Index arrays (*.npy *.npz *.h5 *.hdf5 *.txt);;All files (*)")[0]
         if filename:
             self.file_edit.setText(filename); self.file_radio.setChecked(True); self._preview()
+
+    def _browse_name_file(self) -> None:
+        filename = QFileDialog.getOpenFileName(self, "Load element-name list", "", "Text files (*.txt *.list *.dat);;All files (*)")[0]
+        if filename:
+            self.name_file_edit.setText(filename); self.name_file_radio.setChecked(True); self._preview()
 
     def _candidate_indices(self) -> list[int]:
         if self.auto_radio.isChecked():
@@ -250,6 +274,14 @@ class ElementSelectionDialog(QDialog):
         if self.pattern_radio.isChecked():
             pattern = re.compile(self.pattern_edit.text().strip(), re.I)
             return [i for i, e in self._iter_elements() if pattern.search(self._element_name(e))]
+        if self.name_file_radio.isChecked():
+            if not self._lattice:
+                raise ValueError("Load a lattice before selecting elements from a name file.")
+            return resolve_element_name_file(
+                self._lattice,
+                Path(self.name_file_edit.text()).expanduser(),
+                self.name_attribute.currentData() or "auto",
+            )
         if self.file_radio.isChecked():
             return self._load_index_file(Path(self.file_edit.text()).expanduser())
         return [int(x) for x in re.findall(r"[-+]?\d+", self.manual_edit.toPlainText())]
@@ -355,6 +387,7 @@ class MainWindow(QMainWindow):
         self._create_toolbar()
         self._create_status_bar()
         self._workspace.currentChanged.connect(self._on_tab_changed)
+        self._project_explorer.navigate_requested.connect(self._navigate_from_explorer)
         self._refresh_ui("Ready — create or open a project")
 
     def _create_workspace(self) -> QTabWidget:
@@ -376,29 +409,15 @@ class MainWindow(QMainWindow):
 
 
     def _results_page(self) -> QWidget:
-        page = self._page("Results Workspace")
-        self.run_status_label = QLabel("No LOCO run has been started.")
-        self.run_elapsed_label = QLabel("Elapsed: 0.0 s")
-        self.run_progress = QProgressBar()
-        self.run_progress.setRange(0, 1)
-        self.run_progress.setValue(0)
-        self.run_output_dir = QLabel("—")
-        self.run_log = QTextEdit()
-        self.run_log.setReadOnly(True)
-        self.cancel_loco_button = QPushButton("Cancel Run")
-        self.cancel_loco_button.setEnabled(False)
+        self.results_workspace = ResultsWorkspace()
+        self.run_status_label = self.results_workspace.run_status_label
+        self.run_elapsed_label = self.results_workspace.run_elapsed_label
+        self.run_progress = self.results_workspace.run_progress
+        self.run_output_dir = self.results_workspace.run_output_dir
+        self.run_log = self.results_workspace.log.text
+        self.cancel_loco_button = self.results_workspace.cancel_button
         self.cancel_loco_button.clicked.connect(self.cancel_loco_run)
-        form = QFormLayout()
-        form.addRow("Status", self.run_status_label)
-        form.addRow("Elapsed", self.run_elapsed_label)
-        form.addRow("Progress", self.run_progress)
-        form.addRow("Results directory", self.run_output_dir)
-        group = QGroupBox("Backend Run Monitor")
-        group.setLayout(form)
-        page.layout().addWidget(group)
-        page.layout().addWidget(self.cancel_loco_button)
-        page.layout().addWidget(self.run_log, 1)
-        return page
+        return self.results_workspace
 
     def _project_page(self) -> QWidget:
         page = self._page("Project Dashboard")
@@ -455,7 +474,7 @@ class MainWindow(QMainWindow):
             row.addWidget(button)
             elements_layout.addLayout(row)
             table = QTableWidget(0, 4)
-            table.setHorizontalHeaderLabels(["Selection position", "Lattice ordinal", "Family/name", "Element class"])
+            table.setHorizontalHeaderLabels(["Selection position", "Lattice ordinal", "Element name(s)", "Element class"])
             configure_item_view(table)
             table.setMaximumHeight(160)
             self.element_preview_tables[key] = table
@@ -620,12 +639,16 @@ class MainWindow(QMainWindow):
         self.constraint_skew_sigma = self._double_spin(0.0, 1e12, 0.0, 6)
         self.constraint_quad_weights = QLineEdit()
         self.constraint_skew_weights = QLineEdit()
+        self.constraint_quad_mask = QLineEdit()
+        self.constraint_skew_mask = QLineEdit()
         constraint_form = QFormLayout()
         constraint_form.addRow(self.constraint_enabled)
         constraint_form.addRow("Quadrupole sigma", self.constraint_quad_sigma)
         constraint_form.addRow("Skew sigma", self.constraint_skew_sigma)
         constraint_form.addRow("Quadrupole weights", self.constraint_quad_weights)
         constraint_form.addRow("Skew weights", self.constraint_skew_weights)
+        constraint_form.addRow("Quadrupole mask", self.constraint_quad_mask)
+        constraint_form.addRow("Skew mask", self.constraint_skew_mask)
         constraint_group = QGroupBox("Constraints")
         constraint_group.setLayout(constraint_form)
         layout.addWidget(constraint_group)
@@ -771,7 +794,7 @@ class MainWindow(QMainWindow):
         self.save_project_as_action.triggered.connect(self.save_project_as)
         self.validate_project_action = QAction("Validate", self)
         self.validate_project_action.triggered.connect(self.validate_project)
-        self.run_loco_action = QAction("Run LOCO", self)
+        self.run_loco_action = QAction("▶ Run LOCO", self)
         self.run_loco_action.triggered.connect(self.run_loco)
         self.compare_orms_action = QAction("Compare ORMs", self)
         self.compare_orms_action.triggered.connect(self.compare_orms)
@@ -835,21 +858,21 @@ class MainWindow(QMainWindow):
         toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        for action in (
-            self.new_project_action,
-            self.open_project_action,
-            self.save_project_action,
-            self.validate_project_action,
-            self.run_loco_action,
-            self.compare_orms_action,
-        ):
+        for action in (self.new_project_action, self.open_project_action, self.save_project_action):
             toolbar.addAction(action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.validate_project_action)
+        toolbar.addAction(self.run_loco_action)
+        toolbar.addAction(self.compare_orms_action)
         toolbar.addSeparator()
         toolbar.addAction(self.basic_mode_action)
         toolbar.addAction(self.advanced_mode_action)
         toolbar.addSeparator()
         toolbar.addAction(self.toggle_theme_action)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
+        run_button = toolbar.widgetForAction(self.run_loco_action)
+        if run_button is not None:
+            run_button.setObjectName("primaryToolbarAction")
 
     def _create_status_bar(self) -> None:
         status_bar = QStatusBar(self)
@@ -970,6 +993,11 @@ class MainWindow(QMainWindow):
         self.rm_dkick_v.setValue(cfg.response_matrix.dkick_v)
         self.rm_rf_step.setValue(cfg.response_matrix.rfStep)
         self.rm_delta_coupling.setValue(cfg.response_matrix.delta_coupling)
+        self.rm_hcm_coupling.setText(cfg.response_matrix.HCMCoupling)
+        self.rm_vcm_coupling.setText(cfg.response_matrix.VCMCoupling)
+        self.rm_frequency.setText(cfg.response_matrix.Frequency)
+        self.rm_harm_number.setText(cfg.response_matrix.HarmNumber)
+        self.rm_rf_attr.setText(cfg.response_matrix.RFAttr)
         self._refresh_element_selection_ui()
         self.rm_fixedpath.setChecked(cfg.response_matrix.fixedpathlength)
         self.rm_log_info.setChecked(cfg.response_matrix.log_info)
@@ -1000,6 +1028,8 @@ class MainWindow(QMainWindow):
         self.constraint_skew_sigma.setValue(cfg.constraints.skew_sigma)
         self.constraint_quad_weights.setText(cfg.constraints.quad_weights)
         self.constraint_skew_weights.setText(cfg.constraints.skew_weights)
+        self.constraint_quad_mask.setText(cfg.constraints.quad_mask)
+        self.constraint_skew_mask.setText(cfg.constraints.skew_mask)
         for name, check in self.parameter_checks.items():
             check.setChecked(bool(getattr(cfg.parameters, name)))
         self.params_individuals.setChecked(cfg.parameters.individuals)
@@ -1032,6 +1062,7 @@ class MainWindow(QMainWindow):
 
     def _collect_loco_configuration(self) -> LocoConfiguration:
         cfg = LocoConfiguration()
+        cfg.output_directory = self.project.loco_config.output_directory
         cfg.response_matrix.calculator = self.rm_calculator.currentData() or self.rm_calculator.currentText()
         cfg.response_matrix.includeDispersion = self.rm_dispersion.isChecked()
         cfg.response_matrix.coupling_orm = self.rm_coupling.isChecked()
@@ -1045,6 +1076,11 @@ class MainWindow(QMainWindow):
         cfg._sync_response_matrix_elements()
         cfg.response_matrix.fixedpathlength = self.rm_fixedpath.isChecked()
         cfg.response_matrix.log_info = self.rm_log_info.isChecked()
+        cfg.response_matrix.HCMCoupling = self.rm_hcm_coupling.text()
+        cfg.response_matrix.VCMCoupling = self.rm_vcm_coupling.text()
+        cfg.response_matrix.Frequency = self.rm_frequency.text()
+        cfg.response_matrix.HarmNumber = self.rm_harm_number.text()
+        cfg.response_matrix.RFAttr = self.rm_rf_attr.text()
         cfg.solver.algorithm = self._selected_solver_algorithm()
         cfg.solver.nIter = self.solver_n_iter.value()
         cfg.solver.nLMIter = self.solver_lm_iter.value()
@@ -1059,11 +1095,13 @@ class MainWindow(QMainWindow):
         cfg.rejection.sigma_outlier = self.outlier_sigma.value()
         cfg.rejection.apply_normalization = self.norm_enabled.isChecked()
         cfg.rejection.normalization_mode = self.norm_mode.currentText()
-        cfg.rejection.includeDispersion = self.loco_include_dispersion.isChecked()
+        cfg.rejection.includeDispersion = self.loco_include_dispersion.isChecked() or self.rm_dispersion.isChecked()
+        cfg.response_matrix.includeDispersion = cfg.rejection.includeDispersion
         cfg.rejection.hor_dispersion_weight = self.loco_hor_dispersion_weight.value()
         cfg.rejection.ver_dispersion_weight = self.loco_ver_dispersion_weight.value()
         cfg.rejection.auto_correct_delta = self.auto_delta.isChecked()
-        cfg.rejection.fixedpathlength = self.loco_fixedpath.isChecked()
+        cfg.rejection.fixedpathlength = self.loco_fixedpath.isChecked() or self.rm_fixedpath.isChecked()
+        cfg.response_matrix.fixedpathlength = cfg.rejection.fixedpathlength
         cfg.rejection.individuals = self.loco_individuals.isChecked()
         cfg.rejection.remove_coupling_ = self.loco_remove_coupling.isChecked()
         cfg.rejection.plot_fit_parameters = self.loco_plot_fit_parameters.isChecked()
@@ -1072,6 +1110,8 @@ class MainWindow(QMainWindow):
         cfg.constraints.skew_sigma = self.constraint_skew_sigma.value()
         cfg.constraints.quad_weights = self.constraint_quad_weights.text()
         cfg.constraints.skew_weights = self.constraint_skew_weights.text()
+        cfg.constraints.quad_mask = self.constraint_quad_mask.text()
+        cfg.constraints.skew_mask = self.constraint_skew_mask.text()
         for name, check in self.parameter_checks.items():
             setattr(cfg.parameters, name, check.isChecked())
         cfg.parameters.individuals = self.params_individuals.isChecked()
@@ -1124,7 +1164,28 @@ class MainWindow(QMainWindow):
         if not filename:
             return
         try:
-            self.project.loco_config = LocoConfiguration.load(filename)
+            config, measurements, lattice = load_example_project_data(filename)
+            self.project.loco_config = config
+            if lattice:
+                source = Path(lattice)
+                if not source.exists():
+                    raise ValueError(f"Configured lattice file does not exist: {source}")
+                self.project.lattice = LatticeSelection(path=str(source), file_type=source.suffix.lower().lstrip("."))
+                loaded_lattice = self._load_current_lattice()
+                if loaded_lattice is None:
+                    raise ValueError(f"Unable to load configured lattice: {source}")
+                self.project.lattice.element_count = len(loaded_lattice)
+                resolved = resolve_example_machine_elements(filename, loaded_lattice)
+                if any(getattr(resolved, key) for key in ELEMENT_ROLES):
+                    self.project.loco_config.machine_elements = resolved
+                    self.project.loco_config._sync_response_matrix_elements()
+            for role, value in measurements.items():
+                source = Path(value)
+                if not source.exists():
+                    raise ValueError(f"Configured {role.replace('_', ' ')} file does not exist: {source}")
+                self.project.measurements[role] = ImportedDataset(
+                    role=role, path=str(source), file_type=source.suffix.lower().lstrip("."), size_bytes=source.stat().st_size
+                )
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
             QMessageBox.warning(self, "Import failed", str(exc))
             return
@@ -1214,7 +1275,7 @@ class MainWindow(QMainWindow):
         rows = []
         for position, ordinal in enumerate(ords):
             elem = lattice[ordinal] if lattice and 0 <= ordinal < len(lattice) else None
-            name = str(getattr(elem, "FamName", getattr(elem, "name", getattr(elem, "Name", "")))) if elem else ""
+            name = ElementSelectionDialog._element_name(None, elem) if elem else ""
             cls = type(elem).__name__ if elem else ""
             rows.append((position, ordinal, name, cls))
         return rows
@@ -1335,6 +1396,8 @@ class MainWindow(QMainWindow):
         for window in self._orm_comparison_windows:
             if hasattr(window, "apply_theme"):
                 window.apply_theme(self.current_theme)
+        if hasattr(self, "results_workspace"):
+            self.results_workspace.apply_theme()
         self._refresh_ui(f"{self.current_theme.display_name} theme selected")
 
     def _update_toggle_theme_action(self) -> None:
@@ -1361,6 +1424,8 @@ class MainWindow(QMainWindow):
         )
         for widget in widgets:
             widget.setVisible(advanced)
+        if hasattr(self, "results_workspace"):
+            self.results_workspace.set_mode(self.project.mode)
 
     @Slot()
     def _toggle_theme(self) -> None:
@@ -1441,11 +1506,7 @@ class MainWindow(QMainWindow):
         self.project.loco_config = self._collect_loco_configuration()
         request = LocoRunRequest.from_project(self.project)
         self._run_started_at = __import__("time").monotonic()
-        self.run_log.clear()
-        self.run_status_label.setText("Running pyLOCO backend...")
-        self.run_progress.setRange(0, 0)
-        self.run_output_dir.setText("Preparing results directory...")
-        self.cancel_loco_button.setEnabled(True)
+        self.results_workspace.begin_run()
         self.run_loco_action.setEnabled(False)
         self._workspace.setCurrentIndex(self._workspace.indexOf(self.results_page))
         self._run_thread = QThread(self)
@@ -1472,26 +1533,38 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _append_run_log(self, message: str) -> None:
-        self.run_log.append(message)
-        if message.startswith("Results directory:"):
-            self.run_output_dir.setText(message.split(":", 1)[1].strip())
+        self.results_workspace.append_log(message)
 
     @Slot(object)
     def _on_loco_finished(self, result) -> None:
-        self.run_progress.setRange(0, 1)
-        self.run_progress.setValue(1)
-        self.run_status_label.setText(f"Completed in {result.elapsed_seconds:.1f} s")
-        self.run_output_dir.setText(result.results_dir)
         self._append_run_log("Saved outputs:\n" + "\n".join(result.output_files))
+        self.results_workspace.complete_run(result)
+        self._project_explorer.set_result(self.results_workspace.loader)
+        self._project_explorer.update_project(self.project)
         self._last_loco_result = result
         self.compare_orms_action.setEnabled(self._can_compare_orms())
         QMessageBox.information(self, "LOCO complete", f"LOCO completed successfully.\n\nResults: {result.results_dir}")
 
+    @Slot(str)
+    def _navigate_from_explorer(self, target: str) -> None:
+        if target in {"Machine", "Measurements", "Fit"}:
+            index = next((i for i in range(self._workspace.count()) if self._workspace.tabText(i) == target), -1)
+            if index >= 0:
+                self._workspace.setCurrentIndex(index)
+            return
+        if not target.startswith("Results:"):
+            return
+        result_page = next((i for i in range(self._workspace.count()) if self._workspace.tabText(i) == "Results"), -1)
+        if result_page >= 0:
+            self._workspace.setCurrentIndex(result_page)
+        label = target.split(":", 1)[1]
+        index = next((i for i in range(self.results_workspace.tabs.count()) if self.results_workspace.tabs.tabText(i) == label), -1)
+        if index >= 0 and self.results_workspace.tabs.isTabVisible(index):
+            self.results_workspace.tabs.setCurrentIndex(index)
+
     @Slot(object)
     def _on_loco_failed(self, error: LocoRunError) -> None:
-        self.run_progress.setRange(0, 1)
-        self.run_progress.setValue(0)
-        self.run_status_label.setText("Failed")
+        self.results_workspace.fail_run()
         self._append_run_log(error.traceback)
         QMessageBox.critical(self, "LOCO failed", f"The backend reported an error:\n\n{error.message}")
 

@@ -1,4 +1,4 @@
-# User-facing configuration shared by the two PETRA III measured-data examples.
+# Default user-facing configuration shared by the PETRA III measured-data examples.
 lattice:
   file: data/p3_low_beta.mat
 
@@ -11,6 +11,7 @@ data:
   vertical_corrector_names: data/VCM_names.txt
   bpm_names: data/BPM_names.txt
   quadrupole_indices: data/quad_ind.npy
+  quadrupole_mode: individual
   skew_indices: data/skew_ind.npy
 
 matlab_reference:
@@ -23,6 +24,7 @@ bad_bpm_positions: [24, 104, 108, 111, 123, 138, 144, 153, 161, 162, 243]
 
 rf:
   frequency_hz: 499664399.4230182
+  harmonic_number: 3840
   step_hz: -3000.0
 
 loco:
@@ -39,13 +41,24 @@ loco:
   sigma_outlier: 10.0
   apply_normalization: true
   normalization_mode: component
+  remove_coupling: true
+  skew_individuals: true
+  tilt_individuals: true
+  skew_attribute: PolynomB
+  calculate_delta_chi2: false
   include_dispersion: false
   horizontal_dispersion_weight: 1.0
   vertical_dispersion_weight: 1.0
   standard_fit_list: [quads, hbpm_gain, vbpm_gain, hcor_cal, vcor_cal, HCMEnergyShift]
   coupling_fit_list: [quads, skew_quads, quads_tilt, hbpm_gain, vbpm_gain, hcor_cal, vcor_cal, HCMEnergyShift, VCMEnergyShift, hbpm_coupling, vbpm_coupling, hcor_coupling, vcor_coupling]
+  constrained_fit_list: [quads, skew_quads, quads_tilt, hbpm_gain, vbpm_gain, hcor_cal, vcor_cal, HCMEnergyShift, hbpm_coupling, vbpm_coupling, hcor_coupling, vcor_coupling]
+
+constraints:
+  enable: false
 
 output:
+  run_name: default_measurement
   standard: output/measured_orm
   coupling: output/measured_coupling
+  constrained: output/constrained_case
   matlab_comparison: output/matlab_comparison

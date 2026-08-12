@@ -11,7 +11,7 @@ from typing import Any
 from pyLOCO.config import DEFAULT_INIT_POLICY
 
 PROJECT_FILE_SUFFIX = ".pyloco.json"
-REQUIRED_MEASUREMENTS = ("orm", "dispersion", "bpm_noise")
+REQUIRED_MEASUREMENTS = ("orm",)
 
 
 @dataclass(slots=True)
@@ -167,7 +167,10 @@ class ConstraintConfigState:
     skew_mask: str = ""
 
     def to_constraint_config_kwargs(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        for key in ("quad_weights", "skew_weights", "quad_mask", "skew_mask"):
+            data[key] = _literal_or_none(data[key])
+        return data
 
 
 
@@ -386,6 +389,8 @@ class LocoConfiguration:
     fixed_parameters: FixedParameterConfig = field(default_factory=FixedParameterConfig)
     mcf_source: str = "automatic"
     mcf_user_value: str = ""
+    output_directory: str = ""
+    bad_bpm_positions: list[int] = field(default_factory=list)
 
     def to_backend_mapping(self) -> dict[str, Any]:
         """Return a serializable mapping of backend-compatible constructor data."""
@@ -403,6 +408,8 @@ class LocoConfiguration:
             "ConstraintConfig": self.constraints.to_constraint_config_kwargs(),
             "FixedParameters": self.fixed_parameters.to_fixed_parameters_kwargs(),
             "MomentumCompaction": self.to_mcf_kwargs(),
+            "Output": {"directory": self.output_directory},
+            "BadBPMPositions": list(self.bad_bpm_positions),
         }
 
     def to_mcf_kwargs(self) -> dict[str, Any]:
@@ -458,6 +465,8 @@ class LocoConfiguration:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "LocoConfiguration":
+        if any(key in data for key in ("loco", "measurement", "rf", "elements", "data")):
+            data = _example_config_to_gui(data)
         response_matrix = dict(data.get("response_matrix", {}))
         for key, label in (("dkick_h", "horizontal response-matrix kick step"), ("dkick_v", "vertical response-matrix kick step")):
             if key in response_matrix:
@@ -490,6 +499,8 @@ class LocoConfiguration:
             fixed_parameters=FixedParameterConfig(**data.get("fixed_parameters", {})),
             mcf_source=data.get("mcf_source", "automatic"),
             mcf_user_value=data.get("mcf_user_value", ""),
+            output_directory=data.get("output_directory", ""),
+            bad_bpm_positions=[int(value) for value in data.get("bad_bpm_positions", [])],
         )
 
 
@@ -518,9 +529,22 @@ class ProjectMetadata:
             messages.append("Project name is required.")
         if not self.lattice.path:
             messages.append("A lattice/model file is required.")
+        elif not Path(self.lattice.path).expanduser().exists():
+            messages.append(f"Lattice/model file does not exist: {self.lattice.path}")
         for role in REQUIRED_MEASUREMENTS:
             if role not in self.measurements:
                 messages.append(f"{role.replace('_', ' ').title()} data is required.")
+        for role, dataset in self.measurements.items():
+            if not Path(dataset.path).expanduser().exists():
+                messages.append(f"{role.replace('_', ' ').title()} file does not exist: {dataset.path}")
+        include_dispersion = (
+            self.loco_config.response_matrix.includeDispersion
+            or self.loco_config.rejection.includeDispersion
+        )
+        if include_dispersion and "dispersion" not in self.measurements:
+            messages.append("Dispersion data is required when dispersion fitting is enabled.")
+        if not self.loco_config.parameters.fit_list():
+            messages.append("At least one fitted parameter must be selected.")
         return messages
 
     @property
@@ -574,3 +598,180 @@ class ProjectMetadata:
         self.recent_projects = [p for p in self.recent_projects if p != normalized]
         self.recent_projects.insert(0, normalized)
         del self.recent_projects[5:]
+
+
+def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
+    """Translate the maintained example YAML vocabulary to GUI state.
+
+    The example files remain the source format; this adapter only maps their
+    public settings onto the same backend-facing GUI configuration objects.
+    """
+
+    loco = data.get("loco") or {}
+    measurement = data.get("measurement") or {}
+    rf = data.get("rf") or {}
+    fit_names = loco.get("fit_list") or loco.get("standard_fit_list") or ["quads"]
+    fit_names = set(fit_names)
+    kick = measurement.get("corrector_kick_rad", 1e-5)
+    output = data.get("output") or {}
+    output_directory = output.get("directory") or output.get("standard") or ""
+    parameter_names = {
+        name: name in fit_names
+        for name in (
+            "quads", "skew_quads", "quads_tilt", "hbpm_gain", "vbpm_gain",
+            "hbpm_coupling", "vbpm_coupling", "hcor_cal", "vcor_cal",
+            "hcor_coupling", "vcor_coupling", "HCMEnergyShift",
+            "VCMEnergyShift", "delta_rf",
+        )
+    }
+    parameters = parameter_names | {
+        "cmstep": {
+            "mode": "file" if (data.get("data") or {}).get("corrector_steps") else "uniform",
+            "horizontal": kick,
+            "vertical": kick,
+            "file": (data.get("data") or {}).get("corrector_steps", ""),
+        },
+        "rfStep": rf.get("step_hz", -3000.0),
+    }
+    return {
+        "response_matrix": {
+            "calculator": measurement.get("response_matrix_calculator", "Linear"),
+            "dkick_h": kick,
+            "dkick_v": kick,
+            "rfStep": rf.get("step_hz", -3000.0),
+            "includeDispersion": bool(loco.get("include_dispersion", False)),
+        },
+        "solver": {key: loco[key] for key in ("nIter", "nLMIter", "Starting_Lambda", "max_lm_lambda", "scaled") if key in loco},
+        "svd": {
+            **{key: loco[key] for key in ("svd_selection_method", "svd_threshold", "show_svd_plot") if key in loco},
+            **({"cut_": loco["cut"]} if loco.get("cut") is not None else {}),
+        },
+        "rejection": {
+            "outlier_rejection": loco.get("outlier_rejection", False),
+            "sigma_outlier": loco.get("sigma_outlier", 10.0),
+            "apply_normalization": loco.get("apply_normalization", False),
+            "normalization_mode": loco.get("normalization_mode", "component"),
+            "includeDispersion": bool(loco.get("include_dispersion", False)),
+            "hor_dispersion_weight": loco.get("horizontal_dispersion_weight", 1.0),
+            "ver_dispersion_weight": loco.get("vertical_dispersion_weight", 1.0),
+            "remove_coupling_": loco.get("remove_coupling", True),
+        },
+        "parameters": parameters,
+        "fixed_parameters": {
+            "Frequency": str(rf.get("frequency_hz", 499664399.4230182)),
+            "rfstep": rf.get("step_hz", -3000.0),
+        },
+        "output_directory": output_directory,
+        "bad_bpm_positions": data.get("bad_bpm_positions", []),
+    }
+
+
+def load_example_project_data(path: str | Path) -> tuple[LocoConfiguration, dict[str, str], str]:
+    """Load configuration plus lattice/measurement paths from either YAML schema."""
+
+    source = Path(path).expanduser().resolve()
+    if source.suffix.lower() not in {".yaml", ".yml"}:
+        return LocoConfiguration.load(source), {}, ""
+    if importlib.util.find_spec("yaml") is None:
+        raise RuntimeError("PyYAML is required to import YAML configuration files.")
+    import yaml
+
+    raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    cfg = LocoConfiguration.from_dict(raw)
+    base = source.parent
+    data = raw.get("data") or {}
+    measurements = {
+        role: str((base / value).resolve())
+        for role, value in data.items()
+        if role in {"orm", "dispersion", "bpm_noise", "bad_bpms"} and value
+    }
+    lattice_value = (raw.get("lattice") or {}).get("file", "")
+    lattice = str((base / lattice_value).resolve()) if lattice_value else ""
+    cmstep = cfg.parameters.cmstep
+    if cmstep.mode == "file" and cmstep.file:
+        cmstep.file = str((base / cmstep.file).resolve())
+    if cfg.output_directory:
+        cfg.output_directory = str((base / cfg.output_directory).resolve())
+    return cfg, measurements, lattice
+
+
+def resolve_example_machine_elements(path: str | Path, lattice) -> MachineElementsConfig:
+    """Resolve optional example name/index files against an already-loaded lattice."""
+
+    source = Path(path).expanduser().resolve()
+    if source.suffix.lower() not in {".yaml", ".yml"} or importlib.util.find_spec("yaml") is None:
+        return MachineElementsConfig()
+    import numpy as np
+    import yaml
+
+    raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
+    data = raw.get("data") or {}
+    base = source.parent
+
+    def common_name_indices(key: str) -> list[int]:
+        value = data.get(key)
+        if not value:
+            return []
+        names_path = (base / value).resolve()
+        if not names_path.exists():
+            raise ValueError(f"Configured name file does not exist: {names_path}")
+        return resolve_element_name_file(lattice, names_path)
+
+    def index_file(key: str) -> list[int]:
+        value = data.get(key)
+        if not value:
+            return []
+        index_path = (base / value).resolve()
+        if not index_path.exists():
+            raise ValueError(f"Configured index file does not exist: {index_path}")
+        values = np.asarray(np.load(index_path, allow_pickle=False))
+        if values.ndim != 1 or not np.issubdtype(values.dtype, np.integer):
+            raise ValueError(f"Index file must contain a one-dimensional integer array: {index_path}")
+        if np.any(values < 0) or np.any(values >= len(lattice)):
+            raise ValueError(f"Index file contains ordinals outside lattice range 0..{len(lattice)-1}: {index_path}")
+        return values.astype(int).tolist()
+
+    return MachineElementsConfig(
+        bpm_ords=common_name_indices("bpm_names"),
+        horizontal_corrector_ords=common_name_indices("horizontal_corrector_names"),
+        vertical_corrector_ords=common_name_indices("vertical_corrector_names"),
+        normal_quadrupole_ords=index_file("quadrupole_indices"),
+        skew_quadrupole_ords=index_file("skew_indices"),
+    )
+
+
+def resolve_element_name_file(lattice, path: str | Path, attribute: str = "auto") -> list[int]:
+    """Resolve a text file of element names to lattice ordinals.
+
+    Selection follows lattice order, matching the ORM ordering convention used
+    by the maintained measured-data examples. ``auto`` checks common AT naming
+    attributes without imposing one machine-specific convention.
+    """
+
+    source = Path(path).expanduser()
+    if not source.exists():
+        raise ValueError(f"Element-name file does not exist: {source}")
+    ordered_names = [line.strip() for line in source.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if not ordered_names:
+        raise ValueError(f"Element-name file is empty: {source}")
+    if len(set(ordered_names)) != len(ordered_names):
+        raise ValueError(f"Element-name file contains duplicate names: {source}")
+    names = set(ordered_names)
+    allowed = ("CommonName", "FamName", "Name", "name")
+    if attribute != "auto" and attribute not in allowed:
+        raise ValueError(f"Unsupported element-name attribute: {attribute}")
+    attributes = allowed if attribute == "auto" else (attribute,)
+
+    def matched_name(element) -> str:
+        return next(
+            (str(getattr(element, key)) for key in attributes if str(getattr(element, key, "")) in names),
+            "",
+        )
+
+    indices = [i for i, element in enumerate(lattice) if matched_name(element)]
+    found = {matched_name(lattice[i]) for i in indices}
+    missing = names - found
+    if missing:
+        sample = ", ".join(sorted(missing)[:5])
+        raise ValueError(f"{len(missing)} element name(s) were not found in the lattice: {sample}")
+    return indices
