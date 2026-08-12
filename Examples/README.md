@@ -28,14 +28,7 @@ Toolbox Primer:
 - `from_fodo_to_pyloco.ipynb` introduces the complete basic workflow: create an
   ORM, assign one quadrupole error, fit it with pyLOCO, apply the correction,
   and verify the ORM and optics.
-- `FODO_Jacobian/01_fodo_jacobian_methods.ipynb` asks the student to calculate
-  a numerical Jacobian and compare it with pyLOCO and the ESRF analytical
-  formula.
-- `FODO_Jacobian/02_fodo_jacobian_with_errors.ipynb` repeats the Jacobian
-  comparison around a lattice that already contains quadrupole errors.
-- `FODO_Jacobian/03_fodo_iterative_loco_comparison.ipynb` introduces the full
-  iterative LOCO comparison and the requirements for integrating an analytical
-  Jacobian into pyLOCO.
+
 
 Run these notebooks in the listed order. The numbered Jacobian notebooks are
 student exercises: cells marked `STUDENT TASK — YOUR CODE HERE` are
