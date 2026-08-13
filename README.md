@@ -1,7 +1,11 @@
 # pyLOCO
 
-pyLOCO is a Python implementation of Linear Optics from Closed Orbits (LOCO)
-for fitting accelerator models to measured or simulated orbit-response data.
+pyLOCO is a Python implementation of the Linear Optics from Closed Orbits (LOCO)
+for fitting accelerator models to measured or error-simulated data.
+
+LOCO reference: J. Safranek, “Experimental determination of storage ring
+optics using orbit response measurements,” *NIM A* 388 (1997), 27–36,
+[doi:10.1016/S0168-9002(97)00309-4](https://doi.org/10.1016/S0168-9002(97)00309-4).
 
 ## Install
 
@@ -57,8 +61,5 @@ python3 -m pytest
 - [PETRA III GUI files](Examples/PETRAIII/GUI/README.md)
 - [Testing guide](tests/README.md)
 
-LOCO reference: J. Safranek, “Experimental determination of storage ring
-optics using orbit response measurements,” *NIM A* 388 (1997), 27–36,
-[doi:10.1016/S0168-9002(97)00309-4](https://doi.org/10.1016/S0168-9002(97)00309-4).
 
-Questions: <elaf.musa@desy.de>
+Questions ot suggestions: <elaf.musa@desy.de>
