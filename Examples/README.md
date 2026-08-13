@@ -90,8 +90,9 @@ Then continue with the Jacobian exercises in this order:
 2. `FODO_Jacobian/02_fodo_jacobian_with_errors.ipynb`
 3. `FODO_Jacobian/03_fodo_iterative_loco_comparison.ipynb`
 
-Cells marked `STUDENT TASK — YOUR CODE HERE` are intentionally incomplete.
-Keep the two `analytic_orm_*.py` support files in the `FODO_Jacobian` directory.
+Cells marked `Open analysis — implementation required` are intentionally
+incomplete so alternative methods can be evaluated. Keep the two
+`analytic_orm_*.py` support files in the `FODO_Jacobian` directory.
 
 ## Installation
 
