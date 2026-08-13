@@ -24,15 +24,15 @@ python3 -m pip install -e ".[gui]"
 pyloco-gui
 ```
 
-## Run an example
+## Recommended examples
 
-Start with the simple single-quadrupole example:
+If you are new to pyLOCO, start with the simple single-quadrupole example:
 
 ```bash
 python3 Examples/reconstruct_quadrupoles_errors_examples/reconstruct_one_quad_errors/example_one_quad_error.py
 ```
 
-For a real PETRA III measurement including transverse coupling:
+For a real measured-machine application, use the PETRA III coupling example:
 
 ```bash
 python3 Examples/PETRAIII/example_measured_coupling.py
@@ -62,4 +62,4 @@ python3 -m pytest
 - [Testing guide](tests/README.md)
 
 
-Questions ot suggestions: <elaf.musa@desy.de>
+Questions or suggestions: <elaf.musa@desy.de>
