@@ -32,16 +32,16 @@ Start with the simple single-quadrupole example:
 python3 Examples/reconstruct_quadrupoles_errors_examples/reconstruct_one_quad_errors/example_one_quad_error.py
 ```
 
-For the PETRA III measurement from 12 August, before the quadrupole change:
+For a real PETRA III measurement including transverse coupling:
 
 ```bash
-python3 Examples/PETRAIII/measurments/example_measured_machine.py
+python3 Examples/PETRAIII/example_measured_coupling.py
 ```
 
 Its settings are in:
 
 ```text
-Examples/PETRAIII/measurments/configs/measurement_12Aug_before_change_quad.yaml
+Examples/PETRAIII/pyloco_config_coupling.yaml
 ```
 
 ## Tests
