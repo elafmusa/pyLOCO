@@ -1,0 +1,128 @@
+# Configuration migrated from No_err_remove_pkh47_test_new.ipynb.
+# The notebook was read but not executed. Paths are relative to this YAML file.
+machine:
+  name: PETRA III — 12 Aug before quadrupole change, PKH_NOR_47 removed
+
+lattice:
+  # Byte-identical to p3_v24.mat used by the notebook.
+  file: ../../data/p3_v24_from_matlab.mat
+  disable_6d: true
+
+data:
+  orm:
+    file: ../../data/measurements_12Aug/before_change_quad/ORM_ORM_100urad_short_2026-08-12_15-31-30.h5
+    dataset: response_matrix
+    transpose: false
+    scale: 1.0
+    row_order: [horizontal, vertical]
+    column_order: [horizontal, vertical]
+    corrector_steps:
+      horizontal: 1.0e-4
+      vertical: 1.0e-4
+    # Matches the notebook cell that deletes PKH_NOR_47 and its ORM column.
+    #remove_correctors:
+    #  - plane: horizontal
+    #    name: PKH_NOR_47
+    #    name_attribute: CommonName
+
+  dispersion:
+    enable: true
+    file: ../../data/measurements_12Aug/before_change_quad/Dispersion_18Aug.h5
+    horizontal_dataset: mean_orbit_x
+    vertical_dataset: mean_orbit_y
+    horizontal_scale: 1.0
+    vertical_scale: 1.0
+
+  bpm_noise:
+    enable: true
+    file: ../../data/measurements_12Aug/before_change_quad/BPM_noise_2026-08-12_15-22-19.h5
+    horizontal_dataset: std_orbit_x
+    vertical_dataset: std_orbit_y
+
+elements:
+  bpms:
+    names_file: ../../data/BPM_names.txt
+    name_attribute: CommonName
+    allow_repeated_names: true
+    order: lattice
+  horizontal_correctors:
+    names_file: ../../data/HCM_names_40.txt
+    name_attribute: CommonName
+    allow_repeated_names: true
+    order: lattice
+  vertical_correctors:
+    names_file: ../../data/VCM_names_40.txt
+    name_attribute: CommonName
+    allow_repeated_names: true
+    order: lattice
+  quadrupoles:
+    indices_file: ../../data/quad_ind_2024.npy
+    mode: individual
+  skew_quadrupoles:
+    indices_file: ../../data/skew_ind_2026.npy
+  cavities:
+    element_type: RFCavity
+
+# Positions in BPM_names.txt, matching the notebook exactly.
+bad_bpm_positions: [71, 92, 101, 104, 108, 123, 138, 153, 161, 243]
+
+expected_counts:
+  bpms_before_removal: 246
+  bpms_after_removal: 236
+  horizontal_correctors: 40
+  vertical_correctors: 40
+  quadrupole_families: 398
+  physical_quadrupoles: 398
+  skew_quadrupoles: 16
+
+rf:
+  frequency_hz: 499664399.4230182
+  harmonic_number: 3840
+  step_hz: -3000.0
+
+loco:
+  algorithm: lm
+  nIter: 5
+  nLMIter: 10
+  Starting_Lambda: 1.0e-3
+  max_lm_lambda: 15.0
+  scaled: true
+  svd_selection_method: user_input
+  svd_threshold: 1.0e-7
+  cut: 1900
+  show_svd_plot: true
+  outlier_rejection: true
+  sigma_outlier: 10.0
+  apply_normalization: true
+  normalization_mode: component
+  include_dispersion: true
+  horizontal_dispersion_weight: 5.0
+  vertical_dispersion_weight: 5.0
+  remove_coupling: false
+  skew_individuals: true
+  tilt_individuals: true
+  skew_attribute: PolynomB
+  plot_fit_parameters: false
+  auto_correct_delta: true
+  fixedpathlength: false
+
+fit_parameters:
+  quadrupoles: {enable: true}
+  skew_quadrupoles: {enable: true}
+  quadrupole_tilt: {enable: true}
+  bpm_gains: {enable: true}
+  bpm_coupling: {enable: true}
+  corrector_calibration: {enable: true}
+  corrector_coupling: {enable: true}
+  hcm_energy_shift: {enable: false}
+  vcm_energy_shift: {enable: false}
+  rf_frequency_shift: {enable: false}
+
+constraints:
+  enable: false
+
+resume:
+  enabled: false
+
+output:
+  directory: ../output/measurement_12Aug_before_change_quad

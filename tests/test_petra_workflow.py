@@ -1,17 +1,13 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 import h5py
 import numpy as np
 import pytest
 
 
-PETRA = Path(__file__).resolve().parents[1] / "Examples" / "PETRAIII"
-sys.path.insert(0, str(PETRA))
-
-from petra_diagnostics import extract_corrections, safe_relative_percent  # noqa: E402
-from petra_workflow import (  # noqa: E402
+from pyLOCO.measured_machine.diagnostics import extract_corrections, safe_relative_percent
+from pyLOCO.measured_machine.workflow import (
     _load_family_groups,
     _require_datasets,
     build_constraint_config,

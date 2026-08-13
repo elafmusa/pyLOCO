@@ -1,0 +1,81 @@
+machine:
+  name: ESRF-EBS cached pySC measurement
+
+lattice:
+  file: ../../EBS_pySC/com_simu_loco_example/betamodel.mat
+  disable_6d: true
+
+data:
+  orm:
+    file: ../../EBS_pySC/com_simu_loco_example/data/measured_orm_loco.h5
+    dataset: response_matrix
+    transpose: false
+    scale: 1.0
+    corrector_steps: 1.0e-4
+  dispersion:
+    enable: true
+    file: ../../EBS_pySC/com_simu_loco_example/data/measured_dispersion_loco.h5
+    horizontal_dataset: measured_eta_x
+    vertical_dataset: measured_eta_y
+  bpm_noise:
+    enable: true
+    file: ../../EBS_pySC/com_simu_loco_example/data/measured_BPM_noise_loco.h5
+    horizontal_dataset: Noise_BPMx
+    vertical_dataset: Noise_BPMy
+
+elements:
+  bpms: {element_type: Monitor}
+  horizontal_correctors:
+    pattern: "S[HFDIJ]*"
+    name_attribute: FamName
+  vertical_correctors:
+    pattern: "S[HFDIJ]*"
+    name_attribute: FamName
+  quadrupoles:
+    regex: "^(QD3[AE]|QF4[ABDE]|QD5[BD])"
+    name_attribute: FamName
+    mode: individual
+  skew_quadrupoles: {indices: [], optional: true}
+  cavities: {element_type: RFCavity}
+
+bad_bpm_positions: []
+
+rf:
+  frequency_hz: 352372169.3993786
+  step_hz: 200.0
+
+loco:
+  algorithm: lm
+  nIter: 1
+  nLMIter: 10
+  Starting_Lambda: 1.0e-3
+  max_lm_lambda: 15.0
+  scaled: true
+  svd_selection_method: threshold
+  svd_threshold: 1.0e-7
+  cut: 500
+  show_svd_plot: false
+  outlier_rejection: true
+  sigma_outlier: 10.0
+  apply_normalization: true
+  normalization_mode: component
+  include_dispersion: false
+  horizontal_dispersion_weight: 1.0
+  vertical_dispersion_weight: 1.0
+  remove_coupling: true
+
+fit_parameters:
+  quadrupoles: {enable: true}
+  skew_quadrupoles: {enable: false}
+  quadrupole_tilt: {enable: false}
+  bpm_gains: {enable: true}
+  bpm_coupling: {enable: false}
+  corrector_calibration: {enable: true}
+  corrector_coupling: {enable: false}
+  hcm_energy_shift: {enable: true}
+  vcm_energy_shift: {enable: false}
+  rf_frequency_shift: {enable: false}
+
+constraints: {enable: false}
+resume: {enabled: false}
+output: {directory: output/ebs}

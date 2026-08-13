@@ -1,0 +1,124 @@
+machine:
+  name: PETRA III
+
+lattice:
+  file: ../../PETRAIII/data/p3_v24_from_matlab_tune.mat
+  disable_6d: true
+
+data:
+  orm:
+    file: ../../PETRAIII/data/measurements_12Aug/measured_orm_loco.h5
+    dataset: response_matrix
+    transpose: false
+    scale: 1.0
+    row_order: [horizontal, vertical]
+    column_order: [horizontal, vertical]
+    corrector_steps: 100e-6 #../../PETRAIII/data/CMstep.npz
+  dispersion:
+    enable: true
+    file: ../../PETRAIII/data/measurements_12Aug/measured_dispersion_loco.h5
+    horizontal_dataset: measured_eta_x
+    vertical_dataset: measured_eta_y
+    horizontal_scale: 1.0
+    vertical_scale: 1.0
+  bpm_noise:
+    enable: true
+    file: ../../PETRAIII/data/measurements_12Aug/measured_BPM_noise_loco.h5
+    horizontal_dataset: Noise_BPMx
+    vertical_dataset: Noise_BPMy
+
+elements:
+  bpms:
+    names_file: ../../PETRAIII/data/BPM_names.txt
+    name_attribute: CommonName
+    allow_repeated_names: true
+    order: lattice
+  horizontal_correctors:
+    names_file: ../../PETRAIII/data/HCM_names.txt
+    name_attribute: CommonName
+    allow_repeated_names: true
+    order: lattice
+  vertical_correctors:
+    names_file: ../../PETRAIII/data/VCM_names.txt
+    name_attribute: CommonName
+    allow_repeated_names: true
+    order: lattice
+  quadrupoles:
+    indices_file: ../../PETRAIII/data/quad_ind_2024.npy
+    mode: family
+    family_groups_file: ../../PETRAIII/data/quad_family_groups_new.npy
+  skew_quadrupoles:
+    indices_file: ../../PETRAIII/data/skew_ind_2026.npy
+    optional: true
+  cavities:
+    element_type: RFCavity
+
+bad_bpm_positions: [24, 104, 108, 111, 123, 138, 144, 153, 161, 162, 243]
+
+# Optional regression checks; generic validation does not depend on them.
+expected_counts:
+  lattice_elements: 3693
+  bpms_before_removal: 249
+  bpms_after_removal: 238
+  horizontal_correctors: 184
+  vertical_correctors: 193
+  quadrupole_families: 193
+  physical_quadrupoles: 398
+  skew_quadrupoles: 16
+
+rf:
+  frequency_hz: 499664399.4230182
+  harmonic_number: 3840
+  step_hz: -3000.0
+
+loco:
+  algorithm: lm
+  nIter: 1
+  nLMIter: 10
+  Starting_Lambda: 1.0e-3
+  max_lm_lambda: 15.0
+  scaled: true
+  svd_selection_method: threshold
+  svd_threshold: 1.0e-7
+  cut: 397
+  show_svd_plot: false
+  outlier_rejection: true
+  sigma_outlier: 10.0
+  apply_normalization: true
+  normalization_mode: component
+  include_dispersion: false
+  horizontal_dispersion_weight: 1.0
+  vertical_dispersion_weight: 1.0
+  remove_coupling: true
+  skew_individuals: true
+  tilt_individuals: true
+  skew_attribute: PolynomB
+
+fit_parameters:
+  quadrupoles: {enable: true}
+  skew_quadrupoles: {enable: false}
+  quadrupole_tilt: {enable: false}
+  bpm_gains: {enable: true}
+  bpm_coupling: {enable: false}
+  corrector_calibration: {enable: true}
+  corrector_coupling: {enable: false}
+  hcm_energy_shift: {enable: true}
+  vcm_energy_shift: {enable: false}
+  rf_frequency_shift: {enable: false}
+
+constraints:
+  enable: false
+  quadrupoles:
+    relative_sigma: 1.0e-4
+    minimum_sigma: 1.0e-12
+    default_weight: 0.0
+    selected_weight: 1.0
+    selected_families: []
+  skew_quadrupoles:
+    sigma: 1.0e-4
+    default_weight: 0.0
+
+resume: {enabled: false}
+
+output:
+  directory: output/petra_iii

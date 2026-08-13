@@ -1,4 +1,4 @@
-# Default user-facing configuration shared by the PETRA III measured-data examples.
+# Coupling profile for the PETRA III coupling script and notebook.
 lattice:
   file: data/p3_low_beta.mat
 
@@ -42,7 +42,7 @@ loco:
   sigma_outlier: 10.0
   apply_normalization: true
   normalization_mode: component
-  remove_coupling: true
+  remove_coupling: false
   skew_individuals: true
   tilt_individuals: true
   skew_attribute: PolynomB
@@ -55,14 +55,14 @@ loco:
 # only place where fitted blocks are enabled or disabled.
 fit_parameters:
   quadrupoles: {enable: true}
-  skew_quadrupoles: {enable: false}
-  quadrupole_tilt: {enable: false}
+  skew_quadrupoles: {enable: true}
+  quadrupole_tilt: {enable: true}
   bpm_gains: {enable: true}
-  bpm_coupling: {enable: false}
+  bpm_coupling: {enable: true}
   corrector_calibration: {enable: true}
-  corrector_coupling: {enable: false}
+  corrector_coupling: {enable: true}
   hcm_energy_shift: {enable: true}
-  vcm_energy_shift: {enable: false}
+  vcm_energy_shift: {enable: true}
   rf_frequency_shift: {enable: false}
 
 constraints:

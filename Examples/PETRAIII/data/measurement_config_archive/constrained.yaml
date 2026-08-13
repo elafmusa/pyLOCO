@@ -1,19 +1,19 @@
 # Constrained PETRA III machine-study example. Paths are relative to this file.
 lattice:
-  file: ../data/p3_low_beta.mat
+  file: ../p3_low_beta.mat
 
 data:
-  orm: ../data/measured_orm_loco.h5
-  dispersion: ../data/measured_dispersion_loco.h5
-  bpm_noise: ../data/measured_BPM_noise_loco.h5
-  corrector_steps: ../data/CMstep.npz
-  horizontal_corrector_names: ../data/HCM_names.txt
-  vertical_corrector_names: ../data/VCM_names.txt
-  bpm_names: ../data/BPM_names.txt
-  quadrupole_indices: ../data/quad_ind_2024.npy
-  skew_indices: ../data/skew_ind_2026.npy
+  orm: ../measured_orm_loco.h5
+  dispersion: ../measured_dispersion_loco.h5
+  bpm_noise: ../measured_BPM_noise_loco.h5
+  corrector_steps: ../CMstep.npz
+  horizontal_corrector_names: ../HCM_names.txt
+  vertical_corrector_names: ../VCM_names.txt
+  bpm_names: ../BPM_names.txt
+  quadrupole_indices: ../quad_ind_2024.npy
+  skew_indices: ../skew_ind_2026.npy
   quadrupole_mode: family
-  quadrupole_family_groups: ../data/quad_family_groups_new.npy
+  quadrupole_family_groups: ../quad_family_groups_new.npy
 
 bad_bpm_positions: [24, 104, 108, 111, 123, 138, 144, 153, 161, 162, 243]
 
@@ -45,7 +45,16 @@ loco:
   include_dispersion: true
   horizontal_dispersion_weight: 5.0
   vertical_dispersion_weight: 1.0
-  constrained_fit_list: [quads, skew_quads, quads_tilt, hbpm_gain, vbpm_gain, hcor_cal, vcor_cal, HCMEnergyShift, hbpm_coupling, vbpm_coupling, hcor_coupling, vcor_coupling]
+fit_parameters:
+  quadrupoles: {enable: true}
+  skew_quadrupoles: {enable: true}
+  quadrupole_tilt: {enable: true}
+  bpm_gains: {enable: true}
+  bpm_coupling: {enable: true}
+  corrector_calibration: {enable: true}
+  corrector_coupling: {enable: true}
+  corrector_energy_shift: {enable: true}
+  rf_frequency_shift: {enable: false}
 
 constraints:
   enable: true
@@ -68,4 +77,4 @@ constraints:
 output:
   run_name: constrained_case
   # root/run_name receives plots/, correction/, and results/ subdirectories.
-  root: ../output
+  root: ../../output

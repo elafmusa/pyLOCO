@@ -1,4 +1,4 @@
-"""Result extraction, persistence, and diagnostics for PETRA III examples."""
+"""Generic result extraction, persistence, and diagnostics for measured machines."""
 from __future__ import annotations
 
 import csv
@@ -151,8 +151,17 @@ def calculate_metrics(data: dict[str, Any], initial_orm: np.ndarray, fit: dict[s
         fitted = fit["fitted_dispersion"][plane]
         metrics[f"dispersion_{plane}_rms_initial_m"] = rms(initial - measured)
         metrics[f"dispersion_{plane}_rms_fitted_m"] = rms(fitted - measured)
-    optics = _optics_data(data["ring"], fit["ring"])
-    metrics.update(optics["metrics"])
+    try:
+        optics = _optics_data(data["ring"], fit["ring"])
+    except Exception as exc:
+        # A LOCO solution can be saved and inspected even when its fitted ring
+        # is outside the stable region required by Accelerator Toolbox optics.
+        fit["optics_warning"] = f"Optics diagnostics skipped: {exc}"
+        metrics["optics_available"] = False
+        metrics["optics_warning"] = fit["optics_warning"]
+    else:
+        metrics["optics_available"] = True
+        metrics.update(optics["metrics"])
     for prefix, values in (
         ("family_delta_k", corrections["delta_q_families"]),
         ("expanded_delta_k", corrections["delta_q_expanded"]),
@@ -211,7 +220,7 @@ def _save_corrections(data: dict[str, Any], fit: dict[str, Any], c: dict[str, np
         # Keep the historical machine-application schema intact.
         "normal_quads": {"delta": normal_delta, "length": normal_length},
         "skew_quads": {"delta": skew_delta, "length": skew_length},
-        # Exactly one value per fitted family (193 for case C).
+        # Exactly one value per fitted family for any configured machine.
         "normal_quads_family": {
             "family_index": c["family_indices"].tolist(),
             "delta": c["delta_q_families"].tolist(),
@@ -267,7 +276,14 @@ def _plot_orm_blocks(measured: np.ndarray, initial: np.ndarray, fitted: np.ndarr
 
 
 def _plot_optics(data: dict[str, Any], fit: dict[str, Any], plots: Path) -> None:
-    optics = _optics_data(data["ring"], fit["ring"]); s = optics["s"]
+    if fit.get("optics_warning"):
+        return
+    try:
+        optics = _optics_data(data["ring"], fit["ring"])
+    except Exception as exc:
+        fit["optics_warning"] = f"Optics diagnostics skipped: {exc}"
+        return
+    s = optics["s"]
     fig, axes = plt.subplots(2, 1, figsize=(11, 6), sharex=True)
     for plane, ax in enumerate(axes):
         values = 100 * (optics["beta_fitted"][:, plane] - optics["beta_initial"][:, plane]) / optics["beta_initial"][:, plane]
@@ -381,7 +397,7 @@ def _chromaticity(ring: Any) -> list[float] | None:
 def _run_summary(data: dict[str, Any], fit: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     cfg = data["cfg"]
     runtime = fit.get("runtime_seconds")
-    return {"run_name": cfg["output"].get("run_name", fit["output"].name if "output" in fit else None), "configuration_file": str(data["config_path"]), "lattice_file": cfg["lattice"]["file"], "resumed_from": fit.get("resumed_from"), "measurement_files": {key: cfg["data"].get(key) for key in ("orm", "dispersion", "bpm_noise", "corrector_steps")}, "retained_bpms_per_plane": len(data["bpms"]), "horizontal_correctors": len(data["correctors"][0]), "vertical_correctors": len(data["correctors"][1]), "quadrupole_mode": "individual" if data["quad_individuals"] else "family", "quadrupole_fit_parameters": len(data["quad_indices"]), "skew_quadrupoles": len(data["skew_indices"]), "fit_list": fit["fit_list"], "constraints_enabled": fit["constraint_cfg"] is not None, "constraint_settings": cfg.get("constraints", {}), "dispersion_enabled": cfg["loco"]["include_dispersion"], "horizontal_dispersion_weight": cfg["loco"]["horizontal_dispersion_weight"], "vertical_dispersion_weight": cfg["loco"]["vertical_dispersion_weight"], "runtime_seconds": runtime, "runtime_readable": _format_duration(runtime) if runtime is not None else None, "metrics": metrics, "initial_chi2": fit.get("initial_chi2"), "chi2_history": fit["chi2"], "final_chi2": fit["chi2"][-1] if fit["chi2"] else None, "correction_sign_convention": {"delta_K_apply": "K_model_initial - K_model_fitted", "machine_application": "K_machine_new = K_machine_current + delta_K_apply", "relative_percent": "100 * delta_K_apply / K_model_initial"}, "lattice_save_warning": fit.get("lattice_save_warning")}
+    return {"machine": cfg.get("machine", {}).get("name"), "run_name": cfg["output"].get("run_name", fit["output"].name if "output" in fit else None), "configuration_file": str(data["config_path"]), "lattice_file": cfg["lattice"]["file"], "resumed_from": fit.get("resumed_from"), "measurement_files": {key: cfg["data"].get(key) for key in ("orm", "dispersion", "bpm_noise", "corrector_steps")}, "retained_bpms_per_plane": len(data["bpms"]), "horizontal_correctors": len(data["correctors"][0]), "vertical_correctors": len(data["correctors"][1]), "quadrupole_mode": "individual" if data["quad_individuals"] else "family", "quadrupole_fit_parameters": len(data["quad_indices"]), "skew_quadrupoles": len(data["skew_indices"]), "fit_list": fit["fit_list"], "constraints_enabled": fit["constraint_cfg"] is not None, "constraint_settings": cfg.get("constraints", {}), "dispersion_enabled": cfg["loco"]["include_dispersion"], "horizontal_dispersion_weight": cfg["loco"]["horizontal_dispersion_weight"], "vertical_dispersion_weight": cfg["loco"]["vertical_dispersion_weight"], "runtime_seconds": runtime, "runtime_readable": _format_duration(runtime) if runtime is not None else None, "metrics": metrics, "initial_chi2": fit.get("initial_chi2"), "chi2_history": fit["chi2"], "final_chi2": fit["chi2"][-1] if fit["chi2"] else None, "correction_sign_convention": {"delta_K_apply": "K_model_initial - K_model_fitted", "machine_application": "K_machine_new = K_machine_current + delta_K_apply", "relative_percent": "100 * delta_K_apply / K_model_initial"}, "lattice_save_warning": fit.get("lattice_save_warning"), "optics_warning": fit.get("optics_warning")}
 
 
 def _format_duration(seconds: float) -> str:

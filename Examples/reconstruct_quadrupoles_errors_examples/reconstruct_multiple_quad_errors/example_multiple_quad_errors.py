@@ -23,6 +23,7 @@ from pyLOCO.config import FitInitConfig, RMConfig
 from pyLOCO.analysis import plot_matrices
 from pyLOCO.pyloco import pyloco
 from pyLOCO.response_matrix import response_matrix
+from pyLOCO.user_config import build_constraints, selected_fit_parameters
 
 
 HERE = Path(__file__).resolve().parent
@@ -298,15 +299,16 @@ def main(config_path: Path) -> None:
     frequency_hz = float(cfg["rf"]["frequency_hz"])
     rf_step_hz = float(cfg["rf"]["step_hz"])
     loco_cfg = cfg["loco"]
+    fit_list = selected_fit_parameters(cfg)
     fit_cfg = FitInitConfig(
-        fit_list=["quads"], CMstep=cm_step, individuals=True,
+        fit_list=fit_list, CMstep=cm_step, individuals=True,
         quads_attr="PolynomB", quads_attr_index=1,
     )
     output_dir = (config_path.parent / cfg["output"]["directory"]).resolve()
     temporary_fit_output = TemporaryDirectory(prefix="pyloco_multiple_quads_")
     result = pyloco(
         copy.deepcopy(ideal),
-        algorithm="lm",
+        algorithm=str(loco_cfg.get("algorithm", "lm")),
         nIter=int(loco_cfg["nIter"]),
         used_bpms_ords=bpm_indices,
         used_cor_ords=[corrector_indices, corrector_indices],
@@ -318,31 +320,32 @@ def main(config_path: Path) -> None:
         quads_tilt_ind=quad_indices,
         orm_measured=measured_orm,
         weights=sigma_w,
-        includeDispersion=False,
+        includeDispersion=bool(loco_cfg.get("include_dispersion", False)),
         measured_eta_x=np.zeros(len(bpm_indices)),
         measured_eta_y=np.zeros(len(bpm_indices)),
         CMstep=cm_step,
         rfStep=rf_step_hz,
         Frequency=frequency_hz,
-        fit_list=["quads"],
+        fit_list=fit_list,
         quad_individuals=True,
         remove_coupling_=bool(loco_cfg.get("remove_coupling", True)),
-        outlier_rejection=False,
+        outlier_rejection=bool(loco_cfg.get("outlier_rejection", False)),
         apply_normalization=bool(loco_cfg.get("apply_normalization", False)),
         normalization_mode=str(loco_cfg.get("normalization_mode", "component")),
         svd_selection_method=str(loco_cfg["svd_selection_method"]),
         svd_threshold=float(loco_cfg["svd_threshold"]),
         cut_=loco_cfg.get("cut"),
-        show_svd_plot=False,
+        show_svd_plot=bool(loco_cfg.get("show_svd_plot", False)),
         nLMIter=int(loco_cfg["nLMIter"]),
         Starting_Lambda=float(loco_cfg["Starting_Lambda"]),
         max_lm_lambda=float(loco_cfg["max_lm_lambda"]),
         scaled=bool(loco_cfg.get("scaled", True)),
-        plot_fit_parameters=False,
-        auto_correct_delta=True,
-        fixedpathlength=False,
+        plot_fit_parameters=bool(loco_cfg.get("plot_fit_parameters", False)),
+        auto_correct_delta=bool(loco_cfg.get("auto_correct_delta", True)),
+        fixedpathlength=bool(loco_cfg.get("fixedpathlength", False)),
         fixedmomentum=False,
         fit_cfg=fit_cfg,
+        constraint_cfg=build_constraints(cfg, quad_nominal=[ideal[i].K for i in quad_indices], n_skew=0),
         output_dir=temporary_fit_output.name,
     )
     _, fit_dict, fitted, fitted_orm, _, chi2_history, _, _ = result

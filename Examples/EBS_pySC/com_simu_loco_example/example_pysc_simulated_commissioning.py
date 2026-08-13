@@ -23,6 +23,7 @@ from pyLOCO.analysis import plot_matrices
 from pyLOCO.config import FitInitConfig, RMConfig
 from pyLOCO.pyloco import pyloco
 from pyLOCO.response_matrix import response_matrix
+from pyLOCO.user_config import selected_fit_parameters
 
 
 HERE = Path(__file__).resolve().parent
@@ -146,13 +147,13 @@ def run_fit(ideal, bpm, correctors, quads, cavities, orm, eta_x, eta_y, weights,
     loco = cfg["loco"]
     kick = float(cfg["measurement"]["corrector_kick_rad"])
     cm_step = [[kick] * len(correctors)] * 2
-    fit_list = list(loco["fit_list"])
+    fit_list = selected_fit_parameters(cfg)
     fit_cfg = FitInitConfig(fit_list=fit_list, CMstep=cm_step, individuals=True,
                             quads_attr="PolynomB", quads_attr_index=1)
     temporary = TemporaryDirectory(prefix="pyloco_ebs_pysc_")
     try:
         return pyloco(
-            copy.deepcopy(ideal), algorithm="lm", nIter=int(loco["nIter"]),
+            copy.deepcopy(ideal), algorithm=str(loco.get("algorithm", "lm")), nIter=int(loco["nIter"]),
             used_bpms_ords=bpm, used_cor_ords=[correctors, correctors], quads_ords=quads,
             skew_ords=np.array([], dtype=int), CAVords=cavities,
             nHBPM=len(bpm), nVBPM=len(bpm), nHorCOR=len(correctors), nVerCOR=len(correctors),
@@ -331,7 +332,7 @@ def main(config_path: Path) -> None:
     print("\nEBS pySC + pyLOCO summary\n--------------------------")
     print(f"ORM shape           : {orm.shape}")
     print(f"Configured errors   : {cfg['pysc']['error_configuration']}")
-    print(f"Fitted parameters   : {', '.join(cfg['loco']['fit_list'])}")
+    print(f"Fitted parameters   : {', '.join(selected_fit_parameters(cfg))}")
     print(f"ORM RMS before      : {1e6*before:.6f} µm")
     print(f"ORM RMS after       : {1e6*after:.6f} µm")
     print(f"Improvement         : {before/after:.3f}x")

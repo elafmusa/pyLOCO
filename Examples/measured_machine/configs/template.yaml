@@ -1,0 +1,55 @@
+machine: {name: My accelerator}
+lattice: {file: path/to/lattice.mat, disable_6d: true}
+data:
+  orm:
+    file: path/to/orm.h5
+    dataset: response_matrix
+    transpose: false
+    scale: 1.0
+    row_order: [horizontal, vertical]
+    column_order: [horizontal, vertical]
+    corrector_steps: {horizontal: 1.0e-5, vertical: 1.0e-5}
+  dispersion: {enable: false}
+  bpm_noise: {enable: false, default_sigma: 1.0}
+elements:
+  bpms: {names_file: path/to/bpms.txt, name_attribute: CommonName}
+  horizontal_correctors: {names_file: path/to/hcors.txt, name_attribute: CommonName}
+  vertical_correctors: {names_file: path/to/vcors.txt, name_attribute: CommonName}
+  quadrupoles: {indices_file: path/to/quads.npy, mode: individual}
+  skew_quadrupoles: {indices: [], optional: true}
+  cavities: {element_type: RFCavity, optional: true}
+bad_bpm_positions: []
+rf: {frequency_hz: 5.0e8, harmonic_number: 1, step_hz: -3000.0}
+loco:
+  algorithm: lm
+  nIter: 1
+  nLMIter: 10
+  Starting_Lambda: 1.0e-3
+  max_lm_lambda: 15.0
+  scaled: true
+  svd_selection_method: threshold
+  svd_threshold: 1.0e-7
+  cut: null
+  show_svd_plot: false
+  outlier_rejection: true
+  sigma_outlier: 10.0
+  apply_normalization: false
+  normalization_mode: component
+  include_dispersion: false
+  horizontal_dispersion_weight: 1.0
+  vertical_dispersion_weight: 1.0
+  remove_coupling: true
+fit_parameters:
+  quadrupoles: {enable: true}
+  skew_quadrupoles: {enable: false}
+  quadrupole_tilt: {enable: false}
+  bpm_gains: {enable: false}
+  bpm_coupling: {enable: false}
+  corrector_calibration: {enable: false}
+  corrector_coupling: {enable: false}
+  hcm_energy_shift: {enable: false}
+  vcm_energy_shift: {enable: false}
+  rf_frequency_shift: {enable: false}
+constraints: {enable: false}
+resume: {enabled: false}
+output: {directory: output/my_machine}

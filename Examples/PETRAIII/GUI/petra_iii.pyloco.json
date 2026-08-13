@@ -1,7 +1,7 @@
 {
-  "name": "PETRAIIII_GUI_test",
+  "name": "PETRA III",
   "mode": "Basic",
-  "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/PETRAIIII_GUI_test.pyloco.json",
+  "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/GUI/petra_iii.pyloco.json",
   "modified": false,
   "lattice": {
     "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/p3_low_beta.mat",

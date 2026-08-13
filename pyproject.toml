@@ -5,6 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "pyLOCO"
 version = "0.3.0"
+dependencies = [
+  "accelerator-toolbox",
+  "h5py",
+  "matplotlib",
+  "numpy",
+  "PyYAML",
+]
 
 [project.optional-dependencies]
 gui = ["PySide6", "matplotlib"]

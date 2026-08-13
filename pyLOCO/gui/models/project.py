@@ -609,10 +609,20 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
 
     loco = data.get("loco") or {}
     measurement = data.get("measurement") or {}
+    data_section = data.get("data") or {}
+    orm_section = data_section.get("orm") if isinstance(data_section.get("orm"), dict) else {}
     rf = data.get("rf") or {}
-    fit_names = loco.get("fit_list") or loco.get("standard_fit_list") or ["quads"]
-    fit_names = set(fit_names)
-    kick = measurement.get("corrector_kick_rad", 1e-5)
+    if data.get("fit_parameters") is not None:
+        from pyLOCO.user_config import selected_fit_parameters
+        fit_names = set(selected_fit_parameters(data))
+    else:
+        fit_names = set(loco.get("fit_list") or loco.get("standard_fit_list") or ["quads"])
+    steps = orm_section.get("corrector_steps", measurement.get("corrector_kick_rad", 1e-5))
+    if isinstance(steps, dict):
+        kick_h = steps.get("horizontal", steps.get("horizontal_rad", 1e-5))
+        kick_v = steps.get("vertical", steps.get("vertical_rad", 1e-5))
+    else:
+        kick_h = kick_v = steps if isinstance(steps, (int, float)) else 1e-5
     output = data.get("output") or {}
     output_directory = output.get("directory") or output.get("standard") or ""
     parameter_names = {
@@ -626,18 +636,30 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
     }
     parameters = parameter_names | {
         "cmstep": {
-            "mode": "file" if (data.get("data") or {}).get("corrector_steps") else "uniform",
-            "horizontal": kick,
-            "vertical": kick,
-            "file": (data.get("data") or {}).get("corrector_steps", ""),
+            "mode": "file" if isinstance(steps, str) else "uniform",
+            "horizontal": kick_h,
+            "vertical": kick_v,
+            "file": steps if isinstance(steps, str) else "",
         },
         "rfStep": rf.get("step_hz", -3000.0),
+    }
+    constraint_source = data.get("constraints") or {}
+    quad_constraint = constraint_source.get("quadrupoles") or {}
+    skew_constraint = constraint_source.get("skew_quadrupoles") or {}
+    constraints = {
+        "enable": bool(constraint_source.get("enable", False)),
+        "quad_sigma": float(quad_constraint.get("sigma", quad_constraint.get("relative_sigma", 0.0))),
+        "skew_sigma": float(skew_constraint.get("sigma", 0.0)),
+        "quad_weights": (str(quad_constraint["weights"]) if "weights" in quad_constraint else ""),
+        "skew_weights": (str(skew_constraint["weights"]) if "weights" in skew_constraint else ""),
+        "quad_mask": (str(quad_constraint["mask"]) if "mask" in quad_constraint else ""),
+        "skew_mask": (str(skew_constraint["mask"]) if "mask" in skew_constraint else ""),
     }
     return {
         "response_matrix": {
             "calculator": measurement.get("response_matrix_calculator", "Linear"),
-            "dkick_h": kick,
-            "dkick_v": kick,
+            "dkick_h": kick_h,
+            "dkick_v": kick_v,
             "rfStep": rf.get("step_hz", -3000.0),
             "includeDispersion": bool(loco.get("include_dispersion", False)),
         },
@@ -657,6 +679,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "remove_coupling_": loco.get("remove_coupling", True),
         },
         "parameters": parameters,
+        "constraints": constraints,
         "fixed_parameters": {
             "Frequency": str(rf.get("frequency_hz", 499664399.4230182)),
             "rfstep": rf.get("step_hz", -3000.0),
@@ -680,11 +703,12 @@ def load_example_project_data(path: str | Path) -> tuple[LocoConfiguration, dict
     cfg = LocoConfiguration.from_dict(raw)
     base = source.parent
     data = raw.get("data") or {}
-    measurements = {
-        role: str((base / value).resolve())
-        for role, value in data.items()
-        if role in {"orm", "dispersion", "bpm_noise", "bad_bpms"} and value
-    }
+    measurements = {}
+    for role in ("orm", "dispersion", "bpm_noise", "bad_bpms"):
+        value = data.get(role)
+        file_value = value.get("file") if isinstance(value, dict) else value
+        if file_value:
+            measurements[role] = str((base / file_value).resolve())
     lattice_value = (raw.get("lattice") or {}).get("file", "")
     lattice = str((base / lattice_value).resolve()) if lattice_value else ""
     cmstep = cfg.parameters.cmstep
@@ -706,7 +730,28 @@ def resolve_example_machine_elements(path: str | Path, lattice) -> MachineElemen
 
     raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     data = raw.get("data") or {}
+    element_specs = raw.get("elements")
     base = source.parent
+
+    if element_specs:
+        from pyLOCO.measured_machine.workflow import select_elements
+        return MachineElementsConfig(
+            bpm_ords=select_elements(lattice, element_specs["bpms"], base, "bpms").tolist(),
+            horizontal_corrector_ords=select_elements(
+                lattice, element_specs["horizontal_correctors"], base,
+                "horizontal_correctors").tolist(),
+            vertical_corrector_ords=select_elements(
+                lattice, element_specs["vertical_correctors"], base,
+                "vertical_correctors").tolist(),
+            normal_quadrupole_ords=select_elements(
+                lattice, element_specs["quadrupoles"], base, "quadrupoles").tolist(),
+            skew_quadrupole_ords=select_elements(
+                lattice, element_specs.get("skew_quadrupoles", {"indices": [], "optional": True}),
+                base, "skew_quadrupoles").tolist(),
+            cavity_ords=select_elements(
+                lattice, element_specs.get("cavities", {"element_type": "RFCavity", "optional": True}),
+                base, "cavities").tolist(),
+        )
 
     def common_name_indices(key: str) -> list[int]:
         value = data.get(key)
