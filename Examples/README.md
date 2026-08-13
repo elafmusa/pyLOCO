@@ -1,5 +1,10 @@
 # pyLOCO examples
 
+For a configuration-driven workflow that uses the same Python runner for
+different accelerators, see `measured_machine/`. PETRA III and EBS reference
+YAML files demonstrate that the reusable workflow belongs to the pyLOCO
+package rather than to a machine-specific example.
+
 Each main example has three files:
 
 - a `.py` script for a complete reproducible run;
@@ -78,29 +83,28 @@ This example demonstrates how pySC and pyLOCO work together:
 This example requires pySC. Set `measurement.source: cached` in its YAML file
 to use the preserved pySC measurement instead of simulating a new one.
 
-### 5. PETRA III: measured ORM
+### 5. Generic measured-machine workflow
 
-Files: `PETRAIII/example_measured_orm.py` and
-`PETRAIII/example_measured_orm.ipynb`
+Files: `measured_machine/example_measured_machine.py` and
+`measured_machine/configs/petra_iii.yaml`
 
-This example uses a measured PETRA III ORM. It explains BPM and corrector
-selection, removal of bad BPMs, measurement uncertainty, fitted parameters,
-and validation of the fitted response.
+This is the standard way to fit a measured PETRA III ORM. The same runner also
+supports EBS and new accelerators by changing only the YAML configuration.
 
-Use this example to learn how pyLOCO is applied to real machine data.
+```bash
+python3 Examples/measured_machine/example_measured_machine.py \
+  --config Examples/measured_machine/configs/petra_iii.yaml
+```
 
-All PETRA III scripts accept an alternate measurement configuration, for
-example `python example_measured_orm.py --config configs/before_correction.yaml`.
-Paths in a YAML file are resolved relative to that file, and `output.directory`
-lets each machine study keep its results separate without copying the Python
-workflow.
+Paths are resolved relative to the selected YAML file, and `output.directory`
+lets each study keep its results separate without copying Python workflow code.
 
 To continue a PETRA III fit from a previous stage, enable the `resume` section
 in the YAML and point `resume.directory` at the earlier run directory (the one
 containing `results/`) or directly at its `results/` directory. The workflow
 starts from `ring_pyloco.mat`, restores the final values in `fit_dict.pkl`, and
-uses the current YAML fit list and solver settings. Parameters newly added to
-the second-stage fit list use their normal initial values; overlapping blocks
+uses the current YAML parameter selection and solver settings. Parameters newly
+added to the second-stage fit use their normal initial values; overlapping blocks
 use their values from the previous fit. Run the same example command with the
 new configuration, and choose a different `output.directory` or `run_name` so
 the earlier result is not overwritten.
@@ -110,17 +114,21 @@ the earlier result is not overwritten.
 Files: `PETRAIII/example_measured_coupling.py` and
 `PETRAIII/example_measured_coupling.ipynb`
 
+The coupling profile is `PETRAIII/pyloco_config_coupling.yaml`. It enables the
+skew, tilt, BPM-coupling, and corrector-coupling blocks in YAML; the Python
+script does not override parameter selection.
+
 This example keeps the cross-plane ORM blocks and fits coupling-related
 parameters such as skew quadrupoles, quadrupole tilts, and BPM/corrector
 coupling. It is a more advanced measured-data workflow.
 
-### 7. PETRA III: constrained fit
+### 7. PETRA III: recent measured-machine studies
 
-Files: `PETRAIII/example_measured_constrained.py` and
-`PETRAIII/configs/constrained.yaml`
+Files: `PETRAIII/measured_machine/example_measured_machine.py` and
+`PETRAIII/measured_machine/pyloco_config.yaml`
 
-This thin example uses the same measured-data workflow with dispersion and
-`ConstraintConfig`. The YAML controls the fit list, constraint sigmas and
+This single entry point uses the same measured-data workflow with dispersion and
+`ConstraintConfig`. The YAML controls fitted parameters, constraint sigmas and
 weights, and output directory. The bundled constrained configuration uses the
 PETRA III machine-study family groups; setting `data.quadrupole_mode:
 individual` preserves the individual-quadrupole path used by the standard fit.
@@ -134,12 +142,16 @@ family solution (`delta_q_families.npy` and
 (`delta_q_expanded.npy` and `quadrupole_corrections_expanded.csv`). The latter
 is an expansion of the family fit, not an individual-quadrupole refit.
 
-To add another machine measurement, copy the concise constrained YAML (or the
+To add another machine measurement, copy the concise measured-machine YAML (or the
 default `pyloco_config.yaml`) and change `lattice.file`, the paths under
 `data`, `bad_bpm_positions`, `rf`, and `output`. Fit parameter lists and solver
 settings live under `loco`; family mode is selected with
 `data.quadrupole_mode: family` plus `data.quadrupole_family_groups`; priors live
-under `constraints`. No Python example needs to be copied.
+under `constraints`. `fit_parameters` and `constraints.enable` are independent,
+so a quadrupole fit does not require a quadrupole prior. No Python example needs
+to be copied. See `PETRAIII/measured_machine/README.md` for the short procedure.
+Historical campaign YAML files are retained as data records under
+`PETRAIII/data/measurement_config_archive/`, not as separate examples.
 
 ### 8. PETRA III: comparison with MATLAB LOCO
 

@@ -28,6 +28,7 @@ rf:
   step_hz: 200.0
 
 loco:
+  algorithm: lm
   nIter: 5
   nLMIter: 10
   Starting_Lambda: 1.0e-3
@@ -42,7 +43,20 @@ loco:
   apply_normalization: true
   normalization_mode: component
   include_dispersion: false
-  fit_list: [quads, hbpm_gain, vbpm_gain, hcor_cal, vcor_cal, HCMEnergyShift]
+
+fit_parameters:
+  quadrupoles: {enable: true}
+  skew_quadrupoles: {enable: false}
+  quadrupole_tilt: {enable: false}
+  bpm_gains: {enable: true}
+  bpm_coupling: {enable: false}
+  corrector_calibration: {enable: true}
+  corrector_coupling: {enable: false}
+  corrector_energy_shift: {enable: true}
+  rf_frequency_shift: {enable: false}
+
+constraints:
+  enable: false
 
 output:
   directory: output/pysc_simulated_commissioning

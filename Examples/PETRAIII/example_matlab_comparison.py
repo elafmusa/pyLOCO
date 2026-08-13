@@ -8,7 +8,10 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
-from petra_workflow import HERE, model_orm, prepare_measurement, print_summary, run_fit
+from pyLOCO.measured_machine.workflow import fit_modes, model_orm, prepare_measurement, print_summary, run_fit
+
+
+HERE = Path(__file__).resolve().parent
 
 
 def parameter_block_slices(data: dict) -> dict[str, slice]:
@@ -147,10 +150,13 @@ def print_comparison_summary(comparison: dict) -> None:
 def main(config_path: Path) -> None:
     data = prepare_measurement(config_path)
     initial_orm = model_orm(data)
-    fit = run_fit(data, coupling=False)
+    fit = run_fit(data)
+    coupling, constrained = fit_modes(fit)
+    if coupling or constrained:
+        raise ValueError("MATLAB comparison requires the standard unconstrained YAML parameter selection")
     comparison = compare_with_matlab(data, fit)
     output = make_comparison_plots(data, comparison)
-    print_summary(data, initial_orm, fit, coupling=False)
+    print_summary(data, initial_orm, fit, coupling=coupling, constrained=constrained)
     print_comparison_summary(comparison)
     print(f"Figures                   : {output}")
 
