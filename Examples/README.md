@@ -22,30 +22,6 @@ The example:
 
 Its settings are in the adjacent `pyloco_config.yaml` file.
 
-## Student summer project
-
-The educational notebooks are in `Examples/Summer_project/`. They use a simple
-FODO lattice so students can study the calculations before working with a large
-accelerator model.
-
-Start with:
-
-```text
-Examples/Summer_project/from_fodo_to_pyloco.ipynb
-```
-
-It introduces the response matrix, a quadrupole error, the LOCO fit, correction,
-and verification of the corrected optics.
-
-Then continue with the Jacobian exercises in this order:
-
-1. `FODO_Jacobian/01_fodo_jacobian_methods.ipynb`
-2. `FODO_Jacobian/02_fodo_jacobian_with_errors.ipynb`
-3. `FODO_Jacobian/03_fodo_iterative_loco_comparison.ipynb`
-
-Cells marked `STUDENT TASK — YOUR CODE HERE` are intentionally incomplete.
-Keep the two `analytic_orm_*.py` support files in the `FODO_Jacobian` directory.
-
 ## Real PETRA III measurement
 
 For a real measured-machine application, use the PETRA III coupling example:
@@ -92,6 +68,30 @@ settings are controlled from YAML. See its [README](measured_machine/README.md).
 
 `Examples/PETRAIII/example_matlab_comparison.py` compares a pyLOCO fit with a
 preserved MATLAB LOCO result.
+
+## Student summer project
+
+The educational notebooks are in `Examples/Summer_project/`. They use a simple
+FODO lattice so students can study the calculations before working with a large
+accelerator model.
+
+Start with:
+
+```text
+Examples/Summer_project/from_fodo_to_pyloco.ipynb
+```
+
+It introduces the response matrix, a quadrupole error, the LOCO fit, correction,
+and verification of the corrected optics.
+
+Then continue with the Jacobian exercises in this order:
+
+1. `FODO_Jacobian/01_fodo_jacobian_methods.ipynb`
+2. `FODO_Jacobian/02_fodo_jacobian_with_errors.ipynb`
+3. `FODO_Jacobian/03_fodo_iterative_loco_comparison.ipynb`
+
+Cells marked `STUDENT TASK — YOUR CODE HERE` are intentionally incomplete.
+Keep the two `analytic_orm_*.py` support files in the `FODO_Jacobian` directory.
 
 ## Installation
 
