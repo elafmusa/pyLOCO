@@ -610,8 +610,11 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
     loco = data.get("loco") or {}
     measurement = data.get("measurement") or {}
     rf = data.get("rf") or {}
-    fit_names = loco.get("fit_list") or loco.get("standard_fit_list") or ["quads"]
-    fit_names = set(fit_names)
+    if data.get("fit_parameters") is not None:
+        from pyLOCO.user_config import selected_fit_parameters
+        fit_names = set(selected_fit_parameters(data))
+    else:
+        fit_names = set(loco.get("fit_list") or loco.get("standard_fit_list") or ["quads"])
     kick = measurement.get("corrector_kick_rad", 1e-5)
     output = data.get("output") or {}
     output_directory = output.get("directory") or output.get("standard") or ""
@@ -632,6 +635,18 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "file": (data.get("data") or {}).get("corrector_steps", ""),
         },
         "rfStep": rf.get("step_hz", -3000.0),
+    }
+    constraint_source = data.get("constraints") or {}
+    quad_constraint = constraint_source.get("quadrupoles") or {}
+    skew_constraint = constraint_source.get("skew_quadrupoles") or {}
+    constraints = {
+        "enable": bool(constraint_source.get("enable", False)),
+        "quad_sigma": float(quad_constraint.get("sigma", quad_constraint.get("relative_sigma", 0.0))),
+        "skew_sigma": float(skew_constraint.get("sigma", 0.0)),
+        "quad_weights": (str(quad_constraint["weights"]) if "weights" in quad_constraint else ""),
+        "skew_weights": (str(skew_constraint["weights"]) if "weights" in skew_constraint else ""),
+        "quad_mask": (str(quad_constraint["mask"]) if "mask" in quad_constraint else ""),
+        "skew_mask": (str(skew_constraint["mask"]) if "mask" in skew_constraint else ""),
     }
     return {
         "response_matrix": {
@@ -657,6 +672,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "remove_coupling_": loco.get("remove_coupling", True),
         },
         "parameters": parameters,
+        "constraints": constraints,
         "fixed_parameters": {
             "Frequency": str(rf.get("frequency_hz", 499664399.4230182)),
             "rfstep": rf.get("step_hz", -3000.0),
