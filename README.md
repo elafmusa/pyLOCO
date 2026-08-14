@@ -16,6 +16,7 @@ git clone https://github.com/elafmusa/pyLOCO.git
 cd pyLOCO
 python3 -m pip install -e .
 ```
+## GUI
 
 For the graphical interface:
 
