@@ -126,6 +126,15 @@ class ResultsLoader:
         return bool(self.options.get("includeDispersion", False))
 
     @property
+    def initialization(self) -> str:
+        return str(self.summary.get("initialization") or "current_model")
+
+    @property
+    def resumed_from(self) -> str | None:
+        value = self.summary.get("resumed_from")
+        return str(value) if value else None
+
+    @property
     def fitted_parameter_blocks(self) -> dict[str, slice]:
         result = {}
         for name, value in (self.summary.get("blocks") or {}).items():
@@ -182,12 +191,50 @@ class ResultsLoader:
             label, unit, initial = labels.get(key, (key.replace("_", " ").title(), "backend value", None))
             values = np.asarray(vector[block], dtype=float)
             baseline = np.full(values.shape, initial) if initial is not None else None
+            if key in {"quads", "skew_quads"}:
+                candidate = self._lattice_parameter_baseline(key, values.size)
+                if candidate is not None:
+                    baseline = candidate
             if key in {"hcor_cal", "vcor_cal"} and isinstance(cmstep, (list, tuple)) and len(cmstep) >= 2:
                 candidate = np.asarray(cmstep[0 if key == "hcor_cal" else 1], dtype=float).ravel()
                 if candidate.size == values.size:
                     baseline = candidate
             result.append(ParameterBlock(key, label, values, baseline, unit))
         return result
+
+    def _lattice_parameter_baseline(self, key: str, expected: int):
+        """Read the selected magnet values from the run's initial lattice."""
+        import numpy as np
+
+        mapping = self.request.get("backend_mapping", {})
+        elements = mapping.get("MachineElements", {})
+        fit_init = mapping.get("FitInitConfig", {})
+        if key == "quads":
+            ordinals = elements.get("normal_quadrupole_ords") or []
+            attribute = fit_init.get("quads_attr") or "PolynomB"
+            attribute_index = int(fit_init.get("quads_attr_index", 1))
+        else:
+            ordinals = elements.get("skew_quadrupole_ords") or []
+            attribute = fit_init.get("skew_attr") or "PolynomA"
+            attribute_index = int(fit_init.get("skew_attr_index", 1))
+        if len(ordinals) != expected:
+            return None
+        lattice_path = self.request.get("lattice_path")
+        if not lattice_path:
+            return None
+        try:
+            import at
+
+            ring = at.load_lattice(self._resolve_reference(lattice_path))
+            values = []
+            for ordinal in ordinals:
+                value = getattr(ring[int(ordinal)], attribute)
+                array = np.asarray(value)
+                values.append(float(array[attribute_index]) if array.ndim else float(array))
+            result = np.asarray(values, dtype=float)
+            return result if result.size == expected and np.isfinite(result).all() else None
+        except Exception:
+            return None
 
     @property
     def input_files(self) -> list[tuple[str, Path | None]]:
@@ -202,26 +249,164 @@ class ResultsLoader:
 
     @property
     def dispersion_data(self) -> dict[str, Any] | None:
-        """Return measured/model dispersion vectors when the run included them."""
-        if not self.dispersion_included:
-            return None
+        """Return an independent physical-dispersion diagnostic when possible."""
         if "dispersion_data" in self._cache:
             return self._cache["dispersion_data"]
+        persisted = self.optics_results
+        available = bool(_scalar_value(persisted.get("dispersion_diagnostic_available"), False))
+        if available:
+            data = {}
+            for plane in ("x", "y"):
+                plane_data = {kind: persisted.get(f"dispersion_{plane}_{kind}") for kind in ("measured", "initial", "fitted")}
+                if all(value is not None for value in plane_data.values()):
+                    data[plane] = plane_data
+            if data:
+                data["axis"] = persisted.get("dispersion_s")
+                data["axis_label"] = "Longitudinal position s [m]" if data["axis"] is not None else "BPM index in saved ordering"
+                self._cache["dispersion_data"] = data
+                return data
+        self._cache["dispersion_data"] = self._legacy_dispersion_diagnostic()
+        return self._cache["dispersion_data"]
+
+    @property
+    def dispersion_unavailable_reason(self) -> str | None:
+        if self.dispersion_data is not None:
+            return None
+        persisted = self.optics_results
+        value = persisted.get("dispersion_unavailable_reason")
+        return str(_scalar_value(value, self._unavailable.get("dispersion_diagnostic", "Dispersion diagnostic data are unavailable.")))
+
+    @property
+    def dispersion_statistics(self) -> dict[str, dict[str, float | None]]:
+        import numpy as np
+        result = {}
+        for plane, values in (self.dispersion_data or {}).items():
+            if plane not in {"x", "y"}: continue
+            measured = np.asarray(values["measured"], dtype=float)
+            before = measured - np.asarray(values["initial"], dtype=float)
+            after = measured - np.asarray(values["fitted"], dtype=float)
+            def metrics(residual):
+                finite = residual[np.isfinite(residual)]
+                return {"rms": float(np.sqrt(np.mean(finite**2))), "mean": float(np.mean(finite)),
+                        "min": float(np.min(finite)), "max": float(np.max(finite)),
+                        "max_abs": float(np.max(np.abs(finite)))} if finite.size else {k: None for k in ("rms", "mean", "min", "max", "max_abs")}
+            before_metrics, after_metrics = metrics(before), metrics(after)
+            improvement = None if before_metrics["rms"] in (None, 0) else 100.0 * (1.0 - after_metrics["rms"] / before_metrics["rms"])
+            result[plane] = {**{f"{k}_before": v for k, v in before_metrics.items()},
+                             **{f"{k}_after": v for k, v in after_metrics.items()}, "improvement": improvement}
+        return result
+
+    def _legacy_dispersion_diagnostic(self):
+        """Rebuild old-run diagnostics using recorded inputs and pyLOCO's RF convention."""
         import numpy as np
         measurements = self.request.get("measurements") or {}
         dispersion_file = measurements.get("dispersion")
-        eta_x = self._load_vector_reference(measurements.get("dispersion_x") or measurements.get("eta_x"), dataset_names=("measured_eta_x", "eta_x"))
-        eta_y = self._load_vector_reference(measurements.get("dispersion_y") or measurements.get("eta_y"), dataset_names=("measured_eta_y", "eta_y"))
-        if dispersion_file:
-            eta_x = eta_x if eta_x is not None else self._load_vector_reference(dispersion_file, dataset_names=("measured_eta_x", "eta_x"))
-            eta_y = eta_y if eta_y is not None else self._load_vector_reference(dispersion_file, dataset_names=("measured_eta_y", "eta_y"), fallback_index=1)
-        measured = np.concatenate((eta_x, eta_y)) if eta_x is not None and eta_y is not None else None
-        initial = self.initial_orm[:, -1] if self.initial_orm is not None else None
-        fitted = self.fitted_orm[:, -1] if self.fitted_orm is not None else None
-        if measured is not None and initial is not None and measured.size != initial.size:
-            measured = None
-        self._cache["dispersion_data"] = {"measured": measured, "initial": initial, "fitted": fitted}
-        return self._cache["dispersion_data"]
+        if not dispersion_file:
+            self._unavailable["dispersion_diagnostic"] = "Measured dispersion is not available for this run."
+            return None
+        if self.initialization == "resumed":
+            self._unavailable["dispersion_diagnostic"] = "The recorded reference lattice for this resumed run is unavailable."
+            return None
+        reference_path = self._resolve_reference(self.request.get("lattice_path", ""))
+        fitted_path = self.result_dir / "final_lattice.mat"
+        if reference_path is None:
+            self._unavailable["dispersion_diagnostic"] = "Initial/reference lattice is unavailable."
+            return None
+        if not fitted_path.exists():
+            self._unavailable["dispersion_diagnostic"] = "Final fitted lattice is unavailable."
+            return None
+        mapping = self.request.get("backend_mapping", {})
+        machine = mapping.get("MachineElements", {})
+        rm = mapping.get("RMConfig", {})
+        bpm_ords = machine.get("bpm_ords") or rm.get("bpm_ords") or []
+        if not bpm_ords:
+            self._unavailable["dispersion_diagnostic"] = "BPM mapping required for dispersion comparison is unavailable."
+            return None
+        options = (self.request.get("measurement_options") or {}).get("dispersion", {})
+        names = options.get("datasets", {})
+        eta_x = self._load_vector_reference(dispersion_file, dataset_names=(str(names.get("horizontal") or "measured_eta_x"), "eta_x"))
+        eta_y = self._load_vector_reference(dispersion_file, dataset_names=(str(names.get("vertical") or "measured_eta_y"), "eta_y"), fallback_index=1)
+        if eta_x is None or eta_y is None:
+            self._unavailable["dispersion_diagnostic"] = "Measured horizontal or vertical dispersion is unavailable."
+            return None
+        eta_x = eta_x * float(options.get("horizontal_scale", 1.0)); eta_y = eta_y * float(options.get("vertical_scale", 1.0))
+        bad = list(mapping.get("BadBPMPositions") or [])
+        if bad:
+            eta_x, eta_y = np.delete(eta_x, bad), np.delete(eta_y, bad)
+            bpm_ords = [value for index, value in enumerate(bpm_ords) if index not in set(bad)]
+        if len(eta_x) != len(bpm_ords) or len(eta_y) != len(bpm_ords):
+            self._unavailable["dispersion_diagnostic"] = "Measured dispersion and recorded BPM mapping have different lengths."
+            return None
+        rf_step = rm.get("rfStep")
+        frequency = mapping.get("FixedParameters", {}).get("Frequency")
+        if rf_step in (None, 0) or frequency is None:
+            self._unavailable["dispersion_diagnostic"] = "RF frequency or RF step required for dispersion conversion is unavailable."
+            return None
+        try:
+            import at
+            from pyLOCO.config import get_mcf
+            reference, fitted = at.load_lattice(reference_path), at.load_lattice(fitted_path)
+            ords = np.asarray(bpm_ords, dtype=np.uint32)
+            initial_dispersion = np.asarray(reference.get_optics(refpts=ords)[2].dispersion, dtype=float)
+            fitted_dispersion = np.asarray(fitted.get_optics(refpts=ords)[2].dispersion, dtype=float)
+            alpha_c = float(np.asarray(get_mcf(reference)).ravel()[0])
+            conversion = -alpha_c * float(frequency) / float(rf_step)
+            return {"x": {"measured": eta_x * conversion, "initial": initial_dispersion[:, 0], "fitted": fitted_dispersion[:, 0]},
+                    "y": {"measured": eta_y * conversion, "initial": initial_dispersion[:, 2], "fitted": fitted_dispersion[:, 2]},
+                    "axis": np.asarray(reference.get_s_pos(ords), dtype=float), "axis_label": "Longitudinal position s [m]"}
+        except Exception as exc:
+            self._unavailable["dispersion_diagnostic"] = f"Could not calculate lattice dispersion: {exc}"
+            return None
+
+    @property
+    def optics_results(self) -> dict[str, Any]:
+        if "optics_results" not in self._cache:
+            import numpy as np
+            path = self.result_dir / "optics_results.npz"
+            try:
+                with np.load(path, allow_pickle=False) as archive:
+                    self._cache["optics_results"] = {key: np.array(archive[key]) for key in archive.files}
+            except (OSError, ValueError):
+                self._cache["optics_results"] = {}
+        return self._cache["optics_results"]
+
+    @property
+    def beta_beating_data(self) -> dict[str, Any] | None:
+        values = self.optics_results
+        required = ("s", "beta_beating_x", "beta_beating_y")
+        if all(key in values for key in required):
+            return {key: values[key] for key in required} | {
+                "reference_kind": str(values.get("reference_kind", "run_input_lattice")),
+            }
+        # Scientifically sufficient legacy case: a non-resumed run records its
+        # exact input lattice and final_lattice.mat.  Never infer a resumed
+        # reference if that prior lattice is not explicitly available.
+        if self.initialization == "resumed":
+            return None
+        reference = self._resolve_reference(self.request.get("lattice_path", ""))
+        fitted = self.result_dir / "final_lattice.mat"
+        if reference is None or not fitted.exists():
+            return None
+        try:
+            import at
+            import numpy as np
+            ref_ring, fit_ring = at.load_lattice(reference), at.load_lattice(fitted)
+            if len(ref_ring) != len(fit_ring):
+                return None
+            refpts = np.arange(len(ref_ring), dtype=np.uint32)
+            ref_beta = np.asarray(ref_ring.get_optics(refpts=refpts)[2].beta, dtype=float)
+            fit_beta = np.asarray(fit_ring.get_optics(refpts=refpts)[2].beta, dtype=float)
+            if ref_beta.shape != fit_beta.shape or ref_beta.ndim != 2 or ref_beta.shape[1] < 2:
+                return None
+            result = {"s": np.asarray(ref_ring.get_s_pos(refpts), dtype=float), "reference_kind": "run_input_lattice"}
+            for plane, column in (("x", 0), ("y", 1)):
+                result[f"beta_beating_{plane}"] = np.divide(
+                    fit_beta[:, column] - ref_beta[:, column], ref_beta[:, column],
+                    out=np.full(ref_beta.shape[0], np.nan), where=ref_beta[:, column] != 0,
+                )
+            return result
+        except Exception:
+            return None
 
     @property
     def svd_metadata(self) -> dict[str, Any]:
@@ -265,6 +450,11 @@ class ResultsLoader:
         """Common symmetric full-resolution limit for before/after residual views."""
         limits = self._combined_limits((self.residual_before, self.residual_after), symmetric=True)
         return limits[1] if limits else None
+
+    @property
+    def orm_residual_limits(self) -> tuple[float, float] | None:
+        """Common full-resolution limits matching the standard viridis ORM plots."""
+        return self._combined_limits((self.residual_before, self.residual_after), symmetric=False)
 
     @property
     def measured_orm(self):
@@ -526,3 +716,12 @@ def _finite_float(value) -> float | None:
         return None
     import math
     return result if math.isfinite(result) else None
+
+
+def _scalar_value(value, default=None):
+    if value is None:
+        return default
+    try:
+        return value.item()
+    except (AttributeError, ValueError):
+        return value

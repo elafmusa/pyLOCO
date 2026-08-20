@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from dataclasses import asdict, dataclass, field
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ class ImportedDataset:
     path: str
     file_type: str
     size_bytes: int = 0
+    options: dict[str, Any] = field(default_factory=dict)
 
     @property
     def name(self) -> str:
@@ -87,7 +89,8 @@ class ResponseMatrixConfig:
     def to_rm_config_kwargs(self) -> dict[str, Any]:
         """Return keyword arguments compatible with pyloco_config.RMConfig."""
 
-        calculator = "Linear" if self.calculator == "Linear" else "Tracking"
+        aliases = {"linear": "Linear", "analytical": "Analytical", "numerical": "Numerical", "tracking": "Numerical"}
+        calculator = aliases.get(str(self.calculator).strip().lower(), self.calculator)
         data = {
             "bpm_ords": list(self.bpm_ords),
             "cm_ords": (list(self.cm_ords[0]), list(self.cm_ords[1])),
@@ -152,6 +155,9 @@ class RejectionConfig:
     individuals: bool = True
     remove_coupling_: bool = True
     plot_fit_parameters: bool = False
+    skew_individuals: bool = True
+    tilt_individuals: bool = True
+    calculate_delta_chi2: bool = False
 
 
 @dataclass(slots=True)
@@ -165,12 +171,129 @@ class ConstraintConfigState:
     skew_weights: str = ""
     quad_mask: str = ""
     skew_mask: str = ""
+    quad_sigma_mode: str = "absolute"
+    quad_relative_sigma: float = 1e-4
+    quad_minimum_sigma: float = 1e-12
+    quad_default_weight: float = 1.0
+    quad_selected_weight: float = 1.0
+    quad_selected_families: list[int] = field(default_factory=list)
+    quad_weighted_families: dict[int, float] = field(default_factory=dict)
+    skew_default_weight: float = 1.0
+    skew_selected_weight: float = 1.0
+    skew_selected_families: list[int] = field(default_factory=list)
+    skew_weighted_families: dict[int, float] = field(default_factory=dict)
 
     def to_constraint_config_kwargs(self) -> dict[str, Any]:
-        data = asdict(self)
+        data = {
+            "enable": self.enable,
+            "quad_sigma": self.quad_sigma,
+            "skew_sigma": self.skew_sigma,
+            "quad_weights": self.quad_weights,
+            "skew_weights": self.skew_weights,
+            "quad_mask": self.quad_mask,
+            "skew_mask": self.skew_mask,
+        }
         for key in ("quad_weights", "skew_weights", "quad_mask", "skew_mask"):
             data[key] = _literal_or_none(data[key])
         return data
+
+    def to_yaml_mapping(self) -> dict[str, Any]:
+        quad: dict[str, Any] = {
+            ("relative_sigma" if self.quad_sigma_mode == "relative" else "sigma"):
+                (self.quad_relative_sigma if self.quad_sigma_mode == "relative" else self.quad_sigma),
+            "default_weight": self.quad_default_weight,
+        }
+        if self.quad_sigma_mode == "relative":
+            quad["minimum_sigma"] = self.quad_minimum_sigma
+        if self.quad_selected_families:
+            quad.update(selected_weight=self.quad_selected_weight,
+                        selected_families=list(self.quad_selected_families))
+        if self.quad_weighted_families:
+            quad["weighted_families"] = dict(self.quad_weighted_families)
+        if self.quad_weights.strip():
+            quad["weights"] = _literal_or_none(self.quad_weights)
+        if self.quad_mask.strip():
+            quad["mask"] = _literal_or_none(self.quad_mask)
+        skew: dict[str, Any] = {
+            "sigma": self.skew_sigma,
+            "default_weight": self.skew_default_weight,
+        }
+        if self.skew_selected_families:
+            skew.update(selected_weight=self.skew_selected_weight,
+                        selected_families=list(self.skew_selected_families))
+        if self.skew_weighted_families:
+            skew["weighted_families"] = dict(self.skew_weighted_families)
+        if self.skew_weights.strip():
+            skew["weights"] = _literal_or_none(self.skew_weights)
+        if self.skew_mask.strip():
+            skew["mask"] = _literal_or_none(self.skew_mask)
+        return {"enable": self.enable, "quadrupoles": quad, "skew_quadrupoles": skew}
+
+
+@dataclass(slots=True)
+class ResumeConfigState:
+    """Previous-run artifacts used by the backend continuation API."""
+
+    enabled: bool = False
+    directory: str = ""
+    ring_file: str = "ring_pyloco.mat"
+    fit_dict_file: str = "fit_dict.pkl"
+    fit_results_file: str = "fit_results.npy"
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "directory": self.directory or None,
+            "ring_file": self.ring_file,
+            "fit_dict_file": self.fit_dict_file,
+            "fit_results_file": self.fit_results_file or None,
+        }
+
+    def results_directory(self) -> Path:
+        directory = Path(self.directory).expanduser()
+        return directory / "results" if (directory / "results").is_dir() else directory
+
+    def validation_messages(self) -> list[str]:
+        if not self.enabled:
+            return []
+        if not self.directory:
+            return ["Select a previous LOCO run or results directory."]
+        results = self.results_directory()
+        messages = []
+        for label, filename in (("fitted lattice", self.ring_file),
+                                ("fit dictionary", self.fit_dict_file)):
+            if not (results / filename).is_file():
+                messages.append(f"Previous {label} is missing: {results / filename}")
+        if self.fit_results_file and not (results / self.fit_results_file).is_file():
+            messages.append(f"Previous fit history is missing: {results / self.fit_results_file}")
+        return messages
+
+    def metadata(self) -> dict[str, Any]:
+        if not self.enabled or self.validation_messages():
+            return {}
+        results = self.results_directory()
+        metadata: dict[str, Any] = {"source": str(results)}
+        for filename in ("run_summary.yaml", "summary.json"):
+            path = results / filename
+            if not path.is_file():
+                continue
+            try:
+                if path.suffix == ".json":
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                else:
+                    import yaml
+                    value = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            except Exception:
+                continue
+            history = value.get("chi2_history") or []
+            metadata.update(
+                previous_iterations=len(history),
+                previous_final_chi2=(history[-1] if history else value.get("final_chi2")),
+                fit_list=value.get("fit_list"),
+                timestamp=value.get("timestamp"),
+            )
+            break
+        return metadata
 
 
 
@@ -355,6 +478,14 @@ def _literal_or_none(text: Any) -> Any:
         return stripped
 
 
+def _known_kwargs(cls, values: Any) -> dict[str, Any]:
+    """Filter forward-compatible project dictionaries for a typed dataclass."""
+    if not isinstance(values, dict):
+        return {}
+    allowed = {item.name for item in fields(cls)}
+    return {key: value for key, value in values.items() if key in allowed}
+
+
 @dataclass(slots=True)
 class FixedParameterConfig:
     """GUI state matching FixedParameters."""
@@ -391,6 +522,10 @@ class LocoConfiguration:
     mcf_user_value: str = ""
     output_directory: str = ""
     bad_bpm_positions: list[int] = field(default_factory=list)
+    resume: ResumeConfigState = field(default_factory=ResumeConfigState)
+    source_config: dict[str, Any] = field(default_factory=dict, repr=False)
+    source_path: str = ""
+    uneditable_fields: list[str] = field(default_factory=list)
 
     def to_backend_mapping(self) -> dict[str, Any]:
         """Return a serializable mapping of backend-compatible constructor data."""
@@ -410,6 +545,7 @@ class LocoConfiguration:
             "MomentumCompaction": self.to_mcf_kwargs(),
             "Output": {"directory": self.output_directory},
             "BadBPMPositions": list(self.bad_bpm_positions),
+            "Resume": self.resume.to_mapping(),
         }
 
     def to_mcf_kwargs(self) -> dict[str, Any]:
@@ -434,8 +570,73 @@ class LocoConfiguration:
             f"SVD: method={self.svd.svd_selection_method}, threshold={self.svd.svd_threshold:g}, rank={self.svd.cut_}",
             f"Outliers: enabled={self.rejection.outlier_rejection}, sigma={self.rejection.sigma_outlier:g}, normalization={self.rejection.normalization_mode if self.rejection.apply_normalization else 'off'}",
             f"Constraints: enabled={self.constraints.enable}, quad_sigma={self.constraints.quad_sigma:g}, skew_sigma={self.constraints.skew_sigma:g}",
+            f"Initialization: {'resume from ' + self.resume.directory if self.resume.enabled else 'current model'}",
             f"Fit parameters: {fit_list}",
         ]
+
+    def to_example_mapping(self) -> dict[str, Any]:
+        """Return current public YAML while preserving unrecognized source fields."""
+        data = deepcopy(self.source_config)
+        loco = dict(data.get("loco") or {})
+        loco.update({
+            "algorithm": self.solver.algorithm,
+            "nIter": self.solver.nIter,
+            "nLMIter": self.solver.nLMIter,
+            "Starting_Lambda": self.solver.Starting_Lambda,
+            "max_lm_lambda": self.solver.max_lm_lambda,
+            "scaled": self.solver.scaled,
+            "svd_selection_method": self.svd.svd_selection_method,
+            "svd_threshold": self.svd.svd_threshold,
+            "cut": self.svd.cut_,
+            "show_svd_plot": self.svd.show_svd_plot,
+            "outlier_rejection": self.rejection.outlier_rejection,
+            "sigma_outlier": self.rejection.sigma_outlier,
+            "apply_normalization": self.rejection.apply_normalization,
+            "normalization_mode": self.rejection.normalization_mode,
+            "include_dispersion": self.rejection.includeDispersion,
+            "horizontal_dispersion_weight": self.rejection.hor_dispersion_weight,
+            "vertical_dispersion_weight": self.rejection.ver_dispersion_weight,
+            "auto_correct_delta": self.rejection.auto_correct_delta,
+            "fixedpathlength": self.rejection.fixedpathlength,
+            "remove_coupling": self.rejection.remove_coupling_,
+            "plot_fit_parameters": self.rejection.plot_fit_parameters,
+            "skew_individuals": self.rejection.skew_individuals,
+            "tilt_individuals": self.rejection.tilt_individuals,
+            "calculate_delta_chi2": self.rejection.calculate_delta_chi2,
+        })
+        data["loco"] = loco
+        inverse_groups = {
+            "quadrupoles": ("quads",), "skew_quadrupoles": ("skew_quads",),
+            "quadrupole_tilt": ("quads_tilt",),
+            "bpm_gains": ("hbpm_gain", "vbpm_gain"),
+            "bpm_coupling": ("hbpm_coupling", "vbpm_coupling"),
+            "corrector_calibration": ("hcor_cal", "vcor_cal"),
+            "corrector_coupling": ("hcor_coupling", "vcor_coupling"),
+            "hcm_energy_shift": ("HCMEnergyShift",),
+            "vcm_energy_shift": ("VCMEnergyShift",),
+            "rf_frequency_shift": ("delta_rf",),
+        }
+        selected = set(self.parameters.fit_list())
+        existing_groups = dict(data.get("fit_parameters") or {})
+        for group, blocks in inverse_groups.items():
+            value = existing_groups.get(group)
+            entry = dict(value) if isinstance(value, dict) else {}
+            entry["enable"] = all(block in selected for block in blocks)
+            existing_groups[group] = entry
+        data["fit_parameters"] = existing_groups
+        data["constraints"] = self.constraints.to_yaml_mapping()
+        data["resume"] = self.resume.to_mapping()
+        rf = dict(data.get("rf") or {})
+        rf.update(frequency_hz=_parse_float(self.fixed_parameters.Frequency, "RF frequency"),
+                  harmonic_number=self.fixed_parameters.HarmNumber,
+                  step_hz=self.fixed_parameters.rfstep)
+        data["rf"] = rf
+        output = dict(data.get("output") or {})
+        if self.output_directory:
+            output["directory"] = self.output_directory
+        data["output"] = output
+        data["bad_bpm_positions"] = list(self.bad_bpm_positions)
+        return data
 
     def save(self, path: str | Path) -> Path:
         target = Path(path).expanduser()
@@ -445,6 +646,8 @@ class LocoConfiguration:
                 raise RuntimeError("PyYAML is required to export YAML configuration files.")
             import yaml
 
+            if self.source_config:
+                data = self.to_example_mapping()
             target.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
         else:
             target.write_text(json.dumps(data, indent=2), encoding="utf-8")
@@ -494,13 +697,17 @@ class LocoConfiguration:
             solver=SolverConfig(**data.get("solver", {})),
             svd=SVDConfig(**data.get("svd", {})),
             rejection=RejectionConfig(**data.get("rejection", {})),
-            constraints=ConstraintConfigState(**data.get("constraints", {})),
+            constraints=ConstraintConfigState(**_known_kwargs(ConstraintConfigState, data.get("constraints", {}))),
             parameters=ParameterSelectionConfig(**parameters),
             fixed_parameters=FixedParameterConfig(**data.get("fixed_parameters", {})),
             mcf_source=data.get("mcf_source", "automatic"),
             mcf_user_value=data.get("mcf_user_value", ""),
             output_directory=data.get("output_directory", ""),
             bad_bpm_positions=[int(value) for value in data.get("bad_bpm_positions", [])],
+            resume=ResumeConfigState(**_known_kwargs(ResumeConfigState, data.get("resume", {}))),
+            source_config=deepcopy(data.get("source_config", {})),
+            source_path=data.get("source_path", ""),
+            uneditable_fields=list(data.get("uneditable_fields", [])),
         )
 
 
@@ -545,6 +752,26 @@ class ProjectMetadata:
             messages.append("Dispersion data is required when dispersion fitting is enabled.")
         if not self.loco_config.parameters.fit_list():
             messages.append("At least one fitted parameter must be selected.")
+        messages.extend(self.loco_config.resume.validation_messages())
+        solver = self.loco_config.solver
+        if solver.algorithm not in {"lm", "gn"}:
+            messages.append(f"Unsupported solver algorithm: {solver.algorithm}")
+        if solver.nIter < 1:
+            messages.append("Outer iterations must be at least 1.")
+        if solver.algorithm == "lm" and solver.nLMIter < 1:
+            messages.append("LM inner iterations must be at least 1.")
+        if solver.Starting_Lambda < 0 or solver.max_lm_lambda < 0:
+            messages.append("LM lambda values must be non-negative.")
+        if self.loco_config.svd.svd_selection_method not in {"threshold", "rank", "user_input", "interactive"}:
+            messages.append("SVD selection method is invalid.")
+        if self.loco_config.constraints.enable:
+            c = self.loco_config.constraints
+            if c.quad_sigma_mode == "relative" and c.quad_relative_sigma <= 0:
+                messages.append("Relative quadrupole sigma must be positive.")
+            if c.quad_sigma_mode == "absolute" and c.quad_sigma <= 0:
+                messages.append("Quadrupole sigma must be positive when constraints are enabled.")
+            if c.skew_sigma <= 0 and self.loco_config.parameters.skew_quads:
+                messages.append("Skew sigma must be positive when skew constraints are enabled.")
         return messages
 
     @property
@@ -586,8 +813,36 @@ class ProjectMetadata:
 
     @classmethod
     def load(cls, path: str | Path) -> "ProjectMetadata":
-        source = Path(path).expanduser()
+        source = Path(path).expanduser().resolve()
         project = cls.from_dict(json.loads(source.read_text(encoding="utf-8")))
+
+        def resolve_project_path(value: str) -> str:
+            """Resolve portable paths stored relative to the project file."""
+            if not value:
+                return ""
+            candidate = Path(value).expanduser()
+            if not candidate.is_absolute():
+                candidate = source.parent / candidate
+            return str(candidate.resolve())
+
+        project.lattice.path = resolve_project_path(project.lattice.path)
+        for dataset in project.measurements.values():
+            dataset.path = resolve_project_path(dataset.path)
+        cmstep = project.loco_config.parameters.cmstep
+        if cmstep.mode == "file" and cmstep.file:
+            cmstep.file = resolve_project_path(cmstep.file)
+        if project.loco_config.output_directory:
+            project.loco_config.output_directory = resolve_project_path(
+                project.loco_config.output_directory
+            )
+        if project.loco_config.resume.directory:
+            project.loco_config.resume.directory = resolve_project_path(
+                project.loco_config.resume.directory
+            )
+        if project.loco_config.source_path:
+            project.loco_config.source_path = resolve_project_path(
+                project.loco_config.source_path
+            )
         project.path = str(source)
         project.modified = False
         project.add_recent_project(source)
@@ -642,6 +897,8 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "file": steps if isinstance(steps, str) else "",
         },
         "rfStep": rf.get("step_hz", -3000.0),
+        "skew_attr": str(loco.get("skew_attribute", "PolynomA")),
+        "skew_attr_index": int(loco.get("skew_attribute_index", 1)),
     }
     constraint_source = data.get("constraints") or {}
     quad_constraint = constraint_source.get("quadrupoles") or {}
@@ -654,7 +911,19 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
         "skew_weights": (str(skew_constraint["weights"]) if "weights" in skew_constraint else ""),
         "quad_mask": (str(quad_constraint["mask"]) if "mask" in quad_constraint else ""),
         "skew_mask": (str(skew_constraint["mask"]) if "mask" in skew_constraint else ""),
+        "quad_sigma_mode": "relative" if "relative_sigma" in quad_constraint else "absolute",
+        "quad_relative_sigma": float(quad_constraint.get("relative_sigma", 1e-4)),
+        "quad_minimum_sigma": float(quad_constraint.get("minimum_sigma", 1e-12)),
+        "quad_default_weight": float(quad_constraint.get("default_weight", 1.0)),
+        "quad_selected_weight": float(quad_constraint.get("selected_weight", 1.0)),
+        "quad_selected_families": [int(value) for value in quad_constraint.get("selected_families", [])],
+        "quad_weighted_families": {int(key): float(value) for key, value in (quad_constraint.get("weighted_families") or {}).items()},
+        "skew_default_weight": float(skew_constraint.get("default_weight", 1.0)),
+        "skew_selected_weight": float(skew_constraint.get("selected_weight", 1.0)),
+        "skew_selected_families": [int(value) for value in skew_constraint.get("selected_families", [])],
+        "skew_weighted_families": {int(key): float(value) for key, value in (skew_constraint.get("weighted_families") or {}).items()},
     }
+    resume = data.get("resume") or {}
     return {
         "response_matrix": {
             "calculator": measurement.get("response_matrix_calculator", "Linear"),
@@ -663,7 +932,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "rfStep": rf.get("step_hz", -3000.0),
             "includeDispersion": bool(loco.get("include_dispersion", False)),
         },
-        "solver": {key: loco[key] for key in ("nIter", "nLMIter", "Starting_Lambda", "max_lm_lambda", "scaled") if key in loco},
+        "solver": {key: loco[key] for key in ("algorithm", "nIter", "nLMIter", "Starting_Lambda", "max_lm_lambda", "scaled") if key in loco},
         "svd": {
             **{key: loco[key] for key in ("svd_selection_method", "svd_threshold", "show_svd_plot") if key in loco},
             **({"cut_": loco["cut"]} if loco.get("cut") is not None else {}),
@@ -677,6 +946,12 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "hor_dispersion_weight": loco.get("horizontal_dispersion_weight", 1.0),
             "ver_dispersion_weight": loco.get("vertical_dispersion_weight", 1.0),
             "remove_coupling_": loco.get("remove_coupling", True),
+            "auto_correct_delta": loco.get("auto_correct_delta", True),
+            "fixedpathlength": loco.get("fixedpathlength", False),
+            "plot_fit_parameters": loco.get("plot_fit_parameters", False),
+            "skew_individuals": loco.get("skew_individuals", True),
+            "tilt_individuals": loco.get("tilt_individuals", True),
+            "calculate_delta_chi2": loco.get("calculate_delta_chi2", False),
         },
         "parameters": parameters,
         "constraints": constraints,
@@ -686,7 +961,48 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
         },
         "output_directory": output_directory,
         "bad_bpm_positions": data.get("bad_bpm_positions", []),
+        "resume": {
+            "enabled": bool(resume.get("enabled", False)),
+            "directory": str(resume.get("directory") or ""),
+            "ring_file": str(resume.get("ring_file", "ring_pyloco.mat")),
+            "fit_dict_file": str(resume.get("fit_dict_file", "fit_dict.pkl")),
+            "fit_results_file": str(resume.get("fit_results_file") or "fit_results.npy"),
+        },
+        "source_config": deepcopy(data),
+        "uneditable_fields": _uneditable_config_paths(data),
     }
+
+
+_EDITABLE_YAML_PATHS = {
+    "lattice.file", "lattice.disable_6d", "machine.name", "bad_bpm_positions",
+    "rf.frequency_hz", "rf.harmonic_number", "rf.step_hz",
+    "resume.enabled", "resume.directory", "resume.ring_file", "resume.fit_dict_file",
+    "resume.fit_results_file", "output.directory", "output.root", "output.run_name",
+}
+_EDITABLE_YAML_PATHS.update(f"loco.{name}" for name in (
+    "algorithm", "nIter", "nLMIter", "Starting_Lambda", "max_lm_lambda", "scaled",
+    "svd_selection_method", "svd_threshold", "cut", "show_svd_plot",
+    "outlier_rejection", "sigma_outlier", "apply_normalization", "normalization_mode",
+    "include_dispersion", "horizontal_dispersion_weight", "vertical_dispersion_weight",
+    "remove_coupling", "skew_individuals", "tilt_individuals", "skew_attribute",
+    "plot_fit_parameters", "auto_correct_delta", "fixedpathlength", "calculate_delta_chi2",
+))
+
+
+def _uneditable_config_paths(data: dict[str, Any]) -> list[str]:
+    """Report preserved source leaves without an explicit GUI editor."""
+    result: list[str] = []
+    def visit(value: Any, prefix: str = "") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                visit(child, f"{prefix}.{key}" if prefix else str(key))
+        elif prefix.startswith(("data.", "elements.", "fit_parameters.", "constraints.")):
+            # These areas are represented by dedicated GUI controls or file metadata.
+            return
+        elif prefix not in _EDITABLE_YAML_PATHS:
+            result.append(prefix)
+    visit(data)
+    return sorted(set(result))
 
 
 def load_example_project_data(path: str | Path) -> tuple[LocoConfiguration, dict[str, str], str]:
@@ -701,6 +1017,7 @@ def load_example_project_data(path: str | Path) -> tuple[LocoConfiguration, dict
 
     raw = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
     cfg = LocoConfiguration.from_dict(raw)
+    cfg.source_path = str(source)
     base = source.parent
     data = raw.get("data") or {}
     measurements = {}
@@ -716,7 +1033,29 @@ def load_example_project_data(path: str | Path) -> tuple[LocoConfiguration, dict
         cmstep.file = str((base / cmstep.file).resolve())
     if cfg.output_directory:
         cfg.output_directory = str((base / cfg.output_directory).resolve())
+    if cfg.resume.directory:
+        cfg.resume.directory = str((base / cfg.resume.directory).resolve())
     return cfg, measurements, lattice
+
+
+def measurement_options_from_config(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract measurement preprocessing from the public YAML vocabulary."""
+    data = config.get("data") or {}
+    result: dict[str, dict[str, Any]] = {}
+    orm = data.get("orm")
+    if isinstance(orm, dict):
+        result["orm"] = {key: deepcopy(orm[key]) for key in (
+            "dataset", "transpose", "scale", "row_order", "column_order", "remove_correctors"
+        ) if key in orm}
+    for role, legacy_datasets in (("dispersion", "dispersion_datasets"),
+                                  ("bpm_noise", "bpm_noise_datasets")):
+        section = data.get(role)
+        options = dict(section) if isinstance(section, dict) else {}
+        if legacy_datasets in data and "datasets" not in options:
+            options["datasets"] = deepcopy(data[legacy_datasets])
+        if options:
+            result[role] = options
+    return result
 
 
 def resolve_example_machine_elements(path: str | Path, lattice) -> MachineElementsConfig:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from .plot_canvas import PlotCanvas
 
@@ -29,15 +29,19 @@ class OrmView(QWidget):
             "Residual before = measured − initial model; residual after = measured − fitted model. "
             "RMS = sqrt(mean(residual²)) using the full matrix, never the decimated display."
         )
-        row = QHBoxLayout(); row.addWidget(QLabel("Matrix")); row.addWidget(self.selector)
-        row.addWidget(QLabel("View")); row.addWidget(self.view_mode); row.addStretch(1); row.addWidget(self.metrics)
-        self.plot = PlotCanvas(show_toolbar=True, minimum_height=420)
+        row = QGridLayout()
+        row.addWidget(QLabel("Matrix"), 0, 0); row.addWidget(self.selector, 0, 1)
+        row.addWidget(QLabel("View"), 0, 2); row.addWidget(self.view_mode, 0, 3)
+        row.addWidget(self.metrics, 1, 0, 1, 4)
+        row.setColumnStretch(1, 1); row.setColumnStretch(3, 1)
+        self.metrics.setWordWrap(True)
+        self.plot = PlotCanvas(show_toolbar=True, minimum_height=140)
         self.plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.unavailable = QLabel()
         self.unavailable.setAlignment(Qt.AlignCenter)
         self.unavailable.setWordWrap(True)
         self.unavailable.setObjectName("placeholderDescription")
-        self.unavailable.setMinimumHeight(220)
+        self.unavailable.setMinimumHeight(100)
         self.unavailable.hide()
         layout = QVBoxLayout(self); layout.addLayout(row); layout.addWidget(self.plot, 1); layout.addWidget(self.unavailable, 1)
 
@@ -66,8 +70,8 @@ class OrmView(QWidget):
         import numpy as np
         residual = str(key).startswith("residual")
         if residual:
-            limit = self.loader.orm_residual_limit
-            kwargs = {"cmap": "RdBu_r", "vmin": -limit, "vmax": limit} if limit is not None and limit > 0 else {"cmap": "RdBu_r"}
+            limits = self.loader.orm_residual_limits
+            kwargs = {"cmap": theme["colormap"], "vmin": limits[0], "vmax": limits[1]} if limits else {"cmap": theme["colormap"]}
         else:
             limits = self.loader.orm_raw_limits
             kwargs = {"cmap": theme["colormap"], "vmin": limits[0], "vmax": limits[1]} if limits else {"cmap": theme["colormap"]}
@@ -83,11 +87,11 @@ class OrmView(QWidget):
                 x, y, shown, linewidth=0, antialiased=False,
                 rcount=shown.shape[0], ccount=shown.shape[1], **kwargs,
             )
-            ax.set_zlabel("ORM response [m/rad]", labelpad=8)
+            ax.set_zlabel("ORM response [m]", labelpad=8)
             ax.view_init(elev=28, azim=-62)
         else:
             artist = ax.imshow(shown, origin="lower", aspect="auto", extent=(0, cols, 0, rows), **kwargs)
-        canvas.figure.colorbar(artist, ax=ax, label="ORM response [m/rad]")
+        canvas.figure.colorbar(artist, ax=ax, label="ORM response [m]")
         ax.set_xlabel("Corrector column"); ax.set_ylabel("BPM response row"); ax.set_title(self.selector.currentText())
         parts = self.loader.partitions
         if parts and not is_3d:

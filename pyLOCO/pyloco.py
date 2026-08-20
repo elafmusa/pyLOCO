@@ -2,7 +2,7 @@ import numpy as np
 from numpy.linalg import svd
 import logging
 import matplotlib.pyplot as plt
-
+from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 import time
 import json
@@ -18,6 +18,10 @@ from .response_matrix import response_matrix
 import time
 fit_cfg = FitInitConfig()
 import warnings
+
+from .analytic_orm_with_normal_quad_errors import analytic_orm_variation_with_normal_quadrupole
+from .analytic_orm_with_skew_quad_errors import analytic_orm_variation_with_skew_quadrupole
+
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
@@ -481,20 +485,51 @@ def compute_group_delta_chi2(delta_chi2, blocks):
 # ============================================================================== #
 
 
-def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
-                     nHorCOR, nVerCOR, nHBPM, nVBPM, C, CAVords,
-                     skew_ind=None, includeDispersion=False, delta_coupling=1e-6, delta_skew_=1e-3, delta_q_tilt=1e-6,
-                     include_quads=True, include_skew=False, include_quads_tilt=False, include_bpm_gain=False,
-                     include_cor_kick=False, include_cor_coupling=False, include_bpm_coupling=False,
-                     quads_tilt_ind=None,
-                     include_delta_RF_frequency=False, include_HCMEnergyShift=False, include_VCMEnergyShift=False,
-                     rf_step=fixed_parameters.rfstep,
-                     quad_individuals=False,
-                     skew_individuals=True,
-                     tilt_individuals=True, auto_correct_delta=True, HCMCoupling=None, VCMCoupling=None,
-                     measured_eta_x=None, measured_eta_y=None, quads_tilt_fit=None,
-                     Frequency=fixed_parameters.Frequency, fit_cfg=None, iteration=1, quad_jacobian_file=None,
-                     skew_jacobian_file=None, quads_tilt_jacobian_file=None, force_recompute=True, output_dir='output'):
+def compute_jacobian(
+    ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
+    nHorCOR, nVerCOR, nHBPM, nVBPM, C, CAVords,
+    skew_ind=None,
+    includeDispersion=False,
+    delta_coupling=1e-6,
+    delta_skew_=1e-3,
+    delta_q_tilt=1e-6,
+    include_quads=True,
+    include_skew=False,
+    include_quads_tilt=False,
+    include_bpm_gain=False,
+    include_cor_kick=False,
+    include_cor_coupling=False,
+    include_bpm_coupling=False,
+    quads_tilt_ind=None,
+    include_delta_RF_frequency=False,
+    include_HCMEnergyShift=False,
+    include_VCMEnergyShift=False,
+    rf_step=fixed_parameters.rfstep,
+    quad_individuals=False,
+    skew_individuals=True,
+    tilt_individuals=True,
+    auto_correct_delta=True,
+    HCMCoupling=None,
+    VCMCoupling=None,
+    measured_eta_x=None,
+    measured_eta_y=None,
+    quads_tilt_fit=None,
+    Frequency=fixed_parameters.Frequency,
+    fit_cfg=None,
+    iteration=1,
+    quad_jacobian_file=None,
+    skew_jacobian_file=None,
+    quads_tilt_jacobian_file=None,
+    force_recompute=True,
+    output_dir='output',
+
+    # NEW
+    quad_jacobian_calculator="Numerical",
+    analytical_thick_quadrupole=True,
+    analytical_thick_steerers=False,
+    analytical_verbose=False,
+    analytical_use_mp=False,
+):
     """
     Master function to compute full LOCO Jacobian including:
     - Quadrupole strengths
@@ -530,14 +565,26 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
         quad_dir = output_dir / "jacobians" / "quads"
         quad_dir.mkdir(parents=True, exist_ok=True)
 
+
         J_path = (
-            Path(quad_jacobian_file)
-            if user_provided
-            else quad_dir / (
-                f"J_quads_iter{iteration}_{dkick[0][0]}urad_"
-                f"{fixed_parameters.rfstep}Hz.h5"
-            )
+        quad_jacobian_file if user_provided
+        else quad_dir / (
+            f"J_quads_{quad_jacobian_calculator.lower()}_"
+            f"iter{iteration}_"
+            f"{len(quads_ind)}params_"
+            f"{dkick[0][0]}urad_"
+            f"{fixed_parameters.rfstep}Hz.h5"
         )
+        )
+        print("\n========== JACOBIAN DEBUG ==========")
+        print("pyloco file       :", __file__)
+        print("output_dir        :", output_dir.resolve())
+        print("quad_dir          :", quad_dir.resolve())
+        print("J_path            :", J_path.resolve())
+        print("iteration         :", iteration)
+        print("len(quads_ind)    :", len(quads_ind))
+        print("quad_individuals  :", quad_individuals)
+        print("====================================\n")
         #J_path = quad_jacobian_file if user_provided else f"output/jacobians/quads/J_quads_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
 
         # --- logic ---
@@ -557,37 +604,88 @@ def compute_jacobian(ring, C_model, dkick, dk, bpm_indexes, CMords, quads_ind,
                 print(f"[Jacobian] Computing normal-quadrupole Jacobian (iteration {iteration})...")
             t = time.perf_counter()
 
-            J_quad, delta = calculate_quads_jacobian(
-                ring, C_model, dkick, CMords, bpm_indexes, quads_ind, dk, C,
-                quad_individuals, HCMCoupling, VCMCoupling, rf_step, block="quads",
-                auto_correct_delta=auto_correct_delta,
-                fit_cfg=fit_cfg, includeDispersion=includeDispersion,
-                output_dir=output_dir,
-                log_filename="quad_jacobian_logs2.txt"
-            )
+            method = str(quad_jacobian_calculator).strip().lower()
+
+            if method == "numerical":
+
+                J_quad, delta = calculate_quads_jacobian(
+                    ring,
+                    C_model,
+                    dkick,
+                    CMords,
+                    bpm_indexes,
+                    quads_ind,
+                    dk,
+                    C,
+                    quad_individuals,
+                    HCMCoupling,
+                    VCMCoupling,
+                    rf_step,
+                    block="quads",
+                    auto_correct_delta=auto_correct_delta,
+                    fit_cfg=fit_cfg,
+                    includeDispersion=includeDispersion,
+                    output_dir=output_dir,
+                    log_filename="quad_jacobian_logs2.txt",
+                )
+
+            elif method == "analytical":
+
+                J_quad, delta = calculate_quads_jacobian_analytical(
+                    ring=ring,
+                    C_model=C_model,
+                    dkick=dkick,
+                    used_cor_ind=CMords,
+                    bpm_indexes=bpm_indexes,
+                    quads_ind=quads_ind,
+                    C=C,
+                    includeDispersion=includeDispersion,
+                    analytical_thick_quadrupole=analytical_thick_quadrupole,
+                    analytical_thick_steerers=analytical_thick_steerers,
+                    analytical_verbose=analytical_verbose,
+                    analytical_use_mp=analytical_use_mp,
+
+                )
+
+            else:
+
+                raise ValueError(
+                    f"Unknown quad_jacobian_calculator="
+                    f"{quad_jacobian_calculator!r}. "
+                    "Choose 'Numerical' or 'Analytical'."
+                )
             print(f"Normal quad Jacobian: {time.perf_counter()-t:.1f} s")
 
-            # Save
-            if iteration == 1:
-                with h5py.File(J_path, "w") as f:
-                    f.create_dataset("J_quads", data=J_quad)
-                    f.create_dataset("C_model", data=C_model)
-                    if isinstance(dkick, (list, tuple)):
-                        f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
-                        f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
-                    else:
-                        f.create_dataset("correctors_dkick", data=np.asarray(dkick))
-                    f.attrs.update({
-                        "iteration": iteration,
-                        "nHBPM": nHBPM, "nVBPM": nVBPM,
-                        "nHorCOR": nHorCOR, "nVerCOR": nVerCOR,
-                        "includeDispersion": includeDispersion,
-                        "HCMCoupling": json.dumps(np.asarray(HCMCoupling).tolist()),
-                        "VCMCoupling": json.dumps(np.asarray(VCMCoupling).tolist()),
-                        "date": time.ctime(),
-                    })
+        # Save
+        if iteration == 1:
+            with h5py.File(J_path, "w") as f:
+                f.create_dataset("J_quads", data=J_quad)
+                f.create_dataset("C_model", data=C_model)
+                if isinstance(dkick, (list, tuple)):
+                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
+                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
+                else:
+                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+                f.attrs.update({
+                "iteration": iteration,
+                "jacobian_calculator": method,
+                "nHBPM": nHBPM,
+                "nVBPM": nVBPM,
+                "nHorCOR": nHorCOR,
+                "nVerCOR": nVerCOR,
+                "includeDispersion": includeDispersion,
+                "HCMCoupling": json.dumps(np.asarray(HCMCoupling).tolist()),
+                "VCMCoupling": json.dumps(np.asarray(VCMCoupling).tolist()),
+                "date": time.ctime(),
 
-                print(f"[Jacobian] Saved normal-quadrupole Jacobian to {J_path}")
+                # analytical Jacobian settings
+                "analytical_thick_quadrupole": analytical_thick_quadrupole,
+                "analytical_thick_steerers": analytical_thick_steerers,
+                "analytical_verbose": analytical_verbose,
+                "analytical_use_mp": analytical_use_mp,
+            })
+
+            print(f"[Jacobian] Saved normal-quadrupole Jacobian to {J_path}")
 
     # --- SKEW ---
     J_skew, delta_skew = None, None
@@ -918,6 +1016,248 @@ def calculate_quads_jacobian(
                 pass
 
 
+def calculate_quads_jacobian_analytical(
+    ring,
+    C_model,
+    dkick,
+    used_cor_ind,
+    bpm_indexes,
+    quads_ind,
+    C,
+    includeDispersion=False,
+    analytical_thick_quadrupole=True,
+    analytical_thick_steerers=False,
+    analytical_verbose=False,
+    analytical_use_mp=False,
+):
+    """
+    # Analytical ORM derivative formulas based on:
+    #
+    # A. Franchi and Z. Marti,
+    # "Analytic formulas for the rapid evaluation of the orbit response
+    # matrix and chromatic functions from lattice parameters in circular
+    # accelerators", arXiv:1711.06589.
+    #
+    # Integrated into pyLOCO by Ahmed Eldeeb,
+    # DESY Summer Student, August 2026.
+
+    Analytical normal-quadrupole ORM Jacobian.
+
+    The analytical formulas return derivatives with respect to
+    integrated quadrupole strength KL.
+
+    Output
+    ------
+    J_quad : ndarray
+        Shape (n_parameters, n_bpm_total, n_orm_columns)
+
+    delta : None
+        No finite-difference step is required.
+    """
+
+    # ----------------------------------------------------------
+    # Current limitation
+    # ----------------------------------------------------------
+
+    if includeDispersion:
+        raise NotImplementedError(
+            "Analytical normal-quadrupole Jacobian currently "
+            "supports includeDispersion=False only. "
+            "The derivative of the dispersion column with "
+            "respect to KL has not yet been implemented."
+        )
+
+    bpm_indexes = np.asarray(bpm_indexes, dtype=int)
+
+    hcor = np.asarray(used_cor_ind[0], dtype=int)
+    vcor = np.asarray(used_cor_ind[1], dtype=int)
+
+    nHBPM = len(bpm_indexes)
+    nVBPM = len(bpm_indexes)
+
+    nHorCOR = len(hcor)
+    nVerCOR = len(vcor)
+
+    n_rows = nHBPM + nVBPM
+    n_cols = nHorCOR + nVerCOR
+
+    # ----------------------------------------------------------
+    # Check C_model
+    # ----------------------------------------------------------
+
+    if C_model.shape != (n_rows, n_cols):
+        raise ValueError(
+            "Unexpected C_model shape for analytical Jacobian: "
+            f"{C_model.shape}; expected {(n_rows, n_cols)}."
+        )
+
+    # ----------------------------------------------------------
+    # Corrector kicks
+    # ----------------------------------------------------------
+
+    kick_h = np.asarray(dkick[0], dtype=float).reshape(-1)
+    kick_v = np.asarray(dkick[1], dtype=float).reshape(-1)
+
+    if kick_h.size != nHorCOR:
+        raise ValueError(
+            f"Horizontal dkick length {kick_h.size} "
+            f"!= number of H correctors {nHorCOR}"
+        )
+
+    if kick_v.size != nVerCOR:
+        raise ValueError(
+            f"Vertical dkick length {kick_v.size} "
+            f"!= number of V correctors {nVerCOR}"
+        )
+
+    # ----------------------------------------------------------
+    # Build fit parameter groups
+    # ----------------------------------------------------------
+
+    groups = []
+
+    for q in quads_ind:
+
+        if np.isscalar(q):
+            groups.append([int(q)])
+
+        else:
+            groups.append([int(i) for i in q])
+
+    # ----------------------------------------------------------
+    # Collect all physical quadrupoles needed by analytical code
+    # ----------------------------------------------------------
+
+    physical_quads = sorted({
+        q
+        for group in groups
+        for q in group
+    })
+
+    print(
+        "[Analytical Jacobian] "
+        f"{len(groups)} fit parameters, "
+        f"{len(physical_quads)} physical quadrupoles"
+    )
+
+    # ----------------------------------------------------------
+    # Analytical derivatives
+    #
+    # IMPORTANT:
+    # H and V corrector lists may be different.
+    # Therefore calculate them separately.
+    # ----------------------------------------------------------
+
+    dMH, _ = analytic_orm_variation_with_normal_quadrupole(
+        ring,
+        ind_bpms=bpm_indexes,
+        ind_cors=hcor,
+        ind_quads=physical_quads,
+        thick_quadrupole=analytical_thick_quadrupole,
+        thick_steerers=analytical_thick_steerers,
+        verbose=analytical_verbose,
+        use_mp=analytical_use_mp,
+    )
+
+    _, dMV = analytic_orm_variation_with_normal_quadrupole(
+        ring,
+        ind_bpms=bpm_indexes,
+        ind_cors=vcor,
+        ind_quads=physical_quads,
+        thick_quadrupole=analytical_thick_quadrupole,
+        thick_steerers=analytical_thick_steerers,
+        verbose=analytical_verbose,
+        use_mp=analytical_use_mp,
+    )
+
+    # physical quad index -> analytical-array index
+    q_to_pos = {
+        q: i
+        for i, q in enumerate(physical_quads)
+    }
+
+    # ----------------------------------------------------------
+    # Allocate pyLOCO Jacobian
+    # ----------------------------------------------------------
+
+    J_quad = np.zeros(
+        (
+            len(groups),
+            n_rows,
+            n_cols,
+        ),
+        dtype=float,
+    )
+
+    # ----------------------------------------------------------
+    # Construct each fit-parameter derivative
+    # ----------------------------------------------------------
+
+    for p, group in enumerate(groups):
+
+        # One family parameter changes all magnets in that family.
+        #
+        # Therefore:
+        #
+        # dR/dK_family =
+        #     sum_m dR/dK_m
+        #
+        # The analytical formula is dR/d(KL), so conversion to
+        # pyLOCO's fitted K parameter requires multiplication by L.
+        #
+        # dR/dK = L * dR/d(KL)
+
+        for q in group:
+
+            aq = q_to_pos[q]
+
+            Lq = float(ring[q].Length)
+
+            # --------------------------------------------------
+            # XX block
+            #
+            # Sign follows the numerical-vs-analytical
+            # validation already performed.
+            # --------------------------------------------------
+
+            J_quad[
+                p,
+                :nHBPM,
+                :nHorCOR,
+            ] += (
+                -dMH[:, :, aq]
+                * Lq
+                * kick_h[np.newaxis, :]
+            )
+
+            # --------------------------------------------------
+            # YY block
+            # --------------------------------------------------
+
+            J_quad[
+                p,
+                nHBPM:,
+                nHorCOR:,
+            ] += (
+                dMV[:, :, aq]
+                * Lq
+                * kick_v[np.newaxis, :]
+            )
+
+    # ----------------------------------------------------------
+    # Apply BPM calibration/coupling matrix
+    # ----------------------------------------------------------
+
+    for p in range(J_quad.shape[0]):
+        J_quad[p] = C @ J_quad[p]
+
+    print(
+        "[Analytical Jacobian] shape:",
+        J_quad.shape,
+    )
+
+    return J_quad, None
+
 # ---------- worker globals ----------
 G_C = None
 G_CMODEL = None
@@ -1034,54 +1374,125 @@ def _init_shared(shm_name_C, shape_C, dtype_C, shm_name_Cm, shape_Cm, dtype_Cm):
     G_C = np.ndarray(shape_C, dtype=np.dtype(dtype_C), buffer=_shm_C.buf)
     G_CMODEL = np.ndarray(shape_Cm, dtype=np.dtype(dtype_Cm), buffer=_shm_Cm.buf)
 
-
 def generating_quads_response_matrices(
         quad_index, ring, dkick, cor_indexes, bpm_indexes,
         delta_init, individuals, HCMCoupling, VCMCoupling,
         rf_step, auto_correct_delta, block, fit_cfg,
         includeDispersion
 ):
+    """
+    Generate the numerical quadrupole Jacobian for one fitted
+    quadrupole parameter.
+
+    The parameter may correspond to:
+
+        individuals=True
+            one physical quadrupole
+
+        individuals=False
+            one quadrupole family
+
+    The finite-difference step can optionally be adjusted using
+    the RMS ORM change.
+
+    Once the step has been selected, the final Jacobian is
+    evaluated using a CENTRAL finite difference:
+
+        J = [C(K + dK) - C(K - dK)] / (2 dK)
+
+    rather than the previous forward difference:
+
+        J = [C(K + dK) - C(K)] / dK
+    """
+
     logs = []
 
-    attr_name, attr_idx = _resolve_attr_for_block_read(block, fit_cfg)
+    # ============================================================
+    # 1. Resolve fitted quadrupole attribute
+    # ============================================================
+
+    attr_name, attr_idx = _resolve_attr_for_block_read(
+        block,
+        fit_cfg,
+    )
 
     # quad_index may be:
-    #   int              for individual fitting
-    #   list[int]        for family fitting
+    #
+    #   int
+    #       individual quadrupole
+    #
+    #   list[int]
+    #       quadrupole family
+    #
     group = (
         [int(quad_index)]
         if np.isscalar(quad_index)
         else [int(q) for q in quad_index]
     )
 
-    # Read nominal values of all magnets in this group
+    # ============================================================
+    # 2. Read nominal quadrupole strengths
+    # ============================================================
+
     k0_each = np.asarray(
         [
-            _get_attr_scalar(ring[q], attr_name, attr_idx)
+            _get_attr_scalar(
+                ring[q],
+                attr_name,
+                attr_idx,
+            )
             for q in group
         ],
         dtype=float,
     )
 
+    # ============================================================
+    # 3. Individual or family parameter
+    # ============================================================
+
     if individuals:
+
+        # --------------------------------------------------------
         # Individual parameter
+        # --------------------------------------------------------
+
         correction_indices = group
-        nominal_values = k0_each
+
+        nominal_values = k0_each.copy()
 
         if delta_init is None:
-            delta_local = 1e-3 * nominal_values
-            delta_local[delta_local == 0.0] = 1e-3
+
+            delta_local = (
+                1e-3 * nominal_values
+            )
+
+            delta_local[
+                delta_local == 0.0
+            ] = 1e-3
+
         else:
+
             delta_local = np.atleast_1d(
                 delta_init
             ).astype(float)[:len(group)]
 
     else:
-        # Family parameter: one strength value for the whole family
-        correction_indices = [group]
-        nominal_values = np.asarray([k0_each[0]], dtype=float)
 
-        # Family fitting assumes the magnets have the same nominal strength
+        # --------------------------------------------------------
+        # Family parameter
+        # --------------------------------------------------------
+
+        correction_indices = [
+            group
+        ]
+
+        nominal_values = np.asarray(
+            [k0_each[0]],
+            dtype=float,
+        )
+
+        # Family fitting assumes that all magnets belonging
+        # to the family have the same nominal strength.
         if not np.allclose(
             k0_each,
             k0_each[0],
@@ -1089,82 +1500,185 @@ def generating_quads_response_matrices(
             atol=1e-14,
         ):
             raise ValueError(
-                f"Family {group} contains different nominal strengths: "
-                f"{k0_each}"
+                f"Family {group} contains different "
+                f"nominal strengths: {k0_each}"
             )
 
         if delta_init is None:
-            delta_value = 1e-3 * nominal_values[0]
-            if delta_value == 0.0:
-                delta_value = 1e-3
-        else:
-            delta_value = float(
-                np.atleast_1d(delta_init).ravel()[0]
+
+            delta_value = (
+                1e-3 * nominal_values[0]
             )
 
-        delta_local = np.asarray([delta_value], dtype=float)
+            if delta_value == 0.0:
+                delta_value = 1e-3
+
+        else:
+
+            delta_value = float(
+                np.atleast_1d(
+                    delta_init
+                ).ravel()[0]
+            )
+
+        delta_local = np.asarray(
+            [delta_value],
+            dtype=float,
+        )
+
+    # ============================================================
+    # 4. Step-size selection settings
+    # ============================================================
 
     RMSGoal = 1e-6
     RMSTol = 10.0
 
+    # ============================================================
+    # 5. Response-matrix configuration
+    #
+    # Create it once. The lattice itself is modified below.
+    # ============================================================
+
+    cfg = RMConfig(
+        dkick=dkick,
+        bpm_ords=bpm_indexes,
+        cm_ords=cor_indexes,
+        HCMCoupling=HCMCoupling,
+        VCMCoupling=VCMCoupling,
+        includeDispersion=includeDispersion,
+        rfStep=rf_step,
+    )
+
+    # ============================================================
+    # 6. Automatically choose a suitable finite-difference step
+    #
+    # We preserve the previous pyLOCO logic here.
+    #
+    # The +dK response is compared with the nominal response only
+    # to determine whether dK is sufficiently large/small.
+    #
+    # This response is NOT used as the final Jacobian.
+    # ============================================================
+
     while True:
-        perturbed_values = nominal_values + delta_local
+
+        plus_values = (
+            nominal_values
+            +
+            delta_local
+        )
+
+        # --------------------------------------------------------
+        # Apply +dK
+        # --------------------------------------------------------
 
         set_correction(
             ring,
-            perturbed_values,
+            plus_values,
             correction_indices,
             individuals=individuals,
             block=block,
             config=fit_cfg,
         )
 
-        cfg = RMConfig(
-            dkick=dkick,
-            bpm_ords=bpm_indexes,
-            cm_ords=cor_indexes,
-            HCMCoupling=HCMCoupling,
-            VCMCoupling=VCMCoupling,
-            includeDispersion=includeDispersion,
-            rfStep=rf_step,
+        # --------------------------------------------------------
+        # Calculate ORM at K + dK
+        # --------------------------------------------------------
+
+        C_plus_step_test = response_matrix(
+            ring,
+            config=cfg,
         )
 
-        C_measured = response_matrix(ring, config=cfg)
-        C_measured = G_C @ C_measured
+        C_plus_step_test = (
+            G_C
+            @
+            C_plus_step_test
+        )
+
+        # --------------------------------------------------------
+        # Difference from nominal ORM
+        # --------------------------------------------------------
 
         if includeDispersion:
+
             difference = (
-                C_measured[:, :-1] -
+                C_plus_step_test[:, :-1]
+                -
                 G_CMODEL[:, :-1]
-            ).ravel(order="F")
+            ).ravel(
+                order="F"
+            )
+
         else:
+
             difference = (
-                C_measured -
+                C_plus_step_test
+                -
                 G_CMODEL
-            ).ravel(order="F")
+            ).ravel(
+                order="F"
+            )
 
         RMSDelta = float(
             np.sqrt(
-                np.sum(difference**2) /
-                max(1, difference.size)
+                np.sum(
+                    difference**2
+                )
+                /
+                max(
+                    1,
+                    difference.size,
+                )
             )
         )
 
-        if not np.isfinite(RMSDelta) or RMSDelta == 0.0:
+        if (
+            not np.isfinite(RMSDelta)
+            or
+            RMSDelta == 0.0
+        ):
+
+            # Restore nominal lattice before raising.
+            set_correction(
+                ring,
+                nominal_values,
+                correction_indices,
+                individuals=individuals,
+                block=block,
+                config=fit_cfg,
+            )
+
             raise ValueError(
                 f"LOCO error: RMS difference invalid "
                 f"for group {group}"
             )
 
+        # --------------------------------------------------------
+        # User requested fixed dK
+        # --------------------------------------------------------
+
         if not auto_correct_delta:
+
+            logs.append(
+                f"Group {group}: fixed delta used; "
+                f"RMS={1000 * RMSDelta:0.5g} mm"
+            )
+
             break
 
+        # --------------------------------------------------------
+        # dK too small
+        # --------------------------------------------------------
+
         if RMSDelta < RMSGoal / RMSTol:
+
             logs.append(
                 f"Group {group}: delta too small; "
                 f"RMS={1000 * RMSDelta:0.5g} mm"
             )
 
+            # Restore nominal lattice
             set_correction(
                 ring,
                 nominal_values,
@@ -1174,14 +1688,24 @@ def generating_quads_response_matrices(
                 config=fit_cfg,
             )
 
-            delta_local *= RMSGoal / RMSDelta
+            delta_local *= (
+                RMSGoal
+                /
+                RMSDelta
+            )
+
+        # --------------------------------------------------------
+        # dK too large
+        # --------------------------------------------------------
 
         elif RMSDelta > RMSGoal * RMSTol / 3.0:
+
             logs.append(
                 f"Group {group}: delta too large; "
                 f"RMS={1000 * RMSDelta:0.5g} mm"
             )
 
+            # Restore nominal lattice
             set_correction(
                 ring,
                 nominal_values,
@@ -1191,16 +1715,29 @@ def generating_quads_response_matrices(
                 config=fit_cfg,
             )
 
-            delta_local *= RMSGoal / RMSDelta
+            delta_local *= (
+                RMSGoal
+                /
+                RMSDelta
+            )
+
+        # --------------------------------------------------------
+        # dK accepted
+        # --------------------------------------------------------
 
         else:
+
             logs.append(
                 f"Group {group}: delta OK; "
                 f"RMS={1000 * RMSDelta:0.5g} mm"
             )
+
             break
 
-    # Restore nominal lattice
+    # ============================================================
+    # 7. Restore nominal lattice before final derivative
+    # ============================================================
+
     set_correction(
         ring,
         nominal_values,
@@ -1210,15 +1747,145 @@ def generating_quads_response_matrices(
         config=fit_cfg,
     )
 
-    step = float(delta_local[0])
+    # ============================================================
+    # 8. Check finite-difference step
+    # ============================================================
+
+    step = float(
+        delta_local[0]
+    )
 
     if step == 0.0:
+
         raise ValueError(
-            f"Zero Jacobian step for group {group}"
+            f"Zero Jacobian step "
+            f"for group {group}"
         )
 
+    # ============================================================
+    # 9. POSITIVE perturbation
+    #
+    #                 C_plus = C(K + dK)
+    # ============================================================
+
+    plus_values = (
+        nominal_values
+        +
+        delta_local
+    )
+
+    set_correction(
+        ring,
+        plus_values,
+        correction_indices,
+        individuals=individuals,
+        block=block,
+        config=fit_cfg,
+    )
+
+    C_plus = response_matrix(
+        ring,
+        config=cfg,
+    )
+
+    C_plus = (
+        G_C
+        @
+        C_plus
+    )
+
+    # ============================================================
+    # 10. Restore nominal before negative perturbation
+    # ============================================================
+
+    set_correction(
+        ring,
+        nominal_values,
+        correction_indices,
+        individuals=individuals,
+        block=block,
+        config=fit_cfg,
+    )
+
+    # ============================================================
+    # 11. NEGATIVE perturbation
+    #
+    #                 C_minus = C(K - dK)
+    # ============================================================
+
+    minus_values = (
+        nominal_values
+        -
+        delta_local
+    )
+
+    set_correction(
+        ring,
+        minus_values,
+        correction_indices,
+        individuals=individuals,
+        block=block,
+        config=fit_cfg,
+    )
+
+    C_minus = response_matrix(
+        ring,
+        config=cfg,
+    )
+
+    C_minus = (
+        G_C
+        @
+        C_minus
+    )
+
+    # ============================================================
+    # 12. Restore nominal lattice
+    #
+    # Very important: leave the worker lattice exactly as it
+    # entered the derivative calculation.
+    # ============================================================
+
+    set_correction(
+        ring,
+        nominal_values,
+        correction_indices,
+        individuals=individuals,
+        block=block,
+        config=fit_cfg,
+    )
+
+    # ============================================================
+    # 13. CENTRAL FINITE DIFFERENCE
+    #
+    #             C(K+dK) - C(K-dK)
+    #     J = ---------------------------
+    #                       2 dK
+    # ============================================================
+
+    J_block = (
+        C_plus
+        -
+        C_minus
+    ) / (
+        2.0 * step
+    )
+
+    # ============================================================
+    # 14. Log final step
+    # ============================================================
+
+    logs.append(
+        f"Group {group}: central finite difference; "
+        f"step={step:.12e}"
+    )
+
+    # ============================================================
+    # 15. Return
+    # ============================================================
+
     return (
-        (C_measured - G_CMODEL) / step,
+        J_block,
         delta_local,
         logs,
     )
@@ -1977,107 +2644,6 @@ def build_quad_constraint_rows(
     return G, yc
 
 
-def build_skew_constraint_rows(
-    n_params,
-    skew_slice,
-    *,
-    skew_sigma,
-    skew_weights=None,
-    skew_mask=None,
-):
-    skew_cols = np.arange(skew_slice.start, skew_slice.stop)
-
-    if skew_mask is not None:
-        skew_mask = np.asarray(skew_mask, dtype=bool)
-        if skew_mask.size != skew_cols.size:
-            raise ValueError("skew_mask size mismatch")
-        skew_cols = skew_cols[skew_mask]
-
-    n_constrained = len(skew_cols)
-    if n_constrained == 0:
-        return None, None
-
-    # weights
-    if skew_weights is None:
-        wk = np.ones(n_constrained)
-    else:
-        skew_weights = np.asarray(skew_weights).ravel()
-        if skew_mask is not None:
-            wk = skew_weights[skew_mask]
-        else:
-            wk = skew_weights
-
-    # sigma
-    skew_sigma = np.asarray(skew_sigma).ravel()
-
-    if skew_sigma.size == 1:
-        sigma_vec = np.full(n_constrained, skew_sigma[0])
-    else:
-        if skew_mask is not None:
-            sigma_vec = skew_sigma[skew_mask]
-        else:
-            sigma_vec = skew_sigma
-
-    if np.any(sigma_vec <= 0):
-        raise ValueError("skew_sigma must be > 0")
-
-    diag_vals = wk / sigma_vec
-
-    G = np.zeros((n_constrained, n_params))
-    G[np.arange(n_constrained), skew_cols] = diag_vals
-
-    yc = np.zeros((n_constrained, 1))
-
-    return G, yc
-def augment_system_with_constraints(
-    Jw, y, blocks, fit_list, *,
-    constraint_cfg=None,
-):
-    if constraint_cfg is None or not constraint_cfg.enable:
-        return Jw, y, None, None
-
-    G_list = []
-    yc_list = []
-
-    # -------------------
-    # QUADS
-    # -------------------
-    # --- QUADS ---
-    if 'quads' in fit_list and 'quads' in blocks:
-        Gq, yq = build_constraint_rows(
-            n_params=Jw.shape[1],
-            param_slice=blocks['quads'],
-            sigma=constraint_cfg.quad_sigma,
-            weights=constraint_cfg.quad_weights,
-            mask=constraint_cfg.quad_mask,
-        )
-        if Gq is not None:
-            G_list.append(Gq)
-            yc_list.append(yq)
-
-    # --- SKEW ---
-    if 'skew_quads' in fit_list and 'skew_quads' in blocks:
-        Gs, ys = build_constraint_rows(
-            n_params=Jw.shape[1],
-            param_slice=blocks['skew_quads'],
-            sigma=constraint_cfg.skew_sigma,
-            weights=constraint_cfg.skew_weights,
-            mask=constraint_cfg.skew_mask,
-        )
-        if Gs is not None:
-            G_list.append(Gs)
-            yc_list.append(ys)
-
-    if not G_list:
-        return Jw, y, None, None
-
-    G = np.vstack(G_list)
-    yc = np.vstack(yc_list)
-
-    return Jw, y, G, yc
-
-
-
 def build_constraint_rows(
     n_params,
     param_slice,
@@ -2085,39 +2651,277 @@ def build_constraint_rows(
     sigma,
     weights=None,
     mask=None,
+    param_scale=None,
 ):
-    cols = np.arange(param_slice.start, param_slice.stop)
+    cols_all = np.arange(param_slice.start, param_slice.stop)
 
     if mask is not None:
         mask = np.asarray(mask, dtype=bool)
-        cols = cols[mask]
+
+        if mask.size != len(cols_all):
+            raise ValueError(
+                f"mask has size {mask.size}, expected {len(cols_all)}"
+            )
+
+        cols = cols_all[mask]
+    else:
+        cols = cols_all
 
     n = len(cols)
+
     if n == 0:
         return None, None
 
-    # weights
+    # --------------------------------------------------
+    # Weights
+    # --------------------------------------------------
     if weights is None:
         wk = np.ones(n)
     else:
-        weights = np.asarray(weights).ravel()
+        weights = np.asarray(weights, dtype=float).ravel()
+
+        if weights.size != len(cols_all):
+            raise ValueError(
+                f"weights has size {weights.size}, "
+                f"expected {len(cols_all)}"
+            )
+
         wk = weights[mask] if mask is not None else weights
 
-    # sigma
-    sigma = np.asarray(sigma).ravel()
+    # --------------------------------------------------
+    # Sigma in PHYSICAL parameter units
+    # --------------------------------------------------
+    sigma = np.asarray(sigma, dtype=float).ravel()
+
     if sigma.size == 1:
         sigma_vec = np.full(n, sigma[0])
     else:
+        if sigma.size != len(cols_all):
+            raise ValueError(
+                f"sigma has size {sigma.size}, "
+                f"expected {len(cols_all)}"
+            )
+
         sigma_vec = sigma[mask] if mask is not None else sigma
 
-    diag_vals = wk / sigma_vec
+    if np.any(sigma_vec <= 0):
+        raise ValueError("All constraint sigma values must be > 0")
 
-    G = np.zeros((n, n_params))
+    # --------------------------------------------------
+    # Solver -> physical scaling
+    #
+    # physical_delta = solver_delta / param_scale
+    # --------------------------------------------------
+    if param_scale is None:
+        scale_vec = np.ones(n)
+    else:
+        param_scale = np.asarray(param_scale, dtype=float).ravel()
+
+        if param_scale.size != n_params:
+            raise ValueError(
+                f"param_scale has size {param_scale.size}, "
+                f"expected {n_params}"
+            )
+
+        scale_vec = param_scale[cols]
+
+        if np.any(scale_vec == 0):
+            raise ValueError("Constraint param_scale contains zero")
+
+    # --------------------------------------------------
+    # Constraint in SOLVER coordinates
+    #
+    # physical_delta = z / scale
+    #
+    # (w/sigma) * physical_delta
+    # = w/(sigma*scale) * z
+    # --------------------------------------------------
+    diag_vals = wk / (sigma_vec * scale_vec)
+
+    G = np.zeros((n, n_params), dtype=float)
     G[np.arange(n), cols] = diag_vals
 
-    yc = np.zeros((n, 1))
+    yc = np.zeros((n, 1), dtype=float)
 
     return G, yc
+
+def augment_system_with_constraints(
+    Jw,
+    y,
+    blocks,
+    fit_list,
+    *,
+    constraint_cfg=None,
+    param_scale=None,
+):
+    """
+    Build constraint rows for the fitted parameter blocks.
+
+    Supported constraints:
+        - quads
+        - skew_quads
+        - hbpm_gain
+        - vbpm_gain
+        - hcor_cal
+        - vcor_cal
+
+    The BPM-gain and corrector-calibration constraints are only added
+    when their corresponding weights in ConstraintConfig are not None.
+    """
+
+    # ------------------------------------------------------------
+    # Constraints disabled
+    # ------------------------------------------------------------
+    if constraint_cfg is None or not constraint_cfg.enable:
+        return Jw, y, None, None
+
+    G_list = []
+    yc_list = []
+
+    # ============================================================
+    # Normal quadrupoles
+    # ============================================================
+    if (
+        "quads" in fit_list
+        and "quads" in blocks
+    ):
+        Gq, yq = build_constraint_rows(
+            n_params=Jw.shape[1],
+            param_slice=blocks["quads"],
+            sigma=constraint_cfg.quad_sigma,
+            weights=constraint_cfg.quad_weights,
+            mask=constraint_cfg.quad_mask,
+            param_scale=param_scale,
+        )
+
+        if Gq is not None:
+            G_list.append(Gq)
+            yc_list.append(yq)
+
+    # ============================================================
+    # Skew quadrupoles
+    # ============================================================
+    if (
+        "skew_quads" in fit_list
+        and "skew_quads" in blocks
+    ):
+        Gs, ys = build_constraint_rows(
+            n_params=Jw.shape[1],
+            param_slice=blocks["skew_quads"],
+            sigma=constraint_cfg.skew_sigma,
+            weights=constraint_cfg.skew_weights,
+            mask=constraint_cfg.skew_mask,
+            param_scale=param_scale,
+        )
+
+        if Gs is not None:
+            G_list.append(Gs)
+            yc_list.append(ys)
+
+    # ============================================================
+    # Horizontal BPM gains
+    # ============================================================
+    if (
+        "hbpm_gain" in fit_list
+        and "hbpm_gain" in blocks
+        and constraint_cfg.hbpm_gain_weights is not None
+    ):
+        Gh, yh = build_constraint_rows(
+            n_params=Jw.shape[1],
+            param_slice=blocks["hbpm_gain"],
+            sigma=constraint_cfg.hbpm_gain_sigma,
+            weights=constraint_cfg.hbpm_gain_weights,
+            mask=constraint_cfg.hbpm_gain_mask,
+            param_scale=param_scale,
+        )
+
+        if Gh is not None:
+            G_list.append(Gh)
+            yc_list.append(yh)
+
+    # ============================================================
+    # Vertical BPM gains
+    # ============================================================
+    if (
+        "vbpm_gain" in fit_list
+        and "vbpm_gain" in blocks
+        and constraint_cfg.vbpm_gain_weights is not None
+    ):
+        Gv, yv = build_constraint_rows(
+            n_params=Jw.shape[1],
+            param_slice=blocks["vbpm_gain"],
+            sigma=constraint_cfg.vbpm_gain_sigma,
+            weights=constraint_cfg.vbpm_gain_weights,
+            mask=constraint_cfg.vbpm_gain_mask,
+            param_scale=param_scale,
+        )
+
+        if Gv is not None:
+            G_list.append(Gv)
+            yc_list.append(yv)
+
+    # ============================================================
+    # Horizontal corrector calibration
+    # ============================================================
+    if (
+        "hcor_cal" in fit_list
+        and "hcor_cal" in blocks
+        and constraint_cfg.hcor_cal_weights is not None
+    ):
+        Ghc, yhc = build_constraint_rows(
+            n_params=Jw.shape[1],
+            param_slice=blocks["hcor_cal"],
+            sigma=constraint_cfg.hcor_cal_sigma,
+            weights=constraint_cfg.hcor_cal_weights,
+            mask=constraint_cfg.hcor_cal_mask,
+            param_scale=param_scale,
+        )
+
+        if Ghc is not None:
+            G_list.append(Ghc)
+            yc_list.append(yhc)
+
+    # ============================================================
+    # Vertical corrector calibration
+    # ============================================================
+    if (
+        "vcor_cal" in fit_list
+        and "vcor_cal" in blocks
+        and constraint_cfg.vcor_cal_weights is not None
+    ):
+        Gvc, yvc = build_constraint_rows(
+            n_params=Jw.shape[1],
+            param_slice=blocks["vcor_cal"],
+            sigma=constraint_cfg.vcor_cal_sigma,
+            weights=constraint_cfg.vcor_cal_weights,
+            mask=constraint_cfg.vcor_cal_mask,
+            param_scale=param_scale,
+        )
+
+        if Gvc is not None:
+            G_list.append(Gvc)
+            yc_list.append(yvc)
+
+    # ------------------------------------------------------------
+    # No active constraints
+    # ------------------------------------------------------------
+    if not G_list:
+        return Jw, y, None, None
+
+    # ------------------------------------------------------------
+    # Combine all constraint rows
+    # ------------------------------------------------------------
+    G = np.vstack(G_list)
+    yc = np.vstack(yc_list)
+
+    print(
+        f"[Constraints] G={G.shape} | "
+        f"active rows={G.shape[0]} | "
+        f"solver parameters={G.shape[1]}"
+    )
+
+
+    return Jw, y, G, yc
 
 
 
@@ -2153,6 +2957,12 @@ def _svd_select_indices(
     """Return indices Ivec of singular values to keep."""
     if method == "threshold":
         Ivec = np.where(S > svd_threshold * np.max(S))[0]
+        print(
+        f"[SVD] threshold={svd_threshold:.3e} | "
+        f"kept={len(Ivec)}/{len(S)} | "
+        f"cut={len(S)-len(Ivec)} | "
+        f"smallest kept={S[Ivec[-1]]/S[0]:.3e}"
+    )
     elif method == "user_input" and cut_ is not None:
         Ivec = np.arange(min(cut_, len(S)))
     elif method == "interactive" or interactive:
@@ -2387,8 +3197,6 @@ def solve_step_gn(
 
     return fit_results.ravel(), Ivec, S
 
-
-
 def solve_step_lm(
         J_weighted, y, weights_flat,
         model_orm_flat, measured_orm_flat,
@@ -2396,40 +3204,185 @@ def solve_step_lm(
         max_lm_lambda=15,
         svd_method='threshold',
         svd_threshold=1e-3,
-        cut_=None, show_plot=False, tag="", constraint_cfg=None, blocks=None, fit_list=None
+        cut_=None, show_plot=False, tag="",
+        constraint_cfg=None,
+        blocks=None,
+        fit_list=None,
+        param_scale=None,
 ):
-    # -------------------------------
-    # Constraints (fix bug: Jw -> J_weighted)
-    # -------------------------------
+    """
+    Solve one Levenberg-Marquardt step.
+
+    The unconstrained problem is
+
+        min_delta ||J_weighted @ delta - y||^2
+
+    and, when constraints are enabled,
+
+        min_delta (
+            ||J_weighted @ delta - y||^2
+            + ||G @ delta - yc||^2
+        )
+
+    The corresponding normal equations are
+
+        (J.T @ J + G.T @ G) delta
+            = J.T @ y + G.T @ yc
+
+    before LM damping is added.
+    """
+
+    # ============================================================
+    # 1. Build constraints
+    # ============================================================
+
+    G = None
+    yc = None
 
     if constraint_cfg is not None:
         _, _, G, yc = augment_system_with_constraints(
-            J_weighted, y, blocks, fit_list,
+            J_weighted,
+            y,
+            blocks,
+            fit_list,
             constraint_cfg=constraint_cfg,
+            param_scale=param_scale,
         )
 
-
+    # ============================================================
+    # 2. Construct normal equations from measured data
+    # ============================================================
 
     lam = Starting_Lambda
 
-    C = J_weighted.T @ J_weighted
+    C_data = J_weighted.T @ J_weighted
     ay = J_weighted.T @ y
 
-    # LM
+    # Start with the data contribution
+    C = C_data.copy()
+
+    # ============================================================
+    # 3. Add constraint contribution
+    # ============================================================
+
+    if G is not None:
+        C_constraint = G.T @ G
+
+        C += C_constraint
+        ay += G.T @ yc
+    else:
+        C_constraint = None
+
+    # ============================================================
+    # 4. Constraint-strength diagnostics
+    # ============================================================
+
+    if G is not None:
+        print("\n[CONSTRAINT STRENGTH DEBUG]")
+
+        C_data_diag = np.diag(C_data)
+        C_constraint_diag = np.diag(C_constraint)
+
+        for name, sl in blocks.items():
+
+            data_part = C_data_diag[sl]
+            constraint_part = C_constraint_diag[sl]
+
+            print(f"\n{name}")
+
+            print(
+                f"  data diag       : "
+                f"min={np.min(data_part):.3e}, "
+                f"max={np.max(data_part):.3e}, "
+                f"median={np.median(data_part):.3e}"
+            )
+
+            print(
+                f"  constraint diag : "
+                f"min={np.min(constraint_part):.3e}, "
+                f"max={np.max(constraint_part):.3e}, "
+                f"median={np.median(constraint_part):.3e}"
+            )
+
+            ratio = np.divide(
+                constraint_part,
+                data_part,
+                out=np.full_like(constraint_part, np.inf),
+                where=data_part != 0,
+            )
+
+            print(
+                f"  constraint/data : "
+                f"min={np.min(ratio):.3e}, "
+                f"max={np.max(ratio):.3e}, "
+                f"median={np.median(ratio):.3e}"
+            )
+
+    # ============================================================
+    # 5. Add LM damping
+    # ============================================================
+
     if scaled:
         C_lm = C + lam * np.diag(np.diag(C))
     else:
         C_lm = C + lam * np.eye(C.shape[0])
 
-    # ADD constraint diagonal term
-    if constraint_cfg is not None:
-        C_delta = G.T @ G
-        C_lm += np.diag(np.diag(C_delta))
+    # ============================================================
+    # 6. LM matrix diagnostics
+    # ============================================================
 
-    # -------------------------------
-    # SVD
-    # -------------------------------
-    Uc, Sc, Vhc = np.linalg.svd(C_lm, full_matrices=False)
+    print("\n[LM MATRIX DEBUG]")
+
+    print(
+        "||C_data||       =",
+        np.linalg.norm(C_data)
+    )
+
+    if G is not None:
+        print(
+            "||G.T @ G||     =",
+            np.linalg.norm(C_constraint)
+        )
+
+        print(
+            "||C - C_data||  =",
+            np.linalg.norm(C - C_data)
+        )
+
+    print(
+        "||C_lm||         =",
+        np.linalg.norm(C_lm)
+    )
+
+    print(
+        "diag C_data      :",
+        np.min(np.diag(C_data)),
+        np.median(np.diag(C_data)),
+        np.max(np.diag(C_data)),
+    )
+
+    print(
+        "diag C           :",
+        np.min(np.diag(C)),
+        np.median(np.diag(C)),
+        np.max(np.diag(C)),
+    )
+
+    print(
+        "diag C_lm        :",
+        np.min(np.diag(C_lm)),
+        np.median(np.diag(C_lm)),
+        np.max(np.diag(C_lm)),
+    )
+
+    # ============================================================
+    # 7. SVD of LM system
+    # ============================================================
+
+    Uc, Sc, Vhc = np.linalg.svd(
+        C_lm,
+        full_matrices=False
+    )
 
     Ivec = _svd_select_indices(
         Sc,
@@ -2444,18 +3397,98 @@ def solve_step_lm(
         svd_threshold=svd_threshold,
         cut_=cut_,
         show_plot=show_plot,
-        iteration_tag=tag
+        iteration_tag=tag,
     )
 
-    # -------------------------------
-    # Solve
-    # -------------------------------
+    # ============================================================
+    # 8. Diagnostic: inspect modes removed by SVD threshold
+    # ============================================================
+
+    cut_idx = np.setdiff1d(
+        np.arange(len(Sc)),
+        Ivec
+    )
+
+    print("\n[SVD CUT MODES]")
+
+    for m in cut_idx:
+
+        vec = Vhc[m, :]
+        order = np.argsort(np.abs(vec))[::-1]
+
+        print(
+            f"\nmode {m} | "
+            f"relative SV={Sc[m] / Sc[0]:.3e}"
+        )
+
+        for idx in order[:20]:
+
+            block_name = None
+            local_idx = None
+
+            if blocks is not None:
+                for name, sl in blocks.items():
+                    if sl.start <= idx < sl.stop:
+                        block_name = name
+                        local_idx = idx - sl.start
+                        break
+
+            if block_name is None:
+                print(
+                    f"  global {idx:3d} "
+                    f"component={vec[idx]:+.6e}"
+                )
+            else:
+                print(
+                    f"  global {idx:3d} "
+                    f"{block_name:15s}[{local_idx:3d}] "
+                    f"component={vec[idx]:+.6e}"
+                )
+
+    # ============================================================
+    # 9. Diagnostic: power of each parameter block in cut modes
+    # ============================================================
+
+    print("\n[SVD CUT MODE BLOCK POWER]")
+
+    if blocks is not None:
+
+        for m in cut_idx:
+
+            vec = Vhc[m, :]
+
+            print(
+                f"\nmode {m} | "
+                f"relative SV={Sc[m] / Sc[0]:.3e}"
+            )
+
+            total = np.sum(vec**2)
+
+            if total == 0:
+                continue
+
+            for name, sl in blocks.items():
+
+                frac = np.sum(vec[sl]**2) / total
+
+                print(
+                    f"  {name:15s}: "
+                    f"{100.0 * frac:8.3f}%"
+                )
+
+    # ============================================================
+    # 10. Solve constrained LM system
+    # ============================================================
+
     b = Uc[:, Ivec].T @ ay
-    b = np.diag(1.0 / Sc[Ivec]) @ b
+
+    b = np.diag(
+        1.0 / Sc[Ivec]
+    ) @ b
+
     fit_results = Vhc.T[:, Ivec] @ b
 
     return fit_results.ravel(), lam, Ivec, Sc
-
 
 # ----------------------- MASTER pyloco FUNCTION -----------------------
 
@@ -2493,6 +3526,11 @@ def pyloco(
         quad_jacobian_file=None,
         skew_jacobian_file=None,
         quads_tilt_jacobian_file=None,
+        quad_jacobian_calculator="Numerical",
+        analytical_thick_quadrupole=True,
+        analytical_thick_steerers=False,
+        analytical_verbose=False,
+        analytical_use_mp=False,
         force_recompute=True,
         # Fit multi stage
         continue_from_previous=False,
@@ -2743,11 +3781,18 @@ def pyloco(
             iteration=it + 1,
             quad_jacobian_file=quad_jacobian_file,
             skew_jacobian_file=skew_jacobian_file,
+            quad_jacobian_calculator=quad_jacobian_calculator,
+            analytical_thick_quadrupole=analytical_thick_quadrupole,
+            analytical_thick_steerers=analytical_thick_steerers,
+            analytical_verbose=analytical_verbose,
+            analytical_use_mp=analytical_use_mp,
             quads_tilt_jacobian_file=quads_tilt_jacobian_file,
             force_recompute=force_recompute,
             output_dir=output_dir
 
         )
+
+
         if fixedmomentum == True:
 
             AlphaMCF = get_mcf(ring)
@@ -2773,6 +3818,8 @@ def pyloco(
         y_meas_ = orm_measured.reshape(-1, 1, order="F")
         y_model_ = orm_model.reshape(-1, 1, order="F")
         J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
+
+
 
         iNoCoupling, iNoCoupling_chi, nBPM = build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion)
         if remove_coupling_ == True:
@@ -2897,6 +3944,50 @@ def pyloco(
         if it == 0 and initial_chi2_callback is not None:
             initial_chi2_callback(float(chi2_before))
 
+
+        if it == 0:
+            full_path = Path(output_dir) / "jacobians" / "full"
+            full_path.mkdir(parents=True, exist_ok=True)
+
+            np.save(full_path / "J_fit_filtered.npy", J)
+            np.save(full_path / "Jw_solver.npy", Jw)
+            np.save(full_path / "weights_fit.npy", weights_flat)
+            np.save(full_path / "residual_weighted.npy", y)
+
+            if norm_factors is not None:
+                np.save(
+                    full_path / "normalization_factors.npy",
+                    np.asarray(norm_factors)
+                )
+
+            print("\n========== FULL SOLVER JACOBIAN ==========")
+            print("Jfull 3D :", Jfull.shape)
+            print("J raw    :", J_.shape)
+            print("J fit    :", J.shape)
+            print("Jw solver:", Jw.shape)
+            print("==========================================\n")
+            import json
+
+            blocks_serializable = {
+                name: {
+                    "start": int(sl.start),
+                    "stop": int(sl.stop),
+                    "size": int(sl.stop - sl.start),
+                }
+                for name, sl in blocks.items()
+            }
+
+            with open(full_path / "parameter_blocks.json", "w") as f:
+                json.dump(blocks_serializable, f, indent=2)
+
+            print("\nParameter blocks:")
+            for name, info in blocks_serializable.items():
+                print(
+                    f"{name:20s} "
+                    f"{info['start']:4d}:{info['stop']:4d} "
+                    f"({info['size']:4d})"
+                )
+
         if algorithm.lower() == "lm":
             # LM inner loop with accept/reject and lambda updates
             LMlambda = Starting_Lambda
@@ -2907,10 +3998,20 @@ def pyloco(
 
 
                 fit_results, lam_used, Ivec, S = solve_step_lm(
-                    Jw, y, weights_flat, y_model, y_meas, scaled=scaled, Starting_Lambda=LMlambda,
-                    max_lm_lambda=max_lm_lambda,
-                    svd_method=svd_selection_method, svd_threshold=svd_threshold,
-                    cut_=cut_, show_plot=show_svd_plot, tag=f"LM it{it + 1}/in{j + 1}", constraint_cfg=constraint_cfg, blocks=blocks, fit_list=fit_list)
+                Jw, y, weights_flat, y_model, y_meas,
+                scaled=scaled,
+                Starting_Lambda=LMlambda,
+                max_lm_lambda=max_lm_lambda,
+                svd_method=svd_selection_method,
+                svd_threshold=svd_threshold,
+                cut_=cut_,
+                show_plot=show_svd_plot,
+                tag=f"LM it{it + 1}/in{j + 1}",
+                constraint_cfg=constraint_cfg,
+                blocks=blocks,
+                fit_list=fit_list,
+                param_scale=norm_factors,
+            )
                 if 'delta_rf' in fit_list:
                     # fit_results = remove_rf_normalization(fit_list, rfStep, fit_results, nHBPM, nVBPM, nHorCOR, nVerCOR, quads_ords, quads_tilt_ind, skew_ords)
                     nf = np.asarray(rf_norm_factors).ravel()

@@ -180,19 +180,51 @@ class FixedParameters:
     delta_skew: float = 1e-3
     delta_q_tilt: float = 1e-6
 
-
 @dataclass
 class ConstraintConfig:
     enable: bool = True
 
+    # --------------------------------------------------
+    # Normal quadrupoles
+    # --------------------------------------------------
     quad_sigma: float | np.ndarray = 0.01
     quad_weights: Optional[np.ndarray] = None
     quad_mask: Optional[np.ndarray] = None
 
+    # --------------------------------------------------
+    # Skew quadrupoles
+    # --------------------------------------------------
     skew_sigma: float | np.ndarray = 0.001
     skew_weights: Optional[np.ndarray] = None
     skew_mask: Optional[np.ndarray] = None
 
+    # --------------------------------------------------
+    # Horizontal BPM gains
+    # --------------------------------------------------
+    hbpm_gain_sigma: float | np.ndarray = 0.05
+    hbpm_gain_weights: Optional[np.ndarray] = None
+    hbpm_gain_mask: Optional[np.ndarray] = None
+
+    # --------------------------------------------------
+    # Vertical BPM gains
+    # --------------------------------------------------
+    vbpm_gain_sigma: float | np.ndarray = 0.05
+    vbpm_gain_weights: Optional[np.ndarray] = None
+    vbpm_gain_mask: Optional[np.ndarray] = None
+
+    # --------------------------------------------------
+    # Horizontal corrector calibration
+    # --------------------------------------------------
+    hcor_cal_sigma: float | np.ndarray = 5.0e-6
+    hcor_cal_weights: Optional[np.ndarray] = None
+    hcor_cal_mask: Optional[np.ndarray] = None
+
+    # --------------------------------------------------
+    # Vertical corrector calibration
+    # --------------------------------------------------
+    vcor_cal_sigma: float | np.ndarray = 5.0e-6
+    vcor_cal_weights: Optional[np.ndarray] = None
+    vcor_cal_mask: Optional[np.ndarray] = None
 
 
 fixed_parameters = FixedParameters()

@@ -11,7 +11,7 @@ class SvdView(QWidget):
         for key, label in (("method", "Saved SVD method"), ("threshold", "Threshold"), ("rank", "Configured rank"), ("measurement_values", "Measurement-vector values"), ("fitted_dofs", "Fitted DOFs")):
             widget = QLabel("—"); self.values[key] = widget; self.form.addRow(label, widget)
         self.note = QLabel(); self.note.setWordWrap(True)
-        self.plot = PlotCanvas(show_toolbar=True, minimum_height=320); self.plot.hide()
+        self.plot = PlotCanvas(show_toolbar=True, minimum_height=140); self.plot.hide()
         layout = QVBoxLayout(self); layout.addLayout(self.form); layout.addWidget(self.note); layout.addWidget(self.plot)
 
     def set_loader(self, loader):
@@ -26,4 +26,3 @@ class SvdView(QWidget):
         axis = self.plot.figure.add_subplot(111); axis.semilogy(spectrum, color="#19a974")
         axis.set(xlabel="Singular-value index", ylabel="Singular value", title="Persisted singular-value spectrum")
         axis.grid(True, alpha=.25); self.plot.apply_theme(); self.plot.canvas.draw_idle()
-

@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
+    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
+    QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import Qt
 
@@ -26,16 +26,29 @@ class ResultsWorkspace(QWidget):
         self.loader = None
         title = QLabel("Results Workspace"); title.setObjectName("pageTitle")
         self.run_status_label = QLabel("No LOCO run has been started.")
-        self.run_elapsed_label = QLabel("Elapsed: 0.0 s")
+        self.run_status_label.setWordWrap(True)
+        self.run_elapsed_label = QLabel("0.0 s")
         self.run_progress = QProgressBar(); self.run_progress.setRange(0, 1); self.run_progress.setValue(0)
-        self.run_output_dir = QLabel("—"); self.run_output_dir.setWordWrap(True)
+        self.run_output_dir = QLineEdit("—")
+        self.run_output_dir.setReadOnly(True)
+        self.run_output_dir.setObjectName("runOutputDirectory")
+        self.run_output_dir.setToolTip("The folder where this run's results are saved. The full path can be selected and copied.")
+        self.run_output_dir.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.cancel_button = QPushButton("Cancel Run"); self.cancel_button.setEnabled(False)
-        form = QFormLayout(); form.addRow("Status", self.run_status_label); form.addRow("Elapsed", self.run_elapsed_label)
+        self.waiting_games_button = QPushButton("🎮 Take a LOCO break")
+        self.waiting_games_button.setToolTip("Open optional lightweight games while the fit runs")
+        self.waiting_games_button.hide()
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+        form.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
+        form.addRow("Status", self.run_status_label); form.addRow("Elapsed", self.run_elapsed_label)
         form.addRow("Progress", self.run_progress); form.addRow("Results directory", self.run_output_dir)
         self._progress_label = form.labelForField(self.run_progress)
         self._output_label = form.labelForField(self.run_output_dir)
         self.monitor = QGroupBox("Backend Run Monitor"); self.monitor.setLayout(form)
-        monitor_row = QHBoxLayout(); monitor_row.addWidget(self.monitor, 1); monitor_row.addWidget(self.cancel_button)
+        monitor_actions = QVBoxLayout(); monitor_actions.addWidget(self.cancel_button); monitor_actions.addWidget(self.waiting_games_button); monitor_actions.addStretch(1)
+        monitor_row = QHBoxLayout(); monitor_row.addWidget(self.monitor, 1); monitor_row.addLayout(monitor_actions)
         self.compact_monitor = QWidget()
         compact_layout = QHBoxLayout(self.compact_monitor); compact_layout.setContentsMargins(8, 2, 8, 2)
         self.compact_status = QLabel("✓ Completed")
@@ -47,25 +60,20 @@ class ResultsWorkspace(QWidget):
         self.tabs = QTabWidget()
         self.overview = OverviewView(); self.orm = OrmView(); self.optics = OpticsView()
         self.parameters = ParametersView(); self.svd = SvdView(); self.files = FilesView(); self.log = LogView()
-        self.tabs.addTab(self._scrollable(self.overview), "Overview"); self.tabs.addTab(self._scrollable(self.orm), "ORM")
-        self.tabs.addTab(self._scrollable(self.optics), "Optics")
-        self.tabs.addTab(self._scrollable(self.parameters), "Parameters")
-        self.tabs.addTab(self._scrollable(self.svd), "Jacobian/SVD")
-        self.tabs.addTab(self._scrollable(self.files), "Files")
-        self.tabs.addTab(self._scrollable(self.log), "Log")
-        layout = QVBoxLayout(self); layout.setContentsMargins(30, 24, 30, 30)
+        # Result views own their space directly. Wrapping every view in another
+        # scroll area made Matplotlib retain a large size hint instead of
+        # shrinking with the main window.
+        self.tabs.addTab(self.overview, "Overview"); self.tabs.addTab(self.orm, "ORM")
+        self.tabs.addTab(self.optics, "Optics")
+        self.tabs.addTab(self.parameters, "Parameters")
+        self.tabs.addTab(self.svd, "Jacobian/SVD")
+        self.tabs.addTab(self.files, "Files")
+        self.tabs.addTab(self.log, "Log")
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.ElideRight)
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        layout = QVBoxLayout(self); layout.setContentsMargins(16, 14, 16, 16)
         layout.addWidget(title); layout.addLayout(monitor_row); layout.addWidget(self.compact_monitor); layout.addWidget(self.tabs, 1)
-
-    @staticmethod
-    def _scrollable(widget: QWidget) -> QScrollArea:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setWidget(widget)
-        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        scroll.setMinimumSize(0, 0)
-        return scroll
 
     def _toggle_monitor_details(self, checked: bool) -> None:
         self.monitor.setVisible(checked)
@@ -77,8 +85,10 @@ class ResultsWorkspace(QWidget):
         self.run_status_label.setText("Running pyLOCO backend…")
         self.run_progress.setRange(0, 0)
         self.run_output_dir.setText("Preparing results directory…")
+        self.run_output_dir.setCursorPosition(0)
         self.cancel_button.setEnabled(True)
         self.cancel_button.setVisible(True)
+        self.waiting_games_button.setVisible(True)
         self.compact_monitor.hide()
         self.monitor.show()
         self.details_button.setChecked(False)
@@ -90,14 +100,20 @@ class ResultsWorkspace(QWidget):
     def append_log(self, message: str) -> None:
         self.log.append(message)
         if message.startswith("Results directory:"):
-            self.run_output_dir.setText(message.split(":", 1)[1].strip())
+            output_dir = message.split(":", 1)[1].strip()
+            self.run_output_dir.setText(output_dir)
+            self.run_output_dir.setToolTip(output_dir)
+            self.run_output_dir.setCursorPosition(0)
 
     def complete_run(self, result) -> None:
         self.run_progress.setRange(0, 1); self.run_progress.setValue(1)
         self.run_status_label.setText(f"Completed in {result.elapsed_seconds:.1f} s")
-        self.run_elapsed_label.setText(f"Elapsed: {result.elapsed_seconds:.1f} s")
-        self.run_output_dir.setText(result.results_dir); self.cancel_button.setEnabled(False)
+        self.run_elapsed_label.setText(f"{result.elapsed_seconds:.1f} s")
+        self.run_output_dir.setText(result.results_dir)
+        self.run_output_dir.setToolTip(result.results_dir)
+        self.run_output_dir.setCursorPosition(0); self.cancel_button.setEnabled(False)
         self.cancel_button.setVisible(False)
+        self.waiting_games_button.hide()
         self.loader = ResultsLoader(result.results_dir, runtime=result.elapsed_seconds)
         for view in (self.overview, self.orm, self.optics, self.parameters, self.svd, self.files):
             view.set_loader(self.loader)
@@ -117,12 +133,14 @@ class ResultsWorkspace(QWidget):
     def fail_run(self) -> None:
         self.run_progress.setRange(0, 1); self.run_progress.setValue(0)
         self.run_status_label.setText("Failed"); self.cancel_button.setEnabled(False)
+        self.waiting_games_button.hide()
         self.tabs.setCurrentIndex(self.tabs.count() - 1)
 
     def apply_theme(self) -> None:
         self.overview.chi_plot.apply_theme()
         self.orm.plot.apply_theme()
         self.optics.plot.apply_theme()
+        self.optics.dispersion_plot.apply_theme()
         self.parameters.plot.apply_theme()
         self.svd.plot.apply_theme()
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
 
@@ -12,6 +13,7 @@ class PlotCanvas(QWidget):
         from matplotlib.figure import Figure
 
         self.figure = Figure(constrained_layout=True)
+        self._requested_minimum_height = minimum_height
         self.canvas = FigureCanvasQTAgg(self.figure)
         self.toolbar = NavigationToolbar2QT(self.canvas, self)
         self.toolbar.setObjectName("matplotlibToolbar")
@@ -26,6 +28,13 @@ class PlotCanvas(QWidget):
             layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas, 1)
         self.apply_theme()
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        """Do not propagate FigureCanvasQTAgg's large preferred height."""
+        return QSize(640, max(self._requested_minimum_height, 260))
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        return QSize(0, self._requested_minimum_height)
 
     def theme(self) -> dict[str, str]:
         app = QApplication.instance()

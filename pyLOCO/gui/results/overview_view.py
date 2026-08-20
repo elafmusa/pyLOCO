@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QGridLayout, QGroupBox, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGridLayout, QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from .plot_canvas import PlotCanvas
 
@@ -33,22 +33,36 @@ class OverviewView(QWidget):
         heading.addWidget(title); heading.addStretch(1); heading.addWidget(self.status)
         self.metrics = {name: Metric(label) for name, label in (
             ("initial", "Initial χ²"), ("final", "Final χ²"), ("reduction", "Reduction"),
-            ("iterations", "Iterations"), ("runtime", "Runtime"),
+            ("iterations", "Iterations"), ("runtime", "Runtime"), ("initialization", "Initialization"),
         )}
-        metrics_row = QGridLayout()
-        for index, metric in enumerate(self.metrics.values()):
-            metrics_row.addWidget(metric, index // 3, index % 3)
+        self.metrics_row = QGridLayout()
+        self._metric_columns = 0
+        self._reflow_metrics(3)
         self.metadata = QLabel("No result metadata available."); self.metadata.setWordWrap(True)
         self.metadata.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.chi_plot = PlotCanvas(show_toolbar=False, minimum_height=240)
+        self.chi_plot = PlotCanvas(show_toolbar=False, minimum_height=190)
         chi_group = QGroupBox("χ² convergence"); chi_layout = QVBoxLayout(chi_group); chi_layout.addWidget(self.chi_plot)
         self.orm_summary = QLabel("ORM residual metrics are unavailable."); self.orm_summary.setObjectName("ormSummary")
         self.orm_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
         orm_group = QGroupBox("Raw ORM residual RMS (not weighted χ²)"); orm_layout = QVBoxLayout(orm_group); orm_layout.addWidget(self.orm_summary)
         self.diagnostics = QLabel("No diagnostics available."); self.diagnostics.setWordWrap(True)
         diagnostics_group = QGroupBox("Diagnostics"); diagnostics_layout = QVBoxLayout(diagnostics_group); diagnostics_layout.addWidget(self.diagnostics)
-        layout = QVBoxLayout(self); layout.addLayout(heading); layout.addLayout(metrics_row); layout.addWidget(self.metadata)
-        layout.addWidget(chi_group, 2); layout.addWidget(orm_group); layout.addWidget(diagnostics_group)
+        content = QWidget(); content_layout = QVBoxLayout(content)
+        content_layout.addLayout(heading); content_layout.addLayout(self.metrics_row); content_layout.addWidget(self.metadata)
+        content_layout.addWidget(chi_group); content_layout.addWidget(orm_group); content_layout.addWidget(diagnostics_group); content_layout.addStretch(1)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setWidget(content)
+        layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(scroll)
+
+    def _reflow_metrics(self, columns: int) -> None:
+        if columns == self._metric_columns: return
+        self._metric_columns = columns
+        while self.metrics_row.count(): self.metrics_row.takeAt(0)
+        for index, metric in enumerate(self.metrics.values()):
+            self.metrics_row.addWidget(metric, index // columns, index % columns)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._reflow_metrics(2 if event.size().width() < 720 else 3)
 
     def set_loader(self, loader) -> None:
         self.loader = loader
@@ -60,18 +74,25 @@ class OverviewView(QWidget):
         requested = loader.requested_iterations
         self.metrics["iterations"].value.setText(f"{loader.completed_iterations}" + (f" / {requested}" if requested is not None else ""))
         self.metrics["runtime"].value.setText("Unavailable" if loader.runtime is None else f"{loader.runtime:.1f} s")
+        self.metrics["initialization"].value.setText("Resumed" if loader.initialization == "resumed" else "Current model")
         parts = loader.partitions
         meta = []
         if parts: meta += [f"{parts.n_hbpm} BPMs", f"{parts.n_hcor} H correctors", f"{parts.n_vcor} V correctors"]
         if loader.fitted_parameter_count is not None: meta.append(f"{loader.fitted_parameter_count} fitted DOFs")
         if loader.fit_method: meta.append(loader.fit_method)
         if loader.regularization is not None: meta.append(f"λ = {loader.regularization:g}")
+        if loader.initialization == "resumed":
+            meta.append("Initialization: Resumed")
+            if loader.resumed_from:
+                meta.append(f"Source: {loader.resumed_from}")
+        else:
+            meta.append("Initialization: Current model")
         self.metadata.setText("   •   ".join(meta) if meta else "No run metadata available.")
         before, after, improvement = loader.orm_rms_before, loader.orm_rms_after, loader.orm_improvement_percent
         if before is None or after is None:
             self.orm_summary.setText("Measured, initial-model, or fitted ORM is unavailable for this run.")
         else:
-            text = f"Before fit: {before:.3e} m/rad    After fit: {after:.3e} m/rad"
+            text = f"Before fit: {before:.3e} m    After fit: {after:.3e} m"
             if improvement is not None: text += f"    Improvement: {improvement:.1f}% {'↓' if improvement >= 0 else '↑'}"
             self.orm_summary.setText(text)
         icons = {"success": "✓", "warning": "⚠", "info": "ℹ"}

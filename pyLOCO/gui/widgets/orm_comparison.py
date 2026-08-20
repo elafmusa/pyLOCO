@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
-    QHBoxLayout,
+    QGridLayout,
     QLabel,
     QMessageBox,
     QPushButton,
@@ -65,7 +65,13 @@ class OrmComparisonWindow(QDialog):
         self._theme = self._theme_from_application()
 
         self.setWindowTitle("ORM Comparison")
-        self.resize(1500, 900)
+        screen = QApplication.primaryScreen()
+        available = screen.availableGeometry().size() if screen is not None else None
+        self.resize(
+            min(1200, int(available.width() * 0.9)) if available else 1200,
+            min(760, int(available.height() * 0.85)) if available else 760,
+        )
+        self.setMinimumSize(560, 380)
         layout = QVBoxLayout(self)
         self.rms_label = QLabel(self._rms_text())
         self.rms_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -95,8 +101,8 @@ class OrmComparisonWindow(QDialog):
         self._theme = self._theme_from_application()
         self._redraw()
 
-    def _controls(self) -> QHBoxLayout:
-        row = QHBoxLayout()
+    def _controls(self) -> QGridLayout:
+        row = QGridLayout()
         self.plot_mode = QComboBox()
         self.plot_mode.addItems(["3D surface", "2D heatmap"])
         self.plot_mode.currentTextChanged.connect(self._redraw)
@@ -117,12 +123,12 @@ class OrmComparisonWindow(QDialog):
         self.vmax_spin.setValue(vmax)
         export = QPushButton("Export figure…")
         export.clicked.connect(self.export_figure)
-        for widget in (
+        for column, widget in enumerate((
             QLabel("View"), self.plot_mode, self.shared_scale, self.fixed_scale,
             QLabel("Min"), self.vmin_spin, QLabel("Max"), self.vmax_spin, export,
-        ):
-            row.addWidget(widget)
-        row.addStretch(1)
+        )):
+            row.addWidget(widget, column // 5, column % 5)
+        row.setColumnStretch(1, 1)
         return row
 
     @staticmethod
@@ -135,7 +141,7 @@ class OrmComparisonWindow(QDialog):
     def _rms_text(self) -> str:
         finite = np.isfinite(self.difference_orm)
         rms = float(np.sqrt(np.mean(np.square(self.difference_orm[finite])))) if np.any(finite) else float("nan")
-        return f"RMS(Measured − Model): {rms:.6g} m/rad    Matrix shape: {self.measured_orm.shape[0]} BPM rows × {self.measured_orm.shape[1]} correctors"
+        return f"RMS(Measured − Model): {rms:.6g} m    Matrix shape: {self.measured_orm.shape[0]} BPM rows × {self.measured_orm.shape[1]} correctors"
 
     def _auto_limits(self) -> tuple[float, float]:
         values = np.concatenate([self.measured_orm.ravel(), self.model_orm.ravel()])
@@ -165,6 +171,9 @@ class OrmComparisonWindow(QDialog):
         return RenderedMatrix(matrix[::step, ::step], correctors, bpms)
 
     def _redraw(self) -> None:
+        # Control initialization emits valueChanged before the canvas exists.
+        if not hasattr(self, "figure"):
+            return
         self.figure.clear()
         self._theme = self._theme_from_application()
         self.figure.patch.set_facecolor(self._theme["face"])
@@ -179,7 +188,7 @@ class OrmComparisonWindow(QDialog):
             if is_surface:
                 x, y = np.meshgrid(rendered.correctors, rendered.bpms)
                 artist = ax.plot_surface(x, y, rendered.values, cmap=self._theme["colormap"], vmin=vmin, vmax=vmax, linewidth=0, antialiased=False, rcount=rendered.values.shape[0], ccount=rendered.values.shape[1])
-                ax.set_zlabel("ORM value (m/rad)", color=self._theme["text"], labelpad=8)
+                ax.set_zlabel("ORM value (m)", color=self._theme["text"], labelpad=8)
                 ax.zaxis.label.set_fontsize(10)
             else:
                 artist = ax.imshow(rendered.values, aspect="auto", origin="lower", cmap=self._theme["colormap"], vmin=vmin, vmax=vmax, extent=[rendered.correctors[0], rendered.correctors[-1], rendered.bpms[0], rendered.bpms[-1]])
@@ -187,7 +196,7 @@ class OrmComparisonWindow(QDialog):
             ax.set_title(title, color=self._theme["text"], fontsize=12, fontweight="bold", pad=12)
             ax.set_xlabel("Correctors", color=self._theme["text"], labelpad=8)
             ax.set_ylabel("BPMs", color=self._theme["text"], labelpad=8)
-            colorbar = self.figure.colorbar(artist, ax=ax, shrink=0.72, label="ORM (m/rad)")
+            colorbar = self.figure.colorbar(artist, ax=ax, shrink=0.72, label="ORM (m)")
             colorbar.ax.yaxis.label.set_color(self._theme["text"])
             colorbar.ax.tick_params(colors=self._theme["text"], labelsize=9)
             colorbar.outline.set_edgecolor(self._theme["spine"])

@@ -5,6 +5,7 @@ import copy
 import fnmatch
 import pickle
 import re
+import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -415,8 +416,17 @@ def build_constraint_config(data: dict[str, Any]) -> ConstraintConfig | None:
         float(getattr(data["ring"][group[0] if not np.isscalar(group) else group], "K"))
         for group in data["quad_indices"]
     ]
-    return build_constraints(data["cfg"], quad_nominal=nominal,
-                             n_skew=len(data["skew_indices"]))
+    bpms = data.get("bpms", ())
+    correctors = data.get("correctors", ((), ()))
+    return build_constraints(
+    data["cfg"],
+    quad_nominal=nominal,
+    n_skew=len(data["skew_indices"]),
+        n_hbpm=len(bpms),
+        n_vbpm=len(bpms),
+        n_hcor=len(correctors[0]),
+        n_vcor=len(correctors[1]),
+)
 
 
 def _optional_mask(value: Any, size: int, label: str) -> np.ndarray | None:
@@ -543,6 +553,32 @@ def run_fit(data: dict[str, Any], *, coupling: bool | None = None,
                                   if data.get("resume") is not None else None),
             output_dir=temporary.name,
         )
+        # ------------------------------------------------------
+        # Preserve Jacobians produced inside pyLOCO's temporary
+        # working directory before TemporaryDirectory is deleted.
+        # ------------------------------------------------------
+        temporary_output = Path(temporary.name)
+
+        permanent_output = output_directory(
+            data,
+            coupling=coupling,
+            constrained=constrained,
+        )
+
+        source_jacobians = temporary_output / "jacobians"
+        destination_jacobians = permanent_output / "jacobians"
+
+        if source_jacobians.exists():
+            shutil.copytree(
+                source_jacobians,
+                destination_jacobians,
+                dirs_exist_ok=True,
+            )
+
+            print(
+                f"[Jacobian] Preserved Jacobians in "
+                f"{destination_jacobians}"
+            )
     finally:
         fixed_parameters.Frequency = original_frequency
         fixed_parameters.HarmNumber = original_harmonic

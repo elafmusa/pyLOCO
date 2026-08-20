@@ -27,15 +27,17 @@ _FONT_STACK = '"Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif'
 _COMMON_QSS = f"""
 * {{ font-family: {_FONT_STACK}; font-size: 12pt; }}
 QToolBar#mainToolbar {{ spacing: 10px; padding: 8px 14px; }}
+QMainWindow::separator {{ width: 14px; height: 14px; }}
+QMainWindow::separator:hover {{ background: #7E57C2; }}
 QToolBar#matplotlibToolbar {{ spacing: 2px; padding: 2px; border: 0; }}
 QToolBar#matplotlibToolbar QToolButton {{ min-height: 22px; min-width: 22px; padding: 2px; border-radius: 4px; }}
-QToolButton, QPushButton {{ border-radius: 9px; font-size: 12pt; font-weight: 600; min-height: 34px; padding: 8px 16px; }}
+QToolButton, QPushButton {{ border-radius: 6px; font-size: 12pt; font-weight: 600; min-height: 32px; padding: 7px 13px; }}
 QToolButton:pressed, QPushButton:pressed, QToolButton:checked {{ padding-top: 9px; padding-left: 17px; }}
 QTabBar::tab {{ font-size: 12pt; min-height: 28px; padding: 10px 20px; margin-right: 4px; }}
 QTabWidget::pane {{ border-radius: 11px; padding-top: 8px; }}
 QGroupBox {{ border-radius: 12px; font-weight: 600; margin-top: 18px; padding: 18px 16px 16px 16px; }}
 QGroupBox::title {{ font-size: 13pt; font-weight: 700; subcontrol-origin: margin; left: 14px; padding: 0 8px; }}
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ border-radius: 8px; min-height: 30px; padding: 7px 10px; }}
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{ border-radius: 6px; min-height: 30px; padding: 7px 10px; }}
 QComboBox::drop-down {{ border: 0; width: 28px; }}
 QTextEdit, QListWidget, QTreeView, QTableView, QTreeWidget#projectExplorerTree {{ border-radius: 9px; padding: 4px; }}
 QTreeView::item, QTreeWidget::item, QListWidget::item {{ min-height: 28px; padding: 4px 8px; }}

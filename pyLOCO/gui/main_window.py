@@ -9,10 +9,11 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from copy import deepcopy
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSettings, Qt, QThread, Signal, Slot, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QDoubleValidator, QKeySequence
+from PySide6.QtCore import QObject, QRect, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot, QTimer
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QDoubleValidator, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -26,11 +27,13 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMainWindow,
+    QMenu,
     QPlainTextEdit,
     QRadioButton,
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QDoubleSpinBox,
     QSpinBox,
     QProgressBar,
@@ -40,6 +43,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QTextEdit,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
     QApplication,
@@ -48,10 +52,12 @@ from PySide6.QtWidgets import (
 from .backend import LocoRunError, LocoRunRequest, run_loco_request, _load_bad_bpm_positions
 from .models.project import (
     ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata,
-    load_example_project_data, resolve_element_name_file, resolve_example_machine_elements,
+    load_example_project_data, measurement_options_from_config, resolve_element_name_file,
+    resolve_example_machine_elements,
 )
 from .widgets.project_explorer import ProjectExplorer
 from .widgets.orm_comparison import OrmComparisonWindow
+from .widgets.waiting_games import WaitingGamesDialog
 from .themes import THEMES, apply_application_theme, configure_item_view, theme_for_key
 from .results.results_workspace import ResultsWorkspace
 
@@ -62,7 +68,7 @@ QMenuBar, QMenu, QToolBar#mainToolbar, QStatusBar { background: #25283A; color: 
 QMenuBar::item:selected, QMenu::item:selected { background: #3B315A; color: #FFFFFF; }
 QMenu { border: 1px solid #3C4058; padding: 6px; }
 QToolBar#mainToolbar { border-bottom: 1px solid #3C4058; spacing: 10px; padding: 8px 12px; }
-QToolButton, QPushButton { background: #2F3347; border: 1px solid #4A4F68; border-radius: 8px; color: #F4F6FB; font-weight: 600; padding: 7px 12px; }
+QToolButton, QPushButton { background: #2F3347; border: 1px solid #4A4F68; border-radius: 6px; color: #F4F6FB; font-weight: 600; padding: 7px 12px; }
 QToolButton:hover, QPushButton:hover { background: #3B315A; border-color: #8A63D2; }
 QToolButton:pressed, QPushButton:pressed, QToolButton:checked { background: #8A63D2; border-color: #A78BFA; color: #FFFFFF; }
 QPushButton:disabled, QToolButton:disabled { background: #25283A; color: #737993; border-color: #34384D; }
@@ -100,6 +106,86 @@ QScrollBar::handle { background: #4A4F68; border-radius: 6px; }
 QScrollBar::handle:hover { background: #8A63D2; }
 """
 
+# Exact main logo preserved from the approved pre-resizing GUI version.
+# The toolbar intentionally uses the compact clickable wordmark instead.
+LOGO_PATH = Path(__file__).with_name("assets") / "pyloco_logo_pre_resize_version.png"
+PROJECT_REPOSITORY = "https://github.com/elafmusa/pyLOCO"
+PROJECT_DOCUMENTATION = f"{PROJECT_REPOSITORY}#readme"
+PROJECT_PAPER_URL = "https://indico.jacow.org/event/95/contributions/13338/"
+
+
+class AspectRatioPixmapLabel(QLabel):
+    """A pixmap label that rescales its image when layouts compress it."""
+
+    def __init__(self, pixmap: QPixmap, maximum_width: int, minimum_width: int = 240) -> None:
+        super().__init__()
+        self._source_pixmap = pixmap
+        self._maximum_width = maximum_width
+        self._minimum_width = min(minimum_width, maximum_width)
+        source_width = max(1, pixmap.width())
+        self._aspect_ratio = pixmap.height() / source_width
+        self.setAlignment(Qt.AlignCenter)
+        self.setMaximumWidth(maximum_width)
+        self.setMinimumSize(
+            self._minimum_width, round(self._minimum_width * self._aspect_ratio)
+        )
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._update_pixmap()
+
+    def sizeHint(self) -> QSize:  # type: ignore[override]
+        return QSize(
+            self._maximum_width, round(self._maximum_width * self._aspect_ratio)
+        )
+
+    def minimumSizeHint(self) -> QSize:  # type: ignore[override]
+        return QSize(
+            self._minimum_width, round(self._minimum_width * self._aspect_ratio)
+        )
+
+    def _update_pixmap(self) -> None:
+        if not self._source_pixmap.isNull() and self.width() > 0 and self.height() > 0:
+            pixel_ratio = self.devicePixelRatioF()
+            target = QSize(
+                max(1, round(self.width() * pixel_ratio)),
+                max(1, round(self.height() * pixel_ratio)),
+            )
+            rendered = self._source_pixmap.scaled(
+                target, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            rendered.setDevicePixelRatio(pixel_ratio)
+            self.setPixmap(rendered)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._update_pixmap()
+
+
+class ClickableBrandLabel(QLabel):
+    """Compact pyLOCO wordmark used as the toolbar's About control."""
+
+    clicked = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setText(
+            '<span style="font-size:28px; font-weight:800; color:#5B00E6;">py</span>'
+            '<span style="font-size:28px; font-weight:800; color:#002B73;">LOCO</span>'
+        )
+        self.setTextFormat(Qt.RichText)
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("About pyLOCO and scientific resources")
+        self.setAccessibleName("About pyLOCO")
+        self.setContentsMargins(16, 0, 16, 0)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
 
 class ScientificDoubleSpinBox(QDoubleSpinBox):
     """Double spin box that accepts and displays scientific notation."""
@@ -134,6 +220,60 @@ class ScientificDoubleSpinBox(QDoubleSpinBox):
 
     def textFromValue(self, value: float) -> str:  # type: ignore[override]
         return f"{value:.{self.decimals()}g}"
+
+
+class FamilyWeightEditor(QWidget):
+    """Compact family/weight table used for constraint exceptions."""
+
+    changed = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(["Family index", "Weight"])
+        configure_item_view(self.table)
+        self.table.itemChanged.connect(self.changed.emit)
+        buttons = QHBoxLayout()
+        add = QPushButton("Add")
+        remove = QPushButton("Remove")
+        add.clicked.connect(self.add_row)
+        remove.clicked.connect(self.remove_selected)
+        buttons.addWidget(add); buttons.addWidget(remove); buttons.addStretch(1)
+        layout.addWidget(self.table); layout.addLayout(buttons)
+
+    def add_row(self, family: int | None = None, weight: float = 1.0) -> None:
+        row = self.table.rowCount(); self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem("" if family is None else str(family)))
+        self.table.setItem(row, 1, QTableWidgetItem(f"{weight:.6g}"))
+        self.changed.emit()
+
+    def remove_selected(self) -> None:
+        rows = sorted({index.row() for index in self.table.selectedIndexes()}, reverse=True)
+        for row in rows:
+            self.table.removeRow(row)
+        if rows:
+            self.changed.emit()
+
+    def set_mapping(self, values: dict[int, float]) -> None:
+        self.table.blockSignals(True); self.table.setRowCount(0)
+        for family, weight in sorted(values.items()):
+            self.add_row(int(family), float(weight))
+        self.table.blockSignals(False)
+
+    def mapping(self) -> dict[int, float]:
+        values: dict[int, float] = {}
+        for row in range(self.table.rowCount()):
+            family_item, weight_item = self.table.item(row, 0), self.table.item(row, 1)
+            if family_item is None or not family_item.text().strip():
+                continue
+            family = int(family_item.text())
+            weight = float(weight_item.text()) if weight_item and weight_item.text().strip() else 1.0
+            if family < 0 or family in values:
+                raise ValueError("Constraint family indices must be unique non-negative integers.")
+            values[family] = weight
+        return values
 
 
 class LocoRunWorker(QObject):
@@ -357,12 +497,34 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.project = ProjectMetadata()
+        self._loading_config = False
         self.setObjectName("pyLocoMainWindow")
         self.setWindowTitle("pyLOCO GUI")
         self.resize(1320, 860)
+        # Keep the top-level window freely resizable. Individual pages reflow
+        # or provide their own scrolling when the window becomes very small.
+        self.setMinimumSize(360, 240)
         self._settings = QSettings()
+        self._geometry_save_timer = QTimer(self)
+        self._geometry_save_timer.setSingleShot(True)
+        self._geometry_save_timer.setInterval(350)
+        self._geometry_save_timer.timeout.connect(self._save_window_layout)
+        self._startup_geometry_restored = False
+        self._restoring_startup_geometry = True
         self.current_theme = theme_for_key(self._settings.value("appearance/theme", "dark"))
         apply_application_theme(QApplication.instance(), self.current_theme)
+        saved_rect_values = tuple(
+            self._settings.value(f"window/{key}", None)
+            for key in ("x", "y", "width", "height")
+        )
+        self._startup_normal_geometry = (
+            QRect(*(int(value) for value in saved_rect_values))
+            if all(value is not None for value in saved_rect_values)
+            else self._settings.value("window/normal_geometry")
+        )
+        self._startup_geometry = self._settings.value("window/geometry")
+        saved_mode = str(self._settings.value("workflow/mode", "Basic"))
+        self.project.mode = saved_mode if saved_mode in {"Basic", "Advanced"} else "Basic"
 
         self._mode_label = QLabel("Basic mode")
         self._mode_label.setObjectName("statusPill")
@@ -375,13 +537,40 @@ class MainWindow(QMainWindow):
         self._run_worker: LocoRunWorker | None = None
         self._run_started_at = 0.0
         self._last_loco_result = None
+        self._waiting_games_dialog: WaitingGamesDialog | None = None
+        self._run_cancel_requested = False
         self._orm_comparison_windows = []
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.timeout.connect(self._update_elapsed_time)
         self._workspace = self._create_workspace()
+        # The Fit page is scrollable; its wide form size hint must not prevent
+        # the dock divider from reallocating space within the current window.
+        self._workspace.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        saved_results_tab = int(self._settings.value("results/tab", 0))
+        self.results_workspace.tabs.setCurrentIndex(
+            min(max(saved_results_tab, 0), self.results_workspace.tabs.count() - 1)
+        )
+        self.results_workspace.tabs.currentChanged.connect(
+            lambda index: self._settings.setValue("results/tab", index)
+        )
+        parameter_splitter_state = self._settings.value("results/parameter_splitter")
+        if parameter_splitter_state is not None:
+            self.results_workspace.parameters.content_splitter.restoreState(parameter_splitter_state)
+        self.results_workspace.parameters.content_splitter.splitterMoved.connect(
+            lambda *_: self._settings.setValue(
+                "results/parameter_splitter",
+                self.results_workspace.parameters.content_splitter.saveState(),
+            )
+        )
 
         self.setCentralWidget(self._workspace)
+        self._configure_responsive_layouts()
         self.addDockWidget(Qt.LeftDockWidgetArea, self._project_explorer)
+        saved_window_state = self._settings.value("window/state")
+        if saved_window_state is not None:
+            self.restoreState(saved_window_state)
+        else:
+            self.resizeDocks([self._project_explorer], [320], Qt.Horizontal)
         self._create_actions()
         self._create_menu_bar()
         self._create_toolbar()
@@ -389,6 +578,106 @@ class MainWindow(QMainWindow):
         self._workspace.currentChanged.connect(self._on_tab_changed)
         self._project_explorer.navigate_requested.connect(self._navigate_from_explorer)
         self._refresh_ui("Ready — create or open a project")
+
+    def closeEvent(self, event) -> None:  # type: ignore[override]
+        if not self._confirm_discard_changes():
+            event.ignore()
+            return
+        self._save_window_layout()
+        self._settings.setValue("workflow/mode", self.project.mode)
+        self._settings.sync()
+        event.accept()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if not self._startup_geometry_restored:
+            self._startup_geometry_restored = True
+            normal_geometry = self._startup_normal_geometry
+            geometry = self._startup_geometry
+            if normal_geometry is not None:
+                QTimer.singleShot(0, lambda: self._restore_movable_geometry(normal_geometry))
+                QTimer.singleShot(250, lambda: self._finish_startup_geometry(normal_geometry))
+            elif geometry is not None:
+                # Restore after all toolbars/docks exist; macOS can otherwise
+                # reposition a window while applying their size hints.
+                QTimer.singleShot(0, lambda: self._restore_legacy_geometry(geometry))
+                QTimer.singleShot(250, lambda: self._finish_startup_geometry(self.normalGeometry()))
+            else:
+                self._restoring_startup_geometry = False
+
+    def _restore_movable_geometry(self, geometry) -> None:
+        """Restore a normal window rectangle that remains draggable."""
+        self.showNormal()
+        self.resize(geometry.size())
+        self.move(geometry.topLeft())
+
+    def _finish_startup_geometry(self, geometry) -> None:
+        """Reapply placement after the native macOS window has settled."""
+        if geometry is not None and geometry.isValid():
+            self._restore_movable_geometry(geometry)
+        self._restoring_startup_geometry = False
+        self._save_window_layout()
+
+    def _restore_legacy_geometry(self, geometry) -> None:
+        """Migrate old saved geometry without retaining maximized/fullscreen state."""
+        self.restoreGeometry(geometry)
+        normal = self.normalGeometry()
+        self.showNormal()
+        if normal.isValid():
+            self.setGeometry(normal)
+
+    def moveEvent(self, event) -> None:  # type: ignore[override]
+        super().moveEvent(event)
+        timer = getattr(self, "_geometry_save_timer", None)
+        if timer is not None and self.isVisible() and not self._restoring_startup_geometry:
+            timer.start()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        """Keep the central workspace usable while the whole window shrinks."""
+        super().resizeEvent(event)
+        timer = getattr(self, "_geometry_save_timer", None)
+        if timer is not None and self.isVisible() and not self._restoring_startup_geometry:
+            timer.start()
+        explorer = getattr(self, "_project_explorer", None)
+        if (
+            explorer is not None
+            and explorer.isVisible()
+            and not explorer.isFloating()
+            and self.width() < 760
+        ):
+            maximum_sidebar = max(explorer.minimumWidth(), int(self.width() * 0.38))
+            if explorer.width() > maximum_sidebar:
+                self.resizeDocks([explorer], [maximum_sidebar], Qt.Horizontal)
+
+    def _save_window_layout(self) -> None:
+        """Persist window position, size, and dock layout during the session."""
+        if not hasattr(self, "_settings"):
+            return
+        normal = self.normalGeometry() if (self.isMaximized() or self.isFullScreen()) else self.geometry()
+        if normal.isValid():
+            self._settings.setValue("window/normal_geometry", normal)
+            self._settings.setValue("window/x", normal.x())
+            self._settings.setValue("window/y", normal.y())
+            self._settings.setValue("window/width", normal.width())
+            self._settings.setValue("window/height", normal.height())
+        self._settings.setValue("window/geometry", self.saveGeometry())
+        self._settings.setValue("window/state", self.saveState())
+        self._settings.sync()
+
+    def _confirm_discard_changes(self) -> bool:
+        if not self.project.modified:
+            return True
+        answer = QMessageBox.question(
+            self, "Unsaved changes", "Save changes to the current project?",
+            QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            QMessageBox.Save,
+        )
+        if answer == QMessageBox.Cancel:
+            return False
+        if answer == QMessageBox.Save:
+            self.save_project()
+            return self.project.is_saved
+        return True
 
     def _create_workspace(self) -> QTabWidget:
         tabs = QTabWidget()
@@ -417,10 +706,33 @@ class MainWindow(QMainWindow):
         self.run_log = self.results_workspace.log.text
         self.cancel_loco_button = self.results_workspace.cancel_button
         self.cancel_loco_button.clicked.connect(self.cancel_loco_run)
+        self.results_workspace.waiting_games_button.clicked.connect(self._open_waiting_games)
         return self.results_workspace
 
     def _project_page(self) -> QWidget:
         page = self._page("Project Dashboard")
+        self.dashboard_logo_button = QToolButton()
+        self.dashboard_logo_button.setObjectName("dashboardLogoButton")
+        self.dashboard_logo_button.setCursor(Qt.PointingHandCursor)
+        self.dashboard_logo_button.setToolTip("Open pyLOCO information and scientific resources")
+        self.dashboard_logo_button.setAccessibleName("pyLOCO logo and information")
+        self.dashboard_logo_button.clicked.connect(self._show_about_dialog)
+        self.dashboard_logo_button.setStyleSheet(
+            "QToolButton { background: transparent; border: 0; border-radius: 10px; padding: 4px; "
+            "min-width: 330px; max-width: 330px; min-height: 220px; max-height: 220px; }"
+            "QToolButton:hover { background: rgba(126, 87, 194, 0.10); }"
+            "QToolButton::menu-indicator { image: none; width: 0px; }"
+        )
+        logo_layout = QHBoxLayout(self.dashboard_logo_button)
+        logo_layout.setContentsMargins(4, 4, 4, 4)
+        dashboard_logo = AspectRatioPixmapLabel(QPixmap(str(LOGO_PATH)), 330, 330)
+        dashboard_logo.setFixedSize(330, 220)
+        dashboard_logo.setAttribute(Qt.WA_TransparentForMouseEvents)
+        logo_layout.addWidget(dashboard_logo)
+        # Apply this after styling so the global tool-button theme cannot
+        # replace the exact dimensions from the earlier GUI version.
+        self.dashboard_logo_button.setFixedSize(338, 228)
+        page.layout().addWidget(self.dashboard_logo_button, 0, Qt.AlignHCenter)
         form = QFormLayout()
         form.addRow("Project name", self.dashboard_name)
         for text, slot in (
@@ -442,9 +754,40 @@ class MainWindow(QMainWindow):
         )
         return page
 
+    def _logo_block(self, maximum_width: int) -> QVBoxLayout:
+        """Build a centered, aspect-ratio-preserving pyLOCO logo block."""
+        layout = QVBoxLayout()
+        logo = AspectRatioPixmapLabel(QPixmap(str(LOGO_PATH)), maximum_width)
+        logo.setObjectName("pyLocoLogo")
+        layout.addWidget(logo, 0, Qt.AlignHCenter)
+        return layout
+
+    def _build_brand_menu(self) -> QMenu:
+        """Information menu restored from the pre-resizing GUI branding."""
+        menu = QMenu(self)
+        menu.setObjectName("brandMenu")
+        menu.addSection("pyLOCO — Storage Ring Optics Correction")
+        menu.addAction("About pyLOCO", self._show_about_dialog)
+        menu.addAction(
+            "Documentation",
+            lambda: QDesktopServices.openUrl(QUrl(PROJECT_DOCUMENTATION)),
+        )
+        menu.addAction(
+            "Scientific reference / methodology",
+            lambda: QDesktopServices.openUrl(QUrl(PROJECT_PAPER_URL)),
+        )
+        menu.addSeparator()
+        menu.addAction(
+            "Repository / Source code",
+            lambda: QDesktopServices.openUrl(QUrl(PROJECT_REPOSITORY)),
+        )
+        return menu
+
     def _machine_page(self) -> QWidget:
         page = self._page("Machine Lattice")
         self.lattice_path = QLabel("No lattice selected")
+        self.lattice_path.setWordWrap(True)
+        self.lattice_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lattice_type = QLabel("—")
         self.lattice_elements = QLabel("Unknown")
         choose = QPushButton("Select lattice/model file…")
@@ -462,7 +805,9 @@ class MainWindow(QMainWindow):
         self.element_preview_tables = {}
         elements_group = QGroupBox("Machine Elements")
         elements_layout = QVBoxLayout(elements_group)
-        elements_layout.addWidget(QLabel("Define BPMs, correctors, quadrupoles, and RF cavities after loading the lattice. Bad BPM positions are applied later as positions within the selected BPM list, not as lattice ordinals."))
+        machine_help = QLabel("Define BPMs, correctors, quadrupoles, and RF cavities after loading the lattice. Bad BPM positions are applied later as positions within the selected BPM list, not as lattice ordinals.")
+        machine_help.setWordWrap(True)
+        elements_layout.addWidget(machine_help)
         for key, (label, _kind) in ELEMENT_ROLES.items():
             row = QHBoxLayout()
             row.addWidget(QLabel(label))
@@ -470,13 +815,16 @@ class MainWindow(QMainWindow):
             self.element_count_labels[key] = count
             row.addWidget(count, 1)
             button = QPushButton("Edit/Select…")
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            button.setMaximumHeight(32)
             button.clicked.connect(lambda checked=False, role=key: self.edit_element_selection(role))
             row.addWidget(button)
             elements_layout.addLayout(row)
             table = QTableWidget(0, 4)
             table.setHorizontalHeaderLabels(["Selection position", "Lattice ordinal", "Element name(s)", "Element class"])
             configure_item_view(table)
-            table.setMaximumHeight(160)
+            table.setMinimumHeight(90)
+            table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.element_preview_tables[key] = table
             elements_layout.addWidget(table)
         page.layout().addWidget(elements_group)
@@ -513,9 +861,10 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(container)
 
         self.rm_calculator = QComboBox()
-        self.rm_calculator.addItem("Linear ORM (analytic)", "Linear")
-        self.rm_calculator.addItem("Numerical ORM (tracking)", "Tracking")
-        self.rm_calculator.setToolTip("Choose the backend ORM implementation: linear analytic calculation or numerical tracking.")
+        self.rm_calculator.addItem("Linear (transfer matrix)", "Linear")
+        self.rm_calculator.addItem("Analytical (uncoupled optics)", "Analytical")
+        self.rm_calculator.addItem("Tracking", "Numerical")
+        self.rm_calculator.setToolTip("Choose the backend ORM implementation. Analytical uses the uncoupled beta/phase formula; Tracking uses numerical closed-orbit perturbations.")
         self.rm_dispersion = QCheckBox("Include dispersion/RF response column")
         self.rm_dispersion.setToolTip("Append the response to an RF frequency shift to the ORM.")
         self.rm_coupling = QCheckBox("Include coupling ORM terms")
@@ -544,7 +893,7 @@ class MainWindow(QMainWindow):
         self.rm_delta_coupling.setToolTip("Small dimensionless delta used to evaluate corrector coupling terms; scientific notation is accepted.")
         rm_form = QFormLayout()
         for label, widget in (
-            ("ORM calculation method", self.rm_calculator),
+            ("Response Matrix Calculator", self.rm_calculator),
             ("Horizontal kick step", self.rm_dkick_h),
             ("Vertical kick step", self.rm_dkick_v),
             ("RF frequency step", self.rm_rf_step),
@@ -626,8 +975,8 @@ class MainWindow(QMainWindow):
         rej_form.addRow("Sigma cut", self.outlier_sigma)
         rej_form.addRow(self.norm_enabled)
         rej_form.addRow("Normalization mode", self.norm_mode)
-        rej_form.addRow("hor_dispersion_weight", self.loco_hor_dispersion_weight)
-        rej_form.addRow("ver_dispersion_weight", self.loco_ver_dispersion_weight)
+        rej_form.addRow("Horizontal dispersion weight", self.loco_hor_dispersion_weight)
+        rej_form.addRow("Vertical dispersion weight", self.loco_ver_dispersion_weight)
         for widget in (self.loco_include_dispersion, self.auto_delta, self.loco_fixedpath, self.loco_individuals, self.loco_remove_coupling, self.loco_plot_fit_parameters):
             rej_form.addRow(widget)
         rej_group = QGroupBox("Iterations and Outlier Rejection")
@@ -641,10 +990,36 @@ class MainWindow(QMainWindow):
         self.constraint_skew_weights = QLineEdit()
         self.constraint_quad_mask = QLineEdit()
         self.constraint_skew_mask = QLineEdit()
+        self.constraint_quad_sigma_mode = QComboBox()
+        self.constraint_quad_sigma_mode.addItem("Absolute σ", "absolute")
+        self.constraint_quad_sigma_mode.addItem("Relative σ × |K|", "relative")
+        self.constraint_quad_relative_sigma = self._double_spin(1e-15, 1.0, 1e-4, 10)
+        self.constraint_quad_minimum_sigma = self._double_spin(0.0, 1.0, 1e-12, 12)
+        self.constraint_quad_default_weight = self._double_spin(0.0, 1e12, 1.0, 8)
+        self.constraint_quad_selected_families = QLineEdit()
+        self.constraint_quad_selected_families.setPlaceholderText("e.g. 12, 27, 35")
+        self.constraint_quad_selected_weight = self._double_spin(0.0, 1e12, 1.0, 8)
+        self.constraint_quad_exceptions = FamilyWeightEditor()
+        self.constraint_skew_default_weight = self._double_spin(0.0, 1e12, 1.0, 8)
+        self.constraint_skew_selected_families = QLineEdit()
+        self.constraint_skew_selected_families.setPlaceholderText("e.g. 0, 3")
+        self.constraint_skew_selected_weight = self._double_spin(0.0, 1e12, 1.0, 8)
+        self.constraint_skew_exceptions = FamilyWeightEditor()
         constraint_form = QFormLayout()
         constraint_form.addRow(self.constraint_enabled)
+        constraint_form.addRow("Quadrupole sigma definition", self.constraint_quad_sigma_mode)
         constraint_form.addRow("Quadrupole sigma", self.constraint_quad_sigma)
+        constraint_form.addRow("Relative quadrupole sigma", self.constraint_quad_relative_sigma)
+        constraint_form.addRow("Minimum quadrupole sigma", self.constraint_quad_minimum_sigma)
+        constraint_form.addRow("Default quadrupole weight", self.constraint_quad_default_weight)
+        constraint_form.addRow("Selected quadrupole families", self.constraint_quad_selected_families)
+        constraint_form.addRow("Common selected-family weight", self.constraint_quad_selected_weight)
+        constraint_form.addRow("Quadrupole weight exceptions", self.constraint_quad_exceptions)
         constraint_form.addRow("Skew sigma", self.constraint_skew_sigma)
+        constraint_form.addRow("Default skew weight", self.constraint_skew_default_weight)
+        constraint_form.addRow("Selected skew families", self.constraint_skew_selected_families)
+        constraint_form.addRow("Common selected-skew weight", self.constraint_skew_selected_weight)
+        constraint_form.addRow("Skew weight exceptions", self.constraint_skew_exceptions)
         constraint_form.addRow("Quadrupole weights", self.constraint_quad_weights)
         constraint_form.addRow("Skew weights", self.constraint_skew_weights)
         constraint_form.addRow("Quadrupole mask", self.constraint_quad_mask)
@@ -700,14 +1075,48 @@ class MainWindow(QMainWindow):
         cm_form.addRow("Horizontal step [rad]", self.params_cmstep_h)
         cm_form.addRow("Vertical step [rad]", self.params_cmstep_v)
         cm_form.addRow("CM-step .npz file", self.params_cmstep_file_row)
+        cm_form.addRow("Initialization RF step [Hz]", self.params_rfstep)
         param_layout.addWidget(cm_group)
 
         init_group = QGroupBox("Fit Initialization")
+        self.fit_init_group = init_group
         param_form = QFormLayout(init_group)
         for label, widget in (("Initialization policy overrides", self.params_init_policy), ("Explicit initial values", self.params_init), ("Normal quadrupole attribute", self.params_quads_attr), ("Normal quadrupole attribute index", self.params_quads_attr_index), ("Skew quadrupole attribute", self.params_skew_attr), ("Skew quadrupole attribute index", self.params_skew_attr_index), ("Tilt R1 attribute", self.params_tilt_attr_r1), ("Tilt R2 attribute", self.params_tilt_attr_r2), ("Tilt update method", self.params_tilt_method)):
             param_form.addRow(label, widget)
         param_layout.addWidget(init_group)
+        self._advanced_form_rows = (
+            (rej_form, self.loco_hor_dispersion_weight),
+            (rej_form, self.loco_ver_dispersion_weight),
+            (cm_form, self.params_cmstep_h),
+            (cm_form, self.params_cmstep_v),
+            (cm_form, self.params_cmstep_file_row),
+            (cm_form, self.params_rfstep),
+        )
         layout.addWidget(param_group)
+
+        self.resume_current = QRadioButton("Start from current model")
+        self.resume_previous = QRadioButton("Resume from previous LOCO state")
+        self.resume_current.setChecked(True)
+        self.resume_directory = QLineEdit()
+        self.resume_browse = QPushButton("Browse…")
+        self.resume_browse.clicked.connect(self._browse_resume_directory)
+        resume_path_widget = QWidget(); resume_path_layout = QHBoxLayout(resume_path_widget)
+        resume_path_layout.setContentsMargins(0, 0, 0, 0)
+        resume_path_layout.addWidget(self.resume_directory, 1); resume_path_layout.addWidget(self.resume_browse)
+        self.resume_ring_file = QLineEdit("ring_pyloco.mat")
+        self.resume_fit_dict_file = QLineEdit("fit_dict.pkl")
+        self.resume_fit_results_file = QLineEdit("fit_results.npy")
+        self.resume_metadata = QLabel("No previous state selected.")
+        self.resume_metadata.setWordWrap(True)
+        resume_group = QGroupBox("Initialization / Resume")
+        resume_form = QFormLayout(resume_group)
+        resume_form.addRow(self.resume_current); resume_form.addRow(self.resume_previous)
+        resume_form.addRow("Previous run or results directory", resume_path_widget)
+        resume_form.addRow("Fitted lattice file", self.resume_ring_file)
+        resume_form.addRow("Fit dictionary file", self.resume_fit_dict_file)
+        resume_form.addRow("Fit history file", self.resume_fit_results_file)
+        resume_form.addRow("State metadata", self.resume_metadata)
+        layout.addWidget(resume_group)
 
         self.fixed_group = QGroupBox("RF and Momentum Compaction")
         fixed_form = QFormLayout(self.fixed_group)
@@ -774,11 +1183,18 @@ class MainWindow(QMainWindow):
     def _page(self, title: str) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(36, 32, 36, 36)
+        layout.setContentsMargins(24, 24, 24, 28)
         heading = QLabel(title)
         heading.setObjectName("pageTitle")
         layout.addWidget(heading)
         return page
+
+    def _configure_responsive_layouts(self) -> None:
+        """Apply consistent reflow rules without changing scientific controls."""
+        for form in self.findChildren(QFormLayout):
+            form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+            form.setRowWrapPolicy(QFormLayout.WrapLongRows)
+            form.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
 
     def _create_actions(self) -> None:
         self.new_project_action = QAction("New", self)
@@ -801,8 +1217,8 @@ class MainWindow(QMainWindow):
         self.exit_action = QAction("Exit", self)
         self.exit_action.setShortcut(QKeySequence.Quit)
         self.exit_action.triggered.connect(self.close)
-        self.basic_mode_action = QAction("Basic", self, checkable=True, checked=True)
-        self.advanced_mode_action = QAction("Advanced", self, checkable=True)
+        self.basic_mode_action = QAction("Basic", self, checkable=True, checked=self.project.mode == "Basic")
+        self.advanced_mode_action = QAction("Advanced", self, checkable=True, checked=self.project.mode == "Advanced")
         self.mode_action_group = QActionGroup(self, exclusive=True)
         self.mode_action_group.addAction(self.basic_mode_action)
         self.mode_action_group.addAction(self.advanced_mode_action)
@@ -819,6 +1235,15 @@ class MainWindow(QMainWindow):
         self.toggle_theme_action = QAction(self)
         self.toggle_theme_action.triggered.connect(self._toggle_theme)
         self._update_toggle_theme_action()
+        self.float_explorer_action = QAction(
+            "Move Project Explorer to Separate Window", self, checkable=True
+        )
+        self.float_explorer_action.triggered.connect(
+            self._set_project_explorer_floating
+        )
+        self._project_explorer.topLevelChanged.connect(
+            self.float_explorer_action.setChecked
+        )
         self.about_action = QAction("About pyLOCO GUI", self)
         self.about_action.triggered.connect(self._show_about_dialog)
 
@@ -841,6 +1266,7 @@ class MainWindow(QMainWindow):
         analysis_menu.addAction(self.compare_orms_action)
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self._project_explorer.toggleViewAction())
+        view_menu.addAction(self.float_explorer_action)
         mode_menu = view_menu.addMenu("Workflow Mode")
         mode_menu.addAction(self.basic_mode_action)
         mode_menu.addAction(self.advanced_mode_action)
@@ -852,6 +1278,13 @@ class MainWindow(QMainWindow):
         for action in self.theme_actions.values():
             appearance_menu.addAction(action)
         self.menuBar().addMenu("&Help").addAction(self.about_action)
+
+    def _set_project_explorer_floating(self, floating: bool) -> None:
+        """Move the explorer between a free window and the left dock area."""
+        self._project_explorer.setFloating(floating)
+        if not floating:
+            self.addDockWidget(Qt.LeftDockWidgetArea, self._project_explorer)
+        self._project_explorer.show()
 
     def _create_toolbar(self) -> None:
         toolbar = QToolBar("Main Toolbar", self)
@@ -869,6 +1302,12 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.advanced_mode_action)
         toolbar.addSeparator()
         toolbar.addAction(self.toggle_theme_action)
+        toolbar_spacer = QWidget()
+        toolbar_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        toolbar.addWidget(toolbar_spacer)
+        self.toolbar_brand = ClickableBrandLabel()
+        self.toolbar_brand.clicked.connect(self._show_about_dialog)
+        toolbar.addWidget(self.toolbar_brand)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
         run_button = toolbar.widgetForAction(self.run_loco_action)
         if run_button is not None:
@@ -876,6 +1315,7 @@ class MainWindow(QMainWindow):
 
     def _create_status_bar(self) -> None:
         status_bar = QStatusBar(self)
+        status_bar.setSizeGripEnabled(True)
         status_bar.addWidget(self._project_label, 1)
         status_bar.addWidget(self._workflow_label, 1)
         status_bar.addWidget(self._validation_label, 1)
@@ -897,6 +1337,11 @@ class MainWindow(QMainWindow):
             self.loco_remove_coupling, self.loco_plot_fit_parameters, self.constraint_enabled,
             self.constraint_quad_sigma, self.constraint_skew_sigma,
             self.constraint_quad_weights, self.constraint_skew_weights,
+            self.constraint_quad_sigma_mode, self.constraint_quad_relative_sigma,
+            self.constraint_quad_minimum_sigma, self.constraint_quad_default_weight,
+            self.constraint_quad_selected_families, self.constraint_quad_selected_weight,
+            self.constraint_skew_default_weight, self.constraint_skew_selected_families,
+            self.constraint_skew_selected_weight,
             self.params_individuals, self.cmstep_mode, self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v,
             self.params_cmstep_file, self.params_cmstep_browse, self.params_rfstep, self.params_init, self.params_quads_attr, self.params_quads_attr_index,
             self.params_skew_attr, self.params_skew_attr_index, self.params_tilt_attr_r1,
@@ -915,9 +1360,20 @@ class MainWindow(QMainWindow):
         self.solver_algorithm.currentIndexChanged.connect(self._update_solver_scaled_availability)
         self.svd_method.currentIndexChanged.connect(self._update_svd_input_availability)
         self.cmstep_mode.currentIndexChanged.connect(self._update_cmstep_input_availability)
+        self.constraint_quad_exceptions.changed.connect(self._on_fit_config_changed)
+        self.constraint_skew_exceptions.changed.connect(self._on_fit_config_changed)
+        self.resume_current.toggled.connect(self._on_fit_config_changed)
+        self.resume_previous.toggled.connect(self._on_fit_config_changed)
+        self.resume_previous.toggled.connect(self._update_resume_availability)
+        self.resume_directory.textChanged.connect(self._on_fit_config_changed)
+        self.resume_directory.textChanged.connect(self._update_resume_availability)
+        for widget in (self.resume_ring_file, self.resume_fit_dict_file, self.resume_fit_results_file):
+            widget.textChanged.connect(self._on_fit_config_changed)
+            widget.textChanged.connect(self._update_resume_availability)
 
     def _set_calculator_value(self, calculator: str) -> None:
-        backend_value = "Linear" if calculator == "Linear" else "Tracking"
+        aliases = {"linear": "Linear", "analytical": "Analytical", "numerical": "Numerical", "tracking": "Numerical"}
+        backend_value = aliases.get(str(calculator).strip().lower(), calculator)
         index = self.rm_calculator.findData(backend_value)
         if index >= 0:
             self.rm_calculator.setCurrentIndex(index)
@@ -982,7 +1438,56 @@ class MainWindow(QMainWindow):
         if filename:
             self.params_cmstep_file.setText(filename)
 
+    @Slot()
+    def _browse_resume_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(self, "Select previous LOCO run or results directory")
+        if directory:
+            self.resume_directory.setText(directory)
+            self.resume_previous.setChecked(True)
+
+    @staticmethod
+    def _integer_list(text: str, label: str) -> list[int]:
+        stripped = text.strip()
+        if not stripped:
+            return []
+        try:
+            values = [int(value) for value in re.split(r"[\s,;]+", stripped) if value]
+        except ValueError as exc:
+            raise ValueError(f"{label} must contain integer family indices.") from exc
+        if any(value < 0 for value in values) or len(values) != len(set(values)):
+            raise ValueError(f"{label} must contain unique non-negative indices.")
+        return values
+
+    def _update_resume_availability(self) -> None:
+        enabled = self.resume_previous.isChecked()
+        for widget in (self.resume_directory, self.resume_browse, self.resume_ring_file,
+                       self.resume_fit_dict_file, self.resume_fit_results_file):
+            widget.setEnabled(enabled)
+        if not enabled:
+            self.resume_metadata.setText("Start from the currently selected lattice model.")
+            return
+        resume = self.project.loco_config.resume
+        resume.enabled = True
+        resume.directory = self.resume_directory.text()
+        resume.ring_file = self.resume_ring_file.text() or "ring_pyloco.mat"
+        resume.fit_dict_file = self.resume_fit_dict_file.text() or "fit_dict.pkl"
+        resume.fit_results_file = self.resume_fit_results_file.text()
+        errors = resume.validation_messages()
+        if errors:
+            self.resume_metadata.setText("⚠ " + "\n⚠ ".join(errors))
+            return
+        metadata = resume.metadata()
+        details = [f"Source: {metadata.get('source', resume.directory)}"]
+        if metadata.get("previous_iterations") is not None:
+            details.append(f"Previous iterations: {metadata['previous_iterations']}")
+        if metadata.get("previous_final_chi2") is not None:
+            details.append(f"Previous final χ²: {float(metadata['previous_final_chi2']):.4e}")
+        if metadata.get("fit_list"):
+            details.append("Previous fit blocks: " + ", ".join(metadata["fit_list"]))
+        self.resume_metadata.setText("✓ " + "\n".join(details))
+
     def _load_config_to_widgets(self) -> None:
+        self._loading_config = True
         cfg = self.project.loco_config
         self._set_calculator_value(cfg.response_matrix.calculator)
         self.rm_dispersion.setChecked(cfg.response_matrix.includeDispersion)
@@ -1030,6 +1535,17 @@ class MainWindow(QMainWindow):
         self.constraint_skew_weights.setText(cfg.constraints.skew_weights)
         self.constraint_quad_mask.setText(cfg.constraints.quad_mask)
         self.constraint_skew_mask.setText(cfg.constraints.skew_mask)
+        self.constraint_quad_sigma_mode.setCurrentIndex(max(0, self.constraint_quad_sigma_mode.findData(cfg.constraints.quad_sigma_mode)))
+        self.constraint_quad_relative_sigma.setValue(cfg.constraints.quad_relative_sigma)
+        self.constraint_quad_minimum_sigma.setValue(cfg.constraints.quad_minimum_sigma)
+        self.constraint_quad_default_weight.setValue(cfg.constraints.quad_default_weight)
+        self.constraint_quad_selected_families.setText(", ".join(map(str, cfg.constraints.quad_selected_families)))
+        self.constraint_quad_selected_weight.setValue(cfg.constraints.quad_selected_weight)
+        self.constraint_quad_exceptions.set_mapping(cfg.constraints.quad_weighted_families)
+        self.constraint_skew_default_weight.setValue(cfg.constraints.skew_default_weight)
+        self.constraint_skew_selected_families.setText(", ".join(map(str, cfg.constraints.skew_selected_families)))
+        self.constraint_skew_selected_weight.setValue(cfg.constraints.skew_selected_weight)
+        self.constraint_skew_exceptions.set_mapping(cfg.constraints.skew_weighted_families)
         for name, check in self.parameter_checks.items():
             check.setChecked(bool(getattr(cfg.parameters, name)))
         self.params_individuals.setChecked(cfg.parameters.individuals)
@@ -1055,13 +1571,23 @@ class MainWindow(QMainWindow):
         self.fixed_delta_q_tilt.setValue(cfg.fixed_parameters.delta_q_tilt)
         self.mcf_source.setCurrentIndex(max(0, self.mcf_source.findData(cfg.mcf_source)))
         self.mcf_user_value.setText(cfg.mcf_user_value)
+        self.resume_previous.setChecked(cfg.resume.enabled)
+        self.resume_current.setChecked(not cfg.resume.enabled)
+        self.resume_directory.setText(cfg.resume.directory)
+        self.resume_ring_file.setText(cfg.resume.ring_file)
+        self.resume_fit_dict_file.setText(cfg.resume.fit_dict_file)
+        self.resume_fit_results_file.setText(cfg.resume.fit_results_file)
+        self._update_resume_availability()
         self._apply_mode_visibility()
         self._update_svd_input_availability()
         self._update_cmstep_input_availability()
         self._update_fit_summary()
+        self._loading_config = False
 
     def _collect_loco_configuration(self) -> LocoConfiguration:
-        cfg = LocoConfiguration()
+        # Preserve advanced values hidden in Basic mode and all forward-compatible
+        # source YAML fields while updating only controls visible to the user.
+        cfg = deepcopy(self.project.loco_config)
         cfg.output_directory = self.project.loco_config.output_directory
         cfg.response_matrix.calculator = self.rm_calculator.currentData() or self.rm_calculator.currentText()
         cfg.response_matrix.includeDispersion = self.rm_dispersion.isChecked()
@@ -1112,6 +1638,17 @@ class MainWindow(QMainWindow):
         cfg.constraints.skew_weights = self.constraint_skew_weights.text()
         cfg.constraints.quad_mask = self.constraint_quad_mask.text()
         cfg.constraints.skew_mask = self.constraint_skew_mask.text()
+        cfg.constraints.quad_sigma_mode = self.constraint_quad_sigma_mode.currentData() or "absolute"
+        cfg.constraints.quad_relative_sigma = self.constraint_quad_relative_sigma.value()
+        cfg.constraints.quad_minimum_sigma = self.constraint_quad_minimum_sigma.value()
+        cfg.constraints.quad_default_weight = self.constraint_quad_default_weight.value()
+        cfg.constraints.quad_selected_families = self._integer_list(self.constraint_quad_selected_families.text(), "Selected quadrupole families")
+        cfg.constraints.quad_selected_weight = self.constraint_quad_selected_weight.value()
+        cfg.constraints.quad_weighted_families = self.constraint_quad_exceptions.mapping()
+        cfg.constraints.skew_default_weight = self.constraint_skew_default_weight.value()
+        cfg.constraints.skew_selected_families = self._integer_list(self.constraint_skew_selected_families.text(), "Selected skew families")
+        cfg.constraints.skew_selected_weight = self.constraint_skew_selected_weight.value()
+        cfg.constraints.skew_weighted_families = self.constraint_skew_exceptions.mapping()
         for name, check in self.parameter_checks.items():
             setattr(cfg.parameters, name, check.isChecked())
         cfg.parameters.individuals = self.params_individuals.isChecked()
@@ -1137,11 +1674,23 @@ class MainWindow(QMainWindow):
         cfg.fixed_parameters.delta_q_tilt = self.fixed_delta_q_tilt.value()
         cfg.mcf_source = self.mcf_source.currentData() or "automatic"
         cfg.mcf_user_value = self.mcf_user_value.text()
+        cfg.resume.enabled = self.resume_previous.isChecked()
+        cfg.resume.directory = self.resume_directory.text()
+        cfg.resume.ring_file = self.resume_ring_file.text() or "ring_pyloco.mat"
+        cfg.resume.fit_dict_file = self.resume_fit_dict_file.text() or "fit_dict.pkl"
+        cfg.resume.fit_results_file = self.resume_fit_results_file.text()
         return cfg
 
     @Slot()
     def _on_fit_config_changed(self) -> None:
-        self.project.loco_config = self._collect_loco_configuration()
+        if self._loading_config:
+            return
+        try:
+            self.project.loco_config = self._collect_loco_configuration()
+        except ValueError as exc:
+            self._validation_label.setText(f"Validation: {exc}")
+            self._validation_label.setObjectName("validationMissing")
+            return
         self.project.modified = True
         self._update_fit_summary()
         self._refresh_ui("LOCO configuration updated")
@@ -1184,7 +1733,9 @@ class MainWindow(QMainWindow):
                 if not source.exists():
                     raise ValueError(f"Configured {role.replace('_', ' ')} file does not exist: {source}")
                 self.project.measurements[role] = ImportedDataset(
-                    role=role, path=str(source), file_type=source.suffix.lower().lstrip("."), size_bytes=source.stat().st_size
+                    role=role, path=str(source), file_type=source.suffix.lower().lstrip("."),
+                    size_bytes=source.stat().st_size,
+                    options=measurement_options_from_config(config.source_config).get(role, {}),
                 )
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
             QMessageBox.warning(self, "Import failed", str(exc))
@@ -1213,6 +1764,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def new_project(self) -> None:
+        if not self._confirm_discard_changes():
+            return
         recent = self.project.recent_projects
         self.project = ProjectMetadata(recent_projects=recent)
         self.dashboard_name.setText(self.project.name)
@@ -1221,6 +1774,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def open_project(self, path: Path | None = None) -> None:
+        if not self._confirm_discard_changes():
+            return
         filename = (
             str(path)
             if path
@@ -1424,6 +1979,15 @@ class MainWindow(QMainWindow):
         )
         for widget in widgets:
             widget.setVisible(advanced)
+        self.fit_init_group.setVisible(advanced)
+        for form, field in self._advanced_form_rows:
+            if hasattr(form, "setRowVisible"):
+                form.setRowVisible(field, advanced)
+            else:
+                label = form.labelForField(field)
+                if label is not None:
+                    label.setVisible(advanced)
+                field.setVisible(advanced)
         if hasattr(self, "results_workspace"):
             self.results_workspace.set_mode(self.project.mode)
 
@@ -1440,6 +2004,7 @@ class MainWindow(QMainWindow):
     def _on_mode_changed(self, action: QAction) -> None:
         self.project.mode = action.text()
         self.project.modified = True
+        self._settings.setValue("workflow/mode", self.project.mode)
         self._mode_label.setText(f"{self.project.mode} mode")
         self._apply_mode_visibility()
         self._refresh_ui(f"{self.project.mode} mode selected")
@@ -1505,6 +2070,8 @@ class MainWindow(QMainWindow):
             return
         self.project.loco_config = self._collect_loco_configuration()
         request = LocoRunRequest.from_project(self.project)
+        self._run_cancel_requested = False
+        self._set_waiting_game_status("running")
         self._run_started_at = __import__("time").monotonic()
         self.results_workspace.begin_run()
         self.run_loco_action.setEnabled(False)
@@ -1527,8 +2094,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def cancel_loco_run(self) -> None:
         if self._run_worker is not None:
+            self._run_cancel_requested = True
             self._run_worker.cancel_requested = True
             self.cancel_loco_button.setEnabled(False)
+            self._set_waiting_game_status("cancelled")
             self._append_run_log("Cancellation requested. The current backend step will finish before stopping if cancellation is feasible.")
 
     @Slot(str)
@@ -1543,6 +2112,7 @@ class MainWindow(QMainWindow):
         self._project_explorer.update_project(self.project)
         self._last_loco_result = result
         self.compare_orms_action.setEnabled(self._can_compare_orms())
+        self._set_waiting_game_status("cancelled" if self._run_cancel_requested else "completed")
         QMessageBox.information(self, "LOCO complete", f"LOCO completed successfully.\n\nResults: {result.results_dir}")
 
     @Slot(str)
@@ -1566,7 +2136,23 @@ class MainWindow(QMainWindow):
     def _on_loco_failed(self, error: LocoRunError) -> None:
         self.results_workspace.fail_run()
         self._append_run_log(error.traceback)
+        self._set_waiting_game_status("cancelled" if self._run_cancel_requested else "failed")
         QMessageBox.critical(self, "LOCO failed", f"The backend reported an error:\n\n{error.message}")
+
+    @Slot()
+    def _open_waiting_games(self) -> None:
+        if self._waiting_games_dialog is None:
+            self._waiting_games_dialog = WaitingGamesDialog(self)
+        self._waiting_games_dialog.set_loco_status(
+            "cancelled" if self._run_cancel_requested else "running"
+        )
+        self._waiting_games_dialog.show()
+        self._waiting_games_dialog.raise_()
+        self._waiting_games_dialog.activateWindow()
+
+    def _set_waiting_game_status(self, state: str) -> None:
+        if self._waiting_games_dialog is not None:
+            self._waiting_games_dialog.set_loco_status(state)
 
     @Slot()
     def _cleanup_run_thread(self) -> None:
@@ -1585,7 +2171,7 @@ class MainWindow(QMainWindow):
     def _update_elapsed_time(self) -> None:
         if self._run_started_at:
             elapsed = __import__("time").monotonic() - self._run_started_at
-            self.run_elapsed_label.setText(f"Elapsed: {elapsed:.1f} s")
+            self.run_elapsed_label.setText(f"{elapsed:.1f} s")
 
 
     def _can_compare_orms(self) -> bool:
@@ -1688,8 +2274,44 @@ class MainWindow(QMainWindow):
         window.show()
 
     def _show_about_dialog(self) -> None:
-        QMessageBox.about(
-            self,
-            "About pyLOCO GUI",
-            "pyLOCO GUI\n\nMilestone 2 project management and data import shell. Numerical backend code is unchanged.",
+        dialog = QDialog(self)
+        dialog.setWindowTitle("About pyLOCO")
+        dialog.setModal(True)
+        dialog.resize(560, 590)
+        dialog.setMinimumSize(380, 360)
+        outer = QVBoxLayout(dialog)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame)
+        content = QWidget(); layout = QVBoxLayout(content)
+        layout.setContentsMargins(24, 18, 24, 18)
+        layout.addLayout(self._logo_block(360))
+        def about_label(text, *, rich=False, object_name=""):
+            label = QLabel(text); label.setAlignment(Qt.AlignCenter); label.setWordWrap(True)
+            if object_name: label.setObjectName(object_name)
+            if rich: label.setTextFormat(Qt.RichText); label.setOpenExternalLinks(True)
+            layout.addWidget(label); return label
+        about_label("S T O R A G E   R I N G   O P T I C S   C O R R E C T I O N", object_name="aboutTagline")
+        layout.addSpacing(10)
+        about_label("pyLOCO — Storage Ring Optics Correction", object_name="aboutTitle")
+        about_label("Version 0.3.0")
+        layout.addSpacing(10)
+        about_label("Scientific software for linear-optics correction workflows in storage rings.")
+        layout.addSpacing(12)
+        about_label("Contributor: Elaf Musa")
+        layout.addSpacing(6)
+        about_label("With thanks to: Ilya Agapov, Joachim Keil,\nKonstantinos Paraschou, Simone Liuzzo, and Ahmed El Deeb")
+        layout.addSpacing(12)
+        about_label("License: Apache-2.0")
+        layout.addSpacing(8)
+        about_label(
+            f'<a href="{PROJECT_REPOSITORY}">Repository</a>  ·  '
+            f'<a href="{PROJECT_DOCUMENTATION}">Documentation</a>  ·  '
+            f'<a href="{PROJECT_PAPER_URL}">Scientific reference</a>', rich=True
         )
+        layout.addSpacing(10)
+        about_label(f'<a href="{PROJECT_PAPER_URL}">pyLOCO scientific reference and methodology (IPAC/JACoW)</a>', rich=True)
+        layout.addStretch(1)
+        scroll.setWidget(content); outer.addWidget(scroll, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
+        buttons.accepted.connect(dialog.accept)
+        outer.addWidget(buttons)
+        dialog.exec()

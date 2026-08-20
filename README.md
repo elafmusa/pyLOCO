@@ -7,23 +7,34 @@ LOCO reference: J. Safranek, “Experimental determination of storage ring
 optics using orbit response measurements,” *NIM A* 388 (1997), 27–36,
 [doi:10.1016/S0168-9002(97)00309-4](https://doi.org/10.1016/S0168-9002(97)00309-4).
 
-## Install
+## Install and launch
 
 Python 3.10 or newer is recommended.
 
 ```bash
 git clone https://github.com/elafmusa/pyLOCO.git
 cd pyLOCO
-python3 -m pip install -e .
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[gui]"
 ```
+
 ## GUI
 
-For the graphical interface:
+Launch the graphical interface from the pyLOCO directory:
 
 ```bash
-python3 -m pip install -e ".[gui]"
 pyloco-gui
 ```
+
+Alternatively, launch it with Python:
+
+```bash
+python -m pyLOCO.gui.app
+```
+
+On Windows, activate the environment with `.venv\Scripts\activate` instead of
+`source .venv/bin/activate`.
 
 ## Recommended examples
 

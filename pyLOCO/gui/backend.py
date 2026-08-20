@@ -12,11 +12,13 @@ import io
 import json
 import importlib.util
 import os
+import pickle
 import sys
 import time
 import traceback
 import re
-from dataclasses import asdict, dataclass
+import copy
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,7 @@ class LocoRunRequest:
     lattice_path: str
     measurements: dict[str, str]
     backend_mapping: dict[str, Any]
+    measurement_options: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def results_root(self) -> Path:
@@ -49,6 +52,7 @@ class LocoRunRequest:
             project_path=project.path,
             lattice_path=project.lattice.path,
             measurements={key: dataset.path for key, dataset in project.measurements.items()},
+            measurement_options={key: dict(dataset.options) for key, dataset in project.measurements.items()},
             backend_mapping=project.loco_config.to_backend_mapping(),
         )
 
@@ -126,9 +130,17 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
 
         ring = at.load_lattice(request.lattice_path)
         log(f"Loaded lattice: {request.lattice_path}")
-        measured = _load_measurements(request.measurements)
+        measured = _load_measurements(request.measurements, request.measurement_options)
         log("Loaded measurement files.")
         indices = _derive_indices(ring, measured)
+        fit_cfg = config_module.FitInitConfig(**request.backend_mapping["FitInitConfig"])
+        rm_cfg = config_module.RMConfig(**request.backend_mapping["RMConfig"])
+        # Establish the user's complete machine selection before applying bad
+        # BPM positions.  Reapplying the complete selection afterwards would
+        # restore removed BPMs and make the ORM row count inconsistent.
+        indices = _apply_machine_element_selections(
+            indices, request.backend_mapping.get("MachineElements", {}), rm_cfg
+        )
         bad_bpm_positions = _load_bad_bpm_positions(request.measurements)
         if bad_bpm_positions is None and request.backend_mapping.get("BadBPMPositions"):
             bad_bpm_positions = _as_bad_bpm_positions(request.backend_mapping["BadBPMPositions"])
@@ -151,9 +163,6 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         except Exception as exc:
             raise ValueError(f"Unable to resolve momentum compaction factor: {exc}") from exc
 
-        fit_cfg = config_module.FitInitConfig(**request.backend_mapping["FitInitConfig"])
-        rm_cfg = config_module.RMConfig(**request.backend_mapping["RMConfig"])
-        indices = _apply_machine_element_selections(indices, request.backend_mapping.get("MachineElements", {}), rm_cfg)
         _validate_indices(ring, indices, fit_cfg.fit_list or ())
         constraint_cfg = _make_constraint_config(request.backend_mapping["ConstraintConfig"])
         options.setdefault("fit_list", fit_cfg.fit_list or ())
@@ -169,6 +178,15 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
             measured=measured,
             indices=indices,
         )
+        resume_state = _load_resume_mapping(request.backend_mapping.get("Resume"), log)
+        if resume_state is not None:
+            kwargs.update(
+                continue_from_previous=True,
+                previous_ring=resume_state["ring"],
+                previous_fit_dict=resume_state["fit_dict"],
+                previous_fit_results=resume_state["fit_results"],
+            )
+        reference_ring = copy.deepcopy(resume_state["ring"] if resume_state is not None else ring)
         kwargs["initial_model_orm_callback"] = lambda orm: _save_initial_model_orm(results_dir, orm)
         (results_dir / "run_request.json").write_text(
             json.dumps(_jsonable(asdict(request)), indent=2), encoding="utf-8"
@@ -188,7 +206,24 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
             results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms,
             chi2_history, delta_chi2_history, blocks, save_fit_dict,
             initial_chi2=initial_chi2, runtime_seconds=elapsed,
+            resume_mapping=request.backend_mapping.get("Resume"),
         )
+        optics_path = _save_optics_results(
+            results_dir,
+            reference_ring=reference_ring,
+            fitted_ring=final_ring,
+            measured=measured,
+            initial_orm_path=results_dir / "model_orm_initial.h5",
+            fitted_orm=orm_model,
+            include_dispersion=bool(options.get("includeDispersion", False)),
+            reference_kind="resumed_fitted_lattice" if resume_state is not None else "run_input_lattice",
+            bpm_ords=indices["used_bpms_ords"],
+            rf_step=float(rm_cfg.rfStep),
+            rf_frequency=float(config_module.fixed_parameters.Frequency),
+            momentum_compaction=float(mcf_value.ravel()[0]),
+        )
+        if optics_path is not None:
+            output_files.append(str(optics_path))
         log(f"LOCO run completed in {elapsed:.1f} s.")
         log_path = _save_backend_log(results_dir, log_lines)
         output_files.append(str(log_path))
@@ -241,7 +276,7 @@ def _close_worker_matplotlib_figures() -> None:
 def _make_gui_config(mapping: dict[str, Any]):
     """Return the internal pyLOCO config module configured from GUI state."""
 
-    from dataclasses import dataclass
+    from dataclasses import dataclass, fields
 
     import pyLOCO.config as config_module
 
@@ -265,32 +300,52 @@ def _make_gui_config(mapping: dict[str, Any]):
         config_module.BACKEND = config_module.LOCOAPI(get_mcf=lambda ring, value=value: value)
     else:
         config_module.BACKEND = config_module.LOCOAPI()
-    config_module.loco_options = config_module.LOCOOptions(**mapping.get("LOCOOptions", {}))
+    # The GUI mapping also carries newer pyloco call options which are not
+    # fields of the legacy-compatible LOCOOptions dataclass.  Keep those in the
+    # request mapping for _build_pyloco_kwargs, but do not pass them to this
+    # constructor.
+    option_fields = {item.name for item in fields(config_module.LOCOOptions)}
+    legacy_options = {
+        key: value for key, value in mapping.get("LOCOOptions", {}).items()
+        if key in option_fields
+    }
+    config_module.loco_options = config_module.LOCOOptions(**legacy_options)
     return config_module
 
 
-def _load_measurements(paths: dict[str, str]) -> dict[str, Any]:
+def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     import numpy as np
+
+    options = options or {}
 
     if "orm" not in paths:
         raise ValueError("An ORM measurement file is required.")
     orm_arrays = _load_array_mapping(paths["orm"])
-    data = {"orm": np.asarray(_pick_array(orm_arrays, "response_matrix", "orm"), dtype=float)}
+    orm_options = options.get("orm", {})
+    orm_name = str(orm_options.get("dataset") or "response_matrix")
+    orm = np.asarray(_pick_array(orm_arrays, orm_name, "response_matrix", "orm"), dtype=float)
+    if bool(orm_options.get("transpose", False)):
+        orm = orm.T
+    data = {"orm": orm * float(orm_options.get("scale", 1.0))}
     if data["orm"].ndim != 2 or data["orm"].shape[0] % 2:
         raise ValueError(f"ORM must be a two-dimensional array with an even row count; got {data['orm'].shape}.")
     n_bpms = data["orm"].shape[0] // 2
     if "dispersion" in paths:
         arrays = _load_array_mapping(paths["dispersion"])
-        data["eta_x"] = np.ravel(_pick_array(arrays, "measured_eta_x", "eta_x", fallback_index=0)).astype(float)
-        data["eta_y"] = np.ravel(_pick_array(arrays, "measured_eta_y", "eta_y", fallback_index=1)).astype(float)
+        dispersion_options = options.get("dispersion", {})
+        names = dispersion_options.get("datasets", {})
+        data["eta_x"] = np.ravel(_pick_array(arrays, str(names.get("horizontal") or "measured_eta_x"), "eta_x", fallback_index=0)).astype(float) * float(dispersion_options.get("horizontal_scale", 1.0))
+        data["eta_y"] = np.ravel(_pick_array(arrays, str(names.get("vertical") or "measured_eta_y"), "eta_y", fallback_index=1)).astype(float) * float(dispersion_options.get("vertical_scale", 1.0))
     else:
         data["eta_x"] = np.zeros(n_bpms)
         data["eta_y"] = np.zeros(n_bpms)
     data["dispersion_supplied"] = "dispersion" in paths
     if "bpm_noise" in paths:
         arrays = _load_array_mapping(paths["bpm_noise"])
-        data["noise_x"] = np.ravel(_pick_array(arrays, "Noise_BPMx", "noise_x", fallback_index=0)).astype(float)
-        data["noise_y"] = np.ravel(_pick_array(arrays, "Noise_BPMy", "noise_y", fallback_index=1)).astype(float)
+        noise_options = options.get("bpm_noise", {})
+        names = noise_options.get("datasets", {})
+        data["noise_x"] = np.ravel(_pick_array(arrays, str(names.get("horizontal") or "Noise_BPMx"), "noise_x", fallback_index=0)).astype(float) * float(noise_options.get("horizontal_scale", 1.0))
+        data["noise_y"] = np.ravel(_pick_array(arrays, str(names.get("vertical") or "Noise_BPMy"), "noise_y", fallback_index=1)).astype(float) * float(noise_options.get("vertical_scale", 1.0))
     else:
         data["noise_x"] = np.ones(n_bpms)
         data["noise_y"] = np.ones(n_bpms)
@@ -566,7 +621,9 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
         hor_dispersion_weight=options.get("hor_dispersion_weight", 1.0), ver_dispersion_weight=options.get("ver_dispersion_weight", 1.0),
         CMstep=[hstep, vstep], rfStep=rm_cfg.rfStep if rm_cfg.rfStep is not None else fixed_parameters.rfstep,
         Frequency=fixed_parameters.Frequency, fit_list=options.get("fit_list", ()),
-        quad_individuals=fit_cfg.individuals, skew_individuals=fit_cfg.individuals, tilt_individuals=fit_cfg.individuals,
+        quad_individuals=fit_cfg.individuals,
+        skew_individuals=options.get("skew_individuals", fit_cfg.individuals),
+        tilt_individuals=options.get("tilt_individuals", fit_cfg.individuals),
         remove_coupling_=options.get("remove_coupling_", True), outlier_rejection=options.get("outlier_rejection", False),
         sigma_outlier=options.get("sigma_outlier", 10), apply_normalization=options.get("apply_normalization", False),
         normalization_mode=options.get("normalization_mode", "global"), svd_selection_method=options.get("svd_selection_method", "threshold"),
@@ -574,7 +631,37 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
         constraint_cfg=constraint_cfg, nLMIter=options.get("nLMIter", 10), Starting_Lambda=options.get("Starting_Lambda", 1e-3),
         max_lm_lambda=options.get("max_lm_lambda", 15), scaled=options.get("scaled", True), plot_fit_parameters=options.get("plot_fit_parameters", False),
         auto_correct_delta=options.get("auto_correct_delta", True), fixedpathlength=rm_cfg.fixedpathlength, fit_cfg=fit_cfg,
+        calculate_delta_chi2=options.get("calculate_delta_chi2", False),
     )
+
+
+def _load_resume_mapping(mapping: dict[str, Any] | None, log) -> dict[str, Any] | None:
+    """Load the exact artifacts consumed by pyloco's continuation arguments."""
+    if not mapping or not mapping.get("enabled"):
+        return None
+    directory = Path(str(mapping.get("directory") or "")).expanduser().resolve()
+    results = directory / "results" if (directory / "results").is_dir() else directory
+    ring_path = results / str(mapping.get("ring_file") or "ring_pyloco.mat")
+    fit_dict_path = results / str(mapping.get("fit_dict_file") or "fit_dict.pkl")
+    fit_results_name = mapping.get("fit_results_file")
+    missing = [str(path) for path in (ring_path, fit_dict_path) if not path.is_file()]
+    if fit_results_name and not (results / str(fit_results_name)).is_file():
+        missing.append(str(results / str(fit_results_name)))
+    if missing:
+        raise ValueError("Resume state is incomplete; missing: " + ", ".join(missing))
+    import at
+    import numpy as np
+    ring = at.load_lattice(ring_path)
+    with fit_dict_path.open("rb") as stream:
+        fit_dict = pickle.load(stream)
+    fit_results = None
+    if fit_results_name:
+        fit_results = np.load(results / str(fit_results_name), allow_pickle=True).tolist()
+    if not isinstance(fit_dict, dict):
+        raise ValueError(f"Previous fit dictionary is incompatible: {fit_dict_path}")
+    log(f"Initialization: resumed from {results}")
+    return {"ring": ring, "fit_dict": fit_dict, "fit_results": fit_results,
+            "results_directory": results}
 
 
 def _corrector_steps(value, expected: int, plane: str):
@@ -613,7 +700,86 @@ def _save_initial_model_orm(results_dir: Path, orm_model) -> Path:
     return path
 
 
-def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict, *, initial_chi2=None, runtime_seconds=None):
+def _save_optics_results(
+    results_dir: Path, *, reference_ring, fitted_ring, measured: dict[str, Any],
+    initial_orm_path: Path, fitted_orm, include_dispersion: bool, reference_kind: str,
+    bpm_ords=None, rf_step: float | None = None, rf_frequency: float | None = None,
+    momentum_compaction: float | None = None,
+) -> Path | None:
+    """Persist factual optics derived from the run's actual reference/final lattices.
+
+    Failure to calculate optional optics must never invalidate an otherwise
+    successful LOCO fit.  Old runs remain supported by the results loader.
+    """
+    import numpy as np
+
+    arrays: dict[str, Any] = {
+        "schema_version": np.asarray(2),
+        "reference_kind": np.asarray(reference_kind),
+        "dispersion_included": np.asarray(include_dispersion),
+        "dispersion_in_fit": np.asarray(include_dispersion),
+        "dispersion_diagnostic_available": np.asarray(False),
+    }
+    try:
+        refpts = np.arange(len(reference_ring), dtype=np.uint32)
+        ref_data = reference_ring.get_optics(refpts=refpts)[2]
+        fit_data = fitted_ring.get_optics(refpts=refpts)[2]
+        beta_ref = np.asarray(ref_data.beta, dtype=float)
+        beta_fit = np.asarray(fit_data.beta, dtype=float)
+        if beta_ref.shape == beta_fit.shape and beta_ref.ndim == 2 and beta_ref.shape[1] >= 2:
+            arrays.update({
+                "s": np.asarray(reference_ring.get_s_pos(refpts), dtype=float),
+                "beta_x_reference": beta_ref[:, 0], "beta_y_reference": beta_ref[:, 1],
+                "beta_x_fitted": beta_fit[:, 0], "beta_y_fitted": beta_fit[:, 1],
+                "beta_beating_x": np.divide(beta_fit[:, 0] - beta_ref[:, 0], beta_ref[:, 0],
+                                             out=np.full(beta_ref.shape[0], np.nan), where=beta_ref[:, 0] != 0),
+                "beta_beating_y": np.divide(beta_fit[:, 1] - beta_ref[:, 1], beta_ref[:, 1],
+                                             out=np.full(beta_ref.shape[0], np.nan), where=beta_ref[:, 1] != 0),
+            })
+    except Exception:
+        pass
+
+    eta_x, eta_y = measured.get("eta_x"), measured.get("eta_y")
+    try:
+        ords = np.asarray(bpm_ords, dtype=np.uint32).ravel()
+        valid_conversion = rf_step not in (None, 0) and rf_frequency is not None and momentum_compaction is not None
+        if not measured.get("dispersion_supplied", False):
+            raise ValueError("measured dispersion was not supplied")
+        if eta_x is None or eta_y is None or len(eta_x) != len(ords) or len(eta_y) != len(ords):
+            raise ValueError("measured dispersion and BPM mapping lengths differ")
+        if not valid_conversion:
+            raise ValueError("RF frequency, RF step, or momentum compaction is unavailable")
+        reference_dispersion = np.asarray(reference_ring.get_optics(refpts=ords)[2].dispersion, dtype=float)
+        fitted_dispersion = np.asarray(fitted_ring.get_optics(refpts=ords)[2].dispersion, dtype=float)
+        if reference_dispersion.shape[0] != len(ords) or fitted_dispersion.shape[0] != len(ords):
+            raise ValueError("lattice dispersion and BPM mapping lengths differ")
+        conversion = -float(momentum_compaction) * float(rf_frequency) / float(rf_step)
+        arrays.update({
+            "dispersion_diagnostic_available": np.asarray(True),
+            "dispersion_measurement_convention": np.asarray("rf_orbit_difference_converted_by_-alpha_c_f_rf_over_delta_f"),
+            "dispersion_rf_step_hz": np.asarray(float(rf_step)),
+            "dispersion_rf_frequency_hz": np.asarray(float(rf_frequency)),
+            "dispersion_momentum_compaction": np.asarray(float(momentum_compaction)),
+            "dispersion_bpm_ords": ords,
+            "dispersion_s": np.asarray(reference_ring.get_s_pos(ords), dtype=float),
+            "dispersion_x_measured": np.asarray(eta_x, dtype=float) * conversion,
+            "dispersion_y_measured": np.asarray(eta_y, dtype=float) * conversion,
+            "dispersion_x_initial": reference_dispersion[:, 0],
+            "dispersion_y_initial": reference_dispersion[:, 2],
+            "dispersion_x_fitted": fitted_dispersion[:, 0],
+            "dispersion_y_fitted": fitted_dispersion[:, 2],
+        })
+    except Exception as exc:
+        arrays["dispersion_unavailable_reason"] = np.asarray(str(exc))
+
+    if len(arrays) <= 3:
+        return None
+    path = results_dir / "optics_results.npz"
+    np.savez_compressed(path, **arrays)
+    return path
+
+
+def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict, *, initial_chi2=None, runtime_seconds=None, resume_mapping=None):
     import numpy as np
 
     files = []
@@ -626,12 +792,25 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
     fit_json = results_dir / "fit_dict.json"
     save_fit_dict(fit_dict, fit_json)
     files.append(str(fit_json))
+    fit_pickle = results_dir / "fit_dict.pkl"
+    with fit_pickle.open("wb") as stream:
+        pickle.dump(fit_dict, stream)
+    files.append(str(fit_pickle))
+    fit_results_path = results_dir / "fit_results.npy"
+    np.save(fit_results_path, np.asarray(fit_results, dtype=object), allow_pickle=True)
+    files.append(str(fit_results_path))
+    blocks_path = results_dir / "blocks.pkl"
+    with blocks_path.open("wb") as stream:
+        pickle.dump(blocks, stream)
+    files.append(str(blocks_path))
     summary = results_dir / "summary.json"
     summary.write_text(json.dumps({
         "initial_chi2": initial_chi2,
         "chi2_history": _jsonable(chi2_history),
         "blocks": _jsonable(blocks),
         "runtime_seconds": runtime_seconds,
+        "initialization": "resumed" if resume_mapping and resume_mapping.get("enabled") else "current_model",
+        "resumed_from": (resume_mapping or {}).get("directory"),
     }, indent=2), encoding="utf-8")
     files.append(str(summary))
     try:
@@ -639,6 +818,9 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
         lattice = results_dir / "final_lattice.mat"
         at.save_lattice(final_ring, str(lattice))
         files.append(str(lattice))
+        resume_lattice = results_dir / "ring_pyloco.mat"
+        at.save_lattice(final_ring, str(resume_lattice))
+        files.append(str(resume_lattice))
     except Exception:
         pass
     return files
