@@ -563,8 +563,8 @@ def compute_jacobian(
     # --- QUADS ---
     J_quad, delta = None, None
     if include_quads:
-
-
+        method = str(quad_jacobian_calculator).strip().lower()
+        quad_elapsed = None
         user_provided = quad_jacobian_file is not None
 
         quad_dir = output_dir / "jacobians" / "quads"
@@ -608,8 +608,6 @@ def compute_jacobian(
             else:
                 print(f"[Jacobian] Computing normal-quadrupole Jacobian (iteration {iteration})...")
             t = time.perf_counter()
-
-            method = str(quad_jacobian_calculator).strip().lower()
 
             # ============================================================
             # NUMERICAL NORMAL - QUADRUPOLE JACOBIAN
@@ -846,9 +844,12 @@ def compute_jacobian(
                     f"{quad_jacobian_calculator!r}. "
                     "Choose 'Numerical' or 'Analytical'."
                 )
+            quad_elapsed = time.perf_counter() - t
+            print(f"Normal quad Jacobian: {quad_elapsed:.1f} s")
 
-        # Save
-        if iteration == 1:
+        # Save each freshly computed, iteration-specific Jacobian. Never
+        # overwrite a user-supplied file that was loaded for iteration 1.
+        if quad_elapsed is not None:
             with h5py.File(J_path, "w") as f:
                 f.create_dataset("J_quads", data=J_quad)
                 f.create_dataset("C_model", data=C_model)
@@ -868,6 +869,7 @@ def compute_jacobian(
                 "HCMCoupling": json.dumps(np.asarray(HCMCoupling).tolist()),
                 "VCMCoupling": json.dumps(np.asarray(VCMCoupling).tolist()),
                 "date": time.ctime(),
+                "computation_seconds": quad_elapsed,
 
                 # analytical Jacobian settings
                 "analytical_thick_quadrupole": analytical_thick_quadrupole,
@@ -953,7 +955,8 @@ def compute_jacobian(
                     f"Unknown skew_jacobian_calculator={skew_jacobian_calculator!r}. "
                     "Choose 'Numerical' or 'Analytical'."
                 )
-            print(f"Skew quad Jacobian: {time.perf_counter()-t:.1f} s")
+            skew_elapsed = time.perf_counter() - t
+            print(f"Skew quad Jacobian: {skew_elapsed:.1f} s")
             # Each outer iteration is evaluated on the updated lattice and
             # receives its own calculator-specific artifact.
             with h5py.File(J_path_skew, "w") as f:
@@ -978,6 +981,7 @@ def compute_jacobian(
                 f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
                 f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
                 f.attrs["date"] = time.ctime()
+                f.attrs["computation_seconds"] = skew_elapsed
 
             print(f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}")
 

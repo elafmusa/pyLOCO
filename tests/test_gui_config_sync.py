@@ -4,13 +4,17 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
+from PySide6.QtWidgets import QApplication
 
 from pyLOCO.gui.models.project import LocoConfiguration, ProjectMetadata, load_example_project_data
 from pyLOCO.gui.models.project import ResponseMatrixConfig
 from pyLOCO.gui.backend import (
-    _apply_bad_bpm_positions, _apply_machine_element_selections, _make_gui_config,
+    _apply_bad_bpm_positions, _apply_machine_element_selections,
+    _build_pyloco_kwargs, _make_gui_config,
 )
+from pyLOCO.gui.main_window import MainWindow
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
@@ -157,6 +161,103 @@ def test_normal_and_skew_jacobian_calculators_are_independent():
         options = config.to_backend_mapping()["LOCOOptions"]
         assert options["quad_jacobian_calculator"] == normal
         assert options["skew_jacobian_calculator"] == skew
+
+
+@pytest.mark.parametrize(("normal", "skew"), [
+    ("Numerical", "Numerical"),
+    ("Analytical", "Numerical"),
+    ("Numerical", "Analytical"),
+    ("Analytical", "Analytical"),
+])
+def test_jacobian_calculators_round_trip_and_reach_backend_kwargs(
+    tmp_path, normal, skew
+):
+    config = LocoConfiguration(source_config={"loco": {}})
+    config.rejection.quad_jacobian_calculator = normal
+    config.rejection.skew_jacobian_calculator = skew
+    config.rejection.analytical_thick_quadrupole = False
+    config.rejection.analytical_thick_steerers = True
+    config.rejection.analytical_verbose = True
+    config.rejection.analytical_use_mp = True
+    config.rejection.analytical_thick_skew = False
+    config.rejection.analytical_skew_thick_steerers = True
+    config.rejection.analytical_skew_verbose = True
+    config.rejection.analytical_skew_use_mp = True
+    target = tmp_path / "jacobian-options.json"
+    config.save(target)
+    reloaded = LocoConfiguration.load(target)
+    options = reloaded.to_backend_mapping()["LOCOOptions"]
+
+    indices = {
+        "used_bpms_ords": np.arange(2),
+        "used_cor_ords": [np.arange(1), np.arange(1)],
+        "quads_ords": np.arange(2),
+        "skew_ords": np.arange(2),
+        "CAVords": np.array([], dtype=int),
+        "quads_tilt_ind": np.array([], dtype=int),
+        "nHBPM": 2,
+        "nVBPM": 2,
+        "nHorCOR": 1,
+        "nVerCOR": 1,
+    }
+    kwargs = _build_pyloco_kwargs(
+        ring=[],
+        options=options,
+        rm_cfg=SimpleNamespace(
+            dkick=[[1e-5], [1e-5]], rfStep=-3000.0,
+            includeDispersion=False, fixedpathlength=False,
+        ),
+        fit_cfg=SimpleNamespace(individuals=True),
+        constraint_cfg=None,
+        fixed_parameters=SimpleNamespace(
+            Frequency=499664399.4230182, rfstep=-3000.0
+        ),
+        measured={
+            "orm": np.zeros((4, 2)),
+            "noise_x": np.ones(2),
+            "noise_y": np.ones(2),
+            "eta_x": np.zeros(2),
+            "eta_y": np.zeros(2),
+            "dispersion_supplied": True,
+        },
+        indices=indices,
+    )
+    assert kwargs["quad_jacobian_calculator"] == normal
+    assert kwargs["skew_jacobian_calculator"] == skew
+    for key in (
+        "analytical_thick_steerers", "analytical_verbose",
+        "analytical_use_mp", "analytical_skew_thick_steerers",
+        "analytical_skew_verbose", "analytical_skew_use_mp",
+    ):
+        assert kwargs[key] is True
+    assert kwargs["analytical_thick_quadrupole"] is False
+    assert kwargs["analytical_thick_skew"] is False
+
+
+def test_jacobian_gui_controls_restore_and_disable_without_losing_values():
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    try:
+        config = window.project.loco_config
+        config.rejection.quad_jacobian_calculator = "Analytical"
+        config.rejection.skew_jacobian_calculator = "Analytical"
+        config.rejection.analytical_verbose = True
+        config.rejection.analytical_skew_verbose = True
+        window._load_config_to_widgets()
+        assert window.quad_jacobian_calculator.currentText() == "Analytical"
+        assert window.skew_jacobian_calculator.currentText() == "Analytical"
+        assert window.normal_analytical_options.isEnabled()
+        assert window.skew_analytical_options.isEnabled()
+
+        window.quad_jacobian_calculator.setCurrentText("Numerical")
+        window.skew_jacobian_calculator.setCurrentText("Numerical")
+        app.processEvents()
+        assert not window.normal_analytical_options.isEnabled()
+        assert not window.skew_analytical_options.isEnabled()
+        assert window.analytical_verbose.isChecked()
+        assert window.analytical_skew_verbose.isChecked()
+    finally:
+        window.deleteLater()
 
 
 def test_new_pyloco_options_do_not_break_legacy_options_constructor():

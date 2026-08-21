@@ -969,16 +969,34 @@ class MainWindow(QMainWindow):
         self.analytical_skew_thick_steerers = QCheckBox("Thick steerers for skew Jacobian")
         self.analytical_skew_verbose = QCheckBox("Verbose skew analytical calculation")
         self.analytical_skew_use_mp = QCheckBox("Multiprocessing for skew analytical calculation")
+
+        normal_options_form = QFormLayout()
+        for widget in (
+            self.analytical_thick_quadrupole,
+            self.analytical_thick_steerers,
+            self.analytical_verbose,
+            self.analytical_use_mp,
+        ):
+            normal_options_form.addRow(widget)
+        self.normal_analytical_options = QGroupBox("Normal analytical options")
+        self.normal_analytical_options.setLayout(normal_options_form)
+
+        skew_options_form = QFormLayout()
+        for widget in (
+            self.analytical_thick_skew,
+            self.analytical_skew_thick_steerers,
+            self.analytical_skew_verbose,
+            self.analytical_skew_use_mp,
+        ):
+            skew_options_form.addRow(widget)
+        self.skew_analytical_options = QGroupBox("Skew analytical options")
+        self.skew_analytical_options.setLayout(skew_options_form)
+
         jacobian_form = QFormLayout()
         jacobian_form.addRow("Normal quadrupole Jacobian", self.quad_jacobian_calculator)
+        jacobian_form.addRow(self.normal_analytical_options)
         jacobian_form.addRow("Skew quadrupole Jacobian", self.skew_jacobian_calculator)
-        for widget in (
-            self.analytical_thick_quadrupole, self.analytical_thick_steerers,
-            self.analytical_verbose, self.analytical_use_mp,
-            self.analytical_thick_skew, self.analytical_skew_thick_steerers,
-            self.analytical_skew_verbose, self.analytical_skew_use_mp,
-        ):
-            jacobian_form.addRow(widget)
+        jacobian_form.addRow(self.skew_analytical_options)
         jacobian_group = QGroupBox("Jacobian Calculators")
         jacobian_group.setLayout(jacobian_form)
         layout.addWidget(jacobian_group)
@@ -1391,6 +1409,12 @@ class MainWindow(QMainWindow):
         self.solver_algorithm.currentIndexChanged.connect(self._update_solver_scaled_availability)
         self.svd_method.currentIndexChanged.connect(self._update_svd_input_availability)
         self.cmstep_mode.currentIndexChanged.connect(self._update_cmstep_input_availability)
+        self.quad_jacobian_calculator.currentTextChanged.connect(
+            self._update_jacobian_option_availability
+        )
+        self.skew_jacobian_calculator.currentTextChanged.connect(
+            self._update_jacobian_option_availability
+        )
         self.constraint_quad_exceptions.changed.connect(self._on_fit_config_changed)
         self.constraint_skew_exceptions.changed.connect(self._on_fit_config_changed)
         self.resume_current.toggled.connect(self._on_fit_config_changed)
@@ -1408,6 +1432,15 @@ class MainWindow(QMainWindow):
         index = self.rm_calculator.findData(backend_value)
         if index >= 0:
             self.rm_calculator.setCurrentIndex(index)
+
+    def _update_jacobian_option_availability(self) -> None:
+        """Enable analytical-only controls without changing stored values."""
+        self.normal_analytical_options.setEnabled(
+            self.quad_jacobian_calculator.currentText() == "Analytical"
+        )
+        self.skew_analytical_options.setEnabled(
+            self.skew_jacobian_calculator.currentText() == "Analytical"
+        )
 
     def _set_solver_algorithm_value(self, algorithm: str) -> None:
         index = self.solver_algorithm.findData(algorithm)
@@ -1569,6 +1602,7 @@ class MainWindow(QMainWindow):
         self.analytical_skew_thick_steerers.setChecked(cfg.rejection.analytical_skew_thick_steerers)
         self.analytical_skew_verbose.setChecked(cfg.rejection.analytical_skew_verbose)
         self.analytical_skew_use_mp.setChecked(cfg.rejection.analytical_skew_use_mp)
+        self._update_jacobian_option_availability()
         self.constraint_enabled.setChecked(cfg.constraints.enable)
         self.constraint_quad_sigma.setValue(cfg.constraints.quad_sigma)
         self.constraint_skew_sigma.setValue(cfg.constraints.skew_sigma)

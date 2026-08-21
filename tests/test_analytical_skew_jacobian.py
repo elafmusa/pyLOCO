@@ -1,4 +1,5 @@
 import at
+import h5py
 import numpy as np
 
 from pyLOCO.config import FitInitConfig, RMConfig
@@ -316,3 +317,172 @@ def test_two_iteration_skew_loco_numerical_vs_analytical(tmp_path):
         "final_dispersion_rms_difference=", float(np.sqrt(np.mean(dispersion_difference**2))),
         "final_dispersion_max_difference=", float(np.max(np.abs(dispersion_difference))),
     )
+
+
+def test_two_iteration_normal_and_skew_calculator_comparison(tmp_path):
+    nominal, bpm, hcor, vcor, magnets = _ring_and_indices()
+    quad_indices = [int(magnets[i]) for i in (2, 7, 12)]
+    skew_indices = [int(magnets[i]) for i in (3, 8, 13)]
+    injected_quad = np.asarray([8e-4, -6e-4, 4e-4])
+    injected_skew = np.asarray([5e-4, -4e-4, 3e-4])
+    nominal_quad = np.asarray(
+        [float(nominal[index].PolynomB[1]) for index in quad_indices]
+    )
+    measured_ring = nominal.deepcopy()
+    for index, delta in zip(quad_indices, injected_quad):
+        measured_ring[index].PolynomB[1] += delta
+    for index, delta in zip(skew_indices, injected_skew):
+        measured_ring[index].PolynomA[1] += delta
+    measured = _orm(
+        measured_ring, bpm, hcor, vcor, include_dispersion=True
+    )
+
+    results = {}
+    for method in ("Numerical", "Analytical"):
+        output = tmp_path / f"normal-skew-{method.lower()}"
+        initial_chi2 = []
+        _, fit_dict, _, final_orm, _, chi2, _, _ = pyloco(
+            nominal.deepcopy(),
+            algorithm="gn",
+            nIter=2,
+            used_bpms_ords=bpm,
+            used_cor_ords=[hcor, vcor],
+            quads_ords=quad_indices,
+            skew_ords=skew_indices,
+            CAVords=[],
+            quads_tilt_ind=[],
+            nHBPM=len(bpm), nVBPM=len(bpm),
+            nHorCOR=len(hcor), nVerCOR=len(vcor),
+            orm_measured=measured,
+            weights=np.ones((2 * len(bpm), 1)),
+            includeDispersion=True,
+            measured_eta_x=measured[:len(bpm), -1],
+            measured_eta_y=measured[len(bpm):, -1],
+            CMstep=[[1e-5] * len(hcor), [1e-5] * len(vcor)],
+            rfStep=-3000.0,
+            fit_list=("quads", "skew_quads"),
+            quad_individuals=True,
+            skew_individuals=True,
+            remove_coupling_=False,
+            auto_correct_delta=False,
+            fixedpathlength=False,
+            fit_cfg=FitInitConfig(
+                fit_list=("quads", "skew_quads"), individuals=True
+            ),
+            quad_jacobian_calculator=method,
+            skew_jacobian_calculator=method,
+            svd_selection_method="threshold",
+            svd_threshold=1e-12,
+            show_svd_plot=False,
+            force_recompute=True,
+            initial_chi2_callback=initial_chi2.append,
+            output_dir=output,
+        )
+        recovered_quad = np.asarray(fit_dict[1]["quads"]) - nominal_quad
+        recovered_skew = np.asarray(fit_dict[1]["skew_quads"])
+        metadata = []
+        for block, dataset, attr in (
+            ("quads", "J_quads", "jacobian_calculator"),
+            ("skew", "J_skew", "calculator"),
+        ):
+            for iteration in (1, 2):
+                files = list(
+                    (output / "jacobians" / block).glob(
+                        f"J_{block}_{method.lower()}_iter{iteration}_*.h5"
+                    )
+                )
+                assert len(files) == 1
+                with h5py.File(files[0], "r") as handle:
+                    assert dataset in handle
+                    assert str(handle.attrs[attr]).lower() == method.lower()
+                    metadata.append(float(handle.attrs["computation_seconds"]))
+        results[method] = {
+            "initial_chi2": initial_chi2[0],
+            "chi2": np.asarray(chi2),
+            "quad": recovered_quad,
+            "skew": recovered_skew,
+            "orm": final_orm[:, :-1],
+            "dispersion": final_orm[:, -1],
+            "jacobian_seconds": np.asarray(metadata),
+        }
+
+    for method in ("Numerical", "Analytical"):
+        np.testing.assert_allclose(
+            results[method]["quad"], injected_quad, rtol=2e-3, atol=2e-7
+        )
+        np.testing.assert_allclose(
+            results[method]["skew"], injected_skew, rtol=2e-3, atol=2e-7
+        )
+    np.testing.assert_allclose(
+        results["Analytical"]["orm"], results["Numerical"]["orm"],
+        rtol=3e-3, atol=2e-11,
+    )
+    np.testing.assert_allclose(
+        results["Analytical"]["dispersion"],
+        results["Numerical"]["dispersion"],
+        rtol=3e-3, atol=2e-11,
+    )
+    def comparison_metrics(numerical, analytical, truth=None):
+        difference = analytical - numerical
+        scale = max(np.linalg.norm(numerical), np.finfo(float).eps)
+        metrics = {
+            "numerical_vs_analytical_relative": float(
+                np.linalg.norm(difference) / scale
+            ),
+            "correlation": float(
+                np.corrcoef(numerical.ravel(), analytical.ravel())[0, 1]
+            ),
+            "maximum_difference": float(np.max(np.abs(difference))),
+        }
+        if truth is not None:
+            metrics["numerical_error_vs_truth"] = float(
+                np.linalg.norm(numerical - truth)
+            )
+            metrics["analytical_error_vs_truth"] = float(
+                np.linalg.norm(analytical - truth)
+            )
+        return metrics
+
+    summary = {
+        "initial_chi2": results["Numerical"]["initial_chi2"],
+        "numerical_chi2": results["Numerical"]["chi2"].tolist(),
+        "analytical_chi2": results["Analytical"]["chi2"].tolist(),
+        "numerical_quad": results["Numerical"]["quad"].tolist(),
+        "analytical_quad": results["Analytical"]["quad"].tolist(),
+        "numerical_skew": results["Numerical"]["skew"].tolist(),
+        "analytical_skew": results["Analytical"]["skew"].tolist(),
+        "quad_metrics": comparison_metrics(
+            results["Numerical"]["quad"], results["Analytical"]["quad"],
+            injected_quad,
+        ),
+        "skew_metrics": comparison_metrics(
+            results["Numerical"]["skew"], results["Analytical"]["skew"],
+            injected_skew,
+        ),
+        "orm_metrics": comparison_metrics(
+            results["Numerical"]["orm"], results["Analytical"]["orm"]
+        ),
+        "dispersion_metrics": comparison_metrics(
+            results["Numerical"]["dispersion"],
+            results["Analytical"]["dispersion"],
+        ),
+        "numerical_orm_residual_rms": float(
+            np.sqrt(np.mean((results["Numerical"]["orm"] - measured[:, :-1])**2))
+        ),
+        "analytical_orm_residual_rms": float(
+            np.sqrt(np.mean((results["Analytical"]["orm"] - measured[:, :-1])**2))
+        ),
+        "numerical_dispersion_residual_rms": float(
+            np.sqrt(np.mean((results["Numerical"]["dispersion"] - measured[:, -1])**2))
+        ),
+        "analytical_dispersion_residual_rms": float(
+            np.sqrt(np.mean((results["Analytical"]["dispersion"] - measured[:, -1])**2))
+        ),
+        "numerical_jacobian_seconds": results["Numerical"]["jacobian_seconds"].tolist(),
+        "analytical_jacobian_seconds": results["Analytical"]["jacobian_seconds"].tolist(),
+        "jacobian_speedup": float(
+            np.sum(results["Numerical"]["jacobian_seconds"])
+            / np.sum(results["Analytical"]["jacobian_seconds"])
+        ),
+    }
+    print("normal+skew comparison summary", summary)
