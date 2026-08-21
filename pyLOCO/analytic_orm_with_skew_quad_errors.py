@@ -123,14 +123,18 @@ def _analytic_orm_variation_with_skew_quadrupole(
     # full tunes
     Q = at.get_tune(ring, get_integer=True)
 
-    def tau(pl, a, b):
-        return dphi(pl, a, b) - math.pi*Q[pl]
+    def tau(pl, a, b, idx_a=None, idx_b=None):
+        return dphi(pl, a, b, idx_a=idx_a, idx_b=idx_b) - math.pi*Q[pl]
 
-    def dphi(pl, a, b):
+    def dphi(pl, a, b, idx_a=None, idx_b=None):
+        """Forward phase advance, using lattice order to break phase ties."""
 
         d = b.mu[pl] - a.mu[pl]
 
-        if b.mu[pl] < a.mu[pl]:
+        if np.isclose(b.mu[pl], a.mu[pl], rtol=0.0, atol=1e-12):
+            if idx_a is not None and idx_b is not None and idx_b < idx_a:
+                d = d + 2*math.pi*Q[pl]
+        elif b.mu[pl] < a.mu[pl]:
             d = d + 2*math.pi*Q[pl]
 
         return d
@@ -267,7 +271,10 @@ def _analytic_orm_variation_with_skew_quadrupole(
             sqrt_beta_j_x = sqrt_beta_bpm[j][x] # (bpm[j].beta[x]) ** 0.5
             sqrt_beta_j_y = sqrt_beta_bpm[j][y] # (bpm[j].beta[y]) ** 0.5
 
-            tmj = [tau(p, qua[m], bpm[j]) for p in [x, y]]
+            tmj = [
+                tau(p, qua[m], bpm[j], ind_skews[m], ind_bpms[j])
+                for p in [x, y]
+            ]
 
             for countw, w in enumerate(range(len(cor))):
                 if verbose:
@@ -277,8 +284,14 @@ def _analytic_orm_variation_with_skew_quadrupole(
                           f' with a (thick={thick_steerer}) steerers'
                           )
 
-                twj = [tau(p, cor[w], bpm[j]) for p in [x, y]]
-                tmw = [tau(p, qua[m], cor[w]) for p in [x, y]]
+                twj = [
+                    tau(p, cor[w], bpm[j], ind_cors[w], ind_bpms[j])
+                    for p in [x, y]
+                ]
+                tmw = [
+                    tau(p, qua[m], cor[w], ind_skews[m], ind_cors[w])
+                    for p in [x, y]
+                ]
 
                 MV2H[j][w][m] = + 1 / 8 * \
                                 sqrt_beta_j_x * \

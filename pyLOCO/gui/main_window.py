@@ -957,6 +957,32 @@ class MainWindow(QMainWindow):
         svd_group.setLayout(svd_form)
         layout.addWidget(svd_group)
 
+        self.quad_jacobian_calculator = QComboBox()
+        self.quad_jacobian_calculator.addItems(["Numerical", "Analytical"])
+        self.skew_jacobian_calculator = QComboBox()
+        self.skew_jacobian_calculator.addItems(["Numerical", "Analytical"])
+        self.analytical_thick_quadrupole = QCheckBox("Thick normal quadrupoles")
+        self.analytical_thick_steerers = QCheckBox("Thick steerers for normal Jacobian")
+        self.analytical_verbose = QCheckBox("Verbose normal analytical calculation")
+        self.analytical_use_mp = QCheckBox("Multiprocessing for normal analytical calculation")
+        self.analytical_thick_skew = QCheckBox("Thick skew quadrupoles")
+        self.analytical_skew_thick_steerers = QCheckBox("Thick steerers for skew Jacobian")
+        self.analytical_skew_verbose = QCheckBox("Verbose skew analytical calculation")
+        self.analytical_skew_use_mp = QCheckBox("Multiprocessing for skew analytical calculation")
+        jacobian_form = QFormLayout()
+        jacobian_form.addRow("Normal quadrupole Jacobian", self.quad_jacobian_calculator)
+        jacobian_form.addRow("Skew quadrupole Jacobian", self.skew_jacobian_calculator)
+        for widget in (
+            self.analytical_thick_quadrupole, self.analytical_thick_steerers,
+            self.analytical_verbose, self.analytical_use_mp,
+            self.analytical_thick_skew, self.analytical_skew_thick_steerers,
+            self.analytical_skew_verbose, self.analytical_skew_use_mp,
+        ):
+            jacobian_form.addRow(widget)
+        jacobian_group = QGroupBox("Jacobian Calculators")
+        jacobian_group.setLayout(jacobian_form)
+        layout.addWidget(jacobian_group)
+
         self.outlier_enabled = QCheckBox("Reject outliers")
         self.outlier_sigma = self._double_spin(0.0, 1e6, 10.0, 3)
         self.norm_enabled = QCheckBox("Apply normalization")
@@ -1327,6 +1353,11 @@ class MainWindow(QMainWindow):
     def _connect_fit_controls(self) -> None:
         widgets = [
             self.rm_calculator, self.rm_dispersion, self.rm_coupling, self.rm_bidirectional,
+            self.quad_jacobian_calculator, self.skew_jacobian_calculator,
+            self.analytical_thick_quadrupole, self.analytical_thick_steerers,
+            self.analytical_verbose, self.analytical_use_mp,
+            self.analytical_thick_skew, self.analytical_skew_thick_steerers,
+            self.analytical_skew_verbose, self.analytical_skew_use_mp,
             self.rm_vectorized, self.rm_dkick_h, self.rm_dkick_v, self.rm_rf_step,
             self.rm_delta_coupling, self.rm_fixedpath, self.rm_log_info, self.solver_algorithm, self.solver_n_iter,
             self.solver_lm_iter, self.solver_lambda, self.solver_max_lambda,
@@ -1528,6 +1559,16 @@ class MainWindow(QMainWindow):
         self.loco_individuals.setChecked(cfg.rejection.individuals)
         self.loco_remove_coupling.setChecked(cfg.rejection.remove_coupling_)
         self.loco_plot_fit_parameters.setChecked(cfg.rejection.plot_fit_parameters)
+        self.quad_jacobian_calculator.setCurrentText(cfg.rejection.quad_jacobian_calculator)
+        self.skew_jacobian_calculator.setCurrentText(cfg.rejection.skew_jacobian_calculator)
+        self.analytical_thick_quadrupole.setChecked(cfg.rejection.analytical_thick_quadrupole)
+        self.analytical_thick_steerers.setChecked(cfg.rejection.analytical_thick_steerers)
+        self.analytical_verbose.setChecked(cfg.rejection.analytical_verbose)
+        self.analytical_use_mp.setChecked(cfg.rejection.analytical_use_mp)
+        self.analytical_thick_skew.setChecked(cfg.rejection.analytical_thick_skew)
+        self.analytical_skew_thick_steerers.setChecked(cfg.rejection.analytical_skew_thick_steerers)
+        self.analytical_skew_verbose.setChecked(cfg.rejection.analytical_skew_verbose)
+        self.analytical_skew_use_mp.setChecked(cfg.rejection.analytical_skew_use_mp)
         self.constraint_enabled.setChecked(cfg.constraints.enable)
         self.constraint_quad_sigma.setValue(cfg.constraints.quad_sigma)
         self.constraint_skew_sigma.setValue(cfg.constraints.skew_sigma)
@@ -1631,6 +1672,16 @@ class MainWindow(QMainWindow):
         cfg.rejection.individuals = self.loco_individuals.isChecked()
         cfg.rejection.remove_coupling_ = self.loco_remove_coupling.isChecked()
         cfg.rejection.plot_fit_parameters = self.loco_plot_fit_parameters.isChecked()
+        cfg.rejection.quad_jacobian_calculator = self.quad_jacobian_calculator.currentText()
+        cfg.rejection.skew_jacobian_calculator = self.skew_jacobian_calculator.currentText()
+        cfg.rejection.analytical_thick_quadrupole = self.analytical_thick_quadrupole.isChecked()
+        cfg.rejection.analytical_thick_steerers = self.analytical_thick_steerers.isChecked()
+        cfg.rejection.analytical_verbose = self.analytical_verbose.isChecked()
+        cfg.rejection.analytical_use_mp = self.analytical_use_mp.isChecked()
+        cfg.rejection.analytical_thick_skew = self.analytical_thick_skew.isChecked()
+        cfg.rejection.analytical_skew_thick_steerers = self.analytical_skew_thick_steerers.isChecked()
+        cfg.rejection.analytical_skew_verbose = self.analytical_skew_verbose.isChecked()
+        cfg.rejection.analytical_skew_use_mp = self.analytical_skew_use_mp.isChecked()
         cfg.constraints.enable = self.constraint_enabled.isChecked()
         cfg.constraints.quad_sigma = self.constraint_quad_sigma.value()
         cfg.constraints.skew_sigma = self.constraint_skew_sigma.value()

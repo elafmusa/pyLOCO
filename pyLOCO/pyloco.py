@@ -525,10 +525,15 @@ def compute_jacobian(
 
     # NEW
     quad_jacobian_calculator="Numerical",
+    skew_jacobian_calculator="Numerical",
     analytical_thick_quadrupole=True,
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    analytical_thick_skew=True,
+    analytical_skew_thick_steerers=False,
+    analytical_skew_verbose=False,
+    analytical_skew_use_mp=False,
 ):
     """
     Master function to compute full LOCO Jacobian including:
@@ -606,6 +611,10 @@ def compute_jacobian(
 
             method = str(quad_jacobian_calculator).strip().lower()
 
+            # ============================================================
+            # NUMERICAL NORMAL - QUADRUPOLE JACOBIAN
+            # ============================================================
+
             if method == "numerical":
 
                 J_quad, delta = calculate_quads_jacobian(
@@ -629,23 +638,206 @@ def compute_jacobian(
                     log_filename="quad_jacobian_logs2.txt",
                 )
 
+
+            # ============================================================
+            # ANALYTICAL NORMAL-QUADRUPOLE JACOBIAN
+            # ============================================================
+
             elif method == "analytical":
+
+                # --------------------------------------------------------
+                # The analytical formula currently calculates ONLY
+                #
+                #       d ORM / dK
+                #
+                # Therefore, when dispersion is included in C_model,
+                # remove the last column before passing C_model to the
+                # analytical function.
+                # --------------------------------------------------------
+
+                if includeDispersion:
+
+                    expected_cols = nHorCOR + nVerCOR + 1
+
+                    if C_model.shape[1] != expected_cols:
+                        raise ValueError(
+                            "includeDispersion=True, but C_model does not "
+                            "have the expected dispersion column.\n"
+                            f"C_model.shape = {C_model.shape}\n"
+                            f"Expected columns = {expected_cols}"
+                        )
+
+                    C_model_orm = C_model[:, :-1]
+
+                else:
+
+                    C_model_orm = C_model
+
+
+                # --------------------------------------------------------
+                # 1. Analytical ORM derivative
+                #
+                # Shape:
+                #
+                #     (n_parameters,
+                #      nHBPM+nVBPM,
+                #      nHorCOR+nVerCOR)
+                #
+                # calculate_quads_jacobian_analytical() itself remains
+                # completely unchanged.
+                # --------------------------------------------------------
 
                 J_quad, delta = calculate_quads_jacobian_analytical(
                     ring=ring,
-                    C_model=C_model,
+                    C_model=C_model_orm,
                     dkick=dkick,
                     used_cor_ind=CMords,
                     bpm_indexes=bpm_indexes,
                     quads_ind=quads_ind,
                     C=C,
-                    includeDispersion=includeDispersion,
+
+                    # IMPORTANT:
+                    # analytical function receives ORM only
+                    includeDispersion=False,
+
                     analytical_thick_quadrupole=analytical_thick_quadrupole,
                     analytical_thick_steerers=analytical_thick_steerers,
                     analytical_verbose=analytical_verbose,
                     analytical_use_mp=analytical_use_mp,
-
                 )
+
+
+                # --------------------------------------------------------
+                # 2. Add numerical dispersion derivative, if requested
+                # --------------------------------------------------------
+
+                if includeDispersion:
+
+                    J_eta, delta_eta = calculate_quads_dispersion_jacobian(
+                        ring=ring,
+                        C_model=C_model,
+                        dkick=dkick,
+                        used_cor_ind=CMords,
+                        bpm_indexes=bpm_indexes,
+                        quads_ind=quads_ind,
+                        dk=dk,
+                        C=C,
+                        individuals=quad_individuals,
+                        HCMCoupling=HCMCoupling,
+                        VCMCoupling=VCMCoupling,
+                        rf_step=rf_step,
+                        auto_correct_delta=auto_correct_delta,
+                        fit_cfg=fit_cfg,
+                    )
+
+
+                    # ----------------------------------------------------
+                    # Sanity checks before concatenation
+                    # ----------------------------------------------------
+
+                    if J_quad.ndim != 3:
+                        raise ValueError(
+                            "Analytical quadrupole Jacobian must be 3D; "
+                            f"got shape {J_quad.shape}"
+                        )
+
+                    if J_eta.ndim != 2:
+                        raise ValueError(
+                            "Dispersion quadrupole Jacobian must be 2D; "
+                            f"got shape {J_eta.shape}"
+                        )
+
+                    if J_quad.shape[0] != J_eta.shape[0]:
+                        raise ValueError(
+                            "Number of fitted quadrupole parameters differs "
+                            "between ORM and dispersion Jacobians:\n"
+                            f"J_quad.shape = {J_quad.shape}\n"
+                            f"J_eta.shape  = {J_eta.shape}"
+                        )
+
+                    if J_quad.shape[1] != J_eta.shape[1]:
+                        raise ValueError(
+                            "Number of BPM rows differs between ORM and "
+                            "dispersion Jacobians:\n"
+                            f"J_quad.shape = {J_quad.shape}\n"
+                            f"J_eta.shape  = {J_eta.shape}"
+                        )
+
+
+                    # ----------------------------------------------------
+                    # Append dispersion as LAST response-matrix column
+                    #
+                    # Before:
+                    #
+                    #   J_quad:
+                    #   (P, nBPM_total, nCOR_total)
+                    #
+                    # J_eta:
+                    #   (P, nBPM_total)
+                    #
+                    # After:
+                    #
+                    #   (P, nBPM_total, nCOR_total + 1)
+                    #
+                    # exactly matching response_matrix(...,
+                    # includeDispersion=True)
+                    # ----------------------------------------------------
+
+                    J_quad = np.concatenate(
+                        (
+                            J_quad,
+                            J_eta[:, :, np.newaxis],
+                        ),
+                        axis=2,
+                    )
+
+
+                    # ----------------------------------------------------
+                    # The analytical ORM itself has no finite-difference
+                    # delta.
+                    #
+                    # However, the hybrid analytical+dispersion Jacobian
+                    # does use finite differences for dispersion.
+                    #
+                    # Return those steps so the caller can inspect them.
+                    # ----------------------------------------------------
+
+                    delta = delta_eta
+
+
+                    # ----------------------------------------------------
+                    # Final shape check
+                    # ----------------------------------------------------
+
+                    expected_shape = (
+                        len(quads_ind),
+                        nHBPM + nVBPM,
+                        nHorCOR + nVerCOR + 1,
+                    )
+
+                    if J_quad.shape != expected_shape:
+                        raise ValueError(
+                            "Unexpected hybrid analytical quadrupole "
+                            "Jacobian shape.\n"
+                            f"Got      : {J_quad.shape}\n"
+                            f"Expected : {expected_shape}"
+                        )
+
+
+                    print(
+                        "[Analytical Jacobian] Added numerical "
+                        "dispersion derivative"
+                    )
+
+                    print(
+                        "[Analytical Jacobian] Final hybrid shape:",
+                        J_quad.shape,
+                    )
+
+
+            # ============================================================
+            # UNKNOWN CALCULATOR
+            # ============================================================
 
             else:
 
@@ -654,7 +846,6 @@ def compute_jacobian(
                     f"{quad_jacobian_calculator!r}. "
                     "Choose 'Numerical' or 'Analytical'."
                 )
-            print(f"Normal quad Jacobian: {time.perf_counter()-t:.1f} s")
 
         # Save
         if iteration == 1:
@@ -695,7 +886,11 @@ def compute_jacobian(
         user_provided = skew_jacobian_file is not None
         skew_dir = output_dir / "jacobians" / "skew"
         skew_dir.mkdir(parents=True, exist_ok=True)
-        J_path_skew = Path(skew_jacobian_file) if user_provided else skew_dir / f"J_skew_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
+        J_path_skew = Path(skew_jacobian_file) if user_provided else skew_dir / (
+            f"J_skew_{str(skew_jacobian_calculator).strip().lower()}_"
+            f"iter{iteration}_{len(skew_ind)}params_"
+            f"{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
+        )
 
 
         # --- logic ---
@@ -713,36 +908,78 @@ def compute_jacobian(
             else:
                 print(f"[Jacobian] Computing skew-quadrupole Jacobian (iteration {iteration})...")
             t = time.perf_counter()
-            J_skew, delta_skew = calculate_quads_jacobian(
-                ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
-                skew_individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
-                auto_correct_delta=auto_correct_delta,
-                fit_cfg=fit_cfg, includeDispersion=includeDispersion, output_dir=output_dir,
-                log_filename="skew_jacobian_logs.txt"
-            )
+            skew_method = str(skew_jacobian_calculator).strip().lower()
+            if skew_method == "numerical":
+                J_skew, delta_skew = calculate_quads_jacobian(
+                    ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
+                    skew_individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
+                    auto_correct_delta=auto_correct_delta,
+                    fit_cfg=fit_cfg, includeDispersion=includeDispersion, output_dir=output_dir,
+                    log_filename="skew_jacobian_logs.txt"
+                )
+            elif skew_method == "analytical":
+                C_model_orm = C_model[:, :-1] if includeDispersion else C_model
+                J_skew, delta_skew = calculate_skew_jacobian_analytical(
+                    ring=ring,
+                    C_model=C_model_orm,
+                    dkick=dkick,
+                    used_cor_ind=CMords,
+                    bpm_indexes=bpm_indexes,
+                    skew_ind=skew_ind,
+                    C=C,
+                    fit_cfg=fit_cfg,
+                    analytical_thick_skew=analytical_thick_skew,
+                    analytical_thick_steerers=analytical_skew_thick_steerers,
+                    analytical_verbose=analytical_skew_verbose,
+                    analytical_use_mp=analytical_skew_use_mp,
+                )
+                if includeDispersion:
+                    # Reuse the exact numerical skew perturbation and central-
+                    # difference implementation, retaining only d(eta)/dKs.
+                    J_skew_numerical, delta_skew = calculate_quads_jacobian(
+                        ring, C_model, dkick, CMords, bpm_indexes, skew_ind,
+                        delta_skew_, C, skew_individuals, HCMCoupling,
+                        VCMCoupling, rf_step, block="skew_quads",
+                        auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
+                        includeDispersion=True, output_dir=output_dir,
+                        log_filename="skew_dispersion_jacobian_logs.txt",
+                    )
+                    J_skew = np.concatenate(
+                        (J_skew, J_skew_numerical[:, :, -1, np.newaxis]), axis=2
+                    )
+                    print("[Analytical skew Jacobian] Added numerical dispersion derivative")
+            else:
+                raise ValueError(
+                    f"Unknown skew_jacobian_calculator={skew_jacobian_calculator!r}. "
+                    "Choose 'Numerical' or 'Analytical'."
+                )
             print(f"Skew quad Jacobian: {time.perf_counter()-t:.1f} s")
-            if iteration == 1:
-                # --- Save the computed Jacobian ---
-                with h5py.File(J_path_skew, "w") as f:
-                    f.create_dataset("J_skew", data=J_skew)
-                    f.create_dataset("C_model", data=C_model)
-                    if isinstance(dkick, (list, tuple)):
-                        f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
-                        f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
-                    else:
-                        f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+            # Each outer iteration is evaluated on the updated lattice and
+            # receives its own calculator-specific artifact.
+            with h5py.File(J_path_skew, "w") as f:
+                f.create_dataset("J_skew", data=J_skew)
+                f.create_dataset("C_model", data=C_model)
+                if isinstance(dkick, (list, tuple)):
+                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
+                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
+                else:
+                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
 
-                    f.attrs["iteration"] = iteration
-                    f.attrs["nHBPM"] = nHBPM
-                    f.attrs["nVBPM"] = nVBPM
-                    f.attrs["nHorCOR"] = nHorCOR
-                    f.attrs["nVerCOR"] = nVerCOR
-                    f.attrs["includeDispersion"] = includeDispersion
-                    f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
-                    f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
-                    f.attrs["date"] = time.ctime()
+                f.attrs["iteration"] = iteration
+                f.attrs["nHBPM"] = nHBPM
+                f.attrs["nVBPM"] = nVBPM
+                f.attrs["nHorCOR"] = nHorCOR
+                f.attrs["nVerCOR"] = nVerCOR
+                f.attrs["includeDispersion"] = includeDispersion
+                f.attrs["calculator"] = str(skew_jacobian_calculator)
+                f.attrs["analytical_thick_skew"] = analytical_thick_skew
+                f.attrs["analytical_thick_steerers"] = analytical_skew_thick_steerers
+                f.attrs["analytical_use_mp"] = analytical_skew_use_mp
+                f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
+                f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
+                f.attrs["date"] = time.ctime()
 
-                print(f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}")
+            print(f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}")
 
     # --- QUAD TILT ---
     J_quad_tilt, delta_quads_tilt = None, None
@@ -1015,6 +1252,681 @@ def calculate_quads_jacobian(
             except Exception:
                 pass
 
+def calculate_quads_dispersion_jacobian(
+    ring,
+    C_model,
+    dkick,
+    used_cor_ind,
+    bpm_indexes,
+    quads_ind,
+    dk,
+    C,
+    individuals,
+    HCMCoupling,
+    VCMCoupling,
+    rf_step,
+    auto_correct_delta=True,
+    fit_cfg=None,
+):
+    """
+    Calculate only the dispersion-column derivative with respect
+    to normal-quadrupole fit parameters.
+
+    This function is intended to complement the analytical ORM
+    quadrupole Jacobian:
+
+        analytical:
+            d(ORM) / dK
+
+        this function:
+            d(eta) / dK
+
+    The final hybrid Jacobian is therefore
+
+        J = [ d(ORM)/dK | d(eta)/dK ]
+
+    Dispersion is obtained through the existing response_matrix()
+    implementation with includeDispersion=True.
+
+    The quadrupole derivative is evaluated with a CENTRAL finite
+    difference:
+
+        d(eta)/dK =
+            [eta(K + dK) - eta(K - dK)] / (2*dK)
+
+    For family fitting, all physical quadrupoles belonging to the
+    family are changed simultaneously by the same dK.
+
+    Parameters
+    ----------
+    ring
+        AT lattice.
+
+    C_model : ndarray
+        Nominal full response matrix INCLUDING the dispersion
+        column. Expected shape:
+
+            (nBPM_total, nCOR_total + 1)
+
+    dkick
+        Corrector kick values used by response_matrix().
+
+    used_cor_ind
+        [horizontal_corrector_indices, vertical_corrector_indices]
+
+    bpm_indexes
+        BPM lattice indices.
+
+    quads_ind
+        Fitted quadrupole parameters.
+
+        individuals=True:
+            [q1, q2, q3, ...]
+
+        individuals=False:
+            [[QF family], [QD family], ...]
+
+    dk
+        Quadrupole finite-difference step. If None, the same
+        automatic step-selection strategy used by the numerical
+        quadrupole Jacobian is applied.
+
+    C : ndarray
+        BPM calibration/coupling matrix.
+
+    individuals : bool
+        True for individual quadrupoles, False for families.
+
+    HCMCoupling, VCMCoupling
+        Corrector coupling arrays.
+
+    rf_step
+        RF-frequency step used by the dispersion calculation.
+
+    auto_correct_delta : bool
+        Automatically adapt dK using the ORM change.
+
+    fit_cfg
+        FitInitConfig defining the quadrupole attribute.
+
+    Returns
+    -------
+    J_eta : ndarray
+        Shape:
+
+            (n_parameters, nBPM_total)
+
+        Each row contains d(eta)/dK for one quadrupole fit
+        parameter.
+
+    delta_vec : ndarray
+        Final numerical dK used for each fit parameter.
+    """
+
+    # ============================================================
+    # 0. Basic checks
+    # ============================================================
+
+    if fit_cfg is None:
+        fit_cfg = FitInitConfig()
+
+    bpm_indexes = np.asarray(
+        bpm_indexes,
+        dtype=int,
+    )
+
+    hcor = np.asarray(
+        used_cor_ind[0],
+        dtype=int,
+    )
+
+    vcor = np.asarray(
+        used_cor_ind[1],
+        dtype=int,
+    )
+
+    n_bpm_total = C.shape[0]
+
+    n_cor_total = (
+        len(hcor)
+        +
+        len(vcor)
+    )
+
+    expected_shape = (
+        n_bpm_total,
+        n_cor_total + 1,
+    )
+
+    if C_model.shape != expected_shape:
+        raise ValueError(
+            "calculate_quads_dispersion_jacobian expects "
+            "C_model to contain the dispersion column.\n"
+            f"Got C_model.shape = {C_model.shape}\n"
+            f"Expected          = {expected_shape}"
+        )
+
+    # ============================================================
+    # 1. Resolve quadrupole fitted attribute
+    #
+    # Same mechanism used by generating_quads_response_matrices()
+    # ============================================================
+
+    attr_name, attr_idx = _resolve_attr_for_block_read(
+        "quads",
+        fit_cfg,
+    )
+
+    # ============================================================
+    # 2. Response-matrix configuration
+    #
+    # IMPORTANT:
+    # includeDispersion=True because we need the final column.
+    # ============================================================
+
+    cfg = RMConfig(
+        dkick=dkick,
+        bpm_ords=bpm_indexes,
+        cm_ords=used_cor_ind,
+        HCMCoupling=HCMCoupling,
+        VCMCoupling=VCMCoupling,
+        includeDispersion=True,
+        rfStep=rf_step,
+    )
+
+    # ============================================================
+    # 3. Storage
+    # ============================================================
+
+    J_eta = np.zeros(
+        (
+            len(quads_ind),
+            n_bpm_total,
+        ),
+        dtype=float,
+    )
+
+    delta_used = []
+
+    # Same step-selection targets as the existing numerical
+    # quadrupole Jacobian.
+    RMSGoal = 1e-6
+    RMSTol = 10.0
+
+    # ============================================================
+    # 4. Loop over fitted quadrupole parameters
+    # ============================================================
+
+    for p, quad_parameter in enumerate(quads_ind):
+
+        # --------------------------------------------------------
+        # Build physical quadrupole group
+        # --------------------------------------------------------
+
+        group = (
+            [int(quad_parameter)]
+            if np.isscalar(quad_parameter)
+            else [
+                int(q)
+                for q in quad_parameter
+            ]
+        )
+
+        # --------------------------------------------------------
+        # Nominal strengths of physical magnets
+        # --------------------------------------------------------
+
+        k0_each = np.asarray(
+            [
+                _get_attr_scalar(
+                    ring[q],
+                    attr_name,
+                    attr_idx,
+                )
+                for q in group
+            ],
+            dtype=float,
+        )
+
+        # ========================================================
+        # 5. Individual versus family parameter
+        # ========================================================
+
+        if individuals:
+
+            # Normally group contains one physical quadrupole.
+            correction_indices = group
+
+            nominal_values = (
+                k0_each.copy()
+            )
+
+            if dk is None:
+
+                delta_local = (
+                    1e-3
+                    *
+                    nominal_values
+                )
+
+                delta_local[
+                    delta_local == 0.0
+                ] = 1e-3
+
+            else:
+
+                dk_array = np.atleast_1d(
+                    dk
+                ).astype(float)
+
+                # If dk was supplied as one scalar, use it.
+                # If a vector was supplied, use parameter p.
+                if dk_array.size == 1:
+
+                    delta_local = np.full(
+                        len(group),
+                        float(dk_array[0]),
+                        dtype=float,
+                    )
+
+                elif dk_array.size == len(quads_ind):
+
+                    delta_local = np.full(
+                        len(group),
+                        float(dk_array[p]),
+                        dtype=float,
+                    )
+
+                else:
+
+                    raise ValueError(
+                        "Unexpected dk shape for individual "
+                        "dispersion Jacobian: "
+                        f"{dk_array.shape}"
+                    )
+
+        else:
+
+            # ----------------------------------------------------
+            # FAMILY PARAMETER
+            #
+            # One fitted value changes all physical magnets in
+            # the family simultaneously.
+            # ----------------------------------------------------
+
+            correction_indices = [
+                group
+            ]
+
+            # Family fitting assumes one common nominal strength.
+            if not np.allclose(
+                k0_each,
+                k0_each[0],
+                rtol=1e-10,
+                atol=1e-14,
+            ):
+                raise ValueError(
+                    f"Family {group} contains different "
+                    f"nominal strengths:\n{k0_each}"
+                )
+
+            nominal_values = np.asarray(
+                [
+                    k0_each[0]
+                ],
+                dtype=float,
+            )
+
+            if dk is None:
+
+                delta_value = (
+                    1e-3
+                    *
+                    nominal_values[0]
+                )
+
+                if delta_value == 0.0:
+                    delta_value = 1e-3
+
+            else:
+
+                dk_array = np.atleast_1d(
+                    dk
+                ).astype(float)
+
+                if dk_array.size == 1:
+
+                    delta_value = float(
+                        dk_array[0]
+                    )
+
+                elif dk_array.size == len(quads_ind):
+
+                    delta_value = float(
+                        dk_array[p]
+                    )
+
+                else:
+
+                    raise ValueError(
+                        "Unexpected dk shape for family "
+                        "dispersion Jacobian: "
+                        f"{dk_array.shape}"
+                    )
+
+            delta_local = np.asarray(
+                [
+                    delta_value
+                ],
+                dtype=float,
+            )
+
+        # ========================================================
+        # Everything below temporarily modifies the lattice.
+        #
+        # Always restore it, even if something fails.
+        # ========================================================
+
+        try:
+
+            # ====================================================
+            # 6. Select dK
+            #
+            # Match the numerical quadrupole Jacobian:
+            #
+            # step selection is based ONLY on the ORM columns,
+            # not on dispersion.
+            # ====================================================
+
+            while True:
+
+                plus_test_values = (
+                    nominal_values
+                    +
+                    delta_local
+                )
+
+                set_correction(
+                    ring,
+                    plus_test_values,
+                    correction_indices,
+                    individuals=individuals,
+                    block="quads",
+                    config=fit_cfg,
+                )
+
+                C_plus_step_test = response_matrix(
+                    ring,
+                    config=cfg,
+                )
+
+                # Apply BPM calibration/coupling exactly as in the
+                # numerical quadrupole Jacobian.
+                C_plus_step_test = (
+                    C
+                    @
+                    C_plus_step_test
+                )
+
+                # Restore immediately after test evaluation.
+                set_correction(
+                    ring,
+                    nominal_values,
+                    correction_indices,
+                    individuals=individuals,
+                    block="quads",
+                    config=fit_cfg,
+                )
+
+                # ------------------------------------------------
+                # IMPORTANT:
+                #
+                # Exclude the final dispersion column from the
+                # automatic dK selection.
+                #
+                # This reproduces the existing numerical worker.
+                # ------------------------------------------------
+
+                difference = (
+                    C_plus_step_test[:, :-1]
+                    -
+                    C_model[:, :-1]
+                ).ravel(
+                    order="F"
+                )
+
+                RMSDelta = float(
+                    np.sqrt(
+                        np.sum(
+                            difference**2
+                        )
+                        /
+                        max(
+                            1,
+                            difference.size,
+                        )
+                    )
+                )
+
+                if (
+                    not np.isfinite(RMSDelta)
+                    or
+                    RMSDelta == 0.0
+                ):
+                    raise ValueError(
+                        "Invalid RMS change while selecting dK "
+                        f"for quadrupole group {group}: "
+                        f"{RMSDelta}"
+                    )
+
+                # ------------------------------------------------
+                # Fixed user-specified step
+                # ------------------------------------------------
+
+                if not auto_correct_delta:
+                    break
+
+                # ------------------------------------------------
+                # dK too small
+                # ------------------------------------------------
+
+                if RMSDelta < RMSGoal / RMSTol:
+
+                    delta_local *= (
+                        RMSGoal
+                        /
+                        RMSDelta
+                    )
+
+                # ------------------------------------------------
+                # dK too large
+                # ------------------------------------------------
+
+                elif (
+                    RMSDelta
+                    >
+                    RMSGoal * RMSTol / 3.0
+                ):
+
+                    delta_local *= (
+                        RMSGoal
+                        /
+                        RMSDelta
+                    )
+
+                # ------------------------------------------------
+                # dK accepted
+                # ------------------------------------------------
+
+                else:
+                    break
+
+            # ====================================================
+            # 7. Final scalar finite-difference step
+            # ====================================================
+
+            step = float(
+                delta_local[0]
+            )
+
+            if step == 0.0:
+                raise ValueError(
+                    f"Zero quadrupole step for group {group}"
+                )
+
+            # ====================================================
+            # 8. Positive perturbation
+            #
+            # eta_plus = eta(K + dK)
+            # ====================================================
+
+            plus_values = (
+                nominal_values
+                +
+                delta_local
+            )
+
+            set_correction(
+                ring,
+                plus_values,
+                correction_indices,
+                individuals=individuals,
+                block="quads",
+                config=fit_cfg,
+            )
+
+            C_plus = response_matrix(
+                ring,
+                config=cfg,
+            )
+
+            C_plus = (
+                C
+                @
+                C_plus
+            )
+
+            eta_plus = np.asarray(
+                C_plus[:, -1],
+                dtype=float,
+            ).copy()
+
+            # ====================================================
+            # 9. Restore nominal before negative perturbation
+            # ====================================================
+
+            set_correction(
+                ring,
+                nominal_values,
+                correction_indices,
+                individuals=individuals,
+                block="quads",
+                config=fit_cfg,
+            )
+
+            # ====================================================
+            # 10. Negative perturbation
+            #
+            # eta_minus = eta(K - dK)
+            # ====================================================
+
+            minus_values = (
+                nominal_values
+                -
+                delta_local
+            )
+
+            set_correction(
+                ring,
+                minus_values,
+                correction_indices,
+                individuals=individuals,
+                block="quads",
+                config=fit_cfg,
+            )
+
+            C_minus = response_matrix(
+                ring,
+                config=cfg,
+            )
+
+            C_minus = (
+                C
+                @
+                C_minus
+            )
+
+            eta_minus = np.asarray(
+                C_minus[:, -1],
+                dtype=float,
+            ).copy()
+
+            # ====================================================
+            # 11. CENTRAL FINITE DIFFERENCE
+            #
+            #        eta(K+dK) - eta(K-dK)
+            # dη/dK = ----------------------
+            #                 2 dK
+            # ====================================================
+
+            J_eta[p, :] = (
+                eta_plus
+                -
+                eta_minus
+            ) / (
+                2.0
+                *
+                step
+            )
+
+            delta_used.append(
+                step
+            )
+
+        finally:
+
+            # ====================================================
+            # 12. Always restore nominal lattice
+            # ====================================================
+
+            set_correction(
+                ring,
+                nominal_values,
+                correction_indices,
+                individuals=individuals,
+                block="quads",
+                config=fit_cfg,
+            )
+
+    # ============================================================
+    # 13. Final checks
+    # ============================================================
+
+    delta_vec = np.asarray(
+        delta_used,
+        dtype=float,
+    )
+
+    print(
+        "[Dispersion Jacobian] "
+        f"{len(quads_ind)} parameters"
+    )
+
+    print(
+        "[Dispersion Jacobian] shape:",
+        J_eta.shape,
+    )
+
+    print(
+        "[Dispersion Jacobian] dK:",
+        delta_vec,
+    )
+
+    return (
+        J_eta,
+        delta_vec,
+    )
+
 
 def calculate_quads_jacobian_analytical(
     ring,
@@ -1257,6 +2169,114 @@ def calculate_quads_jacobian_analytical(
     )
 
     return J_quad, None
+
+
+def calculate_skew_jacobian_analytical(
+    ring,
+    C_model,
+    dkick,
+    used_cor_ind,
+    bpm_indexes,
+    skew_ind,
+    C,
+    fit_cfg=None,
+    analytical_thick_skew=True,
+    analytical_thick_steerers=False,
+    analytical_verbose=False,
+    analytical_use_mp=False,
+):
+    """Return the analytical skew ORM Jacobian in pyLOCO layout.
+
+    ``analytic_orm_variation_with_skew_quadrupole`` differentiates with
+    respect to integrated skew strength ``Ks*L``.  pyLOCO's skew fit parameter
+    is the element coefficient ``PolynomA[1]`` (``Ks``), so each physical
+    magnet contribution is multiplied by its length.  A family parameter is
+    the simultaneous change of all its physical magnets and is consequently
+    the sum of those converted contributions.
+
+    The complete output layout is retained explicitly::
+
+                         H correctors    V correctors
+        horizontal BPM       XX              XY
+        vertical BPM         YX              YY
+
+    The first-order formula supplies XY and YX.  XX and YY remain allocated
+    as zero blocks; applying the BPM calibration/coupling matrix may mix these
+    physical blocks in the final calibrated response.
+    """
+    bpm_indexes = np.asarray(bpm_indexes, dtype=int)
+    hcor = np.asarray(used_cor_ind[0], dtype=int)
+    vcor = np.asarray(used_cor_ind[1], dtype=int)
+    n_bpm = len(bpm_indexes)
+    n_hcor = len(hcor)
+    n_vcor = len(vcor)
+    expected_shape = (2 * n_bpm, n_hcor + n_vcor)
+    if C_model.shape != expected_shape:
+        raise ValueError(
+            f"Unexpected C_model shape for analytical skew Jacobian: "
+            f"{C_model.shape}; expected {expected_shape}."
+        )
+
+    attr_name, attr_idx = _resolve_attr_for_block_read("skew_quads", fit_cfg)
+    if attr_name != "PolynomA" or attr_idx != 1:
+        raise ValueError(
+            "Analytical skew Jacobian supports a fitted PolynomA[1] "
+            f"coefficient; got {attr_name}[{attr_idx}]."
+        )
+
+    kick_h = np.asarray(dkick[0], dtype=float).reshape(-1)
+    kick_v = np.asarray(dkick[1], dtype=float).reshape(-1)
+    if kick_h.size != n_hcor or kick_v.size != n_vcor:
+        raise ValueError("Corrector kick arrays do not match the selected correctors")
+
+    groups = [
+        [int(item)] if np.isscalar(item) else [int(q) for q in item]
+        for item in skew_ind
+    ]
+    physical_skews = sorted({q for group in groups for q in group})
+    skew_to_pos = {q: pos for pos, q in enumerate(physical_skews)}
+
+    # The formula accepts a common corrector list.  Evaluate the horizontal
+    # and vertical selections separately because pyLOCO permits them to differ.
+    d_yx, _ = analytic_orm_variation_with_skew_quadrupole(
+        ring, ind_bpms=bpm_indexes, ind_cors=hcor,
+        ind_skews=physical_skews, verbose=analytical_verbose,
+        thick_skew=analytical_thick_skew,
+        thick_steerer=analytical_thick_steerers,
+        use_mp=analytical_use_mp,
+    )
+    _, d_xy = analytic_orm_variation_with_skew_quadrupole(
+        ring, ind_bpms=bpm_indexes, ind_cors=vcor,
+        ind_skews=physical_skews, verbose=analytical_verbose,
+        thick_skew=analytical_thick_skew,
+        thick_steerer=analytical_thick_steerers,
+        use_mp=analytical_use_mp,
+    )
+
+    jacobian = np.zeros((len(groups), *expected_shape), dtype=float)
+    for parameter, group in enumerate(groups):
+        for skew in group:
+            formula_index = skew_to_pos[skew]
+            length = float(ring[skew].Length)
+            # pyLOCO's horizontal-corrector response convention is opposite
+            # to MH2V's convention; keep this adapter sign outside the
+            # analytical skew-response equations.
+            jacobian[parameter, n_bpm:, :n_hcor] += (
+                -d_yx[:, :, formula_index] * length * kick_h[np.newaxis, :]
+            )
+            jacobian[parameter, :n_bpm, n_hcor:] += (
+                d_xy[:, :, formula_index] * length * kick_v[np.newaxis, :]
+            )
+
+    for parameter in range(jacobian.shape[0]):
+        jacobian[parameter] = C @ jacobian[parameter]
+
+    print(
+        "[Analytical skew Jacobian] "
+        f"{len(groups)} fit parameters, {len(physical_skews)} physical magnets, "
+        f"shape={jacobian.shape}"
+    )
+    return jacobian, None
 
 # ---------- worker globals ----------
 G_C = None
@@ -3527,10 +4547,15 @@ def pyloco(
         skew_jacobian_file=None,
         quads_tilt_jacobian_file=None,
         quad_jacobian_calculator="Numerical",
+        skew_jacobian_calculator="Numerical",
         analytical_thick_quadrupole=True,
         analytical_thick_steerers=False,
         analytical_verbose=False,
         analytical_use_mp=False,
+        analytical_thick_skew=True,
+        analytical_skew_thick_steerers=False,
+        analytical_skew_verbose=False,
+        analytical_skew_use_mp=False,
         force_recompute=True,
         # Fit multi stage
         continue_from_previous=False,
@@ -3782,10 +4807,15 @@ def pyloco(
             quad_jacobian_file=quad_jacobian_file,
             skew_jacobian_file=skew_jacobian_file,
             quad_jacobian_calculator=quad_jacobian_calculator,
+            skew_jacobian_calculator=skew_jacobian_calculator,
             analytical_thick_quadrupole=analytical_thick_quadrupole,
             analytical_thick_steerers=analytical_thick_steerers,
             analytical_verbose=analytical_verbose,
             analytical_use_mp=analytical_use_mp,
+            analytical_thick_skew=analytical_thick_skew,
+            analytical_skew_thick_steerers=analytical_skew_thick_steerers,
+            analytical_skew_verbose=analytical_skew_verbose,
+            analytical_skew_use_mp=analytical_skew_use_mp,
             quads_tilt_jacobian_file=quads_tilt_jacobian_file,
             force_recompute=force_recompute,
             output_dir=output_dir

@@ -158,6 +158,16 @@ class RejectionConfig:
     skew_individuals: bool = True
     tilt_individuals: bool = True
     calculate_delta_chi2: bool = False
+    quad_jacobian_calculator: str = "Numerical"
+    skew_jacobian_calculator: str = "Numerical"
+    analytical_thick_quadrupole: bool = True
+    analytical_thick_steerers: bool = False
+    analytical_verbose: bool = False
+    analytical_use_mp: bool = False
+    analytical_thick_skew: bool = True
+    analytical_skew_thick_steerers: bool = False
+    analytical_skew_verbose: bool = False
+    analytical_skew_use_mp: bool = False
 
 
 @dataclass(slots=True)
@@ -603,6 +613,16 @@ class LocoConfiguration:
             "skew_individuals": self.rejection.skew_individuals,
             "tilt_individuals": self.rejection.tilt_individuals,
             "calculate_delta_chi2": self.rejection.calculate_delta_chi2,
+            "quad_jacobian_calculator": self.rejection.quad_jacobian_calculator,
+            "skew_jacobian_calculator": self.rejection.skew_jacobian_calculator,
+            "analytical_thick_quadrupole": self.rejection.analytical_thick_quadrupole,
+            "analytical_thick_steerers": self.rejection.analytical_thick_steerers,
+            "analytical_verbose": self.rejection.analytical_verbose,
+            "analytical_use_mp": self.rejection.analytical_use_mp,
+            "analytical_thick_skew": self.rejection.analytical_thick_skew,
+            "analytical_skew_thick_steerers": self.rejection.analytical_skew_thick_steerers,
+            "analytical_skew_verbose": self.rejection.analytical_skew_verbose,
+            "analytical_skew_use_mp": self.rejection.analytical_skew_use_mp,
         })
         data["loco"] = loco
         inverse_groups = {
@@ -952,6 +972,16 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "skew_individuals": loco.get("skew_individuals", True),
             "tilt_individuals": loco.get("tilt_individuals", True),
             "calculate_delta_chi2": loco.get("calculate_delta_chi2", False),
+            "quad_jacobian_calculator": loco.get("quad_jacobian_calculator", "Numerical"),
+            "skew_jacobian_calculator": loco.get("skew_jacobian_calculator", "Numerical"),
+            "analytical_thick_quadrupole": loco.get("analytical_thick_quadrupole", True),
+            "analytical_thick_steerers": loco.get("analytical_thick_steerers", False),
+            "analytical_verbose": loco.get("analytical_verbose", False),
+            "analytical_use_mp": loco.get("analytical_use_mp", False),
+            "analytical_thick_skew": loco.get("analytical_thick_skew", True),
+            "analytical_skew_thick_steerers": loco.get("analytical_skew_thick_steerers", False),
+            "analytical_skew_verbose": loco.get("analytical_skew_verbose", False),
+            "analytical_skew_use_mp": loco.get("analytical_skew_use_mp", False),
         },
         "parameters": parameters,
         "constraints": constraints,
@@ -986,6 +1016,11 @@ _EDITABLE_YAML_PATHS.update(f"loco.{name}" for name in (
     "include_dispersion", "horizontal_dispersion_weight", "vertical_dispersion_weight",
     "remove_coupling", "skew_individuals", "tilt_individuals", "skew_attribute",
     "plot_fit_parameters", "auto_correct_delta", "fixedpathlength", "calculate_delta_chi2",
+    "quad_jacobian_calculator", "skew_jacobian_calculator",
+    "analytical_thick_quadrupole", "analytical_thick_steerers",
+    "analytical_verbose", "analytical_use_mp", "analytical_thick_skew",
+    "analytical_skew_thick_steerers", "analytical_skew_verbose",
+    "analytical_skew_use_mp",
 ))
 
 

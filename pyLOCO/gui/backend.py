@@ -632,6 +632,16 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
         max_lm_lambda=options.get("max_lm_lambda", 15), scaled=options.get("scaled", True), plot_fit_parameters=options.get("plot_fit_parameters", False),
         auto_correct_delta=options.get("auto_correct_delta", True), fixedpathlength=rm_cfg.fixedpathlength, fit_cfg=fit_cfg,
         calculate_delta_chi2=options.get("calculate_delta_chi2", False),
+        quad_jacobian_calculator=options.get("quad_jacobian_calculator", "Numerical"),
+        skew_jacobian_calculator=options.get("skew_jacobian_calculator", "Numerical"),
+        analytical_thick_quadrupole=options.get("analytical_thick_quadrupole", True),
+        analytical_thick_steerers=options.get("analytical_thick_steerers", False),
+        analytical_verbose=options.get("analytical_verbose", False),
+        analytical_use_mp=options.get("analytical_use_mp", False),
+        analytical_thick_skew=options.get("analytical_thick_skew", True),
+        analytical_skew_thick_steerers=options.get("analytical_skew_thick_steerers", False),
+        analytical_skew_verbose=options.get("analytical_skew_verbose", False),
+        analytical_skew_use_mp=options.get("analytical_skew_use_mp", False),
     )
 
 

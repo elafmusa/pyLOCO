@@ -140,6 +140,23 @@ def test_legacy_gui_project_missing_new_fields_loads():
     assert config.solver.nIter == 3
     assert not config.resume.enabled
     assert config.parameters.quads
+    assert config.rejection.quad_jacobian_calculator == "Numerical"
+    assert config.rejection.skew_jacobian_calculator == "Numerical"
+
+
+def test_normal_and_skew_jacobian_calculators_are_independent():
+    config = LocoConfiguration()
+    for normal, skew in (
+        ("Numerical", "Numerical"),
+        ("Analytical", "Numerical"),
+        ("Numerical", "Analytical"),
+        ("Analytical", "Analytical"),
+    ):
+        config.rejection.quad_jacobian_calculator = normal
+        config.rejection.skew_jacobian_calculator = skew
+        options = config.to_backend_mapping()["LOCOOptions"]
+        assert options["quad_jacobian_calculator"] == normal
+        assert options["skew_jacobian_calculator"] == skew
 
 
 def test_new_pyloco_options_do_not_break_legacy_options_constructor():
