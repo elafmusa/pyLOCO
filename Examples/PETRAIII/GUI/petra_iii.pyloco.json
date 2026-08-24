@@ -1,31 +1,34 @@
 {
-  "name": "PETRA III",
+  "name": "PETRA III measured ORM \u2014 verified fit",
   "mode": "Basic",
-  "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/GUI/petra_iii.pyloco.json",
+  "path": "petra_iii.pyloco.json",
   "modified": false,
   "lattice": {
-    "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/p3_low_beta.mat",
+    "path": "../data/p3_low_beta.mat",
     "file_type": "mat",
     "element_count": 7675
   },
   "measurements": {
     "orm": {
       "role": "orm",
-      "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/measured_orm_loco.h5",
+      "path": "../data/measured_orm_loco.h5",
       "file_type": "h5",
-      "size_bytes": 1627616
+      "size_bytes": 1627616,
+      "options": {}
     },
     "dispersion": {
       "role": "dispersion",
-      "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/measured_dispersion_loco.h5",
+      "path": "../data/measured_dispersion_loco.h5",
       "file_type": "h5",
-      "size_bytes": 5984
+      "size_bytes": 5984,
+      "options": {}
     },
     "bpm_noise": {
       "role": "bpm_noise",
-      "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/measured_BPM_noise_loco.h5",
+      "path": "../data/measured_BPM_noise_loco.h5",
       "file_type": "h5",
-      "size_bytes": 5984
+      "size_bytes": 5984,
+      "options": {}
     }
   },
   "loco_config": {
@@ -1827,16 +1830,30 @@
       "fixedpathlength": false,
       "individuals": true,
       "remove_coupling_": true,
-      "plot_fit_parameters": false
+      "plot_fit_parameters": false,
+      "skew_individuals": true,
+      "tilt_individuals": true,
+      "calculate_delta_chi2": false
     },
     "constraints": {
       "enable": false,
-      "quad_sigma": 0.0,
-      "skew_sigma": 0.0,
+      "quad_sigma": 0.0001,
+      "skew_sigma": 0.0001,
       "quad_weights": "",
       "skew_weights": "",
       "quad_mask": "",
-      "skew_mask": ""
+      "skew_mask": "",
+      "quad_sigma_mode": "relative",
+      "quad_relative_sigma": 0.0001,
+      "quad_minimum_sigma": 1e-12,
+      "quad_default_weight": 0.0,
+      "quad_selected_weight": 1.0,
+      "quad_selected_families": [],
+      "quad_weighted_families": {},
+      "skew_default_weight": 0.0,
+      "skew_selected_weight": 1.0,
+      "skew_selected_families": [],
+      "skew_weighted_families": {}
     },
     "parameters": {
       "quads": true,
@@ -1860,13 +1877,13 @@
         "mode": "file",
         "horizontal": 1e-05,
         "vertical": 1e-05,
-        "file": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/CMstep.npz"
+        "file": "../data/CMstep.npz"
       },
       "rfStep": -3000.0,
       "init": "",
       "quads_attr": "PolynomB",
       "quads_attr_index": 1,
-      "skew_attr": "PolynomA",
+      "skew_attr": "PolynomB",
       "skew_attr_index": 1,
       "quads_tilt_attr_R1": "R1",
       "quads_tilt_attr_R2": "R2",
@@ -1882,8 +1899,146 @@
     },
     "mcf_source": "automatic",
     "mcf_user_value": "",
-    "output_directory": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/output/measured_orm",
-    "bad_bpm_positions": []
+    "output_directory": "../output/measured_orm",
+    "bad_bpm_positions": [],
+    "resume": {
+      "enabled": false,
+      "directory": "../output/measured_orm",
+      "ring_file": "ring_pyloco.mat",
+      "fit_dict_file": "fit_dict.pkl",
+      "fit_results_file": "fit_results.npy"
+    },
+    "source_config": {
+      "lattice": {
+        "file": "data/p3_low_beta.mat"
+      },
+      "data": {
+        "orm": "data/measured_orm_loco.h5",
+        "dispersion": "data/measured_dispersion_loco.h5",
+        "bpm_noise": "data/measured_BPM_noise_loco.h5",
+        "corrector_steps": "data/CMstep.npz",
+        "horizontal_corrector_names": "data/HCM_names.txt",
+        "vertical_corrector_names": "data/VCM_names.txt",
+        "bpm_names": "data/BPM_names.txt",
+        "quadrupole_indices": "data/quad_ind.npy",
+        "quadrupole_mode": "individual",
+        "skew_indices": "data/skew_ind.npy"
+      },
+      "matlab_reference": {
+        "standard_one_iteration": "data/matlab_fit_1iter.npy"
+      },
+      "bad_bpm_positions": [
+        24,
+        104,
+        108,
+        111,
+        123,
+        138,
+        144,
+        153,
+        161,
+        162,
+        243
+      ],
+      "rf": {
+        "frequency_hz": 499664399.4230182,
+        "harmonic_number": 3840,
+        "step_hz": -3000.0
+      },
+      "loco": {
+        "algorithm": "lm",
+        "nIter": 1,
+        "nLMIter": 10,
+        "Starting_Lambda": 0.001,
+        "max_lm_lambda": 15.0,
+        "scaled": true,
+        "svd_selection_method": "threshold",
+        "svd_threshold": 1e-07,
+        "cut": 397,
+        "show_svd_plot": false,
+        "outlier_rejection": true,
+        "sigma_outlier": 10.0,
+        "apply_normalization": true,
+        "normalization_mode": "component",
+        "remove_coupling": false,
+        "skew_individuals": true,
+        "tilt_individuals": true,
+        "skew_attribute": "PolynomB",
+        "calculate_delta_chi2": false,
+        "include_dispersion": false,
+        "horizontal_dispersion_weight": 1.0,
+        "vertical_dispersion_weight": 1.0
+      },
+      "fit_parameters": {
+        "quadrupoles": {
+          "enable": true
+        },
+        "skew_quadrupoles": {
+          "enable": true
+        },
+        "quadrupole_tilt": {
+          "enable": true
+        },
+        "bpm_gains": {
+          "enable": true
+        },
+        "bpm_coupling": {
+          "enable": true
+        },
+        "corrector_calibration": {
+          "enable": true
+        },
+        "corrector_coupling": {
+          "enable": true
+        },
+        "hcm_energy_shift": {
+          "enable": true
+        },
+        "vcm_energy_shift": {
+          "enable": true
+        },
+        "rf_frequency_shift": {
+          "enable": false
+        }
+      },
+      "constraints": {
+        "enable": false,
+        "quadrupoles": {
+          "relative_sigma": 0.0001,
+          "minimum_sigma": 1e-12,
+          "default_weight": 0.0,
+          "selected_weight": 1.0,
+          "selected_families": [],
+          "weighted_families": {}
+        },
+        "skew_quadrupoles": {
+          "sigma": 0.0001,
+          "default_weight": 0.0
+        }
+      },
+      "resume": {
+        "enabled": false,
+        "directory": "output/measured_orm",
+        "ring_file": "ring_pyloco.mat",
+        "fit_dict_file": "fit_dict.pkl",
+        "fit_results_file": "fit_results.npy"
+      },
+      "output": {
+        "run_name": "default_measurement",
+        "standard": "output/measured_orm",
+        "coupling": "output/measured_coupling",
+        "constrained": "output/constrained_case",
+        "matlab_comparison": "output/matlab_comparison"
+      }
+    },
+    "source_path": "../pyloco_config_coupling.yaml",
+    "uneditable_fields": [
+      "matlab_reference.standard_one_iteration",
+      "output.constrained",
+      "output.coupling",
+      "output.matlab_comparison",
+      "output.standard"
+    ]
   },
   "recent_projects": []
 }
