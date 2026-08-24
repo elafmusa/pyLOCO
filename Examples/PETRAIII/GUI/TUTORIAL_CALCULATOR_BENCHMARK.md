@@ -40,12 +40,14 @@ All paths in this tutorial are relative to the pyLOCO repository root.
    Examples/PETRAIII/GUI/petra_iii.pyloco.json
    ```
 
-> [SCREENSHOT 1 — Open the PETRA III project]
+![Open the PETRA III project](tutorial_images/01_open_project.png)
+
 > Show **File → Open…** and `petra_iii.pyloco.json`.
 
 The Project view should show the PETRA III project as complete, with validation passed and **Run LOCO** enabled. Opening the project does not start a fit.
 
-> [SCREENSHOT 2 — Project loaded]
+![PETRA III project loaded](tutorial_images/02_project_loaded.png)
+
 > Show the project name, successful validation, and enabled Run LOCO action.
 
 ### 2.2 Verify the supplied configuration
@@ -65,10 +67,12 @@ Do not manually select BPMs, correctors, quadrupoles, measurement files, or latt
 | Measured dispersion | `measured_dispersion_loco.h5` |
 | BPM noise | `measured_BPM_noise_loco.h5` |
 
-> [SCREENSHOT 3 — Machine configuration]
+![Machine configuration](tutorial_images/03_machine_configuration.png)
+
 > Show the lattice and selected BPM, corrector, and quadrupole counts.
 
-> [SCREENSHOT 4 — Measurements]
+![Measurements](tutorial_images/04_measurements.png)
+
 > Show the ORM, dispersion, and BPM-noise files.
 
 ### 2.3 Verify corrector steps and initialization
@@ -80,12 +84,14 @@ In **Corrector Steps**, confirm:
 
 The GUI label is **Load from file**. These measured per-corrector steps must not be replaced with uniform values.
 
-> [SCREENSHOT 8 — Corrector steps]
+![Corrector steps](tutorial_images/08_corrector_steps.png)
+
 > Highlight **Load from file** and `CMstep.npz`.
 
 In **Initialization / Resume**, select **Start from current model**. Do not select **Resume from previous LOCO state** for an independent benchmark run.
 
-> [SCREENSHOT 9 — Initialization]
+![Start from current model](tutorial_images/09_start_from_current_model.png)
+
 > Highlight **Start from current model** and the Resume option that must not be used.
 
 ### 2.4 Settings that must not change
@@ -117,7 +123,8 @@ Choices shown in the GUI:
 
 This selector changes how the model ORM is calculated initially, during fitting and trial evaluations, and after fitting.
 
-> [SCREENSHOT 5 — Response Matrix Calculator]
+![Response Matrix Calculator](tutorial_images/05_response_matrix_calculator.png)
+
 > Highlight the Linear / Analytical / Tracking dropdown and explain that it changes the ORM implementation.
 
 ### 3.2 Normal quadrupole Jacobian
@@ -131,7 +138,8 @@ Choices:
 
 This selector changes the derivative implementation, not the ORM implementation.
 
-> [SCREENSHOT 6 — Normal quadrupole Jacobian]
+![Normal quadrupole Jacobian](tutorial_images/06_normal_quadrupole_jacobian.png)
+
 > Highlight the Numerical / Analytical dropdown and explain that it changes dORM/dK.
 
 The two saved choices appear independently in **Results → Overview**, for example `ORM: Linear` and `Normal Jacobian: Numerical`.
@@ -153,7 +161,8 @@ Set **Outer iterations = 1**.
 | 1 | Linear | Numerical |
 | 2 | Linear | Analytical |
 
-> [SCREENSHOT 7 — Outer iterations]
+![Outer iterations](tutorial_images/07_outer_iterations.png)
+
 > Highlight `1` for Exercise 1. Later exercises use `8`.
 
 ### Reset before each run
@@ -169,7 +178,8 @@ Set **Outer iterations = 1**.
 
 Reopening the original project prevents a previous fitted lattice or a changed setting from becoming part of the next independent run.
 
-> [SCREENSHOT 10 — Run LOCO]
+![Run LOCO](tutorial_images/10_run_loco.png)
+
 > Highlight **▶ Run LOCO** in the main toolbar.
 
 When the run starts, the GUI switches to **Results**, initially showing the **Log** tab. The **Backend Run Monitor** shows status, elapsed time, progress, and the results directory. When finished, the GUI reports completion and selects **Results → Overview**.
@@ -263,10 +273,12 @@ Record Initial χ², Final χ², reduction, Runtime, completed iterations, fitte
 
 The per-iteration table displays iteration, χ², overall/H/V ORM RMS [m], beta-x/y RMS [%], Dx/Dy RMS [mm], Model ORM [s], Jacobian [s], Trial ORM [s], All ORM [s], Iteration [s], and Cumulative [s].
 
-> [SCREENSHOT 11 — Overview]
+![Results overview](tutorial_images/11_results_overview.png)
+
 > Highlight Initial χ², Final χ², ORM RMS, Runtime, fitted DOFs, and calculator metadata.
 
-> [SCREENSHOT 12 — Per-iteration metrics and timing]
+![Per-iteration convergence and timing](tutorial_images/12_iteration_convergence_timing.png)
+
 > Highlight the convergence and timing table.
 
 ### 7.2 Results → ORM
@@ -275,40 +287,46 @@ For fitted results select **Residual after** and **Heatmap**. Record RMS, maximu
 
 For Exercise 2 initial validation, also inspect **Initial model** and **Residual before**.
 
-> [SCREENSHOT 13 — ORM residual]
+![ORM residual after fitting](tutorial_images/13_orm_residual_after.png)
+
 > Select Residual after and Heatmap; highlight RMS and maximum residual.
 
 ### 7.3 Results → Optics → Beta beating
 
 Record horizontal and vertical RMS and maximum absolute beta beating [%]. Smaller beta beating means the fitted optics remain closer to the input reference lattice.
 
-> [SCREENSHOT 14 — Beta beating]
+![Beta beating](tutorial_images/14_beta_beating.png)
+
 > Highlight beta-x/y curves, RMS values, and maxima.
 
 ### 7.4 Results → Optics → Dispersion
 
 Record horizontal and vertical RMS-after and maximum-absolute-residual-after [mm]. Dispersion is a post-fit diagnostic, not part of the default LOCO objective or a direct contribution to χ². Do not enable dispersion fitting.
 
-> [SCREENSHOT 15 — Dispersion]
+![Dispersion](tutorial_images/15_dispersion.png)
+
 > Highlight Dx/Dy residual RMS and maximum values, plus the diagnostic message.
 
 ### 7.5 Results → Parameters
 
 Inspect all active blocks, especially normal-quadrupole changes, horizontal/vertical BPM gains, horizontal/vertical corrector calibration, and horizontal-corrector energy shift. Large parameter differences matter even when final χ² values are similar.
 
-> [SCREENSHOT 16 — Parameters]
+![Fitted parameters](tutorial_images/16_fitted_parameters.png)
+
 > Highlight the parameter-block selector, fitted changes, and summary.
 
 ### 7.6 Results → Files
 
 In Advanced mode, select an artifact and use **Open containing folder** or **Copy selected path**.
 
-> [SCREENSHOT 17 — Files and output directory]
+![Files and output directory](tutorial_images/17_files_output_directory.png)
+
 > Highlight **Open containing folder**.
 
 `iteration_metrics.csv` is inside the timestamped run directory. One row represents one completed outer iteration. Use rows 1, 2, 3, 5, and 8 rather than transcribing values from plots.
 
-> [SCREENSHOT 18 — iteration_metrics.csv]
+![iteration_metrics.csv](tutorial_images/18_iteration_metrics_csv.png)
+
 > Show the file and explain that it is the main scalar convergence-data file.
 
 ---
