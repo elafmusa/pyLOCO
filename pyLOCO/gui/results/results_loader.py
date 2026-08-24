@@ -122,6 +122,39 @@ class ResultsLoader:
         return self._runtime_override if self._runtime_override is not None else _finite_float(self.summary.get("runtime_seconds"))
 
     @property
+    def iteration_metrics(self) -> list[dict[str, Any]]:
+        values = self.summary.get("iteration_metrics")
+        return [value for value in values if isinstance(value, dict)] if isinstance(values, list) else []
+
+    @property
+    def timing_totals(self) -> dict[str, float | None]:
+        records = self.iteration_metrics
+        keys = ("model_orm_seconds", "jacobian_seconds", "trial_orm_seconds",
+                "final_orm_seconds", "total_orm_seconds", "iteration_seconds",
+                "cumulative_seconds")
+        return {
+            key: (sum(float(item.get("timings", {}).get(key, 0.0)) for item in records)
+                  if records else None)
+            for key in keys
+        }
+
+    @property
+    def response_matrix_calculator(self) -> str | None:
+        value = self.summary.get("response_matrix_calculator")
+        if value is None:
+            value = self.request.get("backend_mapping", {}).get("RMConfig", {}).get("calculator")
+            if str(value).strip().lower() == "numerical":
+                value = "Tracking"
+        return str(value) if value else None
+
+    @property
+    def normal_quad_jacobian(self) -> str | None:
+        value = self.summary.get("normal_quad_jacobian")
+        if value is None:
+            value = self.options.get("quad_jacobian_calculator")
+        return str(value) if value else None
+
+    @property
     def dispersion_included(self) -> bool:
         return bool(self.options.get("includeDispersion", False))
 

@@ -205,7 +205,7 @@ def test_jacobian_calculators_round_trip_and_reach_backend_kwargs(
         options=options,
         rm_cfg=SimpleNamespace(
             dkick=[[1e-5], [1e-5]], rfStep=-3000.0,
-            includeDispersion=False, fixedpathlength=False,
+            includeDispersion=False, fixedpathlength=False, calculator="Linear",
         ),
         fit_cfg=SimpleNamespace(individuals=True),
         constraint_cfg=None,
@@ -244,6 +244,9 @@ def test_jacobian_gui_controls_restore_and_disable_without_losing_values():
         config.rejection.analytical_verbose = True
         config.rejection.analytical_skew_verbose = True
         window._load_config_to_widgets()
+        assert [window.quad_jacobian_calculator.itemText(index) for index in range(2)] == [
+            "Numerical", "Analytical"
+        ]
         assert window.quad_jacobian_calculator.currentText() == "Analytical"
         assert window.skew_jacobian_calculator.currentText() == "Analytical"
         assert window.normal_analytical_options.isEnabled()

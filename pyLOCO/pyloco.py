@@ -366,7 +366,8 @@ def compute_delta_chi2(
     orm_measured, weights_flat_chi_,
     includeDispersion,
     iNoCoupling_chi, iOut_coupled,
-    J_
+    J_,
+    response_matrix_calculator="Linear",
 ):
     """
     MATLAB-equivalent Δχ² per fit parameter
@@ -383,7 +384,8 @@ def compute_delta_chi2(
         HCMCoupling=HCMCoupling,
         VCMCoupling=VCMCoupling,
         rfStep=rfStep,
-        includeDispersion=includeDispersion
+        includeDispersion=includeDispersion,
+        calculator=response_matrix_calculator,
     )
 
     orm_model = response_matrix(ring, config=cfg)
@@ -438,6 +440,7 @@ def compute_delta_chi2(
             HCMEnergyShift=HCMEnergyShift,
             VCMEnergyShift=VCMEnergyShift,
             includeDispersion=includeDispersion,
+            response_matrix_calculator=response_matrix_calculator,
         )
 
         # Compute ORM
@@ -534,6 +537,8 @@ def compute_jacobian(
     analytical_skew_thick_steerers=False,
     analytical_skew_verbose=False,
     analytical_skew_use_mp=False,
+    response_matrix_calculator="Linear",
+    calculator_trace_callback=None,
 ):
     """
     Master function to compute full LOCO Jacobian including:
@@ -544,6 +549,10 @@ def compute_jacobian(
     """
     from pathlib import Path
     output_dir = Path(output_dir)
+    calculator_plan = _calculator_execution_plan(
+        response_matrix_calculator, quad_jacobian_calculator
+    )
+    response_matrix_calculator = calculator_plan["response_matrix_calculator"]
 
     nCOR = nHorCOR + nVerCOR
     C_inv = np.linalg.inv(C)
@@ -608,6 +617,8 @@ def compute_jacobian(
             else:
                 print(f"[Jacobian] Computing normal-quadrupole Jacobian (iteration {iteration})...")
             t = time.perf_counter()
+            jacobian_reference_model = C_model
+            orm_calculator_used = None
 
             # ============================================================
             # NUMERICAL NORMAL - QUADRUPOLE JACOBIAN
@@ -615,9 +626,24 @@ def compute_jacobian(
 
             if method == "numerical":
 
+                _trace_calculator(
+                    calculator_trace_callback,
+                    "normal_quad_numerical_perturbation_orm",
+                    response_matrix_calculator,
+                )
+
+                # Reuse the existing central finite-difference implementation
+                # with the selected existing ORM implementation.
+                orm_calculator = response_matrix_calculator
+                # C_model is the main ORM already evaluated with that selected
+                # calculator; use it as the finite-difference reference.
+                jacobian_model = C_model
+                jacobian_reference_model = jacobian_model
+                orm_calculator_used = orm_calculator
+
                 J_quad, delta = calculate_quads_jacobian(
                     ring,
-                    C_model,
+                    jacobian_model,
                     dkick,
                     CMords,
                     bpm_indexes,
@@ -634,6 +660,7 @@ def compute_jacobian(
                     includeDispersion=includeDispersion,
                     output_dir=output_dir,
                     log_filename="quad_jacobian_logs2.txt",
+                    orm_calculator=orm_calculator,
                 )
 
 
@@ -642,6 +669,12 @@ def compute_jacobian(
             # ============================================================
 
             elif method == "analytical":
+
+                _trace_calculator(
+                    calculator_trace_callback,
+                    "normal_quad_analytical_derivative",
+                    "Analytical",
+                )
 
                 # --------------------------------------------------------
                 # The analytical formula currently calculates ONLY
@@ -726,6 +759,7 @@ def compute_jacobian(
                         rf_step=rf_step,
                         auto_correct_delta=auto_correct_delta,
                         fit_cfg=fit_cfg,
+                        orm_calculator=response_matrix_calculator,
                     )
 
 
@@ -852,7 +886,7 @@ def compute_jacobian(
         if quad_elapsed is not None:
             with h5py.File(J_path, "w") as f:
                 f.create_dataset("J_quads", data=J_quad)
-                f.create_dataset("C_model", data=C_model)
+                f.create_dataset("C_model", data=jacobian_reference_model)
                 if isinstance(dkick, (list, tuple)):
                     f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
                     f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
@@ -861,6 +895,11 @@ def compute_jacobian(
                 f.attrs.update({
                 "iteration": iteration,
                 "jacobian_calculator": method,
+                "orm_calculator": (
+                    "Tracking" if str(orm_calculator_used).strip().lower() == "numerical"
+                    else (orm_calculator_used or "Analytical derivative")
+                ),
+                "orm_calculator_backend": orm_calculator_used or "Analytical derivative",
                 "nHBPM": nHBPM,
                 "nVBPM": nVBPM,
                 "nHorCOR": nHorCOR,
@@ -917,7 +956,8 @@ def compute_jacobian(
                     skew_individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
                     auto_correct_delta=auto_correct_delta,
                     fit_cfg=fit_cfg, includeDispersion=includeDispersion, output_dir=output_dir,
-                    log_filename="skew_jacobian_logs.txt"
+                    log_filename="skew_jacobian_logs.txt",
+                    orm_calculator=response_matrix_calculator,
                 )
             elif skew_method == "analytical":
                 C_model_orm = C_model[:, :-1] if includeDispersion else C_model
@@ -945,6 +985,7 @@ def compute_jacobian(
                         auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
                         includeDispersion=True, output_dir=output_dir,
                         log_filename="skew_dispersion_jacobian_logs.txt",
+                        orm_calculator=response_matrix_calculator,
                     )
                     J_skew = np.concatenate(
                         (J_skew, J_skew_numerical[:, :, -1, np.newaxis]), axis=2
@@ -1184,7 +1225,8 @@ def calculate_quads_jacobian(
         individuals, HCMCoupling, VCMCoupling, rf_step, block,
         auto_correct_delta=True,
         fit_cfg=None, output_dir="output",
-        log_filename="quad_jacobian_logs.txt", processes=None, includeDispersion=False
+        log_filename="quad_jacobian_logs.txt", processes=None, includeDispersion=False,
+        orm_calculator="Linear",
 ):
     from pathlib import Path
 
@@ -1208,7 +1250,7 @@ def calculate_quads_jacobian(
                 quad_index, ring, dkick, used_cor_ind, bpm_indexes, dk,
                 individuals, HCMCoupling, VCMCoupling, rf_step,
                 auto_correct_delta,
-                block, fit_cfg_dict, includeDispersion
+                block, fit_cfg_dict, includeDispersion, orm_calculator
             ))
 
         with ctx.Pool(
@@ -1271,6 +1313,7 @@ def calculate_quads_dispersion_jacobian(
     rf_step,
     auto_correct_delta=True,
     fit_cfg=None,
+    orm_calculator="Linear",
 ):
     """
     Calculate only the dispersion-column derivative with respect
@@ -1436,6 +1479,7 @@ def calculate_quads_dispersion_jacobian(
         VCMCoupling=VCMCoupling,
         includeDispersion=True,
         rfStep=rf_step,
+        calculator=orm_calculator,
     )
 
     # ============================================================
@@ -2402,7 +2446,7 @@ def generating_quads_response_matrices(
         quad_index, ring, dkick, cor_indexes, bpm_indexes,
         delta_init, individuals, HCMCoupling, VCMCoupling,
         rf_step, auto_correct_delta, block, fit_cfg,
-        includeDispersion
+        includeDispersion, orm_calculator="Linear"
 ):
     """
     Generate the numerical quadrupole Jacobian for one fitted
@@ -2571,6 +2615,7 @@ def generating_quads_response_matrices(
         VCMCoupling=VCMCoupling,
         includeDispersion=includeDispersion,
         rfStep=rf_step,
+        calculator=orm_calculator,
     )
 
     # ============================================================
@@ -4074,7 +4119,8 @@ def _prepare_ring_and_rmconfig(
         used_bpms_ords, used_cor_ords, CMstep, rfStep,
         HCMCoupling, VCMCoupling,
         hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain,
-        HCMEnergyShift, VCMEnergyShift, includeDispersion
+        HCMEnergyShift, VCMEnergyShift, includeDispersion,
+        response_matrix_calculator="Linear",
 ):
     """
     Build a *temporary* ring with the trial fit applied, and an RMConfig
@@ -4109,7 +4155,9 @@ def _prepare_ring_and_rmconfig(
         cm_ords=used_cor_ords,
         HCMCoupling=prop.get('hcor_coupling', HCMCoupling),
         VCMCoupling=prop.get('vcor_coupling', VCMCoupling),
-        rfStep=float(np.asarray(prop.get('delta_rf', rfStep)).ravel()[0]), includeDispersion=includeDispersion
+        rfStep=float(np.asarray(prop.get('delta_rf', rfStep)).ravel()[0]),
+        includeDispersion=includeDispersion,
+        calculator=response_matrix_calculator,
     )
 
     Cmat = _build_C_matrix(
@@ -4552,6 +4600,7 @@ def pyloco(
         quads_tilt_jacobian_file=None,
         quad_jacobian_calculator="Numerical",
         skew_jacobian_calculator="Numerical",
+        response_matrix_calculator="Linear",
         analytical_thick_quadrupole=True,
         analytical_thick_steerers=False,
         analytical_verbose=False,
@@ -4569,9 +4618,19 @@ def pyloco(
         calculate_delta_chi2=False,
         initial_model_orm_callback=None,
         initial_chi2_callback=None,
+        iteration_metrics_callback=None,
+        calculator_trace_callback=None,
         output_dir='output'
 
 ):
+
+    calculator_plan = _calculator_execution_plan(
+        response_matrix_calculator, quad_jacobian_calculator
+    )
+    response_matrix_calculator = calculator_plan["response_matrix_calculator"]
+    _trace_calculator(
+        calculator_trace_callback, "calculator_configuration", calculator_plan
+    )
 
     if fit_cfg is None:
         fit_cfg = FitInitConfig(fit_list=fit_list, CMstep=CMstep, rfStep=rfStep,
@@ -4754,13 +4813,20 @@ def pyloco(
     fit_dict_all = {}
 
     # ------- Outer iterations -------
+    iterations_started = time.perf_counter()
     for it in range(nIter):
+        iteration_started = time.perf_counter()
+        trial_orm_seconds = 0.0
         print(f"\n==== Iteration {it + 1}/{nIter} – {algorithm.upper()} ====")
         # --- 1) ORM model ---
         cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep,
-                       includeDispersion=includeDispersion)
+                       includeDispersion=includeDispersion,
+                       calculator=response_matrix_calculator)
+        orm_started = time.perf_counter()
+        _trace_calculator(calculator_trace_callback, "main_model_orm", cfg.calculator)
         orm_model = response_matrix(ring, config=cfg)
+        model_orm_seconds = time.perf_counter() - orm_started
 
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model = Cmat @ orm_model
@@ -4777,6 +4843,7 @@ def pyloco(
         include_VCMEnergyShift = ('VCMEnergyShift' in fit_list)
         include_delta_RF = ('delta_rf' in fit_list)
 
+        jacobian_started = time.perf_counter()
         Jfull, dq, dskew, dtilt = compute_jacobian(
             ring, C_model=orm_model, dkick=CMstep,
             bpm_indexes=used_bpms_ords, CMords=used_cor_ords, quads_ind=quads_ords,
@@ -4820,11 +4887,14 @@ def pyloco(
             analytical_skew_thick_steerers=analytical_skew_thick_steerers,
             analytical_skew_verbose=analytical_skew_verbose,
             analytical_skew_use_mp=analytical_skew_use_mp,
+            response_matrix_calculator=response_matrix_calculator,
+            calculator_trace_callback=calculator_trace_callback,
             quads_tilt_jacobian_file=quads_tilt_jacobian_file,
             force_recompute=force_recompute,
             output_dir=output_dir
 
         )
+        jacobian_seconds = time.perf_counter() - jacobian_started
 
 
         if fixedmomentum == True:
@@ -5073,10 +5143,14 @@ def pyloco(
                     hbpm_gain=hbpm_gain, hbpm_coupling=hbpm_coupling,
                     vbpm_coupling=vbpm_coupling, vbpm_gain=vbpm_gain,
                     HCMEnergyShift=HCMEnergyShift, VCMEnergyShift=VCMEnergyShift, includeDispersion=includeDispersion,
+                    response_matrix_calculator=response_matrix_calculator,
                 )
 
                 # Trial ORM on the *temp* ring
+                trial_orm_started = time.perf_counter()
+                _trace_calculator(calculator_trace_callback, "trial_model_orm", cfg2.calculator)
                 orm_trial = response_matrix(ring_tmp, config=cfg2)
+                trial_orm_seconds += time.perf_counter() - trial_orm_started
                 orm_trial = Cmat2 @ orm_trial
 
                 # Fixed path length adjustment (trial)
@@ -5235,8 +5309,12 @@ def pyloco(
         cfg3 = RMConfig(dkick=[CMstep[0], CMstep[1]],
                         bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
                         HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
-                        rfStep=rfStep, includeDispersion=includeDispersion)
+                        rfStep=rfStep, includeDispersion=includeDispersion,
+                        calculator=response_matrix_calculator)
+        final_orm_started = time.perf_counter()
+        _trace_calculator(calculator_trace_callback, "final_model_orm", cfg3.calculator)
         orm_model_after = response_matrix(ring, config=cfg3)
+        final_orm_seconds = time.perf_counter() - final_orm_started
         C_bpms_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
         orm_model_after = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain) @ orm_model_after
 
@@ -5281,6 +5359,44 @@ def pyloco(
 
         chi2_history.append(chi2_after)
 
+        if iteration_metrics_callback is not None:
+            residual_after = np.asarray(orm_measured) - np.asarray(orm_model_after)
+            horizontal_residual = residual_after[:nHBPM, :]
+            vertical_residual = residual_after[nHBPM:nHBPM + nVBPM, :]
+
+            def _residual_metrics(values):
+                finite = np.asarray(values, dtype=float)
+                finite = finite[np.isfinite(finite)]
+                if not finite.size:
+                    return {"rms": None, "max_abs": None}
+                return {
+                    "rms": float(np.sqrt(np.mean(finite ** 2))),
+                    "max_abs": float(np.max(np.abs(finite))),
+                }
+
+            iteration_metrics_callback({
+                "iteration": int(it + 1),
+                "chi2_before": float(chi2_before),
+                "chi2_after": float(chi2_after),
+                "orm_residual": _residual_metrics(residual_after),
+                "horizontal_orm_residual": _residual_metrics(horizontal_residual),
+                "vertical_orm_residual": _residual_metrics(vertical_residual),
+                "timings": {
+                    "model_orm_seconds": float(model_orm_seconds),
+                    "jacobian_seconds": float(jacobian_seconds),
+                    "trial_orm_seconds": float(trial_orm_seconds),
+                    "final_orm_seconds": float(final_orm_seconds),
+                    "total_orm_seconds": float(
+                        model_orm_seconds + trial_orm_seconds + final_orm_seconds
+                    ),
+                    "iteration_seconds": float(time.perf_counter() - iteration_started),
+                    "cumulative_seconds": float(time.perf_counter() - iterations_started),
+                },
+                "fit_parameters": np.asarray(current_fit_parameters, dtype=float).copy(),
+                "ring": ring,
+                "orm_model": np.asarray(orm_model_after, dtype=float).copy(),
+            })
+
         if calculate_delta_chi2 ==True:
 
             print(f"Calculating delta Chi² for all fit paramaters from iteration 0 ...")
@@ -5317,7 +5433,8 @@ def pyloco(
                 includeDispersion=includeDispersion,
                 iNoCoupling_chi=iNoCoupling_chi_persistent,
                 iOut_coupled=iOut_coupled_persistent,
-                J_=J_
+                J_=J_,
+                response_matrix_calculator=response_matrix_calculator,
             )
 
             delta_chi2_history.append(delta_chi2_iter)
@@ -5506,3 +5623,31 @@ def get_fit_param_block(fit_dict, name):
         )
 
     return np.asarray(inner[name], dtype=float)
+def _calculator_execution_plan(response_matrix_calculator, quad_jacobian_calculator):
+    """Return canonical independent calculator choices used by the fit."""
+    response_aliases = {
+        "linear": "Linear", "analytical": "Analytical",
+        "numerical": "Numerical", "tracking": "Numerical",
+    }
+    response = response_aliases.get(str(response_matrix_calculator).strip().lower())
+    if response is None:
+        raise ValueError(
+            f"Unknown response_matrix_calculator={response_matrix_calculator!r}. "
+            "Choose 'Linear', 'Analytical', or 'Tracking'."
+        )
+    jacobian = str(quad_jacobian_calculator).strip().capitalize()
+    if jacobian not in {"Numerical", "Analytical"}:
+        raise ValueError(
+            f"Unknown quad_jacobian_calculator={quad_jacobian_calculator!r}. "
+            "Choose 'Numerical' or 'Analytical'."
+        )
+    return {
+        "response_matrix_calculator": response,
+        "normal_quad_jacobian": jacobian,
+        "numerical_jacobian_orm_calculator": response if jacobian == "Numerical" else None,
+    }
+
+
+def _trace_calculator(callback, stage, calculator):
+    if callback is not None:
+        callback({"stage": stage, "calculator": calculator})

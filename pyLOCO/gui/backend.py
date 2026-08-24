@@ -187,7 +187,24 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
                 previous_fit_results=resume_state["fit_results"],
             )
         reference_ring = copy.deepcopy(resume_state["ring"] if resume_state is not None else ring)
+        iteration_metrics: list[dict[str, Any]] = []
+        calculator_trace: list[dict[str, Any]] = []
+
+        def capture_iteration(record: dict[str, Any]) -> None:
+            iteration_metrics.append(_iteration_diagnostics(
+                record,
+                reference_ring=reference_ring,
+                measured=measured,
+                bpm_ords=indices["used_bpms_ords"],
+                rf_step=float(rm_cfg.rfStep),
+                rf_frequency=float(config_module.fixed_parameters.Frequency),
+                momentum_compaction=float(mcf_value.ravel()[0]),
+            ))
+
         kwargs["initial_model_orm_callback"] = lambda orm: _save_initial_model_orm(results_dir, orm)
+        kwargs["iteration_metrics_callback"] = capture_iteration
+        kwargs["calculator_trace_callback"] = calculator_trace.append
+        kwargs["output_dir"] = str(results_dir)
         (results_dir / "run_request.json").write_text(
             json.dumps(_jsonable(asdict(request)), indent=2), encoding="utf-8"
         )
@@ -207,6 +224,14 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
             chi2_history, delta_chi2_history, blocks, save_fit_dict,
             initial_chi2=initial_chi2, runtime_seconds=elapsed,
             resume_mapping=request.backend_mapping.get("Resume"),
+            iteration_metrics=iteration_metrics,
+            response_matrix_calculator=(
+                "Tracking" if str(rm_cfg.calculator).strip().lower() == "numerical"
+                else rm_cfg.calculator
+            ),
+            response_matrix_backend_calculator=rm_cfg.calculator,
+            normal_quad_jacobian=options.get("quad_jacobian_calculator", "Numerical"),
+            calculator_trace=calculator_trace,
         )
         optics_path = _save_optics_results(
             results_dir,
@@ -632,6 +657,7 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
         max_lm_lambda=options.get("max_lm_lambda", 15), scaled=options.get("scaled", True), plot_fit_parameters=options.get("plot_fit_parameters", False),
         auto_correct_delta=options.get("auto_correct_delta", True), fixedpathlength=rm_cfg.fixedpathlength, fit_cfg=fit_cfg,
         calculate_delta_chi2=options.get("calculate_delta_chi2", False),
+        response_matrix_calculator=getattr(rm_cfg, "calculator", "Linear"),
         quad_jacobian_calculator=options.get("quad_jacobian_calculator", "Numerical"),
         skew_jacobian_calculator=options.get("skew_jacobian_calculator", "Numerical"),
         analytical_thick_quadrupole=options.get("analytical_thick_quadrupole", True),
@@ -708,6 +734,60 @@ def _save_initial_model_orm(results_dir: Path, orm_model) -> Path:
         handle.create_dataset("response_matrix", data=np.asarray(orm_model), compression="gzip")
         handle.attrs["description"] = "Initial model ORM used for the first chi-squared evaluation"
     return path
+
+
+def _iteration_diagnostics(
+    record: dict[str, Any], *, reference_ring, measured: dict[str, Any],
+    bpm_ords, rf_step: float, rf_frequency: float, momentum_compaction: float,
+) -> dict[str, Any]:
+    """Convert an in-process iteration snapshot to compact JSON metrics."""
+    import numpy as np
+
+    result = {key: value for key, value in record.items() if key not in {"ring", "orm_model"}}
+    ring = record.get("ring")
+
+    def stats(values, *, scale=1.0):
+        finite = np.asarray(values, dtype=float).ravel()
+        finite = finite[np.isfinite(finite)] * scale
+        if not finite.size:
+            return {"rms": None, "mean": None, "max_abs": None}
+        return {
+            "rms": float(np.sqrt(np.mean(finite ** 2))),
+            "mean": float(np.mean(finite)),
+            "max_abs": float(np.max(np.abs(finite))),
+        }
+
+    try:
+        refpts = np.arange(len(reference_ring), dtype=np.uint32)
+        reference_beta = np.asarray(reference_ring.get_optics(refpts=refpts)[2].beta, dtype=float)
+        fitted_beta = np.asarray(ring.get_optics(refpts=refpts)[2].beta, dtype=float)
+        result["beta_beating_percent"] = {
+            plane: stats(np.divide(
+                fitted_beta[:, column] - reference_beta[:, column],
+                reference_beta[:, column],
+                out=np.full(reference_beta.shape[0], np.nan),
+                where=reference_beta[:, column] != 0,
+            ), scale=100.0)
+            for plane, column in (("x", 0), ("y", 1))
+        }
+    except Exception as exc:
+        result["beta_beating_unavailable_reason"] = str(exc)
+
+    try:
+        ords = np.asarray(bpm_ords, dtype=np.uint32).ravel()
+        eta_x, eta_y = measured.get("eta_x"), measured.get("eta_y")
+        if not measured.get("dispersion_supplied", False) or eta_x is None or eta_y is None:
+            raise ValueError("measured dispersion was not supplied")
+        conversion = -momentum_compaction * rf_frequency / rf_step
+        fitted_dispersion = np.asarray(ring.get_optics(refpts=ords)[2].dispersion, dtype=float)
+        result["dispersion_residual_m"] = {
+            "x": stats(np.asarray(eta_x, dtype=float) * conversion - fitted_dispersion[:, 0]),
+            "y": stats(np.asarray(eta_y, dtype=float) * conversion - fitted_dispersion[:, 2]),
+        }
+    except Exception as exc:
+        result["dispersion_unavailable_reason"] = str(exc)
+
+    return _jsonable(result)
 
 
 def _save_optics_results(
@@ -789,7 +869,7 @@ def _save_optics_results(
     return path
 
 
-def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict, *, initial_chi2=None, runtime_seconds=None, resume_mapping=None):
+def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict, *, initial_chi2=None, runtime_seconds=None, resume_mapping=None, iteration_metrics=None, response_matrix_calculator=None, response_matrix_backend_calculator=None, normal_quad_jacobian=None, calculator_trace=None):
     import numpy as np
 
     files = []
@@ -813,12 +893,29 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
     with blocks_path.open("wb") as stream:
         pickle.dump(blocks, stream)
     files.append(str(blocks_path))
+    metrics_csv = results_dir / "iteration_metrics.csv"
+    _save_iteration_metrics_csv(metrics_csv, iteration_metrics or [])
+    files.append(str(metrics_csv))
     summary = results_dir / "summary.json"
     summary.write_text(json.dumps({
         "initial_chi2": initial_chi2,
         "chi2_history": _jsonable(chi2_history),
         "blocks": _jsonable(blocks),
         "runtime_seconds": runtime_seconds,
+        "response_matrix_calculator": response_matrix_calculator,
+        "response_matrix_backend_calculator": response_matrix_backend_calculator,
+        "normal_quad_jacobian": normal_quad_jacobian,
+        "normal_quad_jacobian_orm_calculator": (
+            response_matrix_calculator if normal_quad_jacobian == "Numerical" else None
+        ),
+        "calculator_trace": _jsonable(calculator_trace or []),
+        "iteration_metrics": _jsonable(iteration_metrics or []),
+        "timings": {
+            "total_backend_seconds": runtime_seconds,
+            "iterations": _jsonable([
+                item.get("timings", {}) for item in (iteration_metrics or [])
+            ]),
+        },
         "initialization": "resumed" if resume_mapping and resume_mapping.get("enabled") else "current_model",
         "resumed_from": (resume_mapping or {}).get("directory"),
     }, indent=2), encoding="utf-8")
@@ -834,6 +931,44 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
     except Exception:
         pass
     return files
+
+
+def _save_iteration_metrics_csv(path: Path, records: list[dict[str, Any]]) -> None:
+    import csv
+
+    columns = (
+        "iteration", "chi2_before", "chi2_after", "orm_rms_m", "h_orm_rms_m",
+        "v_orm_rms_m", "beta_x_rms_percent", "beta_y_rms_percent",
+        "dispersion_x_rms_mm", "dispersion_y_rms_mm", "model_orm_seconds",
+        "jacobian_seconds", "trial_orm_seconds", "final_orm_seconds",
+        "total_orm_seconds", "iteration_seconds", "cumulative_seconds",
+    )
+
+    def get(record, *keys):
+        value = record
+        for key in keys:
+            value = value.get(key) if isinstance(value, dict) else None
+        return value
+
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns)
+        writer.writeheader()
+        for record in records:
+            dx = get(record, "dispersion_residual_m", "x", "rms")
+            dy = get(record, "dispersion_residual_m", "y", "rms")
+            writer.writerow({
+                "iteration": record.get("iteration"),
+                "chi2_before": record.get("chi2_before"),
+                "chi2_after": record.get("chi2_after"),
+                "orm_rms_m": get(record, "orm_residual", "rms"),
+                "h_orm_rms_m": get(record, "horizontal_orm_residual", "rms"),
+                "v_orm_rms_m": get(record, "vertical_orm_residual", "rms"),
+                "beta_x_rms_percent": get(record, "beta_beating_percent", "x", "rms"),
+                "beta_y_rms_percent": get(record, "beta_beating_percent", "y", "rms"),
+                "dispersion_x_rms_mm": None if dx is None else 1000.0 * dx,
+                "dispersion_y_rms_mm": None if dy is None else 1000.0 * dy,
+                **{key: get(record, "timings", key) for key in columns if key.endswith("_seconds")},
+            })
 
 
 def _initial_chi2_from_log(lines: list[str]) -> float | None:
