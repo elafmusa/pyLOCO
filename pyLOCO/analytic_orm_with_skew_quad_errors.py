@@ -124,18 +124,40 @@ def _analytic_orm_variation_with_skew_quadrupole(
     Q = at.get_tune(ring, get_integer=True)
 
     def tau(pl, a, b, idx_a=None, idx_b=None):
-        return dphi(pl, a, b, idx_a=idx_a, idx_b=idx_b) - math.pi*Q[pl]
+        # Edited: E.M 20 Aug 2026
+        return (
+            dphi(
+                pl,
+                a,
+                b,
+                idx_w=idx_a,
+                idx_j=idx_b,
+            )
+            - math.pi * Q[pl]
+        )
 
-    def dphi(pl, a, b, idx_a=None, idx_b=None):
-        """Forward phase advance, using lattice order to break phase ties."""
+    def dphi(pl, w, j, idx_w=None, idx_j=None):
+        """
+        Forward phase advance from element w to element j.
 
-        d = b.mu[pl] - a.mu[pl]
+        For elements at the same optical location, lattice indices
+        are used to determine their physical ordering.
 
-        if np.isclose(b.mu[pl], a.mu[pl], rtol=0.0, atol=1e-12):
-            if idx_a is not None and idx_b is not None and idx_b < idx_a:
-                d = d + 2*math.pi*Q[pl]
-        elif b.mu[pl] < a.mu[pl]:
-            d = d + 2*math.pi*Q[pl]
+        Edited: E.M. 20 Aug 2026
+        """
+
+        d = j.mu[pl] - w.mu[pl]
+
+        # Same optical location: lattice order breaks the tie
+        if np.isclose(j.mu[pl], w.mu[pl], rtol=0.0, atol=1e-12):
+
+            if idx_w is not None and idx_j is not None:
+                if idx_j < idx_w:
+                    d += 2.0 * math.pi * Q[pl]
+
+        # Normal phase wrap-around
+        elif j.mu[pl] < w.mu[pl]:
+            d += 2.0 * math.pi * Q[pl]
 
         return d
 
@@ -272,7 +294,13 @@ def _analytic_orm_variation_with_skew_quadrupole(
             sqrt_beta_j_y = sqrt_beta_bpm[j][y] # (bpm[j].beta[y]) ** 0.5
 
             tmj = [
-                tau(p, qua[m], bpm[j], ind_skews[m], ind_bpms[j])
+                tau(
+                    p,
+                    qua[m],
+                    bpm[j],
+                    idx_a=ind_skews[m],
+                    idx_b=ind_bpms[j],
+                )
                 for p in [x, y]
             ]
 
@@ -285,11 +313,23 @@ def _analytic_orm_variation_with_skew_quadrupole(
                           )
 
                 twj = [
-                    tau(p, cor[w], bpm[j], ind_cors[w], ind_bpms[j])
+                    tau(
+                        p,
+                        cor[w],
+                        bpm[j],
+                        idx_a=ind_cors[w],
+                        idx_b=ind_bpms[j],
+                    )
                     for p in [x, y]
                 ]
                 tmw = [
-                    tau(p, qua[m], cor[w], ind_skews[m], ind_cors[w])
+                    tau(
+                        p,
+                        qua[m],
+                        cor[w],
+                        idx_a=ind_skews[m],
+                        idx_b=ind_cors[w],
+                    )
                     for p in [x, y]
                 ]
 
