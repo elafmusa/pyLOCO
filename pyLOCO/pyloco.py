@@ -4832,7 +4832,7 @@ def pyloco(
         initial_chi2_callback=None,
         iteration_metrics_callback=None,
         calculator_trace_callback=None,
-        output_dir='output'
+        output_dir='output',
         save_jacobians=False,
 
 ):
