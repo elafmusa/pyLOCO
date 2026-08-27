@@ -106,40 +106,154 @@ def set_correction(
 ):
     """
     Apply corrections into the attribute defined in config for the given block
-    ('quads' or 'skew_quads'). Families expanded by CommonName.
+    ('quads' or 'skew_quads').
+
+    Current behavior:
+      - individuals=True:
+          change exactly the supplied lattice element.
+      - individuals=False:
+          change exactly the explicitly supplied family members.
+
+    CommonName expansion is disabled.
     """
+
     attr_name, idx = _resolve_attr_for_block(block, config)
 
-    # normalize inputs
+    # ------------------------------------------------------------
+    # Normalize inputs
+    # ------------------------------------------------------------
     if np.isscalar(elem_ind):
         elem_ind = [int(elem_ind)]
     else:
         elem_ind = list(elem_ind)
+
     r = np.asarray(r, dtype=float).ravel()
 
-    cn_map = _commonname_index_map(ring)
+    # OLD CommonName handling:
+    # cn_map = _commonname_index_map(ring)
+
+    # ============================================================
+    # INDIVIDUAL PARAMETERS
+    # ============================================================
+
+    # OLD IMPLEMENTATION:
+    #
+    # if individuals:
+    #     if len(r) != len(elem_ind):
+    #         raise ValueError(
+    #             f"len(r)={len(r)} != "
+    #             f"len(elem_ind)={len(elem_ind)} "
+    #             f"for individuals=True"
+    #         )
+    #
+    #     for val, i0 in zip(r, elem_ind):
+    #         cname = getattr(ring[i0], "CommonName", None)
+    #         targets = (
+    #             cn_map.get(cname, [i0])
+    #             if cname is not None
+    #             else [i0]
+    #         )
+    #
+    #         for ti in targets:
+    #             _set_attr_value(
+    #                 ring[ti],
+    #                 attr_name,
+    #                 val,
+    #                 idx,
+    #             )
 
     if individuals:
+
         if len(r) != len(elem_ind):
-            raise ValueError(f"len(r)={len(r)} != len(elem_ind)={len(elem_ind)} for individuals=True")
+            raise ValueError(
+                f"len(r)={len(r)} != "
+                f"len(elem_ind)={len(elem_ind)} "
+                f"(individuals=True)"
+            )
+
         for val, i0 in zip(r, elem_ind):
-            cname = getattr(ring[i0], "CommonName", None)
-            targets = cn_map.get(cname, [i0]) if cname is not None else [i0]
-            for ti in targets:
-                _set_attr_value(ring[ti], attr_name, val, idx)
+
+            # Change exactly this lattice element.
+            # Do NOT expand using CommonName.
+            _set_attr_value(
+                ring[int(i0)],
+                attr_name,
+                val,
+                idx,
+            )
+
+    # ============================================================
+    # FAMILY PARAMETERS
+    # ============================================================
+
+    # OLD IMPLEMENTATION:
+    #
+    # else:
+    #     if len(r) != len(elem_ind):
+    #         raise ValueError(
+    #             f"len(r)={len(r)} != "
+    #             f"n_families={len(elem_ind)} "
+    #             f"for individuals=False"
+    #         )
+    #
+    #     for fam_val, fam in zip(r, elem_ind):
+    #         fam = list(fam)
+    #
+    #         if not fam:
+    #             continue
+    #
+    #         cname = getattr(
+    #             ring[fam[0]],
+    #             "CommonName",
+    #             None,
+    #         )
+    #
+    #         targets = set(fam)
+    #
+    #         if cname is not None:
+    #             targets.update(
+    #                 cn_map.get(cname, [])
+    #             )
+    #
+    #         for ti in sorted(targets):
+    #             _set_attr_value(
+    #                 ring[ti],
+    #                 attr_name,
+    #                 fam_val,
+    #                 idx,
+    #             )
+
     else:
+
         if len(r) != len(elem_ind):
-            raise ValueError(f"len(r)={len(r)} != n_families={len(elem_ind)} for individuals=False")
+            raise ValueError(
+                f"len(r)={len(r)} != "
+                f"n_families={len(elem_ind)} "
+                f"for individuals=False"
+            )
+
         for fam_val, fam in zip(r, elem_ind):
-            fam = list(fam)
-            if not fam:  # skip empty
+
+            # Normalize explicitly supplied family indices.
+            if np.isscalar(fam):
+                fam = [int(fam)]
+            else:
+                fam = [int(i) for i in fam]
+
+            if not fam:
                 continue
-            cname = getattr(ring[fam[0]], "CommonName", None)
-            targets = set(fam)
-            if cname is not None:
-                targets.update(cn_map.get(cname, []))
-            for ti in sorted(targets):
-                _set_attr_value(ring[ti], attr_name, fam_val, idx)
+
+            # Change exactly the explicitly supplied
+            # members of this family.
+            # Do NOT expand using CommonName.
+            for i0 in fam:
+                _set_attr_value(
+                    ring[i0],
+                    attr_name,
+                    fam_val,
+                    idx,
+                )
+
     return ring
 
 
@@ -195,7 +309,7 @@ def set_correction_tilt(
     else:
         elem_ind = list(elem_ind)
 
-    cn_map = _commonname_index_map(ring)
+    #cn_map = _commonname_index_map(ring)
 
     def _apply(el, psi):
         if method == "add":
@@ -204,27 +318,72 @@ def set_correction_tilt(
         else:
             _set_R_mats(el, R1_attr, R2_attr, float(psi))
 
+    #if individuals:
+    #    if len(psi_values) != len(elem_ind):
+    #        raise ValueError(f"len(psi_values)={len(psi_values)} != len(elem_ind)={len(elem_ind)} (individuals=True)")
+    #    for psi, i0 in zip(psi_values, elem_ind):
+    #        cname = getattr(ring[i0], "CommonName", None)
+    #        targets = cn_map.get(cname, [i0]) if cname is not None else [i0]
+    #        for ti in targets:
+    #            _apply(ring[ti], psi)
+
     if individuals:
         if len(psi_values) != len(elem_ind):
-            raise ValueError(f"len(psi_values)={len(psi_values)} != len(elem_ind)={len(elem_ind)} (individuals=True)")
+            raise ValueError(
+                f"len(psi_values)={len(psi_values)} != "
+                f"len(elem_ind)={len(elem_ind)} (individuals=True)"
+            )
+
         for psi, i0 in zip(psi_values, elem_ind):
-            cname = getattr(ring[i0], "CommonName", None)
-            targets = cn_map.get(cname, [i0]) if cname is not None else [i0]
-            for ti in targets:
-                _apply(ring[ti], psi)
+            _apply(ring[int(i0)], psi)
+    #else:
+    #    if len(psi_values) != len(elem_ind):
+    #        raise ValueError(f"len(psi_values)={len(psi_values)} != n_families={len(elem_ind)} (individuals=False)")
+    #    for psi, fam in zip(psi_values, elem_ind):
+    #        fam = list(fam)
+    #        if not fam:
+    #            continue
+    #        cname = getattr(ring[fam[0]], "CommonName", None)
+    #        targets = set(fam)
+    #        if cname is not None:
+    #            targets.update(cn_map.get(cname, []))
+    #        for ti in sorted(targets):
+    #            _apply(ring[ti], psi)
+
     else:
+
         if len(psi_values) != len(elem_ind):
-            raise ValueError(f"len(psi_values)={len(psi_values)} != n_families={len(elem_ind)} (individuals=False)")
-        for psi, fam in zip(psi_values, elem_ind):
-            fam = list(fam)
+            raise ValueError(
+                f"len(psi_values)={len(psi_values)} != "
+                f"n_families={len(elem_ind)} "
+                f"(individuals=False)"
+            )
+
+        for psi, fam in zip(
+            psi_values,
+            elem_ind,
+        ):
+
+            # The supplied indices explicitly define the family.
+            if np.isscalar(fam):
+                fam = [int(fam)]
+            else:
+                fam = [int(i) for i in fam]
+
             if not fam:
                 continue
-            cname = getattr(ring[fam[0]], "CommonName", None)
-            targets = set(fam)
-            if cname is not None:
-                targets.update(cn_map.get(cname, []))
-            for ti in sorted(targets):
-                _apply(ring[ti], psi)
+
+            # Apply the same family parameter to exactly
+            # the supplied family members.
+            #
+            # IMPORTANT:
+            # No CommonName lookup or expansion.
+            for i0 in fam:
+
+                _apply(
+                    ring[i0],
+                    psi,
+                )
 
     return ring
 
