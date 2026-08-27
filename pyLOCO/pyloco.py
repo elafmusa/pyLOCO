@@ -25,6 +25,7 @@ from .analytic_orm_with_skew_quad_errors import analytic_orm_variation_with_skew
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+#SAVE_JACOBIANS = False
 
 # ============================================================================== #
 #                                    ORMs                                        #
@@ -525,6 +526,7 @@ def compute_jacobian(
     quads_tilt_jacobian_file=None,
     force_recompute=True,
     output_dir='output',
+    save_jacobians=False,
 
     # NEW
     quad_jacobian_calculator="Numerical",
@@ -571,34 +573,31 @@ def compute_jacobian(
 
     # --- QUADS ---
     J_quad, delta = None, None
+
     if include_quads:
         method = str(quad_jacobian_calculator).strip().lower()
         quad_elapsed = None
         user_provided = quad_jacobian_file is not None
 
         quad_dir = output_dir / "jacobians" / "quads"
-        quad_dir.mkdir(parents=True, exist_ok=True)
 
+        # Only create an output directory when we actually intend
+        # to save a newly calculated Jacobian.
+        if save_jacobians and not user_provided:
+            quad_dir.mkdir(parents=True, exist_ok=True)
 
         J_path = (
-        quad_jacobian_file if user_provided
-        else quad_dir / (
-            f"J_quads_{quad_jacobian_calculator.lower()}_"
-            f"iter{iteration}_"
-            f"{len(quads_ind)}params_"
-            f"{dkick[0][0]}urad_"
-            f"{fixed_parameters.rfstep}Hz.h5"
+            Path(quad_jacobian_file)
+            if user_provided
+            else quad_dir / (
+                f"J_quads_{quad_jacobian_calculator.lower()}_"
+                f"iter{iteration}_"
+                f"{len(quads_ind)}params_"
+                f"{dkick[0][0]}urad_"
+                f"{fixed_parameters.rfstep}Hz.h5"
+            )
         )
-        )
-        print("\n========== JACOBIAN DEBUG ==========")
-        print("pyloco file       :", __file__)
-        print("output_dir        :", output_dir.resolve())
-        print("quad_dir          :", quad_dir.resolve())
-        print("J_path            :", J_path.resolve())
-        print("iteration         :", iteration)
-        print("len(quads_ind)    :", len(quads_ind))
-        print("quad_individuals  :", quad_individuals)
-        print("====================================\n")
+  
         #J_path = quad_jacobian_file if user_provided else f"output/jacobians/quads/J_quads_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
 
         # --- logic ---
@@ -883,7 +882,7 @@ def compute_jacobian(
 
         # Save each freshly computed, iteration-specific Jacobian. Never
         # overwrite a user-supplied file that was loaded for iteration 1.
-        if quad_elapsed is not None:
+        if save_jacobians and quad_elapsed is not None:
             with h5py.File(J_path, "w") as f:
                 f.create_dataset("J_quads", data=J_quad)
                 f.create_dataset("C_model", data=jacobian_reference_model)
@@ -919,18 +918,30 @@ def compute_jacobian(
 
             print(f"[Jacobian] Saved normal-quadrupole Jacobian to {J_path}")
 
-    # --- SKEW ---
+    # --- SKEW QUADS ---
     J_skew, delta_skew = None, None
-    if include_skew:
 
-        # Determine file path
+    if include_skew:
+        skew_elapsed = None
         user_provided = skew_jacobian_file is not None
+
         skew_dir = output_dir / "jacobians" / "skew"
-        skew_dir.mkdir(parents=True, exist_ok=True)
-        J_path_skew = Path(skew_jacobian_file) if user_provided else skew_dir / (
-            f"J_skew_{str(skew_jacobian_calculator).strip().lower()}_"
-            f"iter{iteration}_{len(skew_ind)}params_"
-            f"{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
+
+        # Only create the output directory when a newly calculated
+        # skew Jacobian will actually be saved.
+        if save_jacobians and not user_provided:
+            skew_dir.mkdir(parents=True, exist_ok=True)
+
+        J_path_skew = (
+            Path(skew_jacobian_file)
+            if user_provided
+            else skew_dir / (
+                f"J_skew_{skew_jacobian_calculator.lower()}_"
+                f"iter{iteration}_"
+                f"{len(skew_ind)}params_"
+                f"{dkick[0][0]}urad_"
+                f"{fixed_parameters.rfstep}Hz.h5"
+            )
         )
 
 
@@ -998,47 +1009,71 @@ def compute_jacobian(
                 )
             skew_elapsed = time.perf_counter() - t
             print(f"Skew quad Jacobian: {skew_elapsed:.1f} s")
-            # Each outer iteration is evaluated on the updated lattice and
-            # receives its own calculator-specific artifact.
-            with h5py.File(J_path_skew, "w") as f:
-                f.create_dataset("J_skew", data=J_skew)
-                f.create_dataset("C_model", data=C_model)
-                if isinstance(dkick, (list, tuple)):
-                    f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
-                    f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
-                else:
-                    f.create_dataset("correctors_dkick", data=np.asarray(dkick))
 
-                f.attrs["iteration"] = iteration
-                f.attrs["nHBPM"] = nHBPM
-                f.attrs["nVBPM"] = nVBPM
-                f.attrs["nHorCOR"] = nHorCOR
-                f.attrs["nVerCOR"] = nVerCOR
-                f.attrs["includeDispersion"] = includeDispersion
-                f.attrs["calculator"] = str(skew_jacobian_calculator)
-                f.attrs["analytical_thick_skew"] = analytical_thick_skew
-                f.attrs["analytical_thick_steerers"] = analytical_skew_thick_steerers
-                f.attrs["analytical_use_mp"] = analytical_skew_use_mp
-                f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
-                f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
-                f.attrs["date"] = time.ctime()
-                f.attrs["computation_seconds"] = skew_elapsed
+            if save_jacobians:
+                with h5py.File(J_path_skew, "w") as f:
+                    f.create_dataset("J_skew", data=J_skew)
+                    f.create_dataset("C_model", data=C_model)
 
-            print(f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}")
+                    if isinstance(dkick, (list, tuple)):
+                        f.create_dataset(
+                            "correctors_kick_h",
+                            data=np.asarray(dkick[0])
+                        )
+                        f.create_dataset(
+                            "correctors_kick_v",
+                            data=np.asarray(dkick[1])
+                        )
+                    else:
+                        f.create_dataset(
+                            "correctors_dkick",
+                            data=np.asarray(dkick)
+                        )
+
+                    f.attrs["iteration"] = iteration
+                    f.attrs["nHBPM"] = nHBPM
+                    f.attrs["nVBPM"] = nVBPM
+                    f.attrs["nHorCOR"] = nHorCOR
+                    f.attrs["nVerCOR"] = nVerCOR
+                    f.attrs["includeDispersion"] = includeDispersion
+                    f.attrs["calculator"] = str(skew_jacobian_calculator)
+                    f.attrs["analytical_thick_skew"] = analytical_thick_skew
+                    f.attrs["analytical_thick_steerers"] = analytical_skew_thick_steerers
+                    f.attrs["analytical_use_mp"] = analytical_skew_use_mp
+                    f.attrs["HCMCoupling"] = json.dumps(
+                        np.asarray(HCMCoupling).tolist()
+                    )
+                    f.attrs["VCMCoupling"] = json.dumps(
+                        np.asarray(VCMCoupling).tolist()
+                    )
+                    f.attrs["date"] = time.ctime()
+                    f.attrs["computation_seconds"] = skew_elapsed
+
+                print(
+                    f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}"
+                )
 
     # --- QUAD TILT ---
     J_quad_tilt, delta_quads_tilt = None, None
-    if include_quads_tilt:
 
-        # Determine file path
-        user_provided = quads_tilt_jacobian_file is not None
+    if include_quads_tilt:
+        user_provided = tilt_jacobian_file is not None
+
         tilt_dir = output_dir / "jacobians" / "tilt"
-        tilt_dir.mkdir(parents=True, exist_ok=True)
+
+        # Only create the directory when a newly calculated
+        # tilt Jacobian will actually be saved.
+        if save_jacobians and not user_provided:
+            tilt_dir.mkdir(parents=True, exist_ok=True)
 
         J_path_tilt = (
-            Path(quads_tilt_jacobian_file)
+            Path(tilt_jacobian_file)
             if user_provided
-            else tilt_dir / f"J_tilt_iter{iteration}_{dkick[0][0]}urad_{fixed_parameters.rfstep}Hz.h5"
+            else tilt_dir / (
+                f"J_tilt_iter{iteration}_"
+                f"{dkick[0][0]}urad_"
+                f"{fixed_parameters.rfstep}Hz.h5"
+            )
         )
 
         # --- logic ---
@@ -1064,28 +1099,50 @@ def compute_jacobian(
             )
             print(f"Quad tilt Jacobian: {time.perf_counter()-t:.1f} s")
 
-            # --- Save the computed Jacobian ---
-            if iteration == 1:
-                with h5py.File(J_path_tilt, "w") as f:
-                    f.create_dataset("J_quads_tilt", data=J_quad_tilt)
-                    f.create_dataset("C_model", data=C_model)
-                    if isinstance(dkick, (list, tuple)):
-                        f.create_dataset("correctors_kick_h", data=np.asarray(dkick[0]))
-                        f.create_dataset("correctors_kick_v", data=np.asarray(dkick[1]))
-                    else:
-                        f.create_dataset("correctors_dkick", data=np.asarray(dkick))
+        # --- Save the computed Jacobian ---
+        if save_jacobians:
+            with h5py.File(J_path_tilt, "w") as f:
+                f.create_dataset(
+                    "J_quads_tilt",
+                    data=J_quad_tilt
+                )
+                f.create_dataset(
+                    "C_model",
+                    data=C_model
+                )
 
-                    f.attrs["iteration"] = iteration
-                    f.attrs["nHBPM"] = nHBPM
-                    f.attrs["nVBPM"] = nVBPM
-                    f.attrs["nHorCOR"] = nHorCOR
-                    f.attrs["nVerCOR"] = nVerCOR
-                    f.attrs["includeDispersion"] = includeDispersion
-                    f.attrs["HCMCoupling"] = json.dumps(np.asarray(HCMCoupling).tolist())
-                    f.attrs["VCMCoupling"] = json.dumps(np.asarray(VCMCoupling).tolist())
-                    f.attrs["date"] = time.ctime()
+                if isinstance(dkick, (list, tuple)):
+                    f.create_dataset(
+                        "correctors_kick_h",
+                        data=np.asarray(dkick[0])
+                    )
+                    f.create_dataset(
+                        "correctors_kick_v",
+                        data=np.asarray(dkick[1])
+                    )
+                else:
+                    f.create_dataset(
+                        "correctors_dkick",
+                        data=np.asarray(dkick)
+                    )
 
-                print(f"[Jacobian] Saved quadrupole-tilt Jacobian to {J_path_tilt}")
+                f.attrs["iteration"] = iteration
+                f.attrs["nHBPM"] = nHBPM
+                f.attrs["nVBPM"] = nVBPM
+                f.attrs["nHorCOR"] = nHorCOR
+                f.attrs["nVerCOR"] = nVerCOR
+                f.attrs["includeDispersion"] = includeDispersion
+                f.attrs["HCMCoupling"] = json.dumps(
+                    np.asarray(HCMCoupling).tolist()
+                )
+                f.attrs["VCMCoupling"] = json.dumps(
+                    np.asarray(VCMCoupling).tolist()
+                )
+                f.attrs["date"] = time.ctime()
+
+            print(
+                f"[Jacobian] Saved quadrupole-tilt Jacobian to {J_path_tilt}"
+            )
 
     J_bpm_gain = calculate_bpm_gain_jacobian(
         C_inv @ C_model, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion, include_bpm_coupling
@@ -2329,7 +2386,6 @@ def calculate_skew_jacobian_analytical(
 # ---------- worker globals ----------
 G_C = None
 G_CMODEL = None
-
 def calculate_quads_tilt_jacobian(
     ring,
     C_model,
@@ -2353,84 +2409,279 @@ def calculate_quads_tilt_jacobian(
 ):
 
     from pathlib import Path
+
     output_dir = Path(output_dir)
 
-    shm_C = shared_memory.SharedMemory(create=True, size=C.nbytes)
-    C_sh = np.ndarray(C.shape, dtype=C.dtype, buffer=shm_C.buf)
+    # ============================================================
+    # Shared memory
+    # ============================================================
+
+    shm_C = shared_memory.SharedMemory(
+        create=True,
+        size=C.nbytes,
+    )
+
+    C_sh = np.ndarray(
+        C.shape,
+        dtype=C.dtype,
+        buffer=shm_C.buf,
+    )
     C_sh[:] = C
-    shm_Cm = shared_memory.SharedMemory(create=True, size=C_model.nbytes)
-    Cmodel_sh = np.ndarray(C_model.shape, dtype=C_model.dtype, buffer=shm_Cm.buf)
+
+    shm_Cm = shared_memory.SharedMemory(
+        create=True,
+        size=C_model.nbytes,
+    )
+
+    Cmodel_sh = np.ndarray(
+        C_model.shape,
+        dtype=C_model.dtype,
+        buffer=shm_Cm.buf,
+    )
     Cmodel_sh[:] = C_model
 
     all_logs = []
 
     ctx = mp.get_context("spawn")
+
     try:
 
-        assert len(quads_tilt_fit) == len(quads_ind), \
-            f"Length mismatch: {len(quads_tilt_fit)=} vs {len(quads_ind)=}"
+        # ========================================================
+        # Sanity check
+        # ========================================================
+
+        assert len(quads_tilt_fit) == len(quads_ind), (
+            f"Length mismatch: "
+            f"{len(quads_tilt_fit)=} vs {len(quads_ind)=}"
+        )
+
+        # ========================================================
+        # Compact debugging
+        # ========================================================
+
+        zero_positions = [
+            i
+            for i, x in enumerate(quads_ind)
+            if np.isscalar(x) and int(x) == 0
+        ]
+
+        print(
+            "\n========== TILT JACOBIAN START ==========",
+            flush=True,
+        )
+
+        print(
+            "individuals       :",
+            individuals,
+            flush=True,
+        )
+
+        print(
+            "N tilt parameters :",
+            len(quads_ind),
+            flush=True,
+        )
+
+        print(
+            "first 5 indices   :",
+            quads_ind[:5],
+            flush=True,
+        )
+
+        print(
+            "last 5 indices    :",
+            quads_ind[-5:],
+            flush=True,
+        )
+
+        print(
+            "scalar-0 positions:",
+            zero_positions,
+            flush=True,
+        )
+
+        if len(quads_tilt_fit) > 0:
+            print(
+                "first tilt value  :",
+                quads_tilt_fit[0],
+                flush=True,
+            )
+
+        print(
+            "=========================================\n",
+            flush=True,
+        )
+
+        # ========================================================
+        # Prepare multiprocessing arguments
+        # ========================================================
 
         quad_args = []
+
         fit_cfg_dict = fit_cfg.__dict__.copy()
+
         for i, quad_index in enumerate(quads_ind):
+
             tilt_fit_i = quads_tilt_fit[i]
-            quad_args.append((
-                quad_index, ring, dkick, bpm_indexes, used_cor_ind, dk, individuals
-                , auto_correct_delta,
-                HCMCoupling, VCMCoupling, rf_step,
-                tilt_fit_i, fit_cfg_dict, includeDispersion
-            ))
+
+            quad_args.append(
+                (
+                    quad_index,
+                    ring,
+                    dkick,
+                    bpm_indexes,
+                    used_cor_ind,
+                    dk,
+                    individuals,
+                    auto_correct_delta,
+                    HCMCoupling,
+                    VCMCoupling,
+                    rf_step,
+                    tilt_fit_i,
+                    fit_cfg_dict,
+                    includeDispersion,
+                )
+            )
+
+        # ========================================================
+        # Calculate tilt Jacobian
+        # ========================================================
 
         with ctx.Pool(
-                processes=processes,
-                initializer=_init_shared,
-                initargs=(shm_C.name, C.shape, C.dtype.str,
-                          shm_Cm.name, C_model.shape, C_model.dtype.str),
-                maxtasksperchild=64,
+            processes=processes,
+            initializer=_init_shared,
+            initargs=(
+                shm_C.name,
+                C.shape,
+                C.dtype.str,
+                shm_Cm.name,
+                C_model.shape,
+                C_model.dtype.str,
+            ),
+            maxtasksperchild=64,
         ) as pool:
-            results = pool.starmap(generating_quads_tilt_response_matrices, quad_args, chunksize=1)
+
+            results = pool.starmap(
+                generating_quads_tilt_response_matrices,
+                quad_args,
+                chunksize=1,
+            )
+
+        # ========================================================
+        # Collect results
+        # ========================================================
 
         if results:
+
             J_blocks, deltas, logs_lists = zip(*results)
 
             for _logs in logs_lists:
                 if _logs:
                     all_logs.extend(_logs)
 
-            J_blocks = [np.asarray(blk) for blk in J_blocks]
-            J_quad = np.stack(J_blocks, axis=0)
+            J_blocks = [
+                np.asarray(blk)
+                for blk in J_blocks
+            ]
 
-            delta_vec = np.concatenate([np.atleast_1d(d) for d in deltas])
+            J_quad = np.stack(
+                J_blocks,
+                axis=0,
+            )
+
+            delta_vec = np.concatenate(
+                [
+                    np.atleast_1d(d)
+                    for d in deltas
+                ]
+            )
+
         else:
-            J_quad = np.empty((0, C.shape[0], C.shape[1]))
+
+            J_quad = np.empty(
+                (
+                    0,
+                    C.shape[0],
+                    C.shape[1],
+                )
+            )
+
             delta_vec = np.empty((0,))
 
+        # ========================================================
+        # Save logs
+        # ========================================================
+
         if all_logs:
+
             try:
-                output_dir.mkdir(parents=True, exist_ok=True)
+
+                output_dir.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
                 log_dir = output_dir / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
 
-                log_path = log_dir / log_filename
+                log_dir.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
 
-                with open(log_path, "w", encoding="utf-8") as f:
-                    f.write("\n".join(all_logs) + "\n")
+                log_path = (
+                    log_dir / log_filename
+                )
 
-                print(f"[calculate_quads_tilt_jacobian] Logs saved to '{log_path.resolve()}'")
+                with open(
+                    log_path,
+                    "w",
+                    encoding="utf-8",
+                ) as f:
+
+                    f.write(
+                        "\n".join(all_logs)
+                        + "\n"
+                    )
+
+                print(
+                    "[calculate_quads_tilt_jacobian] "
+                    f"Logs saved to "
+                    f"'{log_path.resolve()}'"
+                )
 
             except Exception as e:
-                print(f"[calculate_quads_tilt_jacobian] Could not write logs: {e}")
+
+                print(
+                    "[calculate_quads_tilt_jacobian] "
+                    f"Could not write logs: {e}"
+                )
+
+        # ========================================================
+        # Finished
+        # ========================================================
+
+        print(
+            "[TILT JACOBIAN] completed successfully "
+            f"for {len(quads_ind)} parameters.",
+            flush=True,
+        )
 
         return J_quad, delta_vec
 
     finally:
+
+        # ========================================================
+        # Clean shared memory
+        # ========================================================
+
         try:
-            shm_C.close();
+            shm_C.close()
             shm_C.unlink()
         except Exception:
             pass
+
         try:
-            shm_Cm.close();
+            shm_Cm.close()
             shm_Cm.unlink()
         except Exception:
             pass
@@ -2703,10 +2954,27 @@ def generating_quads_response_matrices(
         )
 
         if (
-            not np.isfinite(RMSDelta)
-            or
-            RMSDelta == 0.0
-        ):
+        not np.isfinite(RMSDelta)
+        or
+        RMSDelta == 0.0):
+
+            print(
+                "\n========== INVALID QUAD/SKEW RMS ==========\n"
+                f"group          : {group}\n"
+                f"block          : {block}\n"
+                f"individuals    : {individuals}\n"
+                f"attr_name      : {attr_name}\n"
+                f"attr_idx       : {attr_idx}\n"
+                f"nominal_values : {np.asarray(nominal_values).tolist()}\n"
+                f"delta_local    : {np.asarray(delta_local).tolist()}\n"
+                f"RMSDelta       : {RMSDelta!r}\n"
+                f"diff size      : {difference.size}\n"
+                f"diff finite    : {np.all(np.isfinite(difference))}\n"
+                f"diff min       : {np.nanmin(difference):.12e}\n"
+                f"diff max       : {np.nanmax(difference):.12e}\n"
+                "============================================\n",
+                flush=True,
+            )
 
             # Restore nominal lattice before raising.
             set_correction(
@@ -2720,7 +2988,11 @@ def generating_quads_response_matrices(
 
             raise ValueError(
                 f"LOCO error: RMS difference invalid "
-                f"for group {group}"
+                f"for group {group}; "
+                f"block={block}; "
+                f"RMSDelta={RMSDelta!r}; "
+                f"nominal={np.asarray(nominal_values).tolist()}; "
+                f"delta={np.asarray(delta_local).tolist()}"
             )
 
         # --------------------------------------------------------
@@ -2958,7 +3230,6 @@ def generating_quads_response_matrices(
         delta_local,
         logs,
     )
-
 def generating_quads_tilt_response_matrices(
         quad_index,
         ring,
@@ -2992,13 +3263,21 @@ def generating_quads_tilt_response_matrices(
     if individuals:
 
         correction_indices = group
-
-        nominal_values = np.asarray(quads_tilt_fit, dtype=float)
+        nominal_values = np.asarray(
+            quads_tilt_fit,
+            dtype=float,
+        )
 
         if delta_init is None:
-            delta_local = np.full(len(group), 1e-6)
+            delta_local = np.full(
+                len(group),
+                1e-6,
+                dtype=float,
+            )
         else:
-            delta_local = np.atleast_1d(delta_init).astype(float)[:len(group)]
+            delta_local = np.atleast_1d(
+                delta_init
+            ).astype(float)[:len(group)]
 
     else:
 
@@ -3010,26 +3289,54 @@ def generating_quads_tilt_response_matrices(
         )
 
         if delta_init is None:
-            delta_local = np.asarray([1e-6], dtype=float)
+            delta_local = np.asarray(
+                [1e-6],
+                dtype=float,
+            )
         else:
             delta_local = np.asarray(
-                [float(np.atleast_1d(delta_init).ravel()[0])],
+                [
+                    float(
+                        np.atleast_1d(
+                            delta_init
+                        ).ravel()[0]
+                    )
+                ],
                 dtype=float,
             )
 
+    # -------------------------------------------------------------
+    # Auto-step settings
+    # -------------------------------------------------------------
     RMSGoal = 1e-6
     RMSTol = 10.0
 
+    attempt = 0
+    max_attempts = 20
+
+
+   
+    # -------------------------------------------------------------
+    # Find suitable finite-difference step
+    # -------------------------------------------------------------
     while True:
 
+        attempt += 1
+
+        # ---------------------------------------------------------
+        # Apply positive tilt perturbation
+        # ---------------------------------------------------------
         set_correction_tilt(
             ring,
-            psi_values = nominal_values + delta_local,
+            psi_values=nominal_values + delta_local,
             elem_ind=correction_indices,
             individuals=individuals,
             config=fit_cfg,
         )
 
+        # ---------------------------------------------------------
+        # Calculate perturbed response matrix
+        # ---------------------------------------------------------
         cfg = RMConfig(
             dkick=dkick,
             bpm_ords=bpm_indexes,
@@ -3040,37 +3347,90 @@ def generating_quads_tilt_response_matrices(
             rfStep=rf_step,
         )
 
-        C_measured = response_matrix(ring, config=cfg)
+        C_measured = response_matrix(
+            ring,
+            config=cfg,
+        )
+
         C_measured = G_C @ C_measured
 
+        # ---------------------------------------------------------
+        # ORM difference used for automatic step selection
+        # ---------------------------------------------------------
         if includeDispersion:
+
             diff = (
                 C_measured[:, :-1]
                 - G_CMODEL[:, :-1]
             ).ravel(order="F")
+
         else:
+
             diff = (
                 C_measured
                 - G_CMODEL
             ).ravel(order="F")
 
-        RMSDelta = np.sqrt(np.mean(diff ** 2))
+        RMSDelta = np.sqrt(
+            np.mean(diff ** 2)
+        )
 
-        if not np.isfinite(RMSDelta) or RMSDelta == 0:
+        # ---------------------------------------------------------
+        # Invalid numerical result
+        # ---------------------------------------------------------
+        if (
+            not np.isfinite(RMSDelta)
+            or RMSDelta == 0
+        ):
             raise ValueError(
-                f"Invalid RMS difference for tilt group {group}"
+                f"Invalid RMS difference for tilt group {group}: "
+                f"RMSDelta={RMSDelta}, "
+                f"delta={delta_local.tolist()}, "
+                f"attempt={attempt}"
             )
 
+        
+        # ---------------------------------------------------------
+        # Safety against an infinite auto-step loop
+        # ---------------------------------------------------------
+        if attempt >= max_attempts:
+
+            # Restore nominal tilt before failing
+            set_correction_tilt(
+                ring,
+                psi_values=nominal_values,
+                elem_ind=correction_indices,
+                individuals=individuals,
+                config=fit_cfg,
+            )
+
+            raise RuntimeError(
+                "Tilt auto-delta failed to converge: "
+                f"group={group}, "
+                f"attempts={attempt}, "
+                f"RMSDelta={RMSDelta:.6e}, "
+                f"delta={delta_local.tolist()}"
+            )
+
+        # ---------------------------------------------------------
+        # No automatic step correction requested
+        # ---------------------------------------------------------
         if not auto_correct_delta:
             break
 
+        # ---------------------------------------------------------
+        # Step too small
+        # ---------------------------------------------------------
         if RMSDelta < RMSGoal / RMSTol:
 
             logs.append(
                 f"Group {group}: delta too small; "
-                f"RMS={1000*RMSDelta:.5g} mm"
+                f"attempt={attempt}; "
+                f"RMS={1000 * RMSDelta:.5g} mm; "
+                f"delta={delta_local.tolist()}"
             )
 
+            # Restore nominal lattice before changing step
             set_correction_tilt(
                 ring,
                 psi_values=nominal_values,
@@ -3079,15 +3439,23 @@ def generating_quads_tilt_response_matrices(
                 config=fit_cfg,
             )
 
-            delta_local *= RMSGoal / RMSDelta
+            delta_local *= (
+                RMSGoal / RMSDelta
+            )
 
+        # ---------------------------------------------------------
+        # Step too large
+        # ---------------------------------------------------------
         elif RMSDelta > RMSGoal * RMSTol / 3:
 
             logs.append(
                 f"Group {group}: delta too large; "
-                f"RMS={1000*RMSDelta:.5g} mm"
+                f"attempt={attempt}; "
+                f"RMS={1000 * RMSDelta:.5g} mm; "
+                f"delta={delta_local.tolist()}"
             )
 
+            # Restore nominal lattice before changing step
             set_correction_tilt(
                 ring,
                 psi_values=nominal_values,
@@ -3096,13 +3464,20 @@ def generating_quads_tilt_response_matrices(
                 config=fit_cfg,
             )
 
-            delta_local *= RMSGoal / RMSDelta
+            delta_local *= (
+                RMSGoal / RMSDelta
+            )
 
+        # ---------------------------------------------------------
+        # Step accepted
+        # ---------------------------------------------------------
         else:
 
             logs.append(
                 f"Group {group}: delta OK; "
-                f"RMS={1000*RMSDelta:.5g} mm"
+                f"attempt={attempt}; "
+                f"RMS={1000 * RMSDelta:.5g} mm; "
+                f"delta={delta_local.tolist()}"
             )
 
             break
@@ -3118,14 +3493,19 @@ def generating_quads_tilt_response_matrices(
         config=fit_cfg,
     )
 
+    # -------------------------------------------------------------
+    # Final finite-difference step
+    # -------------------------------------------------------------
     step = delta_local.item()
 
+    # -------------------------------------------------------------
+    # Return Jacobian block
+    # -------------------------------------------------------------
     return (
         (C_measured - G_CMODEL) / step,
         delta_local,
         logs,
     )
-
 
 
 def calculate_bpm_gain_jacobian(C_model, nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion, fit_bpms_coupling):
@@ -4346,52 +4726,7 @@ def solve_step_lm(
         C_constraint = None
 
     # ============================================================
-    # 4. Constraint-strength diagnostics
-    # ============================================================
-
-    if G is not None:
-        print("\n[CONSTRAINT STRENGTH DEBUG]")
-
-        C_data_diag = np.diag(C_data)
-        C_constraint_diag = np.diag(C_constraint)
-
-        for name, sl in blocks.items():
-
-            data_part = C_data_diag[sl]
-            constraint_part = C_constraint_diag[sl]
-
-            print(f"\n{name}")
-
-            print(
-                f"  data diag       : "
-                f"min={np.min(data_part):.3e}, "
-                f"max={np.max(data_part):.3e}, "
-                f"median={np.median(data_part):.3e}"
-            )
-
-            print(
-                f"  constraint diag : "
-                f"min={np.min(constraint_part):.3e}, "
-                f"max={np.max(constraint_part):.3e}, "
-                f"median={np.median(constraint_part):.3e}"
-            )
-
-            ratio = np.divide(
-                constraint_part,
-                data_part,
-                out=np.full_like(constraint_part, np.inf),
-                where=data_part != 0,
-            )
-
-            print(
-                f"  constraint/data : "
-                f"min={np.min(ratio):.3e}, "
-                f"max={np.max(ratio):.3e}, "
-                f"median={np.median(ratio):.3e}"
-            )
-
-    # ============================================================
-    # 5. Add LM damping
+    # 4. Add LM damping
     # ============================================================
 
     if scaled:
@@ -4400,55 +4735,7 @@ def solve_step_lm(
         C_lm = C + lam * np.eye(C.shape[0])
 
     # ============================================================
-    # 6. LM matrix diagnostics
-    # ============================================================
-
-    print("\n[LM MATRIX DEBUG]")
-
-    print(
-        "||C_data||       =",
-        np.linalg.norm(C_data)
-    )
-
-    if G is not None:
-        print(
-            "||G.T @ G||     =",
-            np.linalg.norm(C_constraint)
-        )
-
-        print(
-            "||C - C_data||  =",
-            np.linalg.norm(C - C_data)
-        )
-
-    print(
-        "||C_lm||         =",
-        np.linalg.norm(C_lm)
-    )
-
-    print(
-        "diag C_data      :",
-        np.min(np.diag(C_data)),
-        np.median(np.diag(C_data)),
-        np.max(np.diag(C_data)),
-    )
-
-    print(
-        "diag C           :",
-        np.min(np.diag(C)),
-        np.median(np.diag(C)),
-        np.max(np.diag(C)),
-    )
-
-    print(
-        "diag C_lm        :",
-        np.min(np.diag(C_lm)),
-        np.median(np.diag(C_lm)),
-        np.max(np.diag(C_lm)),
-    )
-
-    # ============================================================
-    # 7. SVD of LM system
+    # 5. SVD of LM system
     # ============================================================
 
     Uc, Sc, Vhc = np.linalg.svd(
@@ -4472,84 +4759,9 @@ def solve_step_lm(
         iteration_tag=tag,
     )
 
+   
     # ============================================================
-    # 8. Diagnostic: inspect modes removed by SVD threshold
-    # ============================================================
-
-    cut_idx = np.setdiff1d(
-        np.arange(len(Sc)),
-        Ivec
-    )
-
-    print("\n[SVD CUT MODES]")
-
-    for m in cut_idx:
-
-        vec = Vhc[m, :]
-        order = np.argsort(np.abs(vec))[::-1]
-
-        print(
-            f"\nmode {m} | "
-            f"relative SV={Sc[m] / Sc[0]:.3e}"
-        )
-
-        for idx in order[:20]:
-
-            block_name = None
-            local_idx = None
-
-            if blocks is not None:
-                for name, sl in blocks.items():
-                    if sl.start <= idx < sl.stop:
-                        block_name = name
-                        local_idx = idx - sl.start
-                        break
-
-            if block_name is None:
-                print(
-                    f"  global {idx:3d} "
-                    f"component={vec[idx]:+.6e}"
-                )
-            else:
-                print(
-                    f"  global {idx:3d} "
-                    f"{block_name:15s}[{local_idx:3d}] "
-                    f"component={vec[idx]:+.6e}"
-                )
-
-    # ============================================================
-    # 9. Diagnostic: power of each parameter block in cut modes
-    # ============================================================
-
-    print("\n[SVD CUT MODE BLOCK POWER]")
-
-    if blocks is not None:
-
-        for m in cut_idx:
-
-            vec = Vhc[m, :]
-
-            print(
-                f"\nmode {m} | "
-                f"relative SV={Sc[m] / Sc[0]:.3e}"
-            )
-
-            total = np.sum(vec**2)
-
-            if total == 0:
-                continue
-
-            for name, sl in blocks.items():
-
-                frac = np.sum(vec[sl]**2) / total
-
-                print(
-                    f"  {name:15s}: "
-                    f"{100.0 * frac:8.3f}%"
-                )
-
-    # ============================================================
-    # 10. Solve constrained LM system
+    # 6. Solve constrained LM system
     # ============================================================
 
     b = Uc[:, Ivec].T @ ay
@@ -4621,6 +4833,7 @@ def pyloco(
         iteration_metrics_callback=None,
         calculator_trace_callback=None,
         output_dir='output'
+        save_jacobians=False,
 
 ):
 
@@ -4891,7 +5104,9 @@ def pyloco(
             calculator_trace_callback=calculator_trace_callback,
             quads_tilt_jacobian_file=quads_tilt_jacobian_file,
             force_recompute=force_recompute,
-            output_dir=output_dir
+            output_dir=output_dir,
+            save_jacobians=save_jacobians,
+
 
         )
         jacobian_seconds = time.perf_counter() - jacobian_started
