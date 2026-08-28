@@ -98,7 +98,6 @@ Questions or suggestions: <elaf.musa@desy.de>
 ## Contributors
 
 - Elaf Musa
-- Ahmed El Deeb
 
-With thanks to Ilya Agapov, Joachim Keil, Konstantinos Paraschou, and Simone
-Liuzzo for their support and contributions.
+With thanks to Ilya Agapov, Joachim Keil, Konstantinos Paraschou, Simone
+Liuzzo, and Ahmed El Deeb for their support and contributions.

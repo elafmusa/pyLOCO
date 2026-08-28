@@ -4,28 +4,39 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 
-def _json_safe(value: Any) -> Any:
-    """Convert NumPy/path values in imported configuration state to JSON types."""
+def json_safe(value: Any) -> Any:
+    """Recursively copy JSON-bound state into lossless built-in JSON types.
+
+    This conversion is intentionally separate from backend mapping: runtime
+    NumPy arrays remain NumPy arrays, while persistence and display receive a
+    JSON-safe copy.
+    """
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
+        return {str(key): json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
+        return [json_safe(item) for item in value]
     if hasattr(value, "tolist"):
-        return _json_safe(value.tolist())
+        return json_safe(value.tolist())
     if hasattr(value, "item"):
         try:
-            return value.item()
+            return json_safe(value.item())
         except (ValueError, TypeError):
             pass
     return value
+
+
+# Compatibility for internal callers and downstream code that used the
+# original private helper before it became the canonical GUI serializer.
+_json_safe = json_safe
 
 from pyLOCO.config import DEFAULT_INIT_POLICY
 
@@ -700,7 +711,7 @@ class LocoConfiguration:
                 data = self.to_example_mapping()
             target.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
         else:
-            target.write_text(json.dumps(_json_safe(data), indent=2), encoding="utf-8")
+            target.write_text(json.dumps(json_safe(data), indent=2), encoding="utf-8")
         return target
 
     @classmethod
@@ -779,8 +790,10 @@ class ProjectMetadata:
     """Serializable GUI project state that does not touch numerical pyLOCO code."""
 
     name: str = "Untitled LOCO Project"
+    description: str = ""
     mode: str = "Basic"
     path: str = ""
+    base_directory: str = ""
     modified: bool = False
     lattice: LatticeSelection = field(default_factory=LatticeSelection)
     measurements: dict[str, ImportedDataset] = field(default_factory=dict)
@@ -859,9 +872,62 @@ class ProjectMetadata:
     def is_complete(self) -> bool:
         return not self.validation_messages()
 
-    def to_dict(self) -> dict[str, Any]:
-        data = _json_safe(asdict(self))
+    def resolve_path(self, value: str | Path) -> Path:
+        """Resolve a stored project reference without changing its stored value."""
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute():
+            return candidate.resolve()
+        base = Path(self.base_directory or (Path(self.path).parent if self.path else Path.cwd()))
+        primary = (base / candidate).resolve()
+        if primary.exists():
+            return primary
+
+        # Established project files may use repository-root-relative references.
+        # Only try the exact same relative path; never search by basename.
+        for parent in (base, *base.parents):
+            if (parent / "pyLOCO").is_dir() and (parent / "pyproject.toml").exists():
+                fallback = (parent / candidate).resolve()
+                if fallback.exists():
+                    return fallback
+                break
+        return primary
+
+    @staticmethod
+    def _portable_reference(value: str, target_directory: Path) -> str:
+        if not value:
+            return ""
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            return value
+        try:
+            return Path(os.path.relpath(candidate.resolve(), target_directory.resolve())).as_posix()
+        except (OSError, ValueError):
+            return str(candidate)
+
+    def to_dict(self, target: str | Path | None = None) -> dict[str, Any]:
+        data = json_safe(asdict(self))
         data["modified"] = False
+        # The loaded project filename, its runtime base directory, and recent-file
+        # history are application-local state, not portable project contents.
+        data.pop("path", None)
+        data.pop("base_directory", None)
+        data.pop("recent_projects", None)
+
+        target_directory = Path(target or self.path or Path.cwd()).expanduser().resolve().parent
+        portable = lambda value: self._portable_reference(value, target_directory)
+        data["lattice"]["path"] = portable(data["lattice"].get("path", ""))
+        for dataset in data["measurements"].values():
+            dataset["path"] = portable(dataset.get("path", ""))
+        config = data["loco_config"]
+        config["parameters"]["cmstep"]["file"] = portable(
+            config["parameters"]["cmstep"].get("file", "")
+        )
+        for key in ("output_directory", "source_path"):
+            config[key] = portable(config.get(key, ""))
+        config["resume"]["directory"] = portable(config["resume"].get("directory", ""))
+        data["completed_run"]["results_dir"] = portable(
+            data["completed_run"].get("results_dir", "")
+        )
         return data
 
     @classmethod
@@ -870,8 +936,10 @@ class ProjectMetadata:
         measurement_data = data.get("measurements") or {}
         project = cls(
             name=data.get("name", "Untitled LOCO Project"),
+            description=data.get("description", ""),
             mode=data.get("mode", "Basic"),
             path=data.get("path", ""),
+            base_directory=data.get("base_directory", ""),
             modified=False,
             lattice=LatticeSelection(**lattice_data),
             measurements={
@@ -884,11 +952,16 @@ class ProjectMetadata:
         return project
 
     def save(self, path: str | Path | None = None) -> Path:
-        target = Path(path or self.path).expanduser()
+        raw_target = path or self.path
+        if not raw_target:
+            raise ValueError("A project filename is required.")
+        target = Path(raw_target).expanduser()
         if not str(target).endswith(PROJECT_FILE_SUFFIX):
             target = target.with_suffix(PROJECT_FILE_SUFFIX)
+        target = target.resolve()
+        target.write_text(json.dumps(self.to_dict(target), indent=2), encoding="utf-8")
         self.path = str(target)
-        target.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        self.base_directory = str(target.parent)
         self.modified = False
         self.add_recent_project(target)
         return target
@@ -902,10 +975,8 @@ class ProjectMetadata:
             """Resolve portable paths stored relative to the project file."""
             if not value:
                 return ""
-            candidate = Path(value).expanduser()
-            if not candidate.is_absolute():
-                candidate = source.parent / candidate
-            return str(candidate.resolve())
+            project.base_directory = str(source.parent)
+            return str(project.resolve_path(value))
 
         project.lattice.path = resolve_project_path(project.lattice.path)
         for dataset in project.measurements.values():
@@ -928,6 +999,7 @@ class ProjectMetadata:
         if project.completed_run.results_dir:
             project.completed_run.results_dir = resolve_project_path(project.completed_run.results_dir)
         project.path = str(source)
+        project.base_directory = str(source.parent)
         project.modified = False
         project.add_recent_project(source)
         return project

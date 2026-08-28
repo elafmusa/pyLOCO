@@ -1,31 +1,31 @@
 {
   "name": "PETRA III measured ORM \u2014 verified fit",
   "mode": "Basic",
-  "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/GUI/petra_iii.pyloco.json",
+  "path": "",
   "modified": false,
   "lattice": {
-    "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/p3_low_beta.mat",
+    "path": "../data/p3_low_beta.mat",
     "file_type": "mat",
     "element_count": 7675
   },
   "measurements": {
     "orm": {
       "role": "orm",
-      "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/measured_orm_loco.h5",
+      "path": "../data/measured_orm_loco.h5",
       "file_type": "h5",
       "size_bytes": 1627616,
       "options": {}
     },
     "dispersion": {
       "role": "dispersion",
-      "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/measured_dispersion_loco.h5",
+      "path": "../data/measured_dispersion_loco.h5",
       "file_type": "h5",
       "size_bytes": 5984,
       "options": {}
     },
     "bpm_noise": {
       "role": "bpm_noise",
-      "path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/measured_BPM_noise_loco.h5",
+      "path": "../data/measured_BPM_noise_loco.h5",
       "file_type": "h5",
       "size_bytes": 5984,
       "options": {}
@@ -1914,7 +1914,7 @@
         "mode": "file",
         "horizontal": 1e-05,
         "vertical": 1e-05,
-        "file": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/data/CMstep.npz"
+        "file": "../data/CMstep.npz"
       },
       "rfStep": -3000.0,
       "init": "",
@@ -1936,7 +1936,7 @@
     },
     "mcf_source": "automatic",
     "mcf_user_value": "",
-    "output_directory": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/output/measured_orm",
+    "output_directory": "../output/measured_orm",
     "run_name": "",
     "bad_bpm_positions": [
       24,
@@ -1956,7 +1956,7 @@
     "element_selection_state": {},
     "resume": {
       "enabled": false,
-      "directory": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/output/measured_orm",
+      "directory": "../output/measured_orm",
       "ring_file": "ring_pyloco.mat",
       "fit_dict_file": "fit_dict.pkl",
       "fit_results_file": "fit_results.npy"
@@ -2084,7 +2084,7 @@
         "matlab_comparison": "output/matlab_comparison"
       }
     },
-    "source_path": "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/pyloco_config_coupling.yaml",
+    "source_path": "../pyloco_config_coupling.yaml",
     "uneditable_fields": [
       "matlab_reference.standard_one_iteration",
       "output.constrained",
@@ -2093,9 +2093,7 @@
       "output.standard"
     ]
   },
-  "recent_projects": [
-    "/Users/musa/Desktop/pyLOCO/Examples/PETRAIII/GUI/petra_iii.pyloco.json"
-  ],
+  "recent_projects": [],
   "completed_run": {
     "results_dir": "",
     "elapsed_seconds": null,

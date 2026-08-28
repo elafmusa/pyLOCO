@@ -157,8 +157,7 @@ class ResultsWorkspace(QWidget):
     def apply_theme(self) -> None:
         self.overview.chi_plot.apply_theme()
         self.orm.plot.apply_theme()
-        self.optics.plot.apply_theme()
-        self.optics.dispersion_plot.apply_theme()
+        self.optics.apply_theme()
         self.parameters.plot.apply_theme()
         self.svd.plot.apply_theme()
 

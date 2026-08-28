@@ -47,13 +47,23 @@ class LocoRunRequest:
 
     @classmethod
     def from_project(cls, project: ProjectMetadata) -> "LocoRunRequest":
+        backend_mapping = project.loco_config.to_backend_mapping()
+        output = backend_mapping.get("Output", {})
+        if output.get("directory"):
+            output["directory"] = str(project.resolve_path(output["directory"]))
+        resume = backend_mapping.get("Resume", {})
+        if resume.get("directory"):
+            resume["directory"] = str(project.resolve_path(resume["directory"]))
         return cls(
             project_name=project.name,
             project_path=project.path,
-            lattice_path=project.lattice.path,
-            measurements={key: dataset.path for key, dataset in project.measurements.items()},
+            lattice_path=str(project.resolve_path(project.lattice.path)),
+            measurements={
+                key: str(project.resolve_path(dataset.path))
+                for key, dataset in project.measurements.items()
+            },
             measurement_options={key: dict(dataset.options) for key, dataset in project.measurements.items()},
-            backend_mapping=project.loco_config.to_backend_mapping(),
+            backend_mapping=backend_mapping,
         )
 
 

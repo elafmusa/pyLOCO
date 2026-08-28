@@ -6,7 +6,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QApplication, QLabel, QDockWidget
+from PySide6.QtWidgets import QApplication, QLabel, QDockWidget, QPushButton
 
 from pyLOCO.gui.app import build_application
 from pyLOCO.gui.branding import DISPLAY_ASSET, ICON_ASSET, MASTER_ASSET, application_icon, asset_bytes, load_pixmap, set_logo, wordmark_colors
@@ -81,11 +81,12 @@ def test_header_wordmark_is_an_icon_button_with_scientific_menu(app):
 
 def test_theme_switch_updates_wordmark_and_full_logo_at_device_pixel_ratio(app):
     window = MainWindow(); window._apply_theme_selection("light")
-    light_text = window.header_brand_label.text(); light_key = window.dashboard_logo.pixmap().cacheKey()
+    light_text = window.header_brand_label.text(); light_image = window.dashboard_logo.pixmap().toImage()
     window._apply_theme_selection("dark")
     assert window.header_brand_label.text() != light_text
     assert all(color in window.header_brand_label.text() for color in wordmark_colors("dark"))
-    assert window.dashboard_logo.pixmap().cacheKey() != light_key
+    assert not window.dashboard_logo.pixmap().isNull()
+    assert window.dashboard_logo.pixmap().toImage() == light_image
     assert window.dashboard_logo.pixmap().devicePixelRatio() == pytest.approx(window.dashboard_logo.devicePixelRatioF())
     dialog = window._build_about_dialog()
     logo = next(label for label in dialog.findChildren(QLabel) if label.pixmap())
@@ -93,13 +94,13 @@ def test_theme_switch_updates_wordmark_and_full_logo_at_device_pixel_ratio(app):
     dialog.close(); window.close()
 
 
-def test_dashboard_logo_opens_the_same_scientific_information(app):
+def test_dashboard_logo_opens_the_same_scientific_information(app, monkeypatch):
+    opened = []
+    monkeypatch.setattr(MainWindow, "_show_about_dialog", lambda self: opened.append(True))
     window = MainWindow()
-    header_labels = [action.text() for action in window.header_brand.menu().actions()]
-    dashboard_labels = [
-        action.text() for action in window.dashboard_logo_button.menu().actions()
-    ]
-    assert dashboard_labels == header_labels
+    assert window.dashboard_logo_button.menu() is None
+    window.dashboard_logo_button.click()
+    assert opened == [True]
     assert window.dashboard_logo_button.cursor().shape() == Qt.PointingHandCursor
     assert window.dashboard_logo_button.size() == QSize(338, 228)
     logo = window.dashboard_logo_button.findChild(QLabel)
@@ -138,12 +139,16 @@ def test_about_dialog_uses_real_project_metadata(app):
     assert "PyLOCO: A Python Framework for Linear Optics Correction in Storage Rings" in text
     assert "Elaf Musa" in text
     assert "Ahmed El Deeb" in text
+    assert "Contributors: Elaf Musa" in text
+    assert "With thanks to: Ilya Agapov, Joachim Keil, Konstantinos Paraschou, Simone Liuzzo, and Ahmed El Deeb" in text
     assert "With thanks to" in text
     assert "Simone Liuzzo" in text
     assert "WEP5011" in text
-    assert "STORAGE RING OPTICS CORRECTION" in text
+    assert "STORAGE RING OPTICS CORRECTION" in text.upper()
     logo_pixmaps = [label.pixmap() for label in dialog.findChildren(QLabel) if label.pixmap()]
-    assert any(pixmap.size() == QSize(300, 200) for pixmap in logo_pixmaps)
+    assert any(pixmap.size() == QSize(360, 240) for pixmap in logo_pixmaps)
+    actions = {button.text() for button in dialog.findChildren(QPushButton)}
+    assert {"Documentation", "Methodology", "Source code", "Report issue", "Copy citation", "Copy BibTeX"} <= actions
     dialog.close()
     window.close()
 

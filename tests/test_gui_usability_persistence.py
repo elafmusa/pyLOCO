@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import h5py
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QAbstractButton, QLabel, QScrollArea
 from PySide6.QtCore import Qt
 
 from pyLOCO.gui.backend import (
@@ -120,6 +120,34 @@ def test_selection_mode_only_enables_relevant_controls(app):
     window.close()
 
 
+@pytest.mark.parametrize("width,height", [(1000, 700), (1200, 800), (1500, 900)])
+def test_machine_component_rows_remain_aligned_and_scrollable(app, width, height):
+    window = MainWindow()
+    window._workspace.setCurrentIndex(1)
+    window.resize(width, height)
+    window.show()
+    app.processEvents()
+
+    rows = list(window.element_row_widgets.values())
+    buttons = list(window.element_edit_buttons.values())
+    assert len(rows) == len(buttons) == 6
+    assert len({(button.width(), button.height()) for button in buttons}) == 1
+    assert all(button.width() >= button.sizeHint().width() for button in buttons)
+    for previous, current in zip(rows, rows[1:]):
+        assert previous.geometry().bottom() < current.geometry().top()
+        assert previous.height() >= 44 and current.height() >= 44
+
+    scroll = window.findChild(QScrollArea, "machineComponentsScroll")
+    assert scroll is not None
+    if (width, height) == (1000, 700):
+        assert scroll.verticalScrollBar().maximum() > 0
+    assert window.bad_bpm_positions_edit.height() >= 34
+    assert window.hcor_exclusions_edit.height() >= 34
+    assert window.vcor_exclusions_edit.height() >= 34
+    assert window.exclusion_counts.wordWrap()
+    window.close()
+
+
 def test_spinbox_wheel_requires_focus(app):
     class Event:
         ignored = False
@@ -128,12 +156,54 @@ def test_spinbox_wheel_requires_focus(app):
     assert event.ignored
 
 
-def test_dispersion_and_constraint_controls_follow_context(app):
+def test_dispersion_weights_are_contextual_preserved_and_routed(app):
     window = MainWindow()
-    window.loco_include_dispersion.setChecked(False); window.rm_dispersion.setChecked(False)
-    assert not window.loco_hor_dispersion_weight.isEnabled()
-    window.loco_include_dispersion.setChecked(True)
+    window.show()
+    window.rm_dispersion.setChecked(False)
+    app.processEvents()
+    assert window.dispersion_weight_controls.isHidden()
+    assert not window.loco_hor_dispersion_weight.isVisible()
+    assert not window.loco_ver_dispersion_weight.isVisible()
+
+    window.rm_dispersion.setChecked(True)
+    window.loco_hor_dispersion_weight.setValue(5.0)
+    window.loco_ver_dispersion_weight.setValue(2.5)
+    app.processEvents()
+    assert not window.dispersion_weight_controls.isHidden()
     assert window.loco_hor_dispersion_weight.isEnabled()
+    assert window.loco_ver_dispersion_weight.isEnabled()
+
+    window.rm_dispersion.setChecked(False)
+    window.rm_dispersion.setChecked(True)
+    app.processEvents()
+    assert window.loco_hor_dispersion_weight.value() == 5.0
+    assert window.loco_ver_dispersion_weight.value() == 2.5
+
+    config = window._collect_loco_configuration()
+    assert config.response_matrix.includeDispersion is True
+    assert config.rejection.includeDispersion is True
+    assert config.rejection.hor_dispersion_weight == 5.0
+    assert config.rejection.ver_dispersion_weight == 2.5
+
+    visible_text = [
+        widget.text()
+        for widget in (
+            window.findChildren(QLabel) + window.findChildren(QAbstractButton)
+        )
+    ]
+    assert "hor_dispersion_weight" not in visible_text
+    assert "ver_dispersion_weight" not in visible_text
+
+    class Event:
+        ignored = False
+        def ignore(self): self.ignored = True
+    before = window.loco_hor_dispersion_weight.value()
+    event = Event()
+    window.loco_hor_dispersion_weight.clearFocus()
+    window.loco_hor_dispersion_weight.wheelEvent(event)
+    assert event.ignored
+    assert window.loco_hor_dispersion_weight.value() == before
+
     window.constraint_enabled.setChecked(False)
     assert not window.constraint_quad_sigma.isEnabled()
     window.project.modified = False
@@ -350,6 +420,73 @@ def test_complete_nondefault_gui_state_survives_save_close_and_reload(app, tmp_p
     assert second.bad_bpm_positions_edit.text() == "1"
     assert second.hcor_exclusions_edit.text() == "0"
     second.close()
+
+
+def test_save_project_snapshots_live_widgets_and_overwrites_loaded_file(app, tmp_path):
+    target = tmp_path / "live-state.pyloco.json"
+    first = MainWindow()
+    first.project.path = str(target)
+    first.project.base_directory = str(tmp_path)
+    first.project.loco_config.machine_elements.bpm_ords = [4, 8, 12]
+    first.project.loco_config.element_selection_state = {
+        "bpm_ords": {"method": "manual", "indices": [4, 8, 12]}
+    }
+    first.project.measurements["orm"] = ImportedDataset(
+        "orm", str(tmp_path / "orm.h5"), "h5",
+        options={"dataset": "response_matrix", "bidirectional": False},
+    )
+    first.dashboard_name.setText("Saved from widgets")
+    first.dashboard_description.setText("Portable PETRA test project")
+    first.rm_calculator.setCurrentIndex(first.rm_calculator.findData("Numerical"))
+    first.rm_dkick_h.setValue(1.25e-5)
+    first.rm_dkick_v.setValue(2.5e-5)
+    first.rm_rf_step.setValue(-2750.0)
+    first.rm_dispersion.setChecked(False)
+    first.loco_hor_dispersion_weight.setValue(5.0)
+    first.loco_ver_dispersion_weight.setValue(2.5)
+    first.solver_algorithm.setCurrentIndex(first.solver_algorithm.findData("gn"))
+    first.solver_n_iter.setValue(4)
+    first.solver_lm_iter.setValue(9)
+    first.solver_lambda.setValue(0.125)
+    first.solver_max_lambda.setValue(21.0)
+    first.bad_bpm_positions_edit.setText("1, 2")
+    first.output_directory_edit.setText(str(tmp_path / "output"))
+    first.run_name_edit.setText("student-run")
+    first.save_jacobian_check.setChecked(True)
+
+    first.save_project()
+    assert target.exists()
+    assert first.project.path == str(target.resolve())
+    first.close()
+
+    second = MainWindow()
+    second.open_project(target)
+    assert second.dashboard_name.text() == "Saved from widgets"
+    assert second.dashboard_description.text() == "Portable PETRA test project"
+    assert second.rm_calculator.currentData() == "Numerical"
+    assert second.rm_dkick_h.value() == pytest.approx(1.25e-5)
+    assert second.rm_dkick_v.value() == pytest.approx(2.5e-5)
+    assert second.rm_rf_step.value() == pytest.approx(-2750.0)
+    assert not second.rm_dispersion.isChecked()
+    assert second.loco_hor_dispersion_weight.value() == 5.0
+    assert second.loco_ver_dispersion_weight.value() == 2.5
+    assert second.solver_algorithm.currentData() == "gn"
+    assert second.solver_lm_iter.value() == 9
+    assert second.solver_lambda.value() == pytest.approx(0.125)
+    assert second.bad_bpm_positions_edit.text() == "1, 2"
+    assert second.run_name_edit.text() == "student-run"
+    assert second.save_jacobian_check.isChecked()
+    assert second.project.loco_config.machine_elements.bpm_ords == [4, 8, 12]
+    assert second.project.measurements["orm"].options["dataset"] == "response_matrix"
+
+    # A normal Save overwrites the loaded file with the newest live widget state.
+    second.dashboard_name.setText("Newest state")
+    second.solver_n_iter.setValue(6)
+    second.save_project()
+    second.close()
+    third = ProjectMetadata.load(target)
+    assert third.name == "Newest state"
+    assert third.loco_config.solver.nIter == 6
 
 
 def test_plot_parameter_and_summary_exports(app, tmp_path, monkeypatch):

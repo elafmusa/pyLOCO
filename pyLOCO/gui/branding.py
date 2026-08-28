@@ -14,7 +14,9 @@ _ASSET_PACKAGE = "pyLOCO.gui.assets"
 ICON_ASSET = "pyloco_app_icon.png"
 RING_ASSET = "pyloco_ring.png"
 MASTER_ASSET = "pyloco_logo_master.png"
-DISPLAY_ASSET = "pyloco_logo_refined.png"
+# Approved full wordmark used by the dashboard and About experience. Keep its
+# original colors untouched in both themes.
+DISPLAY_ASSET = "pyloco_logo_pre_resize_version.png"
 _THEMED_PIXMAP_CACHE: dict[tuple[str, str], QPixmap] = {}
 
 

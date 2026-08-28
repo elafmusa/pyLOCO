@@ -176,6 +176,8 @@ class ResultsLoader:
             "final_chi2": self.final_chi2,
             "initial_orm_rms": self.orm_rms_before,
             "fitted_orm_rms": self.orm_rms_after,
+            "dispersion_statistics": self.dispersion_statistics,
+            "beta_beating_statistics_percent": self.beta_beating_statistics,
             "warnings": [message for level, message in self.diagnostics if level == "warning"],
         }
 
@@ -269,6 +271,69 @@ class ResultsLoader:
                 result["element_name"] = str(getattr(ring[int(ordinals[index])], "FamName", ordinals[index]))
             except Exception: pass
         return result
+
+    @property
+    def quadrupole_parameter_rows(self) -> list[dict[str, Any]]:
+        """Rows in the exact persisted ``quads`` fit-vector ordering."""
+        if "quadrupole_parameter_rows" in self._cache:
+            return self._cache["quadrupole_parameter_rows"]
+        import numpy as np
+
+        block = next((item for item in self.parameter_blocks if item.key == "quads"), None)
+        if block is None:
+            self._cache["quadrupole_parameter_rows"] = []
+            return []
+        values = np.asarray(block.values, dtype=float).ravel()
+        mapping = self.request.get("backend_mapping", {})
+        machine = mapping.get("MachineElements", {})
+        fit_init = mapping.get("FitInitConfig", {})
+        ordinals = [int(value) for value in (machine.get("normal_quadrupole_ords") or [])]
+        individuals = bool(fit_init.get("individuals", self.options.get("individuals", True)))
+        identities = []
+        baseline = None if block.baseline is None else np.asarray(block.baseline, dtype=float).ravel()
+        try:
+            import at
+            ring = at.load_lattice(self._resolve_reference(self.request.get("lattice_path", "")))
+            attribute = fit_init.get("quads_attr") or "PolynomB"
+            attribute_index = int(fit_init.get("quads_attr_index", 1))
+
+            def strength(ordinal):
+                raw = np.asarray(getattr(ring[int(ordinal)], attribute))
+                return float(raw[attribute_index]) if raw.ndim else float(raw)
+
+            if individuals:
+                identities = [{"name": str(getattr(ring[o], "FamName", o)), "ordinal": o, "members": [o]} for o in ordinals]
+                if baseline is None and len(ordinals) == values.size:
+                    baseline = np.asarray([strength(o) for o in ordinals], dtype=float)
+            else:
+                groups = []
+                for ordinal in ordinals:
+                    family = str(getattr(ring[ordinal], "FamName", ordinal))
+                    match = next((group for group in groups if group[0] == family), None)
+                    if match is None:
+                        match = [family, []]; groups.append(match)
+                    match[1].append(ordinal)
+                identities = [{"name": family, "ordinal": None, "members": members} for family, members in groups]
+                if baseline is None and len(groups) == values.size:
+                    baseline = np.asarray([strength(members[0]) for _family, members in groups], dtype=float)
+        except Exception:
+            identities = []
+
+        rows = []
+        for index, fitted in enumerate(values):
+            identity = identities[index] if index < len(identities) else {"name": None, "ordinal": None, "members": []}
+            initial = float(baseline[index]) if baseline is not None and index < baseline.size else None
+            delta = None if initial is None else float(fitted - initial)
+            relative = None if delta is None or initial == 0 else float(100.0 * delta / initial)
+            rows.append({
+                "index": index, "name": identity["name"], "lattice_ordinal": identity["ordinal"],
+                "member_ordinals": list(identity["members"]), "initial": initial,
+                "fitted": float(fitted), "delta_k": delta, "relative_percent": relative,
+                "unit": block.unit, "mode": "individual" if individuals else "family",
+                "sign_convention": "ΔK = K_fitted − K_initial",
+            })
+        self._cache["quadrupole_parameter_rows"] = rows
+        return rows
 
     @property
     def quadrupole_corrections(self) -> dict[str, Any] | None:
@@ -413,8 +478,9 @@ class ResultsLoader:
         for plane, values in (self.dispersion_data or {}).items():
             if plane not in {"x", "y"}: continue
             measured = np.asarray(values["measured"], dtype=float)
-            before = measured - np.asarray(values["initial"], dtype=float)
-            after = measured - np.asarray(values["fitted"], dtype=float)
+            # Results convention requested by the GUI: model minus measurement.
+            before = np.asarray(values["initial"], dtype=float) - measured
+            after = np.asarray(values["fitted"], dtype=float) - measured
             def metrics(residual):
                 finite = residual[np.isfinite(residual)]
                 return {"rms": float(np.sqrt(np.mean(finite**2))), "mean": float(np.mean(finite)),
@@ -505,9 +571,18 @@ class ResultsLoader:
         values = self.optics_results
         required = ("s", "beta_beating_x", "beta_beating_y")
         if all(key in values for key in required):
-            return {key: values[key] for key in required} | {
+            result = {key: values[key] for key in required} | {
                 "reference_kind": str(values.get("reference_kind", "run_input_lattice")),
             }
+            for plane in ("x", "y"):
+                for state in ("reference", "initial", "fitted"):
+                    key = f"beta_{plane}_{state}"
+                    if key in values:
+                        result[key] = values[key]
+                initial_key = f"beta_beating_{plane}_initial"
+                if initial_key in values:
+                    result[initial_key] = values[initial_key]
+            return result
         # Scientifically sufficient legacy case: a non-resumed run records its
         # exact input lattice and final_lattice.mat.  Never infer a resumed
         # reference if that prior lattice is not explicitly available.
@@ -530,6 +605,8 @@ class ResultsLoader:
                 return None
             result = {"s": np.asarray(ref_ring.get_s_pos(refpts), dtype=float), "reference_kind": "run_input_lattice"}
             for plane, column in (("x", 0), ("y", 1)):
+                result[f"beta_{plane}_reference"] = ref_beta[:, column]
+                result[f"beta_{plane}_fitted"] = fit_beta[:, column]
                 result[f"beta_beating_{plane}"] = np.divide(
                     fit_beta[:, column] - ref_beta[:, column], ref_beta[:, column],
                     out=np.full(ref_beta.shape[0], np.nan), where=ref_beta[:, column] != 0,
@@ -537,6 +614,37 @@ class ResultsLoader:
             return result
         except Exception:
             return None
+
+    @property
+    def beta_beating_statistics(self) -> dict[str, dict[str, dict[str, float | None]]]:
+        """Statistics for persisted beta beating, reported in percent."""
+        import numpy as np
+
+        result: dict[str, dict[str, dict[str, float | None]]] = {}
+        data = self.beta_beating_data or {}
+
+        def metrics(values):
+            finite = np.asarray(values, dtype=float)
+            finite = 100.0 * finite[np.isfinite(finite)]
+            if not finite.size:
+                return {key: None for key in ("min", "max", "mean", "rms", "max_abs")}
+            return {
+                "min": float(np.min(finite)), "max": float(np.max(finite)),
+                "mean": float(np.mean(finite)), "rms": float(np.sqrt(np.mean(finite**2))),
+                "max_abs": float(np.max(np.abs(finite))),
+            }
+
+        for plane in ("x", "y"):
+            plane_result = {}
+            initial = data.get(f"beta_beating_{plane}_initial")
+            fitted = data.get(f"beta_beating_{plane}")
+            if initial is not None:
+                plane_result["initial"] = metrics(initial)
+            if fitted is not None:
+                plane_result["fitted"] = metrics(fitted)
+            if plane_result:
+                result[plane] = plane_result
+        return result
 
     @property
     def svd_metadata(self) -> dict[str, Any]:
