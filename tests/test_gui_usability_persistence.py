@@ -388,6 +388,32 @@ def _synthetic_results(path):
     np.savez_compressed(path / "loco_results.npz", fit_results=np.array([[1.0, 1.0], [1.1, .9]]), chi2_history=np.array([5., 2.]))
 
 
+def test_completed_gui_run_is_recorded_saved_and_restored(app, tmp_path, monkeypatch):
+    result_dir = tmp_path / "results"; _synthetic_results(result_dir)
+    project_path = tmp_path / "completed.pyloco.json"
+    monkeypatch.setattr("pyLOCO.gui.main_window.QMessageBox.information", lambda *args: None)
+
+    window = MainWindow()
+    window.project.path = str(project_path)
+    result = SimpleNamespace(
+        results_dir=str(result_dir), elapsed_seconds=3.5,
+        output_files=[], chi2_history=[5.0, 2.0],
+    )
+    window._on_loco_finished(result)
+    assert window.project.completed_run.results_dir == str(result_dir)
+    assert window.project.completed_run.status == "completed"
+    assert window.project.modified
+    window.save_project()
+
+    saved = ProjectMetadata.load(project_path)
+    assert saved.completed_run.results_dir == str(result_dir)
+    reopened = MainWindow(); reopened.open_project(project_path); app.processEvents()
+    assert reopened.results_workspace.loader is not None
+    assert reopened.results_workspace.loader.result_dir == result_dir
+    assert list(reopened.results_workspace.loader.chi2_history) == [5.0, 2.0]
+    reopened.close(); window.close()
+
+
 def test_completed_run_reload_restores_chi2_and_summary(app, tmp_path):
     result_dir = tmp_path / "results"; _synthetic_results(result_dir)
     project = ProjectMetadata(completed_run=CompletedRunReference(str(result_dir), 1.25, "completed"))

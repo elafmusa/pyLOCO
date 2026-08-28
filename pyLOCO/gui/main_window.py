@@ -57,7 +57,7 @@ from .machine_detection import detect_machine_elements
 from .measurement_metadata import IMPORT_HINTS, inspect_measurement_metadata
 from .branding import DISPLAY_ASSET, application_icon, set_asset, wordmark_html
 from .models.project import (
-    ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata,
+    CompletedRunReference, ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata,
     json_safe, load_cmstep_npz, load_example_project_data, measurement_options_from_config, resolve_element_name_file,
     resolve_example_machine_elements,
 )
@@ -2624,6 +2624,12 @@ class MainWindow(QMainWindow):
     def _on_loco_finished(self, result) -> None:
         self._append_run_log("Saved outputs:\n" + "\n".join(result.output_files))
         self.results_workspace.complete_run(result)
+        self.project.completed_run = CompletedRunReference(
+            results_dir=str(result.results_dir),
+            elapsed_seconds=float(result.elapsed_seconds),
+            status="completed",
+        )
+        self.project.modified = True
         self._project_explorer.set_result(self.results_workspace.loader)
         self._project_explorer.update_project(self.project)
         self._last_loco_result = result
