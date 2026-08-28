@@ -111,7 +111,12 @@ class _ProgressStream(io.TextIOBase):
             self._buffer = ""
 
 
-def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback=None) -> LocoRunResult:
+def run_loco_request(
+    request: LocoRunRequest,
+    log_callback=None,
+    cancel_callback=None,
+    svd_selection_callback=None,
+) -> LocoRunResult:
     """Execute the existing pyLOCO API for a GUI request.
 
     Cancellation is cooperative: the callback is forwarded to pyLOCO and checked
@@ -187,7 +192,9 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         _validate_indices(ring, indices, fit_cfg.fit_list or ())
         constraint_cfg = _make_constraint_config(request.backend_mapping["ConstraintConfig"])
         options.setdefault("fit_list", fit_cfg.fit_list or ())
-        _disable_worker_ui_options(options, log, preserve_svd_ui=interactive_svd)
+        # The GUI supplies its own Qt interactive-SVD dialog.  Matplotlib
+        # windows must never be opened from this worker thread.
+        _disable_worker_ui_options(options, log)
 
         kwargs = _build_pyloco_kwargs(
             ring=ring,
@@ -238,6 +245,12 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         kwargs["iteration_metrics_callback"] = persist_iteration
         kwargs["calculator_trace_callback"] = calculator_trace.append
         kwargs["cancel_callback"] = cancelled
+        if interactive_svd:
+            if svd_selection_callback is None:
+                raise RuntimeError(
+                    "Interactive SVD selection requires a GUI selection callback."
+                )
+            kwargs["svd_selection_callback"] = svd_selection_callback
         if bool(options.get("save_jacobians", False)):
             kwargs["jacobian_callback"] = lambda matrix, iteration: jacobian_capture.update(
                 matrix=matrix, iteration=int(iteration)

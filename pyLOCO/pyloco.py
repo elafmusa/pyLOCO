@@ -4386,7 +4386,8 @@ def _svd_select_indices(
         cut_=None,
         interactive=False,
         show_plot=False,
-        iteration_tag=""
+        iteration_tag="",
+        selection_callback=None,
 ):
     """Return indices Ivec of singular values to keep."""
     if method == "threshold":
@@ -4400,26 +4401,40 @@ def _svd_select_indices(
     elif method == "user_input" and cut_ is not None:
         Ivec = np.arange(min(cut_, len(S)))
     elif method == "interactive" or interactive:
-        sv_indices = np.arange(len(S))
-        plt.figure(figsize=(10, 5))
-        plt.subplot(1, 2, 1);
-        plt.semilogy(sv_indices, S, '.-');
-        plt.xlabel("SV idx");
-        plt.ylabel("SV")
-        plt.subplot(1, 2, 2);
-        plt.plot(sv_indices, S / np.max(S), '.-');
-        plt.xlabel("SV idx");
-        plt.ylabel("SV/max")
-        plt.tight_layout();
-        plt.show();
-        time.sleep(0.5)
-        user = input("Enter indices (e.g. 0:20 or 0,1,2): ")
-        if ':' in user:
-            a, b = user.split(':');
-            Ivec = np.arange(int(a), int(b))
+        if selection_callback is not None:
+            selected = selection_callback(np.asarray(S).copy(), iteration_tag)
+            if selected is None:
+                raise RuntimeError("Interactive SVD selection was cancelled.")
+            Ivec = np.asarray(selected)
+            if Ivec.ndim != 1 or not np.issubdtype(Ivec.dtype, np.integer):
+                raise ValueError("Interactive SVD selection must return integer indices.")
+            Ivec = np.unique(Ivec.astype(int))
+            if not len(Ivec):
+                raise ValueError("Interactive SVD selection must keep at least one singular value.")
+            if Ivec[0] < 0 or Ivec[-1] >= len(S):
+                raise ValueError("Interactive SVD selection contains an out-of-range index.")
         else:
-            Ivec = np.array([int(x.strip()) for x in user.split(',')])
-        Ivec = Ivec[Ivec < len(S)]
+            # Preserve the established terminal workflow for non-GUI callers.
+            sv_indices = np.arange(len(S))
+            plt.figure(figsize=(10, 5))
+            plt.subplot(1, 2, 1)
+            plt.semilogy(sv_indices, S, '.-')
+            plt.xlabel("SV idx")
+            plt.ylabel("SV")
+            plt.subplot(1, 2, 2)
+            plt.plot(sv_indices, S / np.max(S), '.-')
+            plt.xlabel("SV idx")
+            plt.ylabel("SV/max")
+            plt.tight_layout()
+            plt.show()
+            time.sleep(0.5)
+            user = input("Enter indices (e.g. 0:20 or 0,1,2): ")
+            if ':' in user:
+                a, b = user.split(':')
+                Ivec = np.arange(int(a), int(b))
+            else:
+                Ivec = np.array([int(x.strip()) for x in user.split(',')])
+            Ivec = Ivec[Ivec < len(S)]
 
 
     elif method == "rank":
@@ -4606,7 +4621,8 @@ def _apply_fit_to_ring(ring, fit_dict, quads_ords, quads_tilt_ind, skew_ords, qu
 def solve_step_gn(
         J_weighted, y,
         svd_method, svd_threshold, cut_, show_plot, tag,
-        weights_flat, model_orm_flat, measured_orm_flat
+        weights_flat, model_orm_flat, measured_orm_flat,
+        svd_selection_callback=None,
 ):
     # Reduced SVD is correct here
     U, S, Vh = np.linalg.svd(J_weighted, full_matrices=False)
@@ -4624,7 +4640,8 @@ def solve_step_gn(
         svd_threshold=svd_threshold,
         cut_=cut_,
         show_plot=show_plot,
-        iteration_tag=tag
+        iteration_tag=tag,
+        selection_callback=svd_selection_callback,
     )
 
     # GN solution
@@ -4646,6 +4663,7 @@ def solve_step_lm(
         blocks=None,
         fit_list=None,
         param_scale=None,
+        svd_selection_callback=None,
 ):
     """
     Solve one Levenberg-Marquardt step.
@@ -4742,6 +4760,7 @@ def solve_step_lm(
         cut_=cut_,
         show_plot=show_plot,
         iteration_tag=tag,
+        selection_callback=svd_selection_callback,
     )
 
    
@@ -4785,6 +4804,7 @@ def pyloco(
         # SVD selection
         svd_selection_method='threshold', svd_threshold=1e-7, cut_=None,
         show_svd_plot=False,
+        svd_selection_callback=None,
         constraint_cfg=None,
         # LM options
         nLMIter=10, Starting_Lambda=1e-3, max_lm_lambda=15, scaled=True,
@@ -5335,6 +5355,7 @@ def pyloco(
                 blocks=blocks,
                 fit_list=fit_list,
                 param_scale=norm_factors,
+                svd_selection_callback=svd_selection_callback,
             )
                 if 'delta_rf' in fit_list:
                     # fit_results = remove_rf_normalization(fit_list, rfStep, fit_results, nHBPM, nVBPM, nHorCOR, nVerCOR, quads_ords, quads_tilt_ind, skew_ords)
@@ -5467,7 +5488,9 @@ def pyloco(
 
             fit_results, Ivec, S = solve_step_gn(
                 Jw, y, svd_selection_method, svd_threshold, cut_,
-                show_svd_plot, tag=f"GN it{it + 1}",weights_flat= weights_flat, model_orm_flat=y_model,measured_orm_flat= y_meas
+                show_svd_plot, tag=f"GN it{it + 1}", weights_flat=weights_flat,
+                model_orm_flat=y_model, measured_orm_flat=y_meas,
+                svd_selection_callback=svd_selection_callback,
             )
 
             if 'delta_rf' in fit_list:

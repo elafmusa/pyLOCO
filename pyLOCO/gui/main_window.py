@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import threading
 from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -296,11 +297,38 @@ class LocoRunWorker(QObject):
     log = Signal(str)
     finished = Signal(object)
     failed = Signal(object)
+    svd_selection_requested = Signal(object)
 
     def __init__(self, request: LocoRunRequest) -> None:
         super().__init__()
         self.request = request
         self.cancel_requested = False
+        self._svd_event: threading.Event | None = None
+        self._svd_response = None
+
+    def request_svd_selection(self, singular_values, iteration_tag):
+        event = threading.Event()
+        self._svd_event = event
+        self._svd_response = None
+        default_rank = int(
+            self.request.backend_mapping.get("LOCOOptions", {}).get("cut_", 0) or 0
+        )
+        self.svd_selection_requested.emit(
+            {
+                "singular_values": singular_values,
+                "iteration_tag": str(iteration_tag),
+                "default_rank": default_rank,
+            }
+        )
+        while not event.wait(0.1):
+            if self.cancel_requested:
+                return None
+        return self._svd_response
+
+    def provide_svd_selection(self, indices) -> None:
+        self._svd_response = indices
+        if self._svd_event is not None:
+            self._svd_event.set()
 
     @Slot()
     def run(self) -> None:
@@ -309,6 +337,7 @@ class LocoRunWorker(QObject):
                 self.request,
                 log_callback=self.log.emit,
                 cancel_callback=lambda: self.cancel_requested,
+                svd_selection_callback=self.request_svd_selection,
             )
         except Exception as exc:
             import traceback
@@ -316,6 +345,75 @@ class LocoRunWorker(QObject):
             self.failed.emit(LocoRunError(str(exc), traceback.format_exc(), self.cancel_requested))
         else:
             self.finished.emit(result)
+
+
+class SVDSelectionDialog(QDialog):
+    """Choose retained singular values without relying on worker-thread stdin."""
+
+    def __init__(self, singular_values, iteration_tag: str, default_rank: int, parent=None) -> None:
+        super().__init__(parent)
+        import numpy as np
+
+        values = np.asarray(singular_values, dtype=float).ravel()
+        self.setWindowTitle("Interactive SVD selection")
+        self.resize(620, 560)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(
+            f"Select the singular values to retain for {iteration_tag or 'this solver step'}."
+        ))
+        layout.addWidget(QLabel(
+            "The solver ordering is preserved. At least one singular value must be selected."
+        ))
+
+        self.table = QTableWidget(len(values), 3, self)
+        self.table.setHorizontalHeaderLabels(["Keep", "Index", "Singular value / max"])
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        maximum = float(np.max(values)) if len(values) else 1.0
+        keep_count = min(default_rank, len(values)) if default_rank > 0 else len(values)
+        for row, value in enumerate(values):
+            keep = QTableWidgetItem()
+            keep.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            keep.setCheckState(Qt.Checked if row < keep_count else Qt.Unchecked)
+            self.table.setItem(row, 0, keep)
+            index = QTableWidgetItem(str(row))
+            index.setFlags(Qt.ItemIsEnabled)
+            self.table.setItem(row, 1, index)
+            normalized = QTableWidgetItem(f"{value / maximum:.6e}")
+            normalized.setFlags(Qt.ItemIsEnabled)
+            self.table.setItem(row, 2, normalized)
+        layout.addWidget(self.table, 1)
+
+        quick = QHBoxLayout()
+        select_all = QPushButton("Select all")
+        select_none = QPushButton("Clear selection")
+        select_all.clicked.connect(lambda: self._set_all(Qt.Checked))
+        select_none.clicked.connect(lambda: self._set_all(Qt.Unchecked))
+        quick.addWidget(select_all)
+        quick.addWidget(select_none)
+        quick.addStretch(1)
+        layout.addLayout(quick)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _set_all(self, state) -> None:
+        for row in range(self.table.rowCount()):
+            self.table.item(row, 0).setCheckState(state)
+
+    def selected_indices(self) -> list[int]:
+        return [
+            row for row in range(self.table.rowCount())
+            if self.table.item(row, 0).checkState() == Qt.Checked
+        ]
+
+    def _accept_if_valid(self) -> None:
+        if not self.selected_indices():
+            QMessageBox.warning(self, "No singular values selected", "Select at least one singular value.")
+            return
+        self.accept()
 
 
 ELEMENT_ROLES = {
@@ -1756,7 +1854,11 @@ class MainWindow(QMainWindow):
         self.svd_parameter_input.setEnabled(method != "interactive")
         self.svd_plot.setEnabled(method != "interactive")
         if method == "interactive":
-            self.svd_plot.setChecked(True)
+            self.svd_plot.setToolTip(
+                "Interactive selection is shown in a Qt dialog during the run."
+            )
+        else:
+            self.svd_plot.setToolTip("")
 
     def _update_cmstep_input_availability(self) -> None:
         is_uniform = (self.cmstep_mode.currentData() or "uniform") == "uniform"
@@ -2597,6 +2699,7 @@ class MainWindow(QMainWindow):
         self._run_worker.moveToThread(self._run_thread)
         self._run_thread.started.connect(self._run_worker.run)
         self._run_worker.log.connect(self._append_run_log)
+        self._run_worker.svd_selection_requested.connect(self._on_svd_selection_requested)
         self._run_worker.finished.connect(self._on_loco_finished)
         self._run_worker.failed.connect(self._on_loco_failed)
         self._run_worker.finished.connect(self._cleanup_run_thread)
@@ -2606,6 +2709,27 @@ class MainWindow(QMainWindow):
         self._run_thread.start()
         self._elapsed_timer.start(500)
         self._refresh_ui("LOCO run started")
+
+    @Slot(object)
+    def _on_svd_selection_requested(self, request: dict) -> None:
+        worker = self._run_worker
+        if worker is None:
+            return
+        dialog = SVDSelectionDialog(
+            request["singular_values"],
+            request.get("iteration_tag", ""),
+            request.get("default_rank", 0),
+            self,
+        )
+        if dialog.exec() == QDialog.Accepted:
+            worker.provide_svd_selection(dialog.selected_indices())
+            self._append_run_log(
+                f"Interactive SVD: retained {len(dialog.selected_indices())} singular value(s)."
+            )
+        else:
+            worker.cancel_requested = True
+            worker.provide_svd_selection(None)
+            self._append_run_log("Interactive SVD selection cancelled by the user.")
 
     @Slot()
     def cancel_loco_run(self) -> None:
