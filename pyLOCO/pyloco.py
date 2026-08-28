@@ -2455,62 +2455,7 @@ def calculate_quads_tilt_jacobian(
             f"{len(quads_tilt_fit)=} vs {len(quads_ind)=}"
         )
 
-        # ========================================================
-        # Compact debugging
-        # ========================================================
-
-        zero_positions = [
-            i
-            for i, x in enumerate(quads_ind)
-            if np.isscalar(x) and int(x) == 0
-        ]
-
-        print(
-            "\n========== TILT JACOBIAN START ==========",
-            flush=True,
-        )
-
-        print(
-            "individuals       :",
-            individuals,
-            flush=True,
-        )
-
-        print(
-            "N tilt parameters :",
-            len(quads_ind),
-            flush=True,
-        )
-
-        print(
-            "first 5 indices   :",
-            quads_ind[:5],
-            flush=True,
-        )
-
-        print(
-            "last 5 indices    :",
-            quads_ind[-5:],
-            flush=True,
-        )
-
-        print(
-            "scalar-0 positions:",
-            zero_positions,
-            flush=True,
-        )
-
-        if len(quads_tilt_fit) > 0:
-            print(
-                "first tilt value  :",
-                quads_tilt_fit[0],
-                flush=True,
-            )
-
-        print(
-            "=========================================\n",
-            flush=True,
-        )
+    
 
         # ========================================================
         # Prepare multiprocessing arguments
