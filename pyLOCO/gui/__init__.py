@@ -9,8 +9,12 @@ from importlib.metadata import PackageNotFoundError, version
 
 __all__ = ["__version__"]
 
-import tomllib
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11
+    import tomli as tomllib
 
 try:
     # A source checkout must report its own canonical build metadata, not an
