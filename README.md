@@ -77,13 +77,6 @@ python3 -m pytest
 
 Questions or suggestions: <elaf.musa@desy.de>
 
-## Contributors
-
-- Elaf Musa
-
-With thanks to Ilya Agapov, Joachim Keil, Konstantinos Paraschou, Simone
-Liuzzo, and Ahmed El Deeb for their support and contributions.
-
 ## Citing pyLOCO
 
 If pyLOCO contributes to your work, please cite:
