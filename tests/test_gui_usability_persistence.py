@@ -361,7 +361,7 @@ def test_persisted_optics_and_jacobian_are_exactly_reloadable(tmp_path):
     optics_path = _save_optics(tmp_path, lattice_path, ring, {"used_bpms_ords": bpms})
     assert optics_path and optics_path.exists()
     matrix = np.arange(24.0).reshape(8, 3)
-    request = SimpleNamespace(backend_mapping={"RMConfig": {"calculator": "Linear"}, "LOCOOptions": {"includeDispersion": True}, "FixedParameters": {"dk": 1e-4}})
+    request = SimpleNamespace(backend_mapping={"RMConfig": {"calculator": "Linear"}, "LOCOOptions": {"includeDispersion": True, "save_jacobians": True}, "FixedParameters": {"dk": 1e-4}})
     files = _save_jacobian(tmp_path, {"matrix": matrix, "iteration": 2}, {"quads": slice(0, 3)}, request,
                            {"used_bpms_ords": bpms, "used_cor_ords": [np.array([1]), np.array([2])]})
     assert len(files) == 2
@@ -370,6 +370,11 @@ def test_persisted_optics_and_jacobian_are_exactly_reloadable(tmp_path):
     assert loader.jacobian_metadata["shape"] == [8, 3]
     assert loader.beta_beating is not None
     assert np.allclose(loader.beta_beating["beating"], 0.0)
+
+    disabled = SimpleNamespace(backend_mapping={"LOCOOptions": {"save_jacobians": False}})
+    disabled_dir = tmp_path / "disabled"; disabled_dir.mkdir()
+    assert _save_jacobian(disabled_dir, {"matrix": matrix, "iteration": 2}, {}, disabled, {}) == []
+    assert not (disabled_dir / "jacobian.h5").exists()
 
 
 def _synthetic_results(path):

@@ -222,9 +222,10 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         kwargs["initial_model_orm_callback"] = lambda orm: _save_initial_model_orm(results_dir, orm)
         kwargs["iteration_metrics_callback"] = capture_iteration
         kwargs["calculator_trace_callback"] = calculator_trace.append
-        kwargs["jacobian_callback"] = lambda matrix, iteration: jacobian_capture.update(
-            matrix=matrix, iteration=int(iteration)
-        )
+        if bool(options.get("save_jacobians", False)):
+            kwargs["jacobian_callback"] = lambda matrix, iteration: jacobian_capture.update(
+                matrix=matrix, iteration=int(iteration)
+            )
         kwargs["output_dir"] = str(results_dir)
         (results_dir / "run_request.json").write_text(
             json.dumps(_jsonable(asdict(request)), indent=2), encoding="utf-8"
@@ -837,6 +838,10 @@ def _save_jacobian(results_dir, capture, blocks, request, indices):
     This complements the backend's optional per-block ``save_jacobians``
     artifacts; it does not recompute or replace them.
     """
+    mapping = request.backend_mapping if request is not None else {}
+    options = mapping.get("LOCOOptions", {})
+    if not bool(options.get("save_jacobians", False)):
+        return []
     if not capture or capture.get("matrix") is None:
         return []
     import h5py
@@ -847,9 +852,7 @@ def _save_jacobian(results_dir, capture, blocks, request, indices):
     artifact = results_dir / "jacobian.h5"
     with h5py.File(artifact, "w") as handle:
         handle.create_dataset("matrix", data=matrix, chunks=True, compression="gzip", shuffle=True)
-    mapping = request.backend_mapping if request is not None else {}
     rm = mapping.get("RMConfig", {})
-    options = mapping.get("LOCOOptions", {})
     metadata = {
         "shape": list(matrix.shape),
         "iteration": capture.get("iteration"),
