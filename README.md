@@ -7,6 +7,25 @@ LOCO reference: J. Safranek, “Experimental determination of storage ring
 optics using orbit response measurements,” *NIM A* 388 (1997), 27–36,
 [doi:10.1016/S0168-9002(97)00309-4](https://doi.org/10.1016/S0168-9002(97)00309-4).
 
+## Citing pyLOCO
+
+If pyLOCO contributes to your work, please cite:
+
+> E. Musa, I. Agapov, K. Paraschou, J. Keil, and S. Liuzzo, “PyLOCO: A Python Framework for Linear Optics Correction in Storage Rings,” presented at the 17th International Particle Accelerator Conference (IPAC’26), Deauville, France, May 2026, paper WEP5011. [JACoW contribution](https://indico.jacow.org/event/95/contributions/13338/)
+
+```bibtex
+@inproceedings{musa_pyloco_ipac26,
+  author = {Musa, Elaf and Agapov, Ilya and Paraschou, Konstantinos and Keil, Joachim and Liuzzo, Simone},
+  title = {PyLOCO: A Python Framework for Linear Optics Correction in Storage Rings},
+  booktitle = {Proceedings of the 17th International Particle Accelerator Conference (IPAC'26)},
+  address = {Deauville, France},
+  year = {2026},
+  month = {May},
+  note = {Paper WEP5011},
+  url = {https://indico.jacow.org/event/95/contributions/13338/}
+}
+```
+
 ## Install and launch
 
 Python 3.10 or newer is recommended.
@@ -75,3 +94,11 @@ python3 -m pytest
 
 
 Questions or suggestions: <elaf.musa@desy.de>
+
+## Contributors
+
+- Elaf Musa
+- Ahmed El Deeb
+
+With thanks to Ilya Agapov, Joachim Keil, Konstantinos Paraschou, and Simone
+Liuzzo for their support and contributions.

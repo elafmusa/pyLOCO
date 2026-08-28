@@ -33,7 +33,8 @@ class ProjectExplorer(QDockWidget):
         self._tree.setRootIsDecorated(True)
         configure_item_view(self._tree)
         self._tree.setMinimumWidth(0)
-        self.setMinimumWidth(120)
+        self.setMinimumWidth(0)
+        self.toggleViewAction().setShortcut("Ctrl+Shift+E")
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         self.setWidget(self._tree)
 
@@ -70,9 +71,9 @@ class ProjectExplorer(QDockWidget):
         self._tree.addTopLevelItem(root)
 
         machine = self._add_group(
-            root, "Machine", "Ready" if project.lattice.path else "Pending"
+            root, "Machine Components", "Ready" if project.lattice.path else "Pending"
         )
-        machine.setData(0, Qt.UserRole, "Machine")
+        machine.setData(0, Qt.UserRole, "Machine Components")
         self._add_leaf(machine, "Lattice", project.lattice.name)
         self._add_leaf(machine, "File type", project.lattice.file_type or "Not loaded")
         count = (

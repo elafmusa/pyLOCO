@@ -9,6 +9,24 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
+
+def _json_safe(value: Any) -> Any:
+    """Convert NumPy/path values in imported configuration state to JSON types."""
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if hasattr(value, "tolist"):
+        return _json_safe(value.tolist())
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except (ValueError, TypeError):
+            pass
+    return value
+
 from pyLOCO.config import DEFAULT_INIT_POLICY
 
 PROJECT_FILE_SUFFIX = ".pyloco.json"
@@ -168,6 +186,7 @@ class RejectionConfig:
     analytical_skew_thick_steerers: bool = False
     analytical_skew_verbose: bool = False
     analytical_skew_use_mp: bool = False
+    save_jacobians: bool = False
 
 
 @dataclass(slots=True)
@@ -531,7 +550,11 @@ class LocoConfiguration:
     mcf_source: str = "automatic"
     mcf_user_value: str = ""
     output_directory: str = ""
+    run_name: str = ""
     bad_bpm_positions: list[int] = field(default_factory=list)
+    excluded_horizontal_corrector_positions: list[int] = field(default_factory=list)
+    excluded_vertical_corrector_positions: list[int] = field(default_factory=list)
+    element_selection_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     resume: ResumeConfigState = field(default_factory=ResumeConfigState)
     source_config: dict[str, Any] = field(default_factory=dict, repr=False)
     source_path: str = ""
@@ -553,8 +576,12 @@ class LocoConfiguration:
             "ConstraintConfig": self.constraints.to_constraint_config_kwargs(),
             "FixedParameters": self.fixed_parameters.to_fixed_parameters_kwargs(),
             "MomentumCompaction": self.to_mcf_kwargs(),
-            "Output": {"directory": self.output_directory},
+            "Output": {"directory": self.output_directory, "run_name": self.run_name},
             "BadBPMPositions": list(self.bad_bpm_positions),
+            "ExcludedCorrectorPositions": {
+                "horizontal": list(self.excluded_horizontal_corrector_positions),
+                "vertical": list(self.excluded_vertical_corrector_positions),
+            },
             "Resume": self.resume.to_mapping(),
         }
 
@@ -656,6 +683,9 @@ class LocoConfiguration:
             output["directory"] = self.output_directory
         data["output"] = output
         data["bad_bpm_positions"] = list(self.bad_bpm_positions)
+        data["excluded_horizontal_corrector_positions"] = list(self.excluded_horizontal_corrector_positions)
+        data["excluded_vertical_corrector_positions"] = list(self.excluded_vertical_corrector_positions)
+        data["element_selection_state"] = deepcopy(self.element_selection_state)
         return data
 
     def save(self, path: str | Path) -> Path:
@@ -670,7 +700,7 @@ class LocoConfiguration:
                 data = self.to_example_mapping()
             target.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
         else:
-            target.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            target.write_text(json.dumps(_json_safe(data), indent=2), encoding="utf-8")
         return target
 
     @classmethod
@@ -723,12 +753,25 @@ class LocoConfiguration:
             mcf_source=data.get("mcf_source", "automatic"),
             mcf_user_value=data.get("mcf_user_value", ""),
             output_directory=data.get("output_directory", ""),
+            run_name=data.get("run_name", ""),
             bad_bpm_positions=[int(value) for value in data.get("bad_bpm_positions", [])],
+            excluded_horizontal_corrector_positions=[int(value) for value in data.get("excluded_horizontal_corrector_positions", [])],
+            excluded_vertical_corrector_positions=[int(value) for value in data.get("excluded_vertical_corrector_positions", [])],
+            element_selection_state=deepcopy(data.get("element_selection_state", {})),
             resume=ResumeConfigState(**_known_kwargs(ResumeConfigState, data.get("resume", {}))),
             source_config=deepcopy(data.get("source_config", {})),
             source_path=data.get("source_path", ""),
             uneditable_fields=list(data.get("uneditable_fields", [])),
         )
+
+
+@dataclass(slots=True)
+class CompletedRunReference:
+    """External reference to a persisted completed GUI run."""
+
+    results_dir: str = ""
+    elapsed_seconds: float | None = None
+    status: str = ""
 
 
 @dataclass(slots=True)
@@ -743,6 +786,7 @@ class ProjectMetadata:
     measurements: dict[str, ImportedDataset] = field(default_factory=dict)
     loco_config: LocoConfiguration = field(default_factory=LocoConfiguration)
     recent_projects: list[str] = field(default_factory=list)
+    completed_run: CompletedRunReference = field(default_factory=CompletedRunReference)
 
     @property
     def is_saved(self) -> bool:
@@ -794,12 +838,29 @@ class ProjectMetadata:
                 messages.append("Skew sigma must be positive when skew constraints are enabled.")
         return messages
 
+    def metadata_warnings(self) -> list[str]:
+        """Report non-blocking disagreements between file and GUI acquisition metadata."""
+        warnings: list[str] = []
+        orm = self.measurements.get("orm")
+        if orm:
+            for key, configured, label in (
+                ("dkick_h", self.loco_config.response_matrix.dkick_h, "horizontal ORM kick"),
+                ("dkick_v", self.loco_config.response_matrix.dkick_v, "vertical ORM kick"),
+            ):
+                if key in orm.options and float(orm.options[key]) != float(configured):
+                    warnings.append(f"Detected {label} differs from the configured value.")
+        dispersion = self.measurements.get("dispersion")
+        if dispersion and "rf_step_hz" in dispersion.options:
+            if float(dispersion.options["rf_step_hz"]) != float(self.loco_config.response_matrix.rfStep):
+                warnings.append("Detected dispersion RF step differs from the configured value.")
+        return warnings
+
     @property
     def is_complete(self) -> bool:
         return not self.validation_messages()
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
+        data = _json_safe(asdict(self))
         data["modified"] = False
         return data
 
@@ -818,6 +879,7 @@ class ProjectMetadata:
             },
             loco_config=LocoConfiguration.from_dict(data.get("loco_config", {})),
             recent_projects=list(data.get("recent_projects", [])),
+            completed_run=CompletedRunReference(**_known_kwargs(CompletedRunReference, data.get("completed_run", {}))),
         )
         return project
 
@@ -863,6 +925,8 @@ class ProjectMetadata:
             project.loco_config.source_path = resolve_project_path(
                 project.loco_config.source_path
             )
+        if project.completed_run.results_dir:
+            project.completed_run.results_dir = resolve_project_path(project.completed_run.results_dir)
         project.path = str(source)
         project.modified = False
         project.add_recent_project(source)
@@ -900,6 +964,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
         kick_h = kick_v = steps if isinstance(steps, (int, float)) else 1e-5
     output = data.get("output") or {}
     output_directory = output.get("directory") or output.get("standard") or ""
+    run_name = output.get("run_name") or ""
     parameter_names = {
         name: name in fit_names
         for name in (
@@ -990,6 +1055,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "rfstep": rf.get("step_hz", -3000.0),
         },
         "output_directory": output_directory,
+        "run_name": run_name,
         "bad_bpm_positions": data.get("bad_bpm_positions", []),
         "resume": {
             "enabled": bool(resume.get("enabled", False)),

@@ -4832,6 +4832,7 @@ def pyloco(
         initial_chi2_callback=None,
         iteration_metrics_callback=None,
         calculator_trace_callback=None,
+        jacobian_callback=None,
         output_dir='output',
         save_jacobians=False,
 
@@ -5137,6 +5138,8 @@ def pyloco(
         y_meas_ = orm_measured.reshape(-1, 1, order="F")
         y_model_ = orm_model.reshape(-1, 1, order="F")
         J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
+        if jacobian_callback is not None:
+            jacobian_callback(J_.copy(), iteration=it + 1)
 
 
 

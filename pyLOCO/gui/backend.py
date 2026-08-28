@@ -147,6 +147,13 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         if bad_bpm_positions is not None:
             measured, indices = _apply_bad_bpm_positions(measured, indices, bad_bpm_positions, remove_bad_bpms)
             log(f"Applied Bad BPM list: removed {len(bad_bpm_positions)} BPM position(s).")
+        exclusions = request.backend_mapping.get("ExcludedCorrectorPositions", {})
+        if exclusions.get("horizontal") or exclusions.get("vertical"):
+            measured, indices, rm_cfg.dkick = _apply_corrector_exclusions(
+                measured, indices, exclusions.get("horizontal", []),
+                exclusions.get("vertical", []), rm_cfg.dkick,
+            )
+            log("Applied corrector exclusions from selected-list positions.")
         log(
             "Using %d BPMs, %d horizontal correctors, %d vertical correctors."
             % (indices["nHBPM"], indices["nHorCOR"], indices["nVerCOR"])
@@ -189,6 +196,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         reference_ring = copy.deepcopy(resume_state["ring"] if resume_state is not None else ring)
         iteration_metrics: list[dict[str, Any]] = []
         calculator_trace: list[dict[str, Any]] = []
+        jacobian_capture: dict[str, Any] = {}
 
         def capture_iteration(record: dict[str, Any]) -> None:
             iteration_metrics.append(_iteration_diagnostics(
@@ -204,6 +212,9 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         kwargs["initial_model_orm_callback"] = lambda orm: _save_initial_model_orm(results_dir, orm)
         kwargs["iteration_metrics_callback"] = capture_iteration
         kwargs["calculator_trace_callback"] = calculator_trace.append
+        kwargs["jacobian_callback"] = lambda matrix, iteration: jacobian_capture.update(
+            matrix=matrix, iteration=int(iteration)
+        )
         kwargs["output_dir"] = str(results_dir)
         (results_dir / "run_request.json").write_text(
             json.dumps(_jsonable(asdict(request)), indent=2), encoding="utf-8"
@@ -249,6 +260,9 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         )
         if optics_path is not None:
             output_files.append(str(optics_path))
+        output_files.extend(str(path) for path in _save_jacobian(
+            results_dir, jacobian_capture, blocks, request, indices
+        ))
         log(f"LOCO run completed in {elapsed:.1f} s.")
         log_path = _save_backend_log(results_dir, log_lines)
         output_files.append(str(log_path))
@@ -627,8 +641,38 @@ def _selection_size(values) -> int:
     return 0 if values is None else len(values)
 
 
+def _apply_corrector_exclusions(measured, indices, horizontal_positions, vertical_positions, dkick):
+    """Remove zero-based selected-list positions and matching ORM columns."""
+    import numpy as np
+
+    h = _as_bad_bpm_positions(horizontal_positions) if horizontal_positions else np.array([], dtype=int)
+    v = _as_bad_bpm_positions(vertical_positions) if vertical_positions else np.array([], dtype=int)
+    nh, nv = int(indices["nHorCOR"]), int(indices["nVerCOR"])
+    if np.any(h >= nh) or np.any(v >= nv):
+        raise ValueError("Corrector exclusion contains a position outside the selected corrector list.")
+    updated_measured = dict(measured)
+    updated_measured["orm"] = np.delete(updated_measured["orm"], np.concatenate((h, nh + v)), axis=1)
+    updated_indices = dict(indices)
+    updated_indices["used_cor_ords"] = [
+        np.delete(np.asarray(indices["used_cor_ords"][0]), h),
+        np.delete(np.asarray(indices["used_cor_ords"][1]), v),
+    ]
+    updated_indices["nHorCOR"], updated_indices["nVerCOR"] = nh - h.size, nv - v.size
+    values = dkick if isinstance(dkick, (list, tuple)) else (dkick, dkick)
+    steps = []
+    for value, count, removed in ((values[0], nh, h), (values[1], nv, v)):
+        array = np.asarray(value, dtype=float)
+        steps.append(np.delete(array.ravel(), removed) if array.ndim and array.size == count else value)
+    return updated_measured, updated_indices, tuple(steps)
+
+
 def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixed_parameters, measured, indices):
     import numpy as np
+
+    if str(getattr(rm_cfg, "calculator", "Linear")).strip().lower() == "tracking":
+        raise ValueError("Tracking mode is not a backend calculator name; use the supported Numerical calculator.")
+    if not getattr(rm_cfg, "bidirectional", True):
+        raise ValueError("The iterative backend assumes bidirectional ±kick/±RF measurements; one-sided fitting is not scientifically supported.")
 
     sigma_w = np.concatenate((measured["noise_x"], measured["noise_y"]))[:, np.newaxis]
     cmstep = rm_cfg.dkick if isinstance(rm_cfg.dkick, (list, tuple)) else (rm_cfg.dkick, rm_cfg.dkick)
@@ -637,11 +681,13 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
     expected_shape = (indices["nHBPM"] + indices["nVBPM"], indices["nHorCOR"] + indices["nVerCOR"])
     if measured["orm"].shape != expected_shape:
         raise ValueError(f"ORM shape {measured['orm'].shape} is incompatible with selected elements; expected {expected_shape}.")
-    if options.get("includeDispersion", rm_cfg.includeDispersion) and not measured.get("dispersion_supplied", True):
+    include_dispersion = options.get("includeDispersion", rm_cfg.includeDispersion)
+    if include_dispersion and not measured.get("dispersion_supplied", True):
         raise ValueError("Dispersion fitting was requested but no dispersion measurement file was supplied.")
+    measured_for_fit = _assemble_measured_response(measured, include_dispersion)
     return dict(
         algorithm=options.get("algorithm", "lm"), nIter=options.get("nIter", 1), **indices,
-        orm_measured=measured["orm"], weights=sigma_w, includeDispersion=options.get("includeDispersion", rm_cfg.includeDispersion),
+        orm_measured=measured_for_fit, weights=sigma_w, includeDispersion=include_dispersion,
         measured_eta_x=measured["eta_x"], measured_eta_y=measured["eta_y"],
         hor_dispersion_weight=options.get("hor_dispersion_weight", 1.0), ver_dispersion_weight=options.get("ver_dispersion_weight", 1.0),
         CMstep=[hstep, vstep], rfStep=rm_cfg.rfStep if rm_cfg.rfStep is not None else fixed_parameters.rfstep,
@@ -668,7 +714,21 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
         analytical_skew_thick_steerers=options.get("analytical_skew_thick_steerers", False),
         analytical_skew_verbose=options.get("analytical_skew_verbose", False),
         analytical_skew_use_mp=options.get("analytical_skew_use_mp", False),
+        save_jacobians=options.get("save_jacobians", False),
     )
+
+
+def _assemble_measured_response(measured, include_dispersion: bool):
+    """Return canonical ORM ordering with ``[eta_x, eta_y]`` as the final column."""
+    import numpy as np
+
+    orm = np.asarray(measured["orm"], dtype=float)
+    if not include_dispersion:
+        return orm
+    eta = np.concatenate((np.ravel(measured["eta_x"]), np.ravel(measured["eta_y"])))
+    if eta.size != orm.shape[0]:
+        raise ValueError(f"Dispersion vector length {eta.size} does not match ORM row count {orm.shape[0]}.")
+    return np.hstack((orm, eta[:, None]))
 
 
 def _load_resume_mapping(mapping: dict[str, Any] | None, log) -> dict[str, Any] | None:
@@ -719,7 +779,9 @@ def _make_constraint_config(data: dict[str, Any]):
 
 def _make_results_dir(request: LocoRunRequest) -> Path:
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in request.project_name).strip("_") or "pyloco"
+    configured = request.backend_mapping.get("Output", {}).get("run_name")
+    name = configured or request.project_name
+    safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(name)).strip("_") or "pyloco"
     path = request.results_root / f"{safe}-{stamp}"
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -734,6 +796,73 @@ def _save_initial_model_orm(results_dir: Path, orm_model) -> Path:
         handle.create_dataset("response_matrix", data=np.asarray(orm_model), compression="gzip")
         handle.attrs["description"] = "Initial model ORM used for the first chi-squared evaluation"
     return path
+
+
+def _save_optics(results_dir, initial_lattice_path, final_ring, indices):
+    """Compatibility helper used by GUI regression tests and external callers."""
+    if not initial_lattice_path or not indices:
+        return None
+    try:
+        import at
+        import numpy as np
+        initial_ring = at.load_lattice(initial_lattice_path)
+        bpm_ords = np.asarray(indices["used_bpms_ords"], dtype=int)
+        _, initial_ringdata, initial_data = at.get_optics(initial_ring, refpts=bpm_ords)
+        _, fitted_ringdata, fitted_data = at.get_optics(final_ring, refpts=bpm_ords)
+        path = Path(results_dir) / "optics_results.npz"
+        np.savez_compressed(
+            path, bpm_ordinals=bpm_ords, s_position=np.asarray(initial_data.s_pos),
+            beta_initial=np.asarray(initial_data.beta), beta_fitted=np.asarray(fitted_data.beta),
+            tune_initial=np.asarray(initial_ringdata.tune), tune_fitted=np.asarray(fitted_ringdata.tune),
+            definition=np.asarray("beta_beating=(beta_fitted-beta_initial)/beta_initial"),
+        )
+        return path
+    except Exception:
+        return None
+
+
+def _save_jacobian(results_dir, capture, blocks, request, indices):
+    """Persist the final combined Jacobian produced by the current backend.
+
+    This complements the backend's optional per-block ``save_jacobians``
+    artifacts; it does not recompute or replace them.
+    """
+    if not capture or capture.get("matrix") is None:
+        return []
+    import h5py
+    import numpy as np
+
+    results_dir = Path(results_dir)
+    matrix = np.asarray(capture["matrix"], dtype=float)
+    artifact = results_dir / "jacobian.h5"
+    with h5py.File(artifact, "w") as handle:
+        handle.create_dataset("matrix", data=matrix, chunks=True, compression="gzip", shuffle=True)
+    mapping = request.backend_mapping if request is not None else {}
+    rm = mapping.get("RMConfig", {})
+    options = mapping.get("LOCOOptions", {})
+    metadata = {
+        "shape": list(matrix.shape),
+        "iteration": capture.get("iteration"),
+        "storage": "HDF5 float64 dataset with lossless gzip compression",
+        "parameter_blocks": _jsonable(blocks),
+        "fitted_parameter_order": list((blocks or {}).keys()),
+        "bpm_ordinals": _jsonable(indices.get("used_bpms_ords", []) if indices else []),
+        "horizontal_corrector_ordinals": _jsonable(indices.get("used_cor_ords", [[], []])[0] if indices else []),
+        "vertical_corrector_ordinals": _jsonable(indices.get("used_cor_ords", [[], []])[1] if indices else []),
+        "dispersion_included": bool(options.get("includeDispersion", rm.get("includeDispersion", False))),
+        "response_calculator": rm.get("calculator"),
+        "normal_quad_jacobian": options.get("quad_jacobian_calculator", "Numerical"),
+        "skew_quad_jacobian": options.get("skew_jacobian_calculator", "Numerical"),
+        "perturbations": {
+            "normal_quadrupole": mapping.get("FixedParameters", {}).get("dk"),
+            "skew_quadrupole": mapping.get("FixedParameters", {}).get("delta_skew"),
+            "quadrupole_tilt": mapping.get("FixedParameters", {}).get("delta_q_tilt"),
+        },
+        "row_order": "Fortran-flattened response matrix: BPM rows [horizontal, vertical] within each H/V-corrector column; optional dispersion is the final column.",
+    }
+    metadata_path = results_dir / "jacobian_metadata.json"
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+    return [artifact, metadata_path]
 
 
 def _iteration_diagnostics(

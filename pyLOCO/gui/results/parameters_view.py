@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import csv
+import json
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox, QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from .plot_canvas import PlotCanvas
 
@@ -19,6 +21,9 @@ class ParametersView(QWidget):
         self.summary = QLabel("No parameter results loaded.")
         self.summary.setWordWrap(True)
         top = QHBoxLayout(); top.addWidget(QLabel("Parameter block")); top.addWidget(self.selector, 1)
+        self.export_csv = QPushButton("Save fitted data CSV…"); self.export_json = QPushButton("Save fitted data JSON…")
+        self.export_csv.clicked.connect(lambda: self._export("csv")); self.export_json.clicked.connect(lambda: self._export("json"))
+        top.addWidget(self.export_csv); top.addWidget(self.export_json)
         self.plot = PlotCanvas(show_toolbar=True, minimum_height=210)
         self.plot.toolbar.setMaximumHeight(34)
         self.table = QTableWidget(0, 5)
@@ -45,6 +50,9 @@ class ParametersView(QWidget):
         self.selector.blockSignals(True); self.selector.clear()
         for block in loader.parameter_blocks:
             self.selector.addItem(f"{block.label} ({block.values.size})", block.key)
+        if loader.quadrupole_corrections:
+            self.selector.addItem("Quadrupole application correction ΔK", "__quad_delta__")
+            self.selector.addItem("Quadrupole relative correction ΔK/K [%]", "__quad_relative__")
         self.selector.blockSignals(False)
         self._render()
 
@@ -53,6 +61,15 @@ class ParametersView(QWidget):
         if self.loader is None or self.selector.currentIndex() < 0:
             self.summary.setText("No persisted fitted parameter vector is available for this run."); return
         key = self.selector.currentData()
+        if key in {"__quad_delta__", "__quad_relative__"}:
+            data = self.loader.quadrupole_corrections
+            values = np.asarray(data["delta_k_apply"] if key == "__quad_delta__" else data["relative_percent"], dtype=float)
+            unit = "m⁻²" if key == "__quad_delta__" else "%"
+            self.summary.setText(f"{data['sign_convention']} · RMS {np.sqrt(np.nanmean(values**2)):.6g} {unit}")
+            axis = self.plot.figure.add_subplot(111); axis.plot(values, marker=".", linewidth=1.0)
+            axis.set(xlabel="Selected quadrupole position", ylabel=f"Correction [{unit}]", title="Quadrupole correction")
+            axis.grid(True, alpha=.25); self.plot.apply_theme(); self.plot.canvas.draw_idle()
+            return
         block = next((item for item in self.loader.parameter_blocks if item.key == key), None)
         if block is None: return
         values = np.asarray(block.values, dtype=float)
@@ -77,3 +94,32 @@ class ParametersView(QWidget):
                 if col in (0, 2): item.setData(Qt.UserRole, row if col == 0 else float(value))
                 self.table.setItem(row, col, item)
         self.table.setSortingEnabled(True); self.table.resizeColumnsToContents()
+
+    def _rows(self):
+        for block in self.loader.parameter_blocks if self.loader else []:
+            for index, value in enumerate(block.values):
+                initial = None if block.baseline is None else float(block.baseline[index])
+                identity = self.loader.parameter_identity(block.key, index)
+                yield {"block": block.key, "label": block.label, "index": index, "initial": initial,
+                       "fitted": float(value), "correction": None if initial is None else float(value)-initial,
+                       "unit": block.unit, **identity,
+                       "sign_convention": "Backend fitted value; machine-application corrections use the explicitly labelled pyLOCO convention."}
+        corrections = self.loader.quadrupole_corrections if self.loader else None
+        if corrections:
+            for index, value in enumerate(corrections["delta_k_apply"]):
+                yield {"block": "quadrupole_application", "label": corrections["names"][index], "index": index,
+                       "lattice_ordinal": int(corrections["ordinals"][index]), "element_name": corrections["names"][index],
+                       "initial": float(corrections["initial"][index]), "fitted": float(corrections["fitted"][index]),
+                       "correction": float(value), "unit": "m⁻²", "relative_percent": float(corrections["relative_percent"][index]),
+                       "sign_convention": corrections["sign_convention"]}
+
+    def _export(self, format_name):
+        filename = QFileDialog.getSaveFileName(self, "Export fitted parameters", f"fitted_parameters.{format_name}", f"{format_name.upper()} (*.{format_name})")[0]
+        if not filename: return
+        rows = list(self._rows())
+        if format_name == "json":
+            with open(filename, "w", encoding="utf-8") as stream: json.dump(rows, stream, indent=2)
+        else:
+            with open(filename, "w", newline="", encoding="utf-8") as stream:
+                fields = ["block", "label", "index", "selected_list_position", "lattice_ordinal", "element_name", "initial", "fitted", "correction", "unit", "relative_percent", "sign_convention"]
+                writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore"); writer.writeheader(); writer.writerows(rows)

@@ -18,6 +18,7 @@ from .parameters_view import ParametersView
 from .optics_view import OpticsView
 from .svd_view import SvdView
 from .files_view import FilesView
+from .run_summary_view import RunSummaryView
 
 
 class ResultsWorkspace(QWidget):
@@ -59,13 +60,14 @@ class ResultsWorkspace(QWidget):
         self.compact_monitor.hide()
         self.tabs = QTabWidget()
         self.overview = OverviewView(); self.orm = OrmView(); self.optics = OpticsView()
-        self.parameters = ParametersView(); self.svd = SvdView(); self.files = FilesView(); self.log = LogView()
+        self.parameters = ParametersView(); self.summary = RunSummaryView(); self.svd = SvdView(); self.files = FilesView(); self.log = LogView()
         # Result views own their space directly. Wrapping every view in another
         # scroll area made Matplotlib retain a large size hint instead of
         # shrinking with the main window.
         self.tabs.addTab(self.overview, "Overview"); self.tabs.addTab(self.orm, "ORM")
         self.tabs.addTab(self.optics, "Optics")
         self.tabs.addTab(self.parameters, "Parameters")
+        self.tabs.addTab(self.summary, "Run Summary")
         self.tabs.addTab(self.svd, "Jacobian/SVD")
         self.tabs.addTab(self.files, "Files")
         self.tabs.addTab(self.log, "Log")
@@ -114,9 +116,7 @@ class ResultsWorkspace(QWidget):
         self.run_output_dir.setCursorPosition(0); self.cancel_button.setEnabled(False)
         self.cancel_button.setVisible(False)
         self.waiting_games_button.hide()
-        self.loader = ResultsLoader(result.results_dir, runtime=result.elapsed_seconds)
-        for view in (self.overview, self.orm, self.optics, self.parameters, self.svd, self.files):
-            view.set_loader(self.loader)
+        self.load_results(result.results_dir, runtime=result.elapsed_seconds)
         log_path = Path(result.results_dir) / "backend.log"
         if log_path.exists():
             try: self.log.set_log(log_path.read_text(encoding="utf-8"))
@@ -129,6 +129,24 @@ class ResultsWorkspace(QWidget):
         self.monitor.hide()
         self.details_button.setChecked(False)
         self.monitor.setMaximumHeight(16777215)
+
+    def load_results(self, results_dir, *, runtime=None) -> None:
+        path = Path(results_dir).expanduser()
+        if not path.exists():
+            self.loader = None; self.run_status_label.setText(f"Saved results directory is unavailable: {path}"); return
+        self.loader = ResultsLoader(path, runtime=runtime)
+        for view in (self.overview, self.orm, self.optics, self.parameters, self.summary, self.svd, self.files):
+            view.set_loader(self.loader)
+        log_path = path / "backend.log"
+        if log_path.exists():
+            try: self.log.set_log(log_path.read_text(encoding="utf-8"))
+            except OSError: pass
+        self.run_status_label.setText("Completed run restored from project")
+        self.run_output_dir.setText(str(path)); self.run_elapsed_label.setText("Unavailable" if self.loader.runtime is None else f"{self.loader.runtime:.1f} s")
+        self.cancel_button.setVisible(False); self.waiting_games_button.hide()
+        for widget in (self.run_progress, self._progress_label): widget.setVisible(False)
+        self.compact_status.setText("✓ Completed run restored — Results available")
+        self.compact_monitor.show(); self.monitor.hide(); self.details_button.setChecked(False)
 
     def fail_run(self) -> None:
         self.run_progress.setRange(0, 1); self.run_progress.setValue(0)

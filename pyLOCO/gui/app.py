@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from PySide6.QtWidgets import QApplication
 
+from .branding import application_icon
 from .main_window import MainWindow
 
 
@@ -36,6 +37,9 @@ def build_application(argv: Sequence[str] | None = None) -> QApplication:
     app = QApplication(list(sys.argv if argv is None else argv))
     app.setApplicationName(APPLICATION_NAME)
     app.setOrganizationName(ORGANIZATION_NAME)
+    icon = application_icon()
+    if not icon.isNull():
+        app.setWindowIcon(icon)
     return app
 
 

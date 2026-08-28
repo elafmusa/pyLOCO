@@ -10,6 +10,7 @@ import json
 import re
 import shutil
 from copy import deepcopy
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRect, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot, QTimer
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFormLayout,
     QGroupBox,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -50,6 +52,9 @@ from PySide6.QtWidgets import (
 )
 
 from .backend import LocoRunError, LocoRunRequest, run_loco_request, _load_bad_bpm_positions
+from .machine_detection import detect_machine_elements
+from .measurement_metadata import IMPORT_HINTS, inspect_measurement_metadata
+from .branding import DISPLAY_ASSET, application_icon, set_asset, wordmark_html
 from .models.project import (
     ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata,
     load_example_project_data, measurement_options_from_config, resolve_element_name_file,
@@ -112,6 +117,11 @@ LOGO_PATH = Path(__file__).with_name("assets") / "pyloco_logo_pre_resize_version
 PROJECT_REPOSITORY = "https://github.com/elafmusa/pyLOCO"
 PROJECT_DOCUMENTATION = f"{PROJECT_REPOSITORY}#readme"
 PROJECT_PAPER_URL = "https://indico.jacow.org/event/95/contributions/13338/"
+PROJECT_ISSUES = f"{PROJECT_REPOSITORY}/issues"
+PROJECT_LICENSE = "Apache-2.0"
+PROJECT_PAPER_TITLE = "PyLOCO: A Python Framework for Linear Optics Correction in Storage Rings"
+PROJECT_CONTRIBUTORS = "Elaf Musa and Ahmed El Deeb"
+PROJECT_ACKNOWLEDGEMENTS = "Ilya Agapov, Joachim Keil, Konstantinos Paraschou, and Simone Liuzzo"
 
 
 class AspectRatioPixmapLabel(QLabel):
@@ -157,6 +167,7 @@ class AspectRatioPixmapLabel(QLabel):
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        self._update_header_branding()
         self._update_pixmap()
 
 
@@ -220,6 +231,10 @@ class ScientificDoubleSpinBox(QDoubleSpinBox):
 
     def textFromValue(self, value: float) -> str:  # type: ignore[override]
         return f"{value:.{self.decimals()}g}"
+
+    def wheelEvent(self, event) -> None:  # type: ignore[override]
+        if not self.hasFocus(): event.ignore(); return
+        super().wheelEvent(event)
 
 
 class FamilyWeightEditor(QWidget):
@@ -312,6 +327,12 @@ ELEMENT_ROLES = {
 }
 
 
+class BrandToolButton(QToolButton):
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(max(180, hint.width()), hint.height())
+
+
 class ElementSelectionDialog(QDialog):
     """Select and preview lattice ordinals for one machine-element role."""
 
@@ -341,16 +362,16 @@ class ElementSelectionDialog(QDialog):
         self.type_edit = QLineEdit(self._default_type_name())
         self.pattern_edit = QLineEdit(self._default_pattern())
         self.file_edit = QLineEdit()
-        file_button = QPushButton("Browse…")
-        file_button.clicked.connect(self._browse_index_file)
-        file_row = QHBoxLayout(); file_row.addWidget(self.file_edit); file_row.addWidget(file_button)
+        self.file_button = QPushButton("Browse…")
+        self.file_button.clicked.connect(self._browse_index_file)
+        file_row = QHBoxLayout(); file_row.addWidget(self.file_edit); file_row.addWidget(self.file_button)
         self.name_file_edit = QLineEdit()
         self.name_attribute = QComboBox()
         for label, value in (("Auto-detect attribute", "auto"), ("CommonName", "CommonName"), ("FamName", "FamName"), ("Name", "Name"), ("name", "name")):
             self.name_attribute.addItem(label, value)
-        name_file_button = QPushButton("Browse…")
-        name_file_button.clicked.connect(self._browse_name_file)
-        name_file_row = QHBoxLayout(); name_file_row.addWidget(self.name_file_edit); name_file_row.addWidget(name_file_button)
+        self.name_file_button = QPushButton("Browse…")
+        self.name_file_button.clicked.connect(self._browse_name_file)
+        name_file_row = QHBoxLayout(); name_file_row.addWidget(self.name_file_edit); name_file_row.addWidget(self.name_file_button)
         self.manual_edit = QPlainTextEdit(", ".join(str(i) for i in current))
         self.manual_edit.setPlaceholderText("Enter integer lattice ordinals separated by commas, spaces, or new lines.")
         form.addRow("AT class/type contains", self.type_edit)
@@ -373,6 +394,18 @@ class ElementSelectionDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self._set_preview(current)
+        for button in (self.auto_radio, self.type_radio, self.pattern_radio, self.name_file_radio, self.file_radio, self.manual_radio):
+            button.toggled.connect(self._update_method_controls)
+        self._update_method_controls()
+
+    def _update_method_controls(self) -> None:
+        self.type_edit.setVisible(self.type_radio.isChecked()); self.type_edit.setEnabled(self.type_radio.isChecked())
+        self.pattern_edit.setVisible(self.pattern_radio.isChecked()); self.pattern_edit.setEnabled(self.pattern_radio.isChecked())
+        for widget in (self.name_file_edit, self.name_attribute, self.name_file_button):
+            widget.setVisible(self.name_file_radio.isChecked()); widget.setEnabled(self.name_file_radio.isChecked())
+        for widget in (self.file_edit, self.file_button):
+            widget.setVisible(self.file_radio.isChecked()); widget.setEnabled(self.file_radio.isChecked())
+        self.manual_edit.setVisible(self.manual_radio.isChecked()); self.manual_edit.setEnabled(self.manual_radio.isChecked())
 
     def _default_type_name(self) -> str:
         return {"bpm": "Monitor", "hcor": "Corrector", "vcor": "Corrector", "quad": "Quadrupole", "skew": "Quadrupole", "cavity": "RFCavity"}[self.role_kind]
@@ -491,6 +524,70 @@ class ElementSelectionDialog(QDialog):
             self.accept()
 
 
+class ExclusionSelectionDialog(QDialog):
+    """Select exclusions by selected-list position while showing lattice identity."""
+
+    def __init__(self, parent, title: str, ordinals: list[int], excluded: list[int]) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title); self.resize(720, 560)
+        self.ordinals = list(ordinals)
+        self.excluded_positions = sorted(set(int(value) for value in excluded))
+        lattice = parent._load_current_lattice()
+        layout = QVBoxLayout(self)
+        note = QLabel("Check rows to exclude. ‘Selected-list position’ is zero-based within the current component selection; ‘lattice ordinal’ identifies the corresponding pyAT element.")
+        note.setWordWrap(True); layout.addWidget(note)
+        actions = QHBoxLayout(); load_button = QPushButton("Load exclusion file…")
+        load_button.setToolTip("Supported: .txt, .npy, .npz, .h5/.hdf5, .mat; values are zero-based selected-list positions.")
+        load_button.clicked.connect(self._load_file)
+        clear_button = QPushButton("Clear all"); clear_button.clicked.connect(self._clear)
+        actions.addWidget(load_button); actions.addWidget(clear_button); actions.addStretch(1); layout.addLayout(actions)
+        self.table = QTableWidget(len(self.ordinals), 4)
+        self.table.setHorizontalHeaderLabels(["Exclude", "Selected-list position", "Lattice ordinal", "Element name / class"])
+        configure_item_view(self.table)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        for row, ordinal in enumerate(self.ordinals):
+            check = QTableWidgetItem(); check.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            check.setCheckState(Qt.Checked if row in self.excluded_positions else Qt.Unchecked)
+            elem = lattice[ordinal] if lattice is not None and 0 <= ordinal < len(lattice) else None
+            name = str(getattr(elem, "FamName", getattr(elem, "name", ""))) if elem is not None else ""
+            cls = type(elem).__name__ if elem is not None else ""
+            self.table.setItem(row, 0, check); self.table.setItem(row, 1, QTableWidgetItem(str(row)))
+            self.table.setItem(row, 2, QTableWidgetItem(str(ordinal)))
+            self.table.setItem(row, 3, QTableWidgetItem(f"{name} · {cls}".strip(" ·")))
+        layout.addWidget(self.table, 1); self.counts = QLabel(); layout.addWidget(self.counts)
+        self.table.itemChanged.connect(self._update_counts); self._update_counts()
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._accept); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
+
+    def _selected(self) -> list[int]:
+        return [row for row in range(self.table.rowCount()) if self.table.item(row, 0).checkState() == Qt.Checked]
+
+    def _update_counts(self, *_args) -> None:
+        count = len(self._selected())
+        self.counts.setText(f"{len(self.ordinals)} selected · {count} excluded · {len(self.ordinals)-count} retained")
+
+    def _clear(self) -> None:
+        for row in range(self.table.rowCount()): self.table.item(row, 0).setCheckState(Qt.Unchecked)
+
+    def _load_file(self) -> None:
+        filename = QFileDialog.getOpenFileName(self, "Load exclusion positions", "", "Position arrays (*.txt *.npy *.npz *.h5 *.hdf5 *.mat);;All files (*)")[0]
+        if not filename: return
+        try:
+            values = _load_bad_bpm_positions({"bad_bpms": filename})
+            positions = [] if values is None else [int(value) for value in values]
+            if len(positions) != len(set(positions)) or any(value < 0 or value >= len(self.ordinals) for value in positions):
+                raise ValueError(f"Positions must be unique and within 0..{max(0, len(self.ordinals)-1)}.")
+            selected = set(positions)
+            for row in range(self.table.rowCount()):
+                self.table.item(row, 0).setCheckState(Qt.Checked if row in selected else Qt.Unchecked)
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid exclusion file", str(exc))
+
+    def _accept(self) -> None:
+        self.excluded_positions = self._selected(); self.accept()
+
+
 class MainWindow(QMainWindow):
     """Top-level pyLOCO GUI window for project management and data import."""
 
@@ -500,6 +597,7 @@ class MainWindow(QMainWindow):
         self._loading_config = False
         self.setObjectName("pyLocoMainWindow")
         self.setWindowTitle("pyLOCO GUI")
+        self.setWindowIcon(application_icon())
         self.resize(1320, 860)
         # Keep the top-level window freely resizable. Individual pages reflow
         # or provide their own scrolling when the window becomes very small.
@@ -689,7 +787,7 @@ class MainWindow(QMainWindow):
         self.recent_list = QListWidget()
         configure_item_view(self.recent_list)
         tabs.addTab(self._project_page(), "Project")
-        tabs.addTab(self._machine_page(), "Machine")
+        tabs.addTab(self._machine_page(), "Machine Components")
         tabs.addTab(self._measurements_page(), "Measurements")
         tabs.addTab(self._fit_page(), "Fit")
         self.results_page = self._results_page()
@@ -716,7 +814,8 @@ class MainWindow(QMainWindow):
         self.dashboard_logo_button.setCursor(Qt.PointingHandCursor)
         self.dashboard_logo_button.setToolTip("Open pyLOCO information and scientific resources")
         self.dashboard_logo_button.setAccessibleName("pyLOCO logo and information")
-        self.dashboard_logo_button.clicked.connect(self._show_about_dialog)
+        self.dashboard_logo_button.setPopupMode(QToolButton.InstantPopup)
+        self.dashboard_logo_button.setMenu(self._build_brand_menu())
         self.dashboard_logo_button.setStyleSheet(
             "QToolButton { background: transparent; border: 0; border-radius: 10px; padding: 4px; "
             "min-width: 330px; max-width: 330px; min-height: 220px; max-height: 220px; }"
@@ -725,10 +824,10 @@ class MainWindow(QMainWindow):
         )
         logo_layout = QHBoxLayout(self.dashboard_logo_button)
         logo_layout.setContentsMargins(4, 4, 4, 4)
-        dashboard_logo = AspectRatioPixmapLabel(QPixmap(str(LOGO_PATH)), 330, 330)
-        dashboard_logo.setFixedSize(330, 220)
-        dashboard_logo.setAttribute(Qt.WA_TransparentForMouseEvents)
-        logo_layout.addWidget(dashboard_logo)
+        self.dashboard_logo = QLabel(); self.dashboard_logo.setFixedSize(330, 220)
+        set_asset(self.dashboard_logo, QSize(330, 220), DISPLAY_ASSET, crop_transparency=False, theme_key=self.current_theme.key)
+        self.dashboard_logo.setAttribute(Qt.WA_TransparentForMouseEvents)
+        logo_layout.addWidget(self.dashboard_logo)
         # Apply this after styling so the global tool-button theme cannot
         # replace the exact dimensions from the earlier GUI version.
         self.dashboard_logo_button.setFixedSize(338, 228)
@@ -767,7 +866,8 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         menu.setObjectName("brandMenu")
         menu.addSection("pyLOCO — Storage Ring Optics Correction")
-        menu.addAction("About pyLOCO", self._show_about_dialog)
+        version_action = menu.addAction(f"Version {self._package_version()}"); version_action.setEnabled(False)
+        menu.addSeparator(); menu.addAction("About pyLOCO", self._show_about_dialog)
         menu.addAction(
             "Documentation",
             lambda: QDesktopServices.openUrl(QUrl(PROJECT_DOCUMENTATION)),
@@ -777,11 +877,26 @@ class MainWindow(QMainWindow):
             lambda: QDesktopServices.openUrl(QUrl(PROJECT_PAPER_URL)),
         )
         menu.addSeparator()
+        menu.addAction("Copy citation", lambda: QApplication.clipboard().setText(self._software_citation()))
+        menu.addAction("Copy BibTeX", lambda: QApplication.clipboard().setText(self._software_bibtex()))
+        menu.addSeparator()
         menu.addAction(
             "Repository / Source code",
             lambda: QDesktopServices.openUrl(QUrl(PROJECT_REPOSITORY)),
         )
+        menu.addAction("Report an issue", lambda: QDesktopServices.openUrl(QUrl(PROJECT_ISSUES)))
         return menu
+
+    @staticmethod
+    def _package_version() -> str:
+        from . import __version__
+        return __version__
+
+    def _software_citation(self) -> str:
+        return f"E. Musa, I. Agapov, K. Paraschou, J. Keil, and S. Liuzzo, ‘{PROJECT_PAPER_TITLE},’ presented at IPAC’26, Deauville, France, May 2026, paper WEP5011. {PROJECT_PAPER_URL}"
+
+    def _software_bibtex(self) -> str:
+        return "\n".join(("@inproceedings{musa_pyloco_ipac26,", "  author = {Musa, Elaf and Agapov, Ilya and Paraschou, Konstantinos and Keil, Joachim and Liuzzo, Simone},", f"  title = {{{PROJECT_PAPER_TITLE}}},", "  booktitle = {Proceedings of the 17th International Particle Accelerator Conference (IPAC'26)},", "  year = {2026},", "  note = {Paper WEP5011},", f"  url = {{{PROJECT_PAPER_URL}}}", "}"))
 
     def _machine_page(self) -> QWidget:
         page = self._page("Machine Lattice")
@@ -828,6 +943,15 @@ class MainWindow(QMainWindow):
             self.element_preview_tables[key] = table
             elements_layout.addWidget(table)
         page.layout().addWidget(elements_group)
+        exclusion_group = QGroupBox("BPM and corrector exclusions")
+        exclusion_form = QFormLayout(exclusion_group)
+        self.bad_bpm_positions_edit = QLineEdit(); self.bad_bpm_positions_edit.setPlaceholderText("selected-list positions, e.g. 0, 4, 17")
+        self.hcor_exclusions_edit = QLineEdit(); self.vcor_exclusions_edit = QLineEdit()
+        self.exclusion_counts = QLabel()
+        for edit, label in ((self.bad_bpm_positions_edit, "Excluded BPM positions"), (self.hcor_exclusions_edit, "Excluded H-corrector positions"), (self.vcor_exclusions_edit, "Excluded V-corrector positions")):
+            exclusion_form.addRow(label, edit); edit.editingFinished.connect(self._store_exclusions)
+        exclusion_form.addRow("Counts", self.exclusion_counts)
+        page.layout().addWidget(exclusion_group)
         page.layout().addStretch(1)
         return page
 
@@ -835,7 +959,7 @@ class MainWindow(QMainWindow):
         page = self._page("Measurement Import")
         self.measurement_role = QComboBox()
         self.measurement_role.addItems(
-            ["orm", "dispersion", "bpm_noise", "bad_bpms", "other"]
+            ["orm", "dispersion", "bpm_noise", "other"]
         )
         import_button = QPushButton("Import HDF5, MAT, NumPy…")
         import_button.clicked.connect(self.import_measurement)
@@ -848,8 +972,13 @@ class MainWindow(QMainWindow):
         group = QGroupBox("File import")
         layout = QVBoxLayout(group)
         layout.addLayout(row)
+        self.measurement_hint = QLabel(); self.measurement_hint.setWordWrap(True)
+        self.measurement_metadata_label = QLabel("No measurement metadata loaded."); self.measurement_metadata_label.setWordWrap(True)
+        layout.addWidget(self.measurement_hint); layout.addWidget(self.measurement_metadata_label)
         layout.addWidget(self.measurement_list)
         page.layout().addWidget(group)
+        self.measurement_role.currentTextChanged.connect(self._update_measurement_hint)
+        self._update_measurement_hint(self.measurement_role.currentText())
         return page
 
 
@@ -930,6 +1059,7 @@ class MainWindow(QMainWindow):
         solver_form.addRow(self.solver_scaled)
         solver_group = QGroupBox("Solver")
         solver_group.setLayout(solver_form)
+        self._lm_only_controls = (self.solver_lm_iter, self.solver_lambda, self.solver_max_lambda, self.solver_scaled)
         layout.addWidget(solver_group)
 
         self.svd_method = QComboBox()
@@ -1019,13 +1149,18 @@ class MainWindow(QMainWindow):
         rej_form.addRow("Sigma cut", self.outlier_sigma)
         rej_form.addRow(self.norm_enabled)
         rej_form.addRow("Normalization mode", self.norm_mode)
-        rej_form.addRow("Horizontal dispersion weight", self.loco_hor_dispersion_weight)
-        rej_form.addRow("Vertical dispersion weight", self.loco_ver_dispersion_weight)
         for widget in (self.loco_include_dispersion, self.auto_delta, self.loco_fixedpath, self.loco_individuals, self.loco_remove_coupling, self.loco_plot_fit_parameters):
             rej_form.addRow(widget)
         rej_group = QGroupBox("Iterations and Outlier Rejection")
         rej_group.setLayout(rej_form)
         layout.addWidget(rej_group)
+
+        self.dispersion_group = QGroupBox("Dispersion")
+        dispersion_form = QFormLayout(self.dispersion_group)
+        dispersion_form.addRow(self.loco_include_dispersion)
+        dispersion_form.addRow("Horizontal dispersion weight", self.loco_hor_dispersion_weight)
+        dispersion_form.addRow("Vertical dispersion weight", self.loco_ver_dispersion_weight)
+        layout.insertWidget(layout.indexOf(rej_group), self.dispersion_group)
 
         self.constraint_enabled = QCheckBox("Enable constraints")
         self.constraint_quad_sigma = self._double_spin(0.0, 1e12, 0.0, 6)
@@ -1129,14 +1264,28 @@ class MainWindow(QMainWindow):
             param_form.addRow(label, widget)
         param_layout.addWidget(init_group)
         self._advanced_form_rows = (
-            (rej_form, self.loco_hor_dispersion_weight),
-            (rej_form, self.loco_ver_dispersion_weight),
             (cm_form, self.params_cmstep_h),
             (cm_form, self.params_cmstep_v),
             (cm_form, self.params_cmstep_file_row),
             (cm_form, self.params_rfstep),
         )
         layout.addWidget(param_group)
+
+        output_group = QGroupBox("Output & Saving")
+        output_form = QFormLayout(output_group)
+        self.output_directory_edit = QLineEdit()
+        self.output_directory_browse = QPushButton("Browse…")
+        self.output_directory_browse.clicked.connect(self._browse_output_directory)
+        output_row = QWidget(); output_row_layout = QHBoxLayout(output_row)
+        output_row_layout.setContentsMargins(0, 0, 0, 0)
+        output_row_layout.addWidget(self.output_directory_edit, 1)
+        output_row_layout.addWidget(self.output_directory_browse)
+        self.run_name_edit = QLineEdit(); self.run_name_edit.setPlaceholderText("Defaults to project name + timestamp")
+        self.save_jacobian_check = QCheckBox("Save Jacobian")
+        output_form.addRow("Output directory", output_row)
+        output_form.addRow("Run name", self.run_name_edit)
+        output_form.addRow(self.save_jacobian_check)
+        layout.addWidget(output_group)
 
         self.resume_current = QRadioButton("Start from current model")
         self.resume_previous = QRadioButton("Resume from previous LOCO state")
@@ -1346,12 +1495,17 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.advanced_mode_action)
         toolbar.addSeparator()
         toolbar.addAction(self.toggle_theme_action)
-        toolbar_spacer = QWidget()
+        toolbar_spacer = QWidget(); toolbar_spacer.setObjectName("toolbarSpacer")
         toolbar_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(toolbar_spacer)
-        self.toolbar_brand = ClickableBrandLabel()
-        self.toolbar_brand.clicked.connect(self._show_about_dialog)
-        toolbar.addWidget(self.toolbar_brand)
+        self.header_brand = BrandToolButton(toolbar); self.header_brand.setObjectName("headerBrandButton")
+        self.header_brand.setMinimumWidth(180)
+        brand_layout = QHBoxLayout(self.header_brand); brand_layout.setContentsMargins(12, 4, 12, 4)
+        self.header_brand_label = QLabel(wordmark_html(self.current_theme.key)); self.header_brand_label.setTextFormat(Qt.RichText)
+        self.header_brand_label.setMinimumWidth(180)
+        self.header_brand_label.setAttribute(Qt.WA_TransparentForMouseEvents); brand_layout.addWidget(self.header_brand_label)
+        self.header_brand.setCursor(Qt.PointingHandCursor); self.header_brand.setPopupMode(QToolButton.InstantPopup); self.header_brand.setMenu(self._build_brand_menu())
+        self.header_brand_action = toolbar.addWidget(self.header_brand)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
         run_button = toolbar.widgetForAction(self.run_loco_action)
         if run_button is not None:
@@ -1396,6 +1550,7 @@ class MainWindow(QMainWindow):
             self.params_skew_attr, self.params_skew_attr_index, self.params_tilt_attr_r1,
             self.params_tilt_attr_r2, self.params_tilt_method, self.fixed_frequency, self.fixed_harm_number,
             self.fixed_rfstep, self.fixed_dk, self.fixed_delta_skew, self.fixed_delta_q_tilt, self.mcf_source, self.mcf_user_value,
+            self.output_directory_edit, self.run_name_edit, self.save_jacobian_check,
         ] + list(self.parameter_checks.values())
         for widget in widgets:
             if isinstance(widget, QComboBox):
@@ -1417,6 +1572,9 @@ class MainWindow(QMainWindow):
         )
         self.constraint_quad_exceptions.changed.connect(self._on_fit_config_changed)
         self.constraint_skew_exceptions.changed.connect(self._on_fit_config_changed)
+        self.loco_include_dispersion.toggled.connect(self._update_context_controls)
+        self.rm_dispersion.toggled.connect(self._update_context_controls)
+        self.constraint_enabled.toggled.connect(self._update_context_controls)
         self.resume_current.toggled.connect(self._on_fit_config_changed)
         self.resume_previous.toggled.connect(self._on_fit_config_changed)
         self.resume_previous.toggled.connect(self._update_resume_availability)
@@ -1425,6 +1583,20 @@ class MainWindow(QMainWindow):
         for widget in (self.resume_ring_file, self.resume_fit_dict_file, self.resume_fit_results_file):
             widget.textChanged.connect(self._on_fit_config_changed)
             widget.textChanged.connect(self._update_resume_availability)
+        self._update_context_controls()
+
+    def _update_context_controls(self) -> None:
+        dispersion = self.loco_include_dispersion.isChecked() or self.rm_dispersion.isChecked()
+        self.dispersion_group.setVisible(dispersion)
+        self.loco_hor_dispersion_weight.setEnabled(dispersion)
+        self.loco_ver_dispersion_weight.setEnabled(dispersion)
+        enabled = self.constraint_enabled.isChecked()
+        for widget in (
+            self.constraint_quad_sigma, self.constraint_skew_sigma,
+            self.constraint_quad_weights, self.constraint_skew_weights,
+            self.constraint_quad_mask, self.constraint_skew_mask,
+        ):
+            widget.setEnabled(enabled)
 
     def _set_calculator_value(self, calculator: str) -> None:
         aliases = {"linear": "Linear", "analytical": "Analytical", "numerical": "Numerical", "tracking": "Numerical"}
@@ -1452,7 +1624,9 @@ class MainWindow(QMainWindow):
         return self.solver_algorithm.currentData() or self.solver_algorithm.currentText()
 
     def _update_solver_scaled_availability(self) -> None:
-        self.solver_scaled.setEnabled(self._selected_solver_algorithm() == "lm")
+        is_lm = self._selected_solver_algorithm() == "lm"
+        for widget in self._lm_only_controls:
+            widget.setVisible(is_lm); widget.setEnabled(is_lm)
 
     def _selected_svd_method(self) -> str:
         return self.svd_method.currentData() or self.svd_method.currentText()
@@ -1501,6 +1675,13 @@ class MainWindow(QMainWindow):
         )[0]
         if filename:
             self.params_cmstep_file.setText(filename)
+
+    def _browse_output_directory(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select LOCO output directory", self.output_directory_edit.text()
+        )
+        if directory:
+            self.output_directory_edit.setText(directory)
 
     @Slot()
     def _browse_resume_directory(self) -> None:
@@ -1553,6 +1734,9 @@ class MainWindow(QMainWindow):
     def _load_config_to_widgets(self) -> None:
         self._loading_config = True
         cfg = self.project.loco_config
+        self.bad_bpm_positions_edit.setText(", ".join(map(str, cfg.bad_bpm_positions)))
+        self.hcor_exclusions_edit.setText(", ".join(map(str, cfg.excluded_horizontal_corrector_positions)))
+        self.vcor_exclusions_edit.setText(", ".join(map(str, cfg.excluded_vertical_corrector_positions)))
         self._set_calculator_value(cfg.response_matrix.calculator)
         self.rm_dispersion.setChecked(cfg.response_matrix.includeDispersion)
         self.rm_coupling.setChecked(cfg.response_matrix.coupling_orm)
@@ -1646,6 +1830,9 @@ class MainWindow(QMainWindow):
         self.fixed_delta_q_tilt.setValue(cfg.fixed_parameters.delta_q_tilt)
         self.mcf_source.setCurrentIndex(max(0, self.mcf_source.findData(cfg.mcf_source)))
         self.mcf_user_value.setText(cfg.mcf_user_value)
+        self.output_directory_edit.setText(cfg.output_directory)
+        self.run_name_edit.setText(cfg.run_name)
+        self.save_jacobian_check.setChecked(cfg.rejection.save_jacobians)
         self.resume_previous.setChecked(cfg.resume.enabled)
         self.resume_current.setChecked(not cfg.resume.enabled)
         self.resume_directory.setText(cfg.resume.directory)
@@ -1657,6 +1844,7 @@ class MainWindow(QMainWindow):
         self._update_svd_input_availability()
         self._update_cmstep_input_availability()
         self._update_fit_summary()
+        self._update_exclusion_counts()
         self._loading_config = False
 
     def _collect_loco_configuration(self) -> LocoConfiguration:
@@ -1759,6 +1947,12 @@ class MainWindow(QMainWindow):
         cfg.fixed_parameters.delta_q_tilt = self.fixed_delta_q_tilt.value()
         cfg.mcf_source = self.mcf_source.currentData() or "automatic"
         cfg.mcf_user_value = self.mcf_user_value.text()
+        cfg.output_directory = self.output_directory_edit.text().strip()
+        cfg.run_name = self.run_name_edit.text().strip()
+        cfg.rejection.save_jacobians = self.save_jacobian_check.isChecked()
+        cfg.bad_bpm_positions = self._parse_position_text(self.bad_bpm_positions_edit.text())
+        cfg.excluded_horizontal_corrector_positions = self._parse_position_text(self.hcor_exclusions_edit.text())
+        cfg.excluded_vertical_corrector_positions = self._parse_position_text(self.vcor_exclusions_edit.text())
         cfg.resume.enabled = self.resume_previous.isChecked()
         cfg.resume.directory = self.resume_directory.text()
         cfg.resume.ring_file = self.resume_ring_file.text() or "ring_pyloco.mat"
@@ -1935,6 +2129,36 @@ class MainWindow(QMainWindow):
             for r, row in enumerate(rows):
                 for c, value in enumerate(row):
                     table.setItem(r, c, QTableWidgetItem(str(value)))
+        self._update_exclusion_counts()
+
+    @staticmethod
+    def _parse_position_text(text: str) -> list[int]:
+        values = [int(value) for value in re.findall(r"\d+", text)]
+        if len(values) != len(set(values)):
+            raise ValueError("Exclusion positions must be unique.")
+        return values
+
+    def _update_exclusion_counts(self) -> None:
+        if not hasattr(self, "exclusion_counts"):
+            return
+        cfg = self.project.loco_config
+        total = len(cfg.machine_elements.bpm_ords); excluded = len(cfg.bad_bpm_positions)
+        self.exclusion_counts.setText(
+            f"BPMs: {total} selected, {excluded} excluded, {max(0, total-excluded)} retained; "
+            f"H correctors: {len(cfg.machine_elements.horizontal_corrector_ords)-len(cfg.excluded_horizontal_corrector_positions)} retained; "
+            f"V correctors: {len(cfg.machine_elements.vertical_corrector_ords)-len(cfg.excluded_vertical_corrector_positions)} retained"
+        )
+
+    @Slot()
+    def _store_exclusions(self) -> None:
+        try:
+            cfg = self.project.loco_config
+            cfg.bad_bpm_positions = self._parse_position_text(self.bad_bpm_positions_edit.text())
+            cfg.excluded_horizontal_corrector_positions = self._parse_position_text(self.hcor_exclusions_edit.text())
+            cfg.excluded_vertical_corrector_positions = self._parse_position_text(self.vcor_exclusions_edit.text())
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid exclusion", str(exc)); return
+        self.project.modified = True; self._update_exclusion_counts()
 
     @Slot()
     def edit_element_selection(self, role_key: str) -> None:
@@ -1982,14 +2206,39 @@ class MainWindow(QMainWindow):
             source = Path(filename)
             role = self.measurement_role.currentText()
             path = self._store_imported_measurement(source, role)
+            metadata = inspect_measurement_metadata(path, role)
             self.project.measurements[role] = ImportedDataset(
                 role=role,
                 path=str(path),
                 file_type=path.suffix.lower().lstrip("."),
                 size_bytes=path.stat().st_size,
+                options=metadata,
             )
+            self._apply_measurement_metadata(role, metadata)
             self.project.modified = True
             self._refresh_ui(f"Imported {role}: {path.name}")
+
+    def _update_measurement_hint(self, role: str) -> None:
+        self.measurement_hint.setText(IMPORT_HINTS.get(role, IMPORT_HINTS["other"]))
+
+    def _apply_measurement_metadata(self, role: str, metadata: dict) -> None:
+        applied = []
+        if role == "orm":
+            for key, widget in (("dkick_h", self.rm_dkick_h), ("dkick_v", self.rm_dkick_v)):
+                if key in metadata:
+                    widget.setValue(float(metadata[key])); applied.append(f"{key}={metadata[key]:g} rad")
+        elif role == "dispersion" and "rf_step_hz" in metadata:
+            value = float(metadata["rf_step_hz"])
+            self.rm_rf_step.setValue(value); self.params_rfstep.setValue(value); self.fixed_rfstep.setValue(value)
+            applied.append(f"RF step={value:g} Hz")
+        if "bidirectional" in metadata:
+            self.rm_bidirectional.setChecked(bool(metadata["bidirectional"])); applied.append(f"bidirectional={bool(metadata['bidirectional'])}")
+        datasets = metadata.get("datasets") or []
+        if datasets: applied.append("datasets=" + ", ".join(map(str, datasets)))
+        self.measurement_metadata_label.setText(
+            "Detected/applied measurement metadata: " + ", ".join(applied) if applied else
+            "No recognized acquisition settings were present; current Fit Configuration values remain unchanged."
+        )
 
 
     def _store_imported_measurement(self, source: Path, role: str) -> Path:
@@ -2038,7 +2287,17 @@ class MainWindow(QMainWindow):
                 window.apply_theme(self.current_theme)
         if hasattr(self, "results_workspace"):
             self.results_workspace.apply_theme()
+        self._refresh_branding_assets()
         self._refresh_ui(f"{self.current_theme.display_name} theme selected")
+
+    def _update_header_branding(self) -> None:
+        if hasattr(self, "header_brand_action"):
+            visible = self.width() >= 1300
+            self.header_brand_action.setVisible(visible); self.header_brand.setVisible(visible)
+
+    def _refresh_branding_assets(self) -> None:
+        if hasattr(self, "header_brand_label"): self.header_brand_label.setText(wordmark_html(self.current_theme.key))
+        if hasattr(self, "dashboard_logo"): set_asset(self.dashboard_logo, QSize(330, 220), DISPLAY_ASSET, crop_transparency=False, theme_key=self.current_theme.key)
 
     def _update_toggle_theme_action(self) -> None:
         if self.current_theme.key == "dark":
@@ -2202,7 +2461,9 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _navigate_from_explorer(self, target: str) -> None:
-        if target in {"Machine", "Measurements", "Fit"}:
+        if target in {"Machine", "Machine Components", "Measurements", "Fit"}:
+            if target == "Machine":
+                target = "Machine Components"
             index = next((i for i in range(self._workspace.count()) if self._workspace.tabText(i) == target), -1)
             if index >= 0:
                 self._workspace.setCurrentIndex(index)
@@ -2358,45 +2619,19 @@ class MainWindow(QMainWindow):
         window.destroyed.connect(lambda _obj=None, w=window: self._orm_comparison_windows.remove(w) if w in self._orm_comparison_windows else None)
         window.show()
 
-    def _show_about_dialog(self) -> None:
+    def _build_about_dialog(self) -> QDialog:
         dialog = QDialog(self)
         dialog.setWindowTitle("About pyLOCO")
+        dialog.setWindowIcon(self.windowIcon())
         dialog.setModal(True)
-        dialog.resize(560, 590)
-        dialog.setMinimumSize(380, 360)
-        outer = QVBoxLayout(dialog)
-        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame)
-        content = QWidget(); layout = QVBoxLayout(content)
-        layout.setContentsMargins(24, 18, 24, 18)
-        layout.addLayout(self._logo_block(360))
-        def about_label(text, *, rich=False, object_name=""):
-            label = QLabel(text); label.setAlignment(Qt.AlignCenter); label.setWordWrap(True)
-            if object_name: label.setObjectName(object_name)
-            if rich: label.setTextFormat(Qt.RichText); label.setOpenExternalLinks(True)
-            layout.addWidget(label); return label
-        about_label("S T O R A G E   R I N G   O P T I C S   C O R R E C T I O N", object_name="aboutTagline")
-        layout.addSpacing(10)
-        about_label("pyLOCO — Storage Ring Optics Correction", object_name="aboutTitle")
-        about_label("Version 0.3.0")
-        layout.addSpacing(10)
-        about_label("Scientific software for linear-optics correction workflows in storage rings.")
-        layout.addSpacing(12)
-        about_label("Contributor: Elaf Musa")
-        layout.addSpacing(6)
-        about_label("With thanks to: Ilya Agapov, Joachim Keil,\nKonstantinos Paraschou, Simone Liuzzo, and Ahmed El Deeb")
-        layout.addSpacing(12)
-        about_label("License: Apache-2.0")
-        layout.addSpacing(8)
-        about_label(
-            f'<a href="{PROJECT_REPOSITORY}">Repository</a>  ·  '
-            f'<a href="{PROJECT_DOCUMENTATION}">Documentation</a>  ·  '
-            f'<a href="{PROJECT_PAPER_URL}">Scientific reference</a>', rich=True
-        )
-        layout.addSpacing(10)
-        about_label(f'<a href="{PROJECT_PAPER_URL}">pyLOCO scientific reference and methodology (IPAC/JACoW)</a>', rich=True)
-        layout.addStretch(1)
-        scroll.setWidget(content); outer.addWidget(scroll, 1)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok)
-        buttons.accepted.connect(dialog.accept)
-        outer.addWidget(buttons)
+        dialog.setMinimumWidth(430); layout = QVBoxLayout(dialog); layout.setContentsMargins(28, 24, 28, 20)
+        logo = QLabel(); set_asset(logo, QSize(300, 200), DISPLAY_ASSET, crop_transparency=False, theme_key=self.current_theme.key)
+        details = QLabel(f"<div style='text-align:center'><b>pyLOCO — STORAGE RING OPTICS CORRECTION</b><br>Version {self._package_version()}<br><br>Scientific software for linear-optics correction workflows in storage rings.<br><br>Contributors: {PROJECT_CONTRIBUTORS}<br>With thanks to: {PROJECT_ACKNOWLEDGEMENTS}<br>License: {PROJECT_LICENSE}<br><a href='{PROJECT_REPOSITORY}'>Repository</a> · <a href='{PROJECT_DOCUMENTATION}'>Documentation</a> · <a href='{PROJECT_PAPER_URL}'>Scientific reference</a><br><br><i>{PROJECT_PAPER_TITLE}</i><br>IPAC’26, paper WEP5011</div>")
+        details.setAlignment(Qt.AlignCenter); details.setWordWrap(True); details.setOpenExternalLinks(True)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject)
+        layout.addWidget(logo, 0, Qt.AlignHCenter); layout.addWidget(details); layout.addWidget(buttons)
+        return dialog
+
+    def _show_about_dialog(self) -> None:
+        dialog = self._build_about_dialog()
         dialog.exec()

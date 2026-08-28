@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize
-from PySide6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QHBoxLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 
 class PlotCanvas(QWidget):
@@ -26,6 +26,11 @@ class PlotCanvas(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         if show_toolbar:
             layout.addWidget(self.toolbar)
+        actions = QHBoxLayout(); actions.addStretch(1)
+        self.save_button = QPushButton("Save plot…")
+        self.save_button.setToolTip("Export this plot as PNG, PDF, or SVG")
+        self.save_button.clicked.connect(self.save_plot); actions.addWidget(self.save_button)
+        layout.addLayout(actions)
         layout.addWidget(self.canvas, 1)
         self.apply_theme()
 
@@ -60,3 +65,12 @@ class PlotCanvas(QWidget):
     def clear(self) -> None:
         self.figure.clear()
         self.figure.set_facecolor(self.theme()["face"])
+
+    def save_plot(self) -> str | None:
+        filename = QFileDialog.getSaveFileName(
+            self, "Save result plot", "pyloco-result.png",
+            "PNG image (*.png);;PDF document (*.pdf);;SVG vector image (*.svg)",
+        )[0]
+        if not filename: return None
+        self.figure.savefig(filename, dpi=200, bbox_inches="tight")
+        return filename

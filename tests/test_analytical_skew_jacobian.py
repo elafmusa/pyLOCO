@@ -263,7 +263,8 @@ def test_two_iteration_skew_loco_numerical_vs_analytical(tmp_path):
             svd_threshold=1e-12,
             show_svd_plot=False,
             force_recompute=True,
-            output_dir=output,
+                output_dir=output,
+                save_jacobians=True,
         )
         recovered = float(fit_dict[1]["skew_quads"][0])
         assert abs(recovered - injected_strength) < 2e-6
@@ -376,7 +377,8 @@ def test_two_iteration_normal_and_skew_calculator_comparison(tmp_path):
             show_svd_plot=False,
             force_recompute=True,
             initial_chi2_callback=initial_chi2.append,
-            output_dir=output,
+                output_dir=output,
+                save_jacobians=True,
         )
         recovered_quad = np.asarray(fit_dict[1]["quads"]) - nominal_quad
         recovered_skew = np.asarray(fit_dict[1]["skew_quads"])

@@ -159,6 +159,27 @@ class ResultsLoader:
         return bool(self.options.get("includeDispersion", False))
 
     @property
+    def run_summary(self) -> dict[str, Any]:
+        """Concise summary assembled exclusively from persisted run artifacts."""
+        return {
+            "project_name": self.request.get("project_name"),
+            "run_name": self.result_dir.name,
+            "lattice_file": self.request.get("lattice_path"),
+            "measurement_files": self.request.get("measurements", {}),
+            "fit_list": self.options.get("fit_list", []),
+            "dispersion_enabled": self.dispersion_included,
+            "horizontal_dispersion_weight": self.options.get("hor_dispersion_weight"),
+            "vertical_dispersion_weight": self.options.get("ver_dispersion_weight"),
+            "runtime_seconds": self.runtime,
+            "initial_chi2": self.initial_chi2,
+            "chi2_history": self.chi2_history,
+            "final_chi2": self.final_chi2,
+            "initial_orm_rms": self.orm_rms_before,
+            "fitted_orm_rms": self.orm_rms_after,
+            "warnings": [message for level, message in self.diagnostics if level == "warning"],
+        }
+
+    @property
     def initialization(self) -> str:
         return str(self.summary.get("initialization") or "current_model")
 
@@ -234,6 +255,82 @@ class ResultsLoader:
                     baseline = candidate
             result.append(ParameterBlock(key, label, values, baseline, unit))
         return result
+
+    def parameter_identity(self, block_key: str, index: int) -> dict[str, Any]:
+        machine = self.request.get("backend_mapping", {}).get("MachineElements", {})
+        key_map = {"hbpm_gain": "bpm_ords", "vbpm_gain": "bpm_ords", "hbpm_coupling": "bpm_ords", "vbpm_coupling": "bpm_ords", "hcor_cal": "horizontal_corrector_ords", "hcor_coupling": "horizontal_corrector_ords", "vcor_cal": "vertical_corrector_ords", "vcor_coupling": "vertical_corrector_ords", "quads": "normal_quadrupole_ords", "quads_tilt": "normal_quadrupole_ords", "skew_quads": "skew_quadrupole_ords"}
+        ordinals = machine.get(key_map.get(block_key, "")) or []
+        result = {"selected_list_position": index, "lattice_ordinal": None, "element_name": None}
+        if index < len(ordinals):
+            result["lattice_ordinal"] = int(ordinals[index])
+            try:
+                import at
+                ring = at.load_lattice(self.request["lattice_path"])
+                result["element_name"] = str(getattr(ring[int(ordinals[index])], "FamName", ordinals[index]))
+            except Exception: pass
+        return result
+
+    @property
+    def quadrupole_corrections(self) -> dict[str, Any] | None:
+        if "quadrupole_corrections" in self._cache: return self._cache["quadrupole_corrections"]
+        try:
+            import at
+            import numpy as np
+            initial = at.load_lattice(self.request["lattice_path"]); final = at.load_lattice(self.result_dir / "final_lattice.mat")
+            ordinals = self.request.get("backend_mapping", {}).get("MachineElements", {}).get("normal_quadrupole_ords") or list(np.asarray(at.get_refpts(initial, at.elements.Quadrupole), dtype=int))
+            initial_k = np.asarray([initial[int(i)].PolynomB[1] for i in ordinals]); fitted_k = np.asarray([final[int(i)].PolynomB[1] for i in ordinals])
+            delta = initial_k - fitted_k; relative = np.divide(100 * delta, initial_k, out=np.full_like(delta, np.nan), where=initial_k != 0)
+            value = {"ordinals": ordinals, "names": [str(getattr(initial[int(i)], "FamName", i)) for i in ordinals], "initial": initial_k, "fitted": fitted_k, "delta_k_apply": delta, "relative_percent": relative, "sign_convention": "ΔK_apply = K_model_initial − K_model_fitted"}
+        except Exception as exc:
+            value = None; self._unavailable["quadrupole_corrections"] = str(exc)
+        self._cache["quadrupole_corrections"] = value; return value
+
+    @property
+    def beta_beating(self):
+        if "beta_beating" not in self._cache:
+            import numpy as np
+            try:
+                with np.load(self.result_dir / "optics_results.npz", allow_pickle=False) as data:
+                    if "beta_initial" in data:
+                        initial, fitted = np.asarray(data["beta_initial"]), np.asarray(data["beta_fitted"])
+                        beating = np.divide(fitted-initial, initial, out=np.full_like(initial, np.nan), where=initial != 0)
+                        self._cache["beta_beating"] = {"bpm_ordinals": np.asarray(data["bpm_ordinals"]), "s_position": np.asarray(data["s_position"]), "initial": initial, "fitted": fitted, "beating": beating}
+                    else:
+                        current = self.beta_beating_data
+                        self._cache["beta_beating"] = None if current is None else {"s_position": current["s"], "beating": np.column_stack((current["beta_beating_x"], current["beta_beating_y"]))}
+            except Exception as exc:
+                self._cache["beta_beating"] = None; self._unavailable["beta_beating"] = str(exc)
+        return self._cache["beta_beating"]
+
+    @property
+    def jacobian_artifact(self):
+        for name in ("jacobian.h5", "jacobian.npz"):
+            path = self.result_dir / name
+            if path.is_file(): return path
+        return None
+
+    @property
+    def jacobian_available(self) -> bool:
+        return self.jacobian_artifact is not None
+
+    @property
+    def jacobian_metadata(self) -> dict[str, Any]:
+        return self._json("jacobian_metadata.json")
+
+    @property
+    def jacobian(self):
+        if "jacobian" not in self._cache:
+            import numpy as np
+            try:
+                if self.jacobian_artifact.suffix == ".h5":
+                    import h5py
+                    with h5py.File(self.jacobian_artifact, "r") as handle: value = np.asarray(handle["matrix"])
+                else:
+                    with np.load(self.jacobian_artifact, allow_pickle=False) as data: value = np.asarray(data["matrix"])
+            except Exception as exc:
+                value = None; self._unavailable["jacobian"] = str(exc)
+            self._cache["jacobian"] = value
+        return self._cache["jacobian"]
 
     def _lattice_parameter_baseline(self, key: str, expected: int):
         """Read the selected magnet values from the run's initial lattice."""
