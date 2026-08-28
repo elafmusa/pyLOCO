@@ -26,6 +26,22 @@ from .analytic_orm_with_skew_quad_errors import analytic_orm_variation_with_skew
 
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+
+def _raise_if_cancelled(cancel_callback):
+    if cancel_callback is not None and cancel_callback():
+        raise RuntimeError("LOCO run cancelled by the user.")
+
+
+def _wait_for_pool_result(pending, pool, cancel_callback, stage):
+    """Poll a multiprocessing result so GUI cancellation can terminate workers."""
+    while True:
+        try:
+            return pending.get(timeout=0.1)
+        except mp.TimeoutError:
+            if cancel_callback is not None and cancel_callback():
+                pool.terminate()
+                raise RuntimeError(f"LOCO run cancelled during {stage}.")
+
 #SAVE_JACOBIANS = False
 
 # ============================================================================== #
@@ -542,6 +558,7 @@ def compute_jacobian(
     analytical_skew_use_mp=False,
     response_matrix_calculator="Linear",
     calculator_trace_callback=None,
+    cancel_callback=None,
 ):
     """
     Master function to compute full LOCO Jacobian including:
@@ -661,6 +678,7 @@ def compute_jacobian(
                     output_dir=output_dir,
                     log_filename="quad_jacobian_logs2.txt",
                     orm_calculator=orm_calculator,
+                    cancel_callback=cancel_callback,
                 )
 
 
@@ -735,6 +753,7 @@ def compute_jacobian(
                     analytical_thick_steerers=analytical_thick_steerers,
                     analytical_verbose=analytical_verbose,
                     analytical_use_mp=analytical_use_mp,
+                    cancel_callback=cancel_callback,
                 )
 
 
@@ -760,6 +779,7 @@ def compute_jacobian(
                         auto_correct_delta=auto_correct_delta,
                         fit_cfg=fit_cfg,
                         orm_calculator=response_matrix_calculator,
+                        cancel_callback=cancel_callback,
                     )
 
 
@@ -970,6 +990,7 @@ def compute_jacobian(
                     fit_cfg=fit_cfg, includeDispersion=includeDispersion, output_dir=output_dir,
                     log_filename="skew_jacobian_logs.txt",
                     orm_calculator=response_matrix_calculator,
+                    cancel_callback=cancel_callback,
                 )
             elif skew_method == "analytical":
                 C_model_orm = C_model[:, :-1] if includeDispersion else C_model
@@ -986,6 +1007,7 @@ def compute_jacobian(
                     analytical_thick_steerers=analytical_skew_thick_steerers,
                     analytical_verbose=analytical_skew_verbose,
                     analytical_use_mp=analytical_skew_use_mp,
+                    cancel_callback=cancel_callback,
                 )
                 if includeDispersion:
                     # Reuse the exact numerical skew perturbation and central-
@@ -998,6 +1020,7 @@ def compute_jacobian(
                         includeDispersion=True, output_dir=output_dir,
                         log_filename="skew_dispersion_jacobian_logs.txt",
                         orm_calculator=response_matrix_calculator,
+                        cancel_callback=cancel_callback,
                     )
                     J_skew = np.concatenate(
                         (J_skew, J_skew_numerical[:, :, -1, np.newaxis]), axis=2
@@ -1096,7 +1119,8 @@ def compute_jacobian(
                 ring, C_model, dkick, CMords, bpm_indexes, quads_tilt_ind, delta_q_tilt, C, tilt_individuals,
                 HCMCoupling, VCMCoupling, rf_step, auto_correct_delta=auto_correct_delta,
                 includeDispersion=includeDispersion, output_dir=output_dir,
-                log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit, fit_cfg=fit_cfg
+                log_filename="tilt_quad_jacobian_logs.txt", quads_tilt_fit=quads_tilt_fit,
+                fit_cfg=fit_cfg, cancel_callback=cancel_callback,
             )
             print(f"Quad tilt Jacobian: {time.perf_counter()-t:.1f} s")
 
@@ -1284,7 +1308,7 @@ def calculate_quads_jacobian(
         auto_correct_delta=True,
         fit_cfg=None, output_dir="output",
         log_filename="quad_jacobian_logs.txt", processes=None, includeDispersion=False,
-        orm_calculator="Linear",
+        orm_calculator="Linear", cancel_callback=None,
 ):
     from pathlib import Path
 
@@ -1318,7 +1342,10 @@ def calculate_quads_jacobian(
                           shm_Cm.name, C_model.shape, C_model.dtype.str),
                 maxtasksperchild=64,
         ) as pool:
-            results = pool.starmap(generating_quads_response_matrices, quad_args, chunksize=1)
+            pending = pool.starmap_async(generating_quads_response_matrices, quad_args, chunksize=1)
+            results = _wait_for_pool_result(
+                pending, pool, cancel_callback, "numerical quadrupole Jacobian calculation"
+            )
 
         if results:
             J_blocks, deltas, logs_lists = zip(*results)
@@ -1372,6 +1399,7 @@ def calculate_quads_dispersion_jacobian(
     auto_correct_delta=True,
     fit_cfg=None,
     orm_calculator="Linear",
+    cancel_callback=None,
 ):
     """
     Calculate only the dispersion-column derivative with respect
@@ -1564,6 +1592,7 @@ def calculate_quads_dispersion_jacobian(
     # ============================================================
 
     for p, quad_parameter in enumerate(quads_ind):
+        _raise_if_cancelled(cancel_callback)
 
         # --------------------------------------------------------
         # Build physical quadrupole group
@@ -2047,6 +2076,7 @@ def calculate_quads_jacobian_analytical(
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    cancel_callback=None,
 ):
     """
     # Analytical ORM derivative formulas based on:
@@ -2175,6 +2205,7 @@ def calculate_quads_jacobian_analytical(
         thick_steerers=analytical_thick_steerers,
         verbose=analytical_verbose,
         use_mp=analytical_use_mp,
+        cancel_callback=cancel_callback,
     )
 
     _, dMV = analytic_orm_variation_with_normal_quadrupole(
@@ -2186,6 +2217,7 @@ def calculate_quads_jacobian_analytical(
         thick_steerers=analytical_thick_steerers,
         verbose=analytical_verbose,
         use_mp=analytical_use_mp,
+        cancel_callback=cancel_callback,
     )
 
     # physical quad index -> analytical-array index
@@ -2290,6 +2322,7 @@ def calculate_skew_jacobian_analytical(
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    cancel_callback=None,
 ):
     """Return the analytical skew ORM Jacobian in pyLOCO layout.
 
@@ -2350,6 +2383,7 @@ def calculate_skew_jacobian_analytical(
         thick_skew=analytical_thick_skew,
         thick_steerer=analytical_thick_steerers,
         use_mp=analytical_use_mp,
+        cancel_callback=cancel_callback,
     )
     _, d_xy = analytic_orm_variation_with_skew_quadrupole(
         ring, ind_bpms=bpm_indexes, ind_cors=vcor,
@@ -2357,6 +2391,7 @@ def calculate_skew_jacobian_analytical(
         thick_skew=analytical_thick_skew,
         thick_steerer=analytical_thick_steerers,
         use_mp=analytical_use_mp,
+        cancel_callback=cancel_callback,
     )
 
     jacobian = np.zeros((len(groups), *expected_shape), dtype=float)
@@ -2407,6 +2442,7 @@ def calculate_quads_tilt_jacobian(
     log_filename="quads_tilt_jacobian_logs.txt",
     quads_tilt_fit=None,
     fit_cfg=None,
+    cancel_callback=None,
 ):
 
     from pathlib import Path
@@ -2507,10 +2543,13 @@ def calculate_quads_tilt_jacobian(
             maxtasksperchild=64,
         ) as pool:
 
-            results = pool.starmap(
+            pending = pool.starmap_async(
                 generating_quads_tilt_response_matrices,
                 quad_args,
                 chunksize=1,
+            )
+            results = _wait_for_pool_result(
+                pending, pool, cancel_callback, "quadrupole-tilt Jacobian calculation"
             )
 
         # ========================================================
@@ -4780,6 +4819,7 @@ def pyloco(
         iteration_metrics_callback=None,
         calculator_trace_callback=None,
         jacobian_callback=None,
+        cancel_callback=None,
         output_dir='output',
         save_jacobians=False,
 
@@ -4976,6 +5016,7 @@ def pyloco(
     # ------- Outer iterations -------
     iterations_started = time.perf_counter()
     for it in range(nIter):
+        _raise_if_cancelled(cancel_callback)
         iteration_started = time.perf_counter()
         trial_orm_seconds = 0.0
         print(f"\n==== Iteration {it + 1}/{nIter} – {algorithm.upper()} ====")
@@ -4987,6 +5028,7 @@ def pyloco(
         orm_started = time.perf_counter()
         _trace_calculator(calculator_trace_callback, "main_model_orm", cfg.calculator)
         orm_model = response_matrix(ring, config=cfg)
+        _raise_if_cancelled(cancel_callback)
         model_orm_seconds = time.perf_counter() - orm_started
 
         Cmat = _build_C_matrix(hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain)
@@ -5050,6 +5092,7 @@ def pyloco(
             analytical_skew_use_mp=analytical_skew_use_mp,
             response_matrix_calculator=response_matrix_calculator,
             calculator_trace_callback=calculator_trace_callback,
+            cancel_callback=cancel_callback,
             quads_tilt_jacobian_file=quads_tilt_jacobian_file,
             force_recompute=force_recompute,
             output_dir=output_dir,
@@ -5057,6 +5100,7 @@ def pyloco(
 
 
         )
+        _raise_if_cancelled(cancel_callback)
         jacobian_seconds = time.perf_counter() - jacobian_started
 
 
@@ -5274,6 +5318,7 @@ def pyloco(
             accepted = False
 
             for j in range(nLMIter):
+                _raise_if_cancelled(cancel_callback)
 
 
                 fit_results, lam_used, Ivec, S = solve_step_lm(
@@ -5325,6 +5370,7 @@ def pyloco(
                 trial_orm_started = time.perf_counter()
                 _trace_calculator(calculator_trace_callback, "trial_model_orm", cfg2.calculator)
                 orm_trial = response_matrix(ring_tmp, config=cfg2)
+                _raise_if_cancelled(cancel_callback)
                 trial_orm_seconds += time.perf_counter() - trial_orm_started
                 orm_trial = Cmat2 @ orm_trial
 

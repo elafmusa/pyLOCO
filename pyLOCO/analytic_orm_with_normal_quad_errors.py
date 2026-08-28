@@ -23,7 +23,8 @@ def analytic_orm_variation_with_normal_quadrupole(
         thick_quadrupole=True,
         thick_steerers=True,
         opt_all_location=None,
-        use_mp=False):
+        use_mp=False,
+        cancel_callback=None):
     """
     Computes the derivative of the orbit response matrix compared to normal quadrupoles
 
@@ -57,7 +58,7 @@ def analytic_orm_variation_with_normal_quadrupole(
             print('RM derivative parallel computation using {} cores'.format(n_processes))
 
         with multiprocessing.Pool() as p:
-            results = p.starmap( _analytic_orm_variation_with_normal_quadrupole,
+            pending = p.starmap_async( _analytic_orm_variation_with_normal_quadrupole,
                                  zip(repeat(ring),
                                      repeat(ind_bpms),
                                      repeat(ind_cors),
@@ -65,9 +66,18 @@ def analytic_orm_variation_with_normal_quadrupole(
                                      repeat(thick_quadrupole),
                                      repeat(thick_steerers),
                                      repeat(verbose),
-                                     repeat(opt_all_location)
+                                     repeat(opt_all_location),
+                                     repeat(None),
                                      )
                                  )
+            while True:
+                try:
+                    results = pending.get(timeout=0.1)
+                    break
+                except multiprocessing.TimeoutError:
+                    if cancel_callback is not None and cancel_callback():
+                        p.terminate()
+                        raise RuntimeError("LOCO run cancelled during analytical normal Jacobian calculation.")
 
         for m, _ in enumerate(ind_quads):
             _MH = results[m][0]
@@ -85,7 +95,8 @@ def analytic_orm_variation_with_normal_quadrupole(
                         verbose=verbose,
                         thick_quadrupole=thick_quadrupole,
                         thick_steerers=thick_steerers,
-                        opt_all_location=opt_all_location)
+                        opt_all_location=opt_all_location,
+                        cancel_callback=cancel_callback)
 
     return MH, MV
 def _analytic_orm_variation_with_normal_quadrupole(
@@ -96,7 +107,8 @@ def _analytic_orm_variation_with_normal_quadrupole(
         thick_quadrupole=False,
         thick_steerers=False,
         verbose=True,
-        opt_all_location=None):
+        opt_all_location=None,
+        cancel_callback=None):
     """
     analytic orbit response matrix derivative with integrated (KL) errors at normal quadrupoles
 
@@ -113,8 +125,11 @@ def _analytic_orm_variation_with_normal_quadrupole(
         _, _, opt_all_location = ring.linopt6(range(len(ring)))
 
     # print(type(ind_quads))
-    if isinstance(ind_quads, np.uint32):
-        ind_quads = [ind_quads]
+    # Multiprocessing dispatches one lattice ordinal to each worker as a
+    # plain Python ``int``.  Normalize every NumPy/Python scalar to the same
+    # one-element sequence accepted by the sequential implementation.
+    if np.isscalar(ind_quads):
+        ind_quads = [int(ind_quads)]
 
     bpm = opt_all_location[ind_bpms]
     cor = opt_all_location[ind_cors]
@@ -280,6 +295,8 @@ def _analytic_orm_variation_with_normal_quadrupole(
         TC.append( [beta[p]**0.5 - Lw * alpha[p] / (2 * beta[p]**0.5) for p in [x, y]] )
 
     for countm, m in enumerate(range(len(qua))):
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("LOCO run cancelled during analytical normal Jacobian calculation.")
 
         if thick_quadrupole:
             Lm = ring[ind_quads[m]].Length

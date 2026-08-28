@@ -75,6 +75,7 @@ class LocoRunError:
 
     message: str
     traceback: str
+    cancelled: bool = False
 
 
 @dataclass(slots=True)
@@ -113,8 +114,9 @@ class _ProgressStream(io.TextIOBase):
 def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback=None) -> LocoRunResult:
     """Execute the existing pyLOCO API for a GUI request.
 
-    Cancellation is cooperative: pyLOCO currently has no cancellation hook, so the
-    callback is checked before and after the backend call.
+    Cancellation is cooperative: the callback is forwarded to pyLOCO and checked
+    at safe calculation checkpoints. Active Jacobian worker pools are terminated
+    promptly without leaving a partially written result marked as completed.
     """
 
     start = time.monotonic()
@@ -235,6 +237,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         kwargs["initial_state_callback"] = persist_iteration
         kwargs["iteration_metrics_callback"] = persist_iteration
         kwargs["calculator_trace_callback"] = calculator_trace.append
+        kwargs["cancel_callback"] = cancelled
         if bool(options.get("save_jacobians", False)):
             kwargs["jacobian_callback"] = lambda matrix, iteration: jacobian_capture.update(
                 matrix=matrix, iteration=int(iteration)
@@ -249,7 +252,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
             result_tuple = pyloco(ring, **kwargs)
         stream.flush()
         if cancelled():
-            log("Cancellation was requested; backend finished before it could be interrupted.")
+            raise RuntimeError("LOCO run cancelled by the user.")
 
         fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks = result_tuple
         elapsed = time.monotonic() - start
@@ -296,7 +299,7 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
     except Exception:
         log(traceback.format_exc())
         if (results_dir / "iterations").is_dir():
-            _write_iteration_manifest(results_dir, run_status="failed")
+            _write_iteration_manifest(results_dir, run_status="cancelled" if cancelled() else "failed")
         _save_backend_log(results_dir, log_lines)
         raise
     finally:

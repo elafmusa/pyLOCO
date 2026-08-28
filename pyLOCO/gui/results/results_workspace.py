@@ -180,16 +180,16 @@ class ResultsWorkspace(QWidget):
         for view in (self.overview, self.orm, self.optics, self.parameters, self.summary, self.svd, self.files):
             view.set_loader(self.loader)
 
-    def fail_run(self) -> Path | None:
+    def fail_run(self, *, cancelled: bool = False) -> Path | None:
         self.run_progress.setRange(0, 1); self.run_progress.setValue(0)
-        self.run_status_label.setText("Failed"); self.cancel_button.setEnabled(False)
+        self.run_status_label.setText("Cancelled" if cancelled else "Failed"); self.cancel_button.setEnabled(False)
         self.waiting_games_button.hide()
         candidate = Path(self.run_output_dir.text()).expanduser()
         manifest = candidate / "iterations" / "manifest.json"
         if candidate.is_dir() and manifest.is_file():
             self.load_results(candidate)
-            self.run_status_label.setText("Run failed; completed iteration states remain available")
-            self.compact_status.setText("⚠ Run incomplete — completed iterations preserved")
+            self.run_status_label.setText(("Run cancelled" if cancelled else "Run failed") + "; completed iteration states remain available")
+            self.compact_status.setText(("■ Run cancelled" if cancelled else "⚠ Run incomplete") + " — completed iterations preserved")
             self.tabs.setCurrentIndex(0)
             return candidate
         self.tabs.setCurrentIndex(self.tabs.count() - 1)

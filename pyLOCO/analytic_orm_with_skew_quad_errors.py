@@ -23,7 +23,8 @@ def analytic_orm_variation_with_skew_quadrupole(
         thick_skew=True,
         thick_steerer=True,
         opt_all_location=None,
-        use_mp=False):
+        use_mp=False,
+        cancel_callback=None):
     """
     Computes the derivative of the orbit response matrix compared to skew quadrupoles
 
@@ -56,7 +57,7 @@ def analytic_orm_variation_with_skew_quadrupole(
             print('parallel computation using {} cores'.format(n_processes))
 
         with multiprocessing.Pool() as p:
-            results = p.starmap(_analytic_orm_variation_with_skew_quadrupole,
+            pending = p.starmap_async(_analytic_orm_variation_with_skew_quadrupole,
                                  zip(repeat(ring),
                                      repeat(ind_bpms),
                                      repeat(ind_cors),
@@ -64,9 +65,18 @@ def analytic_orm_variation_with_skew_quadrupole(
                                      repeat(verbose),
                                      repeat(thick_skew),
                                      repeat(thick_steerer),
-                                     repeat(opt_all_location)
+                                     repeat(opt_all_location),
+                                     repeat(None),
                                      )
                                  )
+            while True:
+                try:
+                    results = pending.get(timeout=0.1)
+                    break
+                except multiprocessing.TimeoutError:
+                    if cancel_callback is not None and cancel_callback():
+                        p.terminate()
+                        raise RuntimeError("LOCO run cancelled during analytical skew Jacobian calculation.")
 
         for m, _ in enumerate(ind_skews):
             _MH2V=results[m][0]
@@ -84,7 +94,8 @@ def analytic_orm_variation_with_skew_quadrupole(
                         verbose=verbose,
                         thick_skew=thick_skew,
                         thick_steerer=thick_steerer,
-                        opt_all_location=opt_all_location)
+                        opt_all_location=opt_all_location,
+                        cancel_callback=cancel_callback)
 
     return MH2V, MV2H
 
@@ -97,7 +108,8 @@ def _analytic_orm_variation_with_skew_quadrupole(
         verbose=True,
         thick_skew=True,
         thick_steerer=True,
-        opt_all_location=None):
+        opt_all_location=None,
+        cancel_callback=None):
     """
     analytic orbit response matrix derivative with integrated (KL) errors at skew quadrupoles
 
@@ -113,8 +125,10 @@ def _analytic_orm_variation_with_skew_quadrupole(
     if opt_all_location is None:
         _, _, opt_all_location = ring.linopt6(range(len(ring)))
 
-    if isinstance(ind_skews, np.uint32):
-        ind_skews = [ind_skews]
+    # ``Pool.starmap`` supplies a single lattice ordinal (normally a Python
+    # int) to each worker.  Keep worker and sequential input contracts equal.
+    if np.isscalar(ind_skews):
+        ind_skews = [int(ind_skews)]
 
     bpm = opt_all_location[ind_bpms]
     cor = opt_all_location[ind_cors]
@@ -253,6 +267,8 @@ def _analytic_orm_variation_with_skew_quadrupole(
     sqrt_beta_bpm = [b.beta**0.5 for b in bpm]
 
     for countm, m in enumerate(range(len(qua))):
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError("LOCO run cancelled during analytical skew Jacobian calculation.")
 
         if thick_skew:
             is_a_quad = True

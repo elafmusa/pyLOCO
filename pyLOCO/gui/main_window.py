@@ -313,7 +313,7 @@ class LocoRunWorker(QObject):
         except Exception as exc:
             import traceback
 
-            self.failed.emit(LocoRunError(str(exc), traceback.format_exc()))
+            self.failed.emit(LocoRunError(str(exc), traceback.format_exc(), self.cancel_requested))
         else:
             self.finished.emit(result)
 
@@ -2614,7 +2614,7 @@ class MainWindow(QMainWindow):
             self._run_worker.cancel_requested = True
             self.cancel_loco_button.setEnabled(False)
             self._set_waiting_game_status("cancelled")
-            self._append_run_log("Cancellation requested. The current backend step will finish before stopping if cancellation is feasible.")
+            self._append_run_log("Cancellation requested. Stopping at the next safe calculation checkpoint…")
 
     @Slot(str)
     def _append_run_log(self, message: str) -> None:
@@ -2658,20 +2658,24 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_loco_failed(self, error: LocoRunError) -> None:
-        partial_results = self.results_workspace.fail_run()
+        partial_results = self.results_workspace.fail_run(cancelled=error.cancelled)
         if partial_results is not None:
             elapsed = None
             if self._run_started_at is not None:
                 elapsed = __import__("time").monotonic() - self._run_started_at
             self.project.completed_run = CompletedRunReference(
-                results_dir=str(partial_results), elapsed_seconds=elapsed, status="failed"
+                results_dir=str(partial_results), elapsed_seconds=elapsed,
+                status="cancelled" if error.cancelled else "failed"
             )
             self.project.modified = True
             self._project_explorer.set_result(self.results_workspace.loader)
             self._project_explorer.update_project(self.project)
-        self._append_run_log(error.traceback)
+        self._append_run_log(error.message if error.cancelled else error.traceback)
         self._set_waiting_game_status("cancelled" if self._run_cancel_requested else "failed")
-        QMessageBox.critical(self, "LOCO failed", f"The backend reported an error:\n\n{error.message}")
+        if error.cancelled:
+            QMessageBox.information(self, "LOCO cancelled", "The LOCO run was cancelled safely.\n\nAny completed iteration states were preserved.")
+        else:
+            QMessageBox.critical(self, "LOCO failed", f"The backend reported an error:\n\n{error.message}")
 
     @Slot()
     def _open_waiting_games(self) -> None:
