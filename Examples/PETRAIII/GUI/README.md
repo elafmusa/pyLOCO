@@ -37,13 +37,13 @@ larger and slower than the single-quadrupole demonstration.
 ## Coupling fit project
 
 `petra_iii_coupling.pyloco.json` is the portable PETRA III coupling project
-reconstructed from the validated measured-machine run. It uses the tracked
-PETRA III lattice and measurement resources and enables the four coupling fit
-blocks (`hbpm_coupling`, `vbpm_coupling`, `hcor_coupling`, and
-`vcor_coupling`) together with the validated family-quadrupole, skew,
-quadrupole-tilt, gain, and corrector-calibration configuration. Open it from
-the same **File → Open** action; no machine-specific absolute path is stored
-in the project file.
+derived from the verified non-coupling project above. It preserves exactly the
+same tracked lattice and measurements, BPM/corrector/quadrupole/RF selections,
+exclusions, measured per-corrector kick steps, RF/dispersion configuration,
+and solver settings. In addition it enables BPM coupling, skew-quadrupole and
+quadrupole-tilt fit blocks; measured coupling is not removed before fitting.
+Open it from the same **File → Open** action; no machine-specific absolute path
+is stored in the project file.
 
 ## Verified reference result
 

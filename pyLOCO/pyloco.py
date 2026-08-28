@@ -5212,7 +5212,7 @@ def pyloco(
             initial_chi2_callback(float(chi2_before))
 
 
-        if it == 0:
+        if it == 0 and save_jacobians:
             full_path = Path(output_dir) / "jacobians" / "full"
             full_path.mkdir(parents=True, exist_ok=True)
 

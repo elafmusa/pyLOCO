@@ -263,6 +263,7 @@ def test_petra_all_four_coupling_blocks_are_numerically_updated(tmp_path):
     for name, expected in known.items():
         assert np.allclose(np.asarray(final[name]), expected, rtol=.01, atol=1e-5)
     assert result[5][-1] < 1e-18
+    assert not (tmp_path / "jacobians" / "full").exists()
 
 
 def test_gui_backend_appends_dispersion_as_response_matrix_column():

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pyLOCO.gui.models.project import ProjectMetadata
+from pyLOCO.gui.models.project import ProjectMetadata, json_safe
 from pyLOCO.gui.backend import LocoRunRequest
 
 
@@ -185,39 +185,51 @@ def test_validated_petra_coupling_project_mapping_and_round_trip(tmp_path):
     project = ProjectMetadata.load(COUPLING_PROJECT_FILE)
     assert project.validation_messages() == []
     mapping = project.loco_config.to_backend_mapping()
+    base = ProjectMetadata.load(PROJECT_FILE)
+    base_mapping = base.loco_config.to_backend_mapping()
     elements = mapping["MachineElements"]
     assert {key: len(value) for key, value in elements.items()} == {
         "bpm_ords": 246,
-        "horizontal_corrector_ords": 40,
-        "vertical_corrector_ords": 40,
-        "normal_quadrupole_ords": 399,
+        "horizontal_corrector_ords": 219,
+        "vertical_corrector_ords": 194,
+        "normal_quadrupole_ords": 398,
         "skew_quadrupole_ords": 16,
         "cavity_ords": 12,
+    }
+    assert elements == base_mapping["MachineElements"]
+    assert json_safe(mapping["RMConfig"]) == json_safe(base_mapping["RMConfig"])
+    assert {
+        key: (dataset.path, dataset.options)
+        for key, dataset in project.measurements.items()
+    } == {
+        key: (dataset.path, dataset.options)
+        for key, dataset in base.measurements.items()
     }
     expected_fit = [
         "hbpm_gain", "hbpm_coupling", "vbpm_coupling", "vbpm_gain",
         "hcor_cal", "vcor_cal", "hcor_coupling", "vcor_coupling",
-        "quads", "skew_quads", "quads_tilt",
+        "HCMEnergyShift", "quads", "skew_quads", "quads_tilt",
     ]
     selected = set(mapping["FitInitConfig"]["fit_list"])
     from pyLOCO.config import BLOCK_ORDER
     assert [name for name in BLOCK_ORDER if name in selected] == expected_fit
-    assert mapping["FitInitConfig"]["individuals"] is False
-    assert mapping["BadBPMPositions"] == [71, 92, 101, 104, 108, 123, 138, 153, 161, 243]
-    assert mapping["RMConfig"]["dkick"] == (1.0e-4, 1.0e-4)
+    assert mapping["FitInitConfig"]["individuals"] is True
+    assert mapping["BadBPMPositions"] == base_mapping["BadBPMPositions"]
+    assert len(mapping["RMConfig"]["dkick"][0]) == 219
+    assert len(mapping["RMConfig"]["dkick"][1]) == 194
     assert mapping["RMConfig"]["rfStep"] == -3000.0
     assert mapping["RMConfig"]["calculator"] == "Linear"
-    assert mapping["RMConfig"]["coupling_orm"] is False
+    assert mapping["RMConfig"]["coupling_orm"] is True
     options = mapping["LOCOOptions"]
     assert (options["algorithm"], options["nIter"], options["nLMIter"]) == ("lm", 1, 10)
     assert options["Starting_Lambda"] == 1.0e-3 and options["max_lm_lambda"] == 15.0
     assert options["scaled"] is True
     assert options["svd_selection_method"] == "threshold"
-    assert options["svd_threshold"] == 1.0e-6 and options["show_svd_plot"] is False
+    assert options["svd_threshold"] == 1.0e-7 and options["show_svd_plot"] is False
     assert options["apply_normalization"] is True
     assert options["normalization_mode"] == "component"
-    assert options["includeDispersion"] is True
-    assert options["hor_dispersion_weight"] == options["ver_dispersion_weight"] == 5.0
+    assert options["includeDispersion"] is False
+    assert options["hor_dispersion_weight"] == options["ver_dispersion_weight"] == 1.0
     assert options["remove_coupling_"] is False
     assert options["quad_jacobian_calculator"] == "Numerical"
     assert options["skew_jacobian_calculator"] == "Numerical"
@@ -232,6 +244,6 @@ def test_validated_petra_coupling_project_mapping_and_round_trip(tmp_path):
         assert "/Users/" not in saved and "/home/" not in saved
         reopened = ProjectMetadata.load(round_trip)
         assert reopened.validation_messages() == []
-        assert reopened.loco_config.to_backend_mapping() == mapping
+        assert json_safe(reopened.loco_config.to_backend_mapping()) == json_safe(mapping)
     finally:
         round_trip.unlink(missing_ok=True)
