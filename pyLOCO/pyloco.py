@@ -1057,7 +1057,7 @@ def compute_jacobian(
     J_quad_tilt, delta_quads_tilt = None, None
 
     if include_quads_tilt:
-        user_provided = tilt_jacobian_file is not None
+        user_provided = quads_tilt_jacobian_file is not None
 
         tilt_dir = output_dir / "jacobians" / "tilt"
 
@@ -1067,7 +1067,7 @@ def compute_jacobian(
             tilt_dir.mkdir(parents=True, exist_ok=True)
 
         J_path_tilt = (
-            Path(tilt_jacobian_file)
+            Path(quads_tilt_jacobian_file)
             if user_provided
             else tilt_dir / (
                 f"J_tilt_iter{iteration}_"
