@@ -6,6 +6,7 @@ from pathlib import Path
 LOGGER = logging.getLogger(__name__)
 import time
 import json
+import copy
 from .initial_fit import build_initial_fit_parameters
 from .set_parameters import set_correction, set_correction_tilt, _get_attr_scalar, _initial_values_for_block, \
     _resolve_attr_for_block_read
@@ -4775,6 +4776,7 @@ def pyloco(
         calculate_delta_chi2=False,
         initial_model_orm_callback=None,
         initial_chi2_callback=None,
+        initial_state_callback=None,
         iteration_metrics_callback=None,
         calculator_trace_callback=None,
         jacobian_callback=None,
@@ -5210,6 +5212,16 @@ def pyloco(
         print(f"Initial Chi²: {chi2_before:.4e}")
         if it == 0 and initial_chi2_callback is not None:
             initial_chi2_callback(float(chi2_before))
+        if it == 0 and initial_state_callback is not None:
+            initial_state_callback({
+                "iteration": 0,
+                "chi2_before": float(chi2_before),
+                "chi2_after": float(chi2_before),
+                "fit_parameters": np.asarray(current_fit_parameters, dtype=float).copy(),
+                "blocks": blocks,
+                "ring": copy.deepcopy(ring),
+                "orm_model": np.asarray(orm_model, dtype=float).copy(),
+            })
 
 
         if it == 0 and save_jacobians:
@@ -5556,6 +5568,7 @@ def pyloco(
                     "cumulative_seconds": float(time.perf_counter() - iterations_started),
                 },
                 "fit_parameters": np.asarray(current_fit_parameters, dtype=float).copy(),
+                "blocks": blocks,
                 "ring": ring,
                 "orm_model": np.asarray(orm_model_after, dtype=float).copy(),
             })

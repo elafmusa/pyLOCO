@@ -21,9 +21,14 @@ class ParametersView(QWidget):
         title = QLabel("Fitted Parameters"); title.setObjectName("resultsTitle")
         self.selector = QComboBox()
         self.selector.currentIndexChanged.connect(self._render)
+        self.correction_mode = QComboBox()
+        self.correction_mode.addItem("Cumulative correction from initial", "cumulative")
+        self.correction_mode.addItem("Iteration step from previous", "step")
+        self.correction_mode.currentIndexChanged.connect(self._render)
         self.summary = QLabel("No parameter results loaded.")
         self.summary.setWordWrap(True)
         top = QHBoxLayout(); top.addWidget(QLabel("Parameter block")); top.addWidget(self.selector, 1)
+        top.addWidget(QLabel("Correction shown")); top.addWidget(self.correction_mode)
         self.export_csv = QPushButton("Save fitted data CSV…"); self.export_json = QPushButton("Save fitted data JSON…")
         self.export_csv.clicked.connect(lambda: self._export("csv")); self.export_json.clicked.connect(lambda: self._export("json"))
         top.addWidget(self.export_csv); top.addWidget(self.export_json)
@@ -50,6 +55,7 @@ class ParametersView(QWidget):
 
     def set_loader(self, loader):
         self.loader = loader
+        self.correction_mode.setVisible(loader.iteration is not None)
         self.selector.blockSignals(True); self.selector.clear()
         for block in loader.parameter_blocks:
             self.selector.addItem(f"{block.label} ({block.values.size})", block.key)
@@ -71,6 +77,13 @@ class ParametersView(QWidget):
                 else row["delta_k" if key == "__quad_delta__" else "relative_percent"]
                 for row in rows
             ], dtype=float)
+            showing_step = self.loader.iteration is not None and self.correction_mode.currentData() == "step"
+            block_slice = self.loader.fitted_parameter_blocks.get("quads")
+            if showing_step and block_slice is not None and self.loader.iteration_parameter_step is not None:
+                values = np.asarray(self.loader.iteration_parameter_step[block_slice], dtype=float)
+                if key == "__quad_relative__":
+                    initial = np.asarray([np.nan if row["initial"] is None else row["initial"] for row in rows])
+                    values = np.divide(100.0 * values, initial, out=np.full_like(values, np.nan), where=initial != 0)
             unit = "m⁻²" if key == "__quad_delta__" else "%"
             finite = values[np.isfinite(values)]
             mode = rows[0]["mode"] if rows else "unknown"
@@ -81,7 +94,9 @@ class ParametersView(QWidget):
                 )
             else:
                 statistics = "Correction statistics unavailable because the initial K values were not persisted."
-            self.summary.setText(f"{len(rows)} {mode} fitted quadrupole parameters · ΔK = K_fitted − K_initial · {statistics}")
+            correction_definition = (f"iteration step = state {self.loader.iteration} − state {max(0, self.loader.iteration - 1)}"
+                                     if showing_step else "cumulative ΔK = K_fitted − K_initial")
+            self.summary.setText(f"{len(rows)} {mode} fitted quadrupole parameters · Plot: {correction_definition} · {statistics}. The table retains the cumulative fitted state.")
             axis = self.plot.figure.add_subplot(111); axis.plot(values, marker=".", linewidth=1.0)
             title = "Quadrupole ΔK" if key == "__quad_delta__" else "Quadrupole ΔK/K"
             axis.set(xlabel="Fitted-parameter position", ylabel=f"Correction [{unit}]", title=title)
@@ -111,11 +126,28 @@ class ParametersView(QWidget):
         values = np.asarray(block.values, dtype=float)
         changes = block.changes
         plotted = np.asarray(changes if changes is not None else values, dtype=float)
-        quantity = "Change from initialization" if changes is not None else "Fitted value"
+        quantity = "Cumulative change from initialization" if changes is not None else "Fitted value"
+        sl = self.loader.fitted_parameter_blocks.get(block.key)
+        if (self.loader.iteration is not None and self.correction_mode.currentData() == "step"
+                and sl is not None and self.loader.iteration_parameter_step is not None):
+            plotted = np.asarray(self.loader.iteration_parameter_step[sl], dtype=float)
+            quantity = f"Iteration {self.loader.iteration} step from previous state"
+        iteration_note = ""
+        if self.loader.iteration is not None:
+            sl = self.loader.fitted_parameter_blocks.get(block.key)
+            cumulative = self.loader.cumulative_parameter_change
+            step = self.loader.iteration_parameter_step
+            if sl is not None and cumulative is not None and step is not None:
+                cumulative_rms = np.sqrt(np.mean(np.asarray(cumulative[sl], dtype=float) ** 2))
+                step_rms = np.sqrt(np.mean(np.asarray(step[sl], dtype=float) ** 2))
+                iteration_note = (
+                    f" Cumulative change (iteration {self.loader.iteration} − initial) RMS: {cumulative_rms:.6g};"
+                    f" iteration step (iteration {self.loader.iteration} − previous) RMS: {step_rms:.6g}."
+                )
         self.summary.setText(
             f"{block.label}: {values.size} fitted DOFs · {quantity.lower()} mean {np.mean(plotted):.6g} · "
             f"RMS {np.sqrt(np.mean(plotted**2)):.6g} · median {np.median(plotted):.6g} · range {np.min(plotted):.6g} to {np.max(plotted):.6g}. "
-            "The chart shows the fitted change when the initial values are available."
+            "The chart shows the fitted change when the initial values are available." + iteration_note
         )
         axis = self.plot.figure.add_subplot(111)
         axis.plot(np.arange(values.size), plotted, color="#19a974", linewidth=1.1)

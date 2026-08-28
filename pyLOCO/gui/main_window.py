@@ -2658,7 +2658,17 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_loco_failed(self, error: LocoRunError) -> None:
-        self.results_workspace.fail_run()
+        partial_results = self.results_workspace.fail_run()
+        if partial_results is not None:
+            elapsed = None
+            if self._run_started_at is not None:
+                elapsed = __import__("time").monotonic() - self._run_started_at
+            self.project.completed_run = CompletedRunReference(
+                results_dir=str(partial_results), elapsed_seconds=elapsed, status="failed"
+            )
+            self.project.modified = True
+            self._project_explorer.set_result(self.results_workspace.loader)
+            self._project_explorer.update_project(self.project)
         self._append_run_log(error.traceback)
         self._set_waiting_game_status("cancelled" if self._run_cancel_requested else "failed")
         QMessageBox.critical(self, "LOCO failed", f"The backend reported an error:\n\n{error.message}")

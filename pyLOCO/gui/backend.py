@@ -18,6 +18,8 @@ import time
 import traceback
 import re
 import copy
+import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -208,8 +210,8 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         calculator_trace: list[dict[str, Any]] = []
         jacobian_capture: dict[str, Any] = {}
 
-        def capture_iteration(record: dict[str, Any]) -> None:
-            iteration_metrics.append(_iteration_diagnostics(
+        def persist_iteration(record: dict[str, Any]) -> None:
+            diagnostics = _iteration_diagnostics(
                 record,
                 reference_ring=reference_ring,
                 measured=measured,
@@ -217,10 +219,21 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
                 rf_step=float(rm_cfg.rfStep),
                 rf_frequency=float(config_module.fixed_parameters.Frequency),
                 momentum_compaction=float(mcf_value.ravel()[0]),
-            ))
+            )
+            _save_iteration_snapshot(
+                results_dir, record, diagnostics=diagnostics,
+                reference_ring=reference_ring, measured=measured,
+                include_dispersion=bool(options.get("includeDispersion", False)),
+                bpm_ords=indices["used_bpms_ords"], rf_step=float(rm_cfg.rfStep),
+                rf_frequency=float(config_module.fixed_parameters.Frequency),
+                momentum_compaction=float(mcf_value.ravel()[0]), request=request,
+            )
+            if int(record.get("iteration", 0)) > 0:
+                iteration_metrics.append(diagnostics)
 
         kwargs["initial_model_orm_callback"] = lambda orm: _save_initial_model_orm(results_dir, orm)
-        kwargs["iteration_metrics_callback"] = capture_iteration
+        kwargs["initial_state_callback"] = persist_iteration
+        kwargs["iteration_metrics_callback"] = persist_iteration
         kwargs["calculator_trace_callback"] = calculator_trace.append
         if bool(options.get("save_jacobians", False)):
             kwargs["jacobian_callback"] = lambda matrix, iteration: jacobian_capture.update(
@@ -271,6 +284,8 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         )
         if optics_path is not None:
             output_files.append(str(optics_path))
+        manifest = _write_iteration_manifest(results_dir, run_status="completed")
+        output_files.append(str(manifest))
         output_files.extend(str(path) for path in _save_jacobian(
             results_dir, jacobian_capture, blocks, request, indices
         ))
@@ -280,6 +295,8 @@ def run_loco_request(request: LocoRunRequest, log_callback=None, cancel_callback
         return LocoRunResult(str(results_dir), elapsed, [float(x) for x in chi2_history], output_files)
     except Exception:
         log(traceback.format_exc())
+        if (results_dir / "iterations").is_dir():
+            _write_iteration_manifest(results_dir, run_status="failed")
         _save_backend_log(results_dir, log_lines)
         raise
     finally:
@@ -885,7 +902,8 @@ def _iteration_diagnostics(
     """Convert an in-process iteration snapshot to compact JSON metrics."""
     import numpy as np
 
-    result = {key: value for key, value in record.items() if key not in {"ring", "orm_model"}}
+    result = {key: value for key, value in record.items()
+              if key not in {"ring", "orm_model", "fit_parameters", "blocks"}}
     ring = record.get("ring")
 
     def stats(values, *, scale=1.0):
@@ -932,6 +950,101 @@ def _iteration_diagnostics(
     return _jsonable(result)
 
 
+def _save_iteration_snapshot(
+    results_dir: Path, record: dict[str, Any], *, diagnostics: dict[str, Any],
+    reference_ring, measured: dict[str, Any], include_dispersion: bool, bpm_ords,
+    rf_step: float, rf_frequency: float, momentum_compaction: float,
+    request: LocoRunRequest,
+) -> Path:
+    """Atomically persist one accepted outer-iteration state.
+
+    The solver callback is emitted only after the corrected ORM and chi-squared
+    have been calculated.  A temporary directory prevents a failed write from
+    advertising a partial iteration as completed.
+    """
+    import at
+    import numpy as np
+
+    number = int(record.get("iteration", 0))
+    root = results_dir / "iterations"
+    root.mkdir(parents=True, exist_ok=True)
+    final = root / f"iteration_{number:03d}"
+    temporary = Path(tempfile.mkdtemp(prefix=f".iteration_{number:03d}-", dir=root))
+    try:
+        vector = np.asarray(record["fit_parameters"], dtype=float).ravel()
+        orm = np.asarray(record["orm_model"], dtype=float)
+        np.savez_compressed(
+            temporary / "loco_results.npz",
+            fit_results=vector[np.newaxis, :], orm_model=orm,
+            chi2_history=np.asarray([record.get("chi2_after")], dtype=float),
+        )
+        at.save_lattice(record["ring"], str(temporary / "fitted_lattice.mat"))
+        _save_optics_results(
+            temporary, reference_ring=reference_ring, fitted_ring=record["ring"],
+            measured=measured, initial_orm_path=results_dir / "model_orm_initial.h5",
+            fitted_orm=orm, include_dispersion=include_dispersion,
+            reference_kind="run_initial_iteration", bpm_ords=bpm_ords,
+            rf_step=rf_step, rf_frequency=rf_frequency,
+            momentum_compaction=momentum_compaction,
+        )
+        previous_vector = None
+        if number > 0:
+            previous = root / f"iteration_{number - 1:03d}" / "loco_results.npz"
+            if previous.exists():
+                with np.load(previous, allow_pickle=False) as archive:
+                    previous_vector = np.asarray(archive["fit_results"], dtype=float)[-1]
+        initial_vector = vector
+        initial = root / "iteration_000" / "loco_results.npz"
+        if initial.exists():
+            with np.load(initial, allow_pickle=False) as archive:
+                initial_vector = np.asarray(archive["fit_results"], dtype=float)[-1]
+        metadata = {
+            **diagnostics,
+            "schema_version": 1,
+            "iteration": number,
+            "label": "Initial" if number == 0 else f"Iteration {number}",
+            "completed": True,
+            "parent_run": "../..",
+            "solver": request.backend_mapping.get("LOCOOptions", {}).get("algorithm"),
+            "response_matrix_calculator": request.backend_mapping.get("RMConfig", {}).get("calculator"),
+            "normal_quad_jacobian": request.backend_mapping.get("LOCOOptions", {}).get("quad_jacobian_calculator"),
+            "skew_quad_jacobian": request.backend_mapping.get("LOCOOptions", {}).get("skew_jacobian_calculator"),
+            "fit_parameter_blocks": _jsonable(record.get("blocks", {})),
+            "fit_parameter_order": list((record.get("blocks") or {}).keys()),
+            "dispersion_included": include_dispersion,
+            "coupling_blocks": [name for name in (record.get("blocks") or {}) if "coupling" in name],
+            "cumulative_parameter_change": _jsonable(vector - initial_vector),
+            "iteration_parameter_step": _jsonable(vector - previous_vector) if previous_vector is not None else _jsonable(np.zeros_like(vector)),
+        }
+        (temporary / "iteration.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        if final.exists():
+            shutil.rmtree(final)
+        temporary.replace(final)
+        _write_iteration_manifest(results_dir)
+        return final
+    except Exception:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
+
+
+def _write_iteration_manifest(results_dir: Path, *, run_status: str = "running") -> Path:
+    root = results_dir / "iterations"
+    entries = []
+    for directory in sorted(root.glob("iteration_[0-9][0-9][0-9]")):
+        metadata_path = directory / "iteration.json"
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if metadata.get("completed") is True:
+            entries.append({"iteration": int(metadata["iteration"]), "directory": directory.name,
+                            "label": metadata.get("label")})
+    path = root / "manifest.json"
+    path.write_text(json.dumps({"schema_version": 1, "run_status": run_status,
+                                "iterations": entries}, indent=2), encoding="utf-8")
+    return path
+
+
 def _save_optics_results(
     results_dir: Path, *, reference_ring, fitted_ring, measured: dict[str, Any],
     initial_orm_path: Path, fitted_orm, include_dispersion: bool, reference_kind: str,
@@ -954,8 +1067,10 @@ def _save_optics_results(
     }
     try:
         refpts = np.arange(len(reference_ring), dtype=np.uint32)
-        ref_data = reference_ring.get_optics(refpts=refpts)[2]
-        fit_data = fitted_ring.get_optics(refpts=refpts)[2]
+        reference_optics = reference_ring.get_optics(refpts=refpts)
+        fitted_optics = fitted_ring.get_optics(refpts=refpts)
+        ref_data = reference_optics[2]
+        fit_data = fitted_optics[2]
         beta_ref = np.asarray(ref_data.beta, dtype=float)
         beta_fit = np.asarray(fit_data.beta, dtype=float)
         if beta_ref.shape == beta_fit.shape and beta_ref.ndim == 2 and beta_ref.shape[1] >= 2:
@@ -968,6 +1083,11 @@ def _save_optics_results(
                 "beta_beating_y": np.divide(beta_fit[:, 1] - beta_ref[:, 1], beta_ref[:, 1],
                                              out=np.full(beta_ref.shape[0], np.nan), where=beta_ref[:, 1] != 0),
             })
+            for prefix, optics in (("reference", reference_optics), ("fitted", fitted_optics)):
+                ring_data = optics[1]
+                tune = getattr(ring_data, "tune", None)
+                if tune is not None:
+                    arrays[f"tune_{prefix}"] = np.asarray(tune, dtype=float)
     except Exception:
         pass
 

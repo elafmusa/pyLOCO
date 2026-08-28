@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
+    QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
     QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import Qt
@@ -25,6 +25,7 @@ class ResultsWorkspace(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.loader = None
+        self.base_loader = None
         title = QLabel("Results Workspace"); title.setObjectName("pageTitle")
         self.run_status_label = QLabel("No LOCO run has been started.")
         self.run_status_label.setWordWrap(True)
@@ -74,8 +75,19 @@ class ResultsWorkspace(QWidget):
         self.tabs.setUsesScrollButtons(True)
         self.tabs.setElideMode(Qt.ElideRight)
         self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.iteration_selector = QComboBox()
+        self.iteration_selector.setObjectName("resultsIterationSelector")
+        self.iteration_selector.setMinimumWidth(220)
+        self.iteration_selector.currentIndexChanged.connect(self._select_iteration)
+        self.iteration_notice = QLabel("No iteration history loaded.")
+        self.iteration_notice.setWordWrap(True)
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("View fitted state:"))
+        selector_row.addWidget(self.iteration_selector)
+        selector_row.addWidget(self.iteration_notice, 1)
         layout = QVBoxLayout(self); layout.setContentsMargins(16, 14, 16, 16)
-        layout.addWidget(title); layout.addLayout(monitor_row); layout.addWidget(self.compact_monitor); layout.addWidget(self.tabs, 1)
+        layout.addWidget(title); layout.addLayout(monitor_row); layout.addWidget(self.compact_monitor)
+        layout.addLayout(selector_row); layout.addWidget(self.tabs, 1)
 
     def _toggle_monitor_details(self, checked: bool) -> None:
         self.monitor.setVisible(checked)
@@ -134,9 +146,21 @@ class ResultsWorkspace(QWidget):
         path = Path(results_dir).expanduser()
         if not path.exists():
             self.loader = None; self.run_status_label.setText(f"Saved results directory is unavailable: {path}"); return
-        self.loader = ResultsLoader(path, runtime=runtime)
-        for view in (self.overview, self.orm, self.optics, self.parameters, self.summary, self.svd, self.files):
-            view.set_loader(self.loader)
+        self.base_loader = ResultsLoader(path, runtime=runtime)
+        entries = self.base_loader.iteration_entries
+        self.iteration_selector.blockSignals(True)
+        self.iteration_selector.clear()
+        for entry in entries:
+            self.iteration_selector.addItem(entry["label"], entry.get("iteration"))
+        self.iteration_selector.setCurrentIndex(len(entries) - 1)
+        self.iteration_selector.blockSignals(False)
+        legacy = bool(entries[0].get("legacy"))
+        self.iteration_notice.setText(
+            "This older run saved only its final state; intermediate iterations are unavailable."
+            if legacy else "The selected state updates all applicable result views; χ² retains the complete convergence history."
+        )
+        self._select_iteration(self.iteration_selector.currentIndex())
+        self.loader = self.loader or self.base_loader
         log_path = path / "backend.log"
         if log_path.exists():
             try: self.log.set_log(log_path.read_text(encoding="utf-8"))
@@ -148,11 +172,28 @@ class ResultsWorkspace(QWidget):
         self.compact_status.setText("✓ Completed run restored — Results available")
         self.compact_monitor.show(); self.monitor.hide(); self.details_button.setChecked(False)
 
-    def fail_run(self) -> None:
+    def _select_iteration(self, index: int) -> None:
+        if self.base_loader is None or index < 0:
+            return
+        iteration = self.iteration_selector.itemData(index)
+        self.loader = self.base_loader.for_iteration(iteration)
+        for view in (self.overview, self.orm, self.optics, self.parameters, self.summary, self.svd, self.files):
+            view.set_loader(self.loader)
+
+    def fail_run(self) -> Path | None:
         self.run_progress.setRange(0, 1); self.run_progress.setValue(0)
         self.run_status_label.setText("Failed"); self.cancel_button.setEnabled(False)
         self.waiting_games_button.hide()
+        candidate = Path(self.run_output_dir.text()).expanduser()
+        manifest = candidate / "iterations" / "manifest.json"
+        if candidate.is_dir() and manifest.is_file():
+            self.load_results(candidate)
+            self.run_status_label.setText("Run failed; completed iteration states remain available")
+            self.compact_status.setText("⚠ Run incomplete — completed iterations preserved")
+            self.tabs.setCurrentIndex(0)
+            return candidate
         self.tabs.setCurrentIndex(self.tabs.count() - 1)
+        return None
 
     def apply_theme(self) -> None:
         self.overview.chi_plot.apply_theme()

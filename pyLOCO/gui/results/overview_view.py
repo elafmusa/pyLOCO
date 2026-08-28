@@ -76,7 +76,12 @@ class OverviewView(QWidget):
 
     def set_loader(self, loader) -> None:
         self.loader = loader
-        self.status.setText("✓ Fit completed")
+        if loader.iteration is None:
+            self.status.setText("✓ Final fitted state")
+        elif loader.iteration == 0:
+            self.status.setText("Viewing Initial / Iteration 0")
+        else:
+            self.status.setText(f"Viewing completed Iteration {loader.iteration}")
         self.metrics["initial"].value.setText(scientific(loader.initial_chi2, "Not persisted for this run"))
         self.metrics["final"].value.setText(scientific(loader.final_chi2, "Unavailable"))
         reduction = loader.chi2_reduction_percent
@@ -157,6 +162,12 @@ class OverviewView(QWidget):
             plotted = ([initial] if initial is not None else []) + list(values)
             x = np.arange(0 if initial is not None else 1, len(values) + 1)
             ax.plot(x, plotted, marker="o", color="#7E57C2", linewidth=1.8)
+            selected = self.loader.iteration if self.loader else None
+            if selected is not None and selected < len(plotted):
+                ax.scatter([selected], [plotted[selected]], s=90, zorder=5,
+                           facecolor="#FF6D00", edgecolor=theme["text"],
+                           label=f"Selected: {('Initial' if selected == 0 else 'Iteration ' + str(selected))}")
+                ax.legend(loc="best")
             if len(plotted) == 1: ax.set_xlim(x[0] - 0.5, x[0] + 0.5)
             if initial is not None:
                 ax.set_xticks(x, ["Initial"] + [str(i) for i in range(1, len(values) + 1)])

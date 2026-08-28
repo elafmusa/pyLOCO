@@ -37,8 +37,12 @@ class ResultsLoader:
     Missing optional files return ``None`` rather than inventing values.
     """
 
-    def __init__(self, result_dir: str | Path, *, runtime: float | None = None) -> None:
+    def __init__(self, result_dir: str | Path, *, runtime: float | None = None,
+                 iteration: int | None = None) -> None:
         self.result_dir = Path(result_dir).expanduser().resolve()
+        self.iteration = iteration
+        self.artifact_dir = (self.result_dir / "iterations" / f"iteration_{iteration:03d}"
+                             if iteration is not None else self.result_dir)
         self._runtime_override = runtime
         self._cache: dict[str, Any] = {}
         self._unavailable: dict[str, str] = {}
@@ -61,6 +65,44 @@ class ResultsLoader:
     @property
     def summary(self) -> dict[str, Any]:
         return self._json("summary.json")
+
+    @property
+    def iteration_metadata(self) -> dict[str, Any]:
+        if self.iteration is None:
+            return {}
+        key = "iteration_metadata"
+        if key not in self._cache:
+            path = self.artifact_dir / "iteration.json"
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                value = {}
+            self._cache[key] = value if isinstance(value, dict) else {}
+        return self._cache[key]
+
+    @property
+    def iteration_entries(self) -> list[dict[str, Any]]:
+        path = self.result_dir / "iterations" / "manifest.json"
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            entries = [entry for entry in manifest.get("iterations", [])
+                       if isinstance(entry, dict) and isinstance(entry.get("iteration"), int)]
+        except (OSError, ValueError, TypeError):
+            entries = []
+        if not entries:
+            return [{"iteration": None, "label": "Final", "legacy": True}]
+        last = max(int(entry["iteration"]) for entry in entries)
+        result = []
+        for entry in sorted(entries, key=lambda item: int(item["iteration"])):
+            number = int(entry["iteration"])
+            label = "Initial / Iteration 0" if number == 0 else f"Iteration {number}"
+            if number == last and manifest.get("run_status") == "completed":
+                label += " / Final"
+            result.append({**entry, "label": label, "legacy": False})
+        return result
+
+    def for_iteration(self, iteration: int | None) -> "ResultsLoader":
+        return ResultsLoader(self.result_dir, runtime=self._runtime_override, iteration=iteration)
 
     @property
     def request(self) -> dict[str, Any]:
@@ -89,6 +131,8 @@ class ResultsLoader:
 
     @property
     def final_chi2(self) -> float | None:
+        if self.iteration is not None:
+            return _finite_float(self.iteration_metadata.get("chi2_after"))
         values = self.chi2_history
         return values[-1] if values else None
 
@@ -106,6 +150,8 @@ class ResultsLoader:
 
     @property
     def completed_iterations(self) -> int:
+        if self.iteration is not None:
+            return int(self.iteration)
         return len(self.chi2_history)
 
     @property
@@ -193,7 +239,8 @@ class ResultsLoader:
     @property
     def fitted_parameter_blocks(self) -> dict[str, slice]:
         result = {}
-        for name, value in (self.summary.get("blocks") or {}).items():
+        source = self.iteration_metadata.get("fit_parameter_blocks") or self.summary.get("blocks") or {}
+        for name, value in source.items():
             if isinstance(value, dict) and value.get("start") is not None and value.get("stop") is not None:
                 result[str(name)] = slice(int(value["start"]), int(value["stop"]), value.get("step"))
         return result
@@ -215,6 +262,23 @@ class ResultsLoader:
                 self._cache["parameter_vector"] = None
                 self._unavailable["parameter_vector"] = "No numeric final fit vector was persisted"
         return self._cache["parameter_vector"]
+
+    @property
+    def cumulative_parameter_change(self):
+        return self._iteration_vector("cumulative_parameter_change")
+
+    @property
+    def iteration_parameter_step(self):
+        return self._iteration_vector("iteration_parameter_step")
+
+    def _iteration_vector(self, key: str):
+        if self.iteration is None:
+            return None
+        try:
+            import numpy as np
+            return np.asarray(self.iteration_metadata[key], dtype=float).ravel()
+        except (KeyError, TypeError, ValueError):
+            return None
 
     @property
     def parameter_blocks(self) -> list[ParameterBlock]:
@@ -341,7 +405,7 @@ class ResultsLoader:
         try:
             import at
             import numpy as np
-            initial = at.load_lattice(self.request["lattice_path"]); final = at.load_lattice(self.result_dir / "final_lattice.mat")
+            initial = at.load_lattice(self._resolve_reference(self.request["lattice_path"])); final = at.load_lattice(self.fitted_lattice_path)
             ordinals = self.request.get("backend_mapping", {}).get("MachineElements", {}).get("normal_quadrupole_ords") or list(np.asarray(at.get_refpts(initial, at.elements.Quadrupole), dtype=int))
             initial_k = np.asarray([initial[int(i)].PolynomB[1] for i in ordinals]); fitted_k = np.asarray([final[int(i)].PolynomB[1] for i in ordinals])
             delta = initial_k - fitted_k; relative = np.divide(100 * delta, initial_k, out=np.full_like(delta, np.nan), where=initial_k != 0)
@@ -355,7 +419,7 @@ class ResultsLoader:
         if "beta_beating" not in self._cache:
             import numpy as np
             try:
-                with np.load(self.result_dir / "optics_results.npz", allow_pickle=False) as data:
+                with np.load(self.artifact_dir / "optics_results.npz", allow_pickle=False) as data:
                     if "beta_initial" in data:
                         initial, fitted = np.asarray(data["beta_initial"]), np.asarray(data["beta_fitted"])
                         beating = np.divide(fitted-initial, initial, out=np.full_like(initial, np.nan), where=initial != 0)
@@ -373,6 +437,12 @@ class ResultsLoader:
             path = self.result_dir / name
             if path.is_file(): return path
         return None
+
+    @property
+    def fitted_lattice_path(self) -> Path:
+        if self.iteration is not None:
+            return self.artifact_dir / "fitted_lattice.mat"
+        return self.result_dir / "final_lattice.mat"
 
     @property
     def jacobian_available(self) -> bool:
@@ -504,7 +574,7 @@ class ResultsLoader:
             self._unavailable["dispersion_diagnostic"] = "The recorded reference lattice for this resumed run is unavailable."
             return None
         reference_path = self._resolve_reference(self.request.get("lattice_path", ""))
-        fitted_path = self.result_dir / "final_lattice.mat"
+        fitted_path = self.fitted_lattice_path
         if reference_path is None:
             self._unavailable["dispersion_diagnostic"] = "Initial/reference lattice is unavailable."
             return None
@@ -558,7 +628,7 @@ class ResultsLoader:
     def optics_results(self) -> dict[str, Any]:
         if "optics_results" not in self._cache:
             import numpy as np
-            path = self.result_dir / "optics_results.npz"
+            path = self.artifact_dir / "optics_results.npz"
             try:
                 with np.load(path, allow_pickle=False) as archive:
                     self._cache["optics_results"] = {key: np.array(archive[key]) for key in archive.files}
@@ -589,7 +659,7 @@ class ResultsLoader:
         if self.initialization == "resumed":
             return None
         reference = self._resolve_reference(self.request.get("lattice_path", ""))
-        fitted = self.result_dir / "final_lattice.mat"
+        fitted = self.fitted_lattice_path
         if reference is None or not fitted.exists():
             return None
         try:
@@ -784,7 +854,7 @@ class ResultsLoader:
     def _npz_value(self, name: str):
         key = f"npz:{name}"
         if key not in self._cache:
-            path = self.result_dir / "loco_results.npz"
+            path = self.artifact_dir / "loco_results.npz"
             if not path.exists():
                 self._cache[key] = None
             else:
