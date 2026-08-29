@@ -295,6 +295,7 @@ class FamilyWeightEditor(QWidget):
 
 class LocoRunWorker(QObject):
     log = Signal(str)
+    progress = Signal(object)
     finished = Signal(object)
     failed = Signal(object)
     svd_selection_requested = Signal(object)
@@ -338,6 +339,7 @@ class LocoRunWorker(QObject):
                 log_callback=self.log.emit,
                 cancel_callback=lambda: self.cancel_requested,
                 svd_selection_callback=self.request_svd_selection,
+                progress_callback=self.progress.emit,
             )
         except Exception as exc:
             import traceback
@@ -2699,6 +2701,7 @@ class MainWindow(QMainWindow):
         self._run_worker.moveToThread(self._run_thread)
         self._run_thread.started.connect(self._run_worker.run)
         self._run_worker.log.connect(self._append_run_log)
+        self._run_worker.progress.connect(self._on_loco_progress)
         self._run_worker.svd_selection_requested.connect(self._on_svd_selection_requested)
         self._run_worker.finished.connect(self._on_loco_finished)
         self._run_worker.failed.connect(self._on_loco_failed)
@@ -2743,6 +2746,10 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _append_run_log(self, message: str) -> None:
         self.results_workspace.append_log(message)
+
+    @Slot(object)
+    def _on_loco_progress(self, event: dict) -> None:
+        self.results_workspace.update_progress(event)
 
     @Slot(object)
     def _on_loco_finished(self, result) -> None:
@@ -2833,7 +2840,7 @@ class MainWindow(QMainWindow):
     def _update_elapsed_time(self) -> None:
         if self._run_started_at:
             elapsed = __import__("time").monotonic() - self._run_started_at
-            self.run_elapsed_label.setText(f"{elapsed:.1f} s")
+            self.run_elapsed_label.setText(self.results_workspace.format_elapsed(elapsed))
 
 
     def _can_compare_orms(self) -> bool:

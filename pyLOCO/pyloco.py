@@ -27,6 +27,33 @@ from .analytic_orm_with_skew_quad_errors import analytic_orm_variation_with_skew
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
+class _WorkflowProgressReporter:
+    """Emit monotonic, bounded LOCO workflow checkpoints."""
+
+    def __init__(self, callback, total_iterations):
+        self.callback = callback
+        self.total_iterations = max(0, int(total_iterations))
+        self.last_fraction = 0.0
+
+    def emit(self, phase, fraction, message, *, iteration=0):
+        if self.callback is None:
+            return
+        bounded = min(1.0, max(self.last_fraction, float(fraction)))
+        self.last_fraction = bounded
+        self.callback({
+            "phase": str(phase),
+            "iteration": int(iteration),
+            "total_iterations": self.total_iterations,
+            "workflow_fraction": bounded,
+            "message": str(message),
+        })
+
+    def iteration_fraction(self, iteration, phase_fraction):
+        total = max(1, self.total_iterations)
+        within = min(1.0, max(0.0, float(phase_fraction)))
+        return 0.05 + 0.90 * (((int(iteration) - 1) + within) / total)
+
+
 def _raise_if_cancelled(cancel_callback):
     if cancel_callback is not None and cancel_callback():
         raise RuntimeError("LOCO run cancelled by the user.")
@@ -4924,10 +4951,16 @@ def pyloco(
         calculator_trace_callback=None,
         jacobian_callback=None,
         cancel_callback=None,
+        progress_callback=None,
         output_dir='output',
         save_jacobians=False,
 
 ):
+
+    progress = _WorkflowProgressReporter(progress_callback, nIter)
+    progress.emit(
+        "initialization", 0.0, "Initializing LOCO fit and validating configuration."
+    )
 
     calculator_plan = _calculator_execution_plan(
         response_matrix_calculator, quad_jacobian_calculator
@@ -4936,6 +4969,11 @@ def pyloco(
     _trace_calculator(
         calculator_trace_callback, "calculator_configuration", calculator_plan
     )
+    progress.emit(
+        "model_preparation", 0.02,
+        "Preparing model, fit parameters, and response-matrix configuration.",
+    )
+    _raise_if_cancelled(cancel_callback)
 
     if fit_cfg is None:
         fit_cfg = FitInitConfig(fit_list=fit_list, CMstep=CMstep, rfStep=rfStep,
@@ -5131,10 +5169,17 @@ def pyloco(
     iterations_started = time.perf_counter()
     for it in range(nIter):
         _raise_if_cancelled(cancel_callback)
+        iteration = it + 1
         iteration_started = time.perf_counter()
         trial_orm_seconds = 0.0
         print(f"\n==== Iteration {it + 1}/{nIter} – {algorithm.upper()} ====")
         # --- 1) ORM model ---
+        progress.emit(
+            "model_calculation",
+            progress.iteration_fraction(iteration, 0.0),
+            f"Calculating {response_matrix_calculator} response matrix.",
+            iteration=iteration,
+        )
         cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
                        cav_ords=CAVords,
                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep,
@@ -5160,6 +5205,19 @@ def pyloco(
         include_HCMEnergyShift = ('HCMEnergyShift' in fit_list)
         include_VCMEnergyShift = ('VCMEnergyShift' in fit_list)
         include_delta_RF = ('delta_rf' in fit_list)
+
+        jacobian_parts = []
+        if include_quads:
+            jacobian_parts.append(f"{str(quad_jacobian_calculator).lower()} quadrupole")
+        if include_skew:
+            jacobian_parts.append(f"{str(skew_jacobian_calculator).lower()} skew-quadrupole")
+        jacobian_description = " and ".join(jacobian_parts) or "configured"
+        progress.emit(
+            "jacobian_calculation",
+            progress.iteration_fraction(iteration, 0.15),
+            f"Computing {jacobian_description} Jacobian.",
+            iteration=iteration,
+        )
 
         jacobian_started = time.perf_counter()
         Jfull, dq, dskew, dtilt = compute_jacobian(
@@ -5244,6 +5302,12 @@ def pyloco(
         y_meas_ = orm_measured.reshape(-1, 1, order="F")
         y_model_ = orm_model.reshape(-1, 1, order="F")
         J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
+        progress.emit(
+            "solver_preparation",
+            progress.iteration_fraction(iteration, 0.62),
+            "Preparing weighted Jacobian, constraints, outliers, and SVD system.",
+            iteration=iteration,
+        )
         _validate_loco_system_dimensions(
             y_meas_, y_model_, weights_flat_, J_,
             nHBPM=nHBPM, nVBPM=nVBPM,
@@ -5433,6 +5497,12 @@ def pyloco(
                 )
 
         if algorithm.lower() == "lm":
+            progress.emit(
+                "lm_calculation",
+                progress.iteration_fraction(iteration, 0.72),
+                "Running Levenberg–Marquardt calculation and trial model evaluations.",
+                iteration=iteration,
+            )
             # LM inner loop with accept/reject and lambda updates
             LMlambda = Starting_Lambda
             chi2_0 = chi2_before
@@ -5588,6 +5658,13 @@ def pyloco(
         # GN de-normalization and application (LM handled above)
         elif algorithm.lower() == "gn":
 
+            progress.emit(
+                "gn_calculation",
+                progress.iteration_fraction(iteration, 0.72),
+                "Running Gauss–Newton calculation.",
+                iteration=iteration,
+            )
+
             fit_results, Ivec, S = solve_step_gn(
                 Jw, y, svd_selection_method, svd_threshold, cut_,
                 show_svd_plot, tag=f"GN it{it + 1}", weights_flat=weights_flat,
@@ -5652,6 +5729,12 @@ def pyloco(
             raise ValueError("algorithm must be 'lm' or 'gn'")
 
         # --- Recompute chi²  ---
+        progress.emit(
+            "final_model_calculation",
+            progress.iteration_fraction(iteration, 0.87),
+            "Calculating corrected model response and iteration results.",
+            iteration=iteration,
+        )
         cfg3 = RMConfig(dkick=[CMstep[0], CMstep[1]],
                         bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
                         cav_ords=CAVords,
@@ -5821,12 +5904,24 @@ def pyloco(
             CMstep=CMstep
         )
 
+        progress.emit(
+            "iteration_complete",
+            progress.iteration_fraction(iteration, 1.0),
+            f"Completed outer iteration {iteration} of {nIter}.",
+            iteration=iteration,
+        )
+
+    progress.emit(
+        "final_results", 0.97,
+        "Preparing final LOCO model and return results.",
+        iteration=nIter,
+    )
     print(f"LOCO {algorithm.upper()} completed! :).")
 
     # if continue_from_previous and previous_fit_results is not None:
     #    fit_results_all = previous_fit_results + fit_results_all
     #    fit_dict_all = {**previous_fit_dict, **fit_dict_all}
-    return (
+    result = (
         fit_results_all,
         fit_dict_all,
         ring,
@@ -5836,6 +5931,10 @@ def pyloco(
         delta_chi2_history,
         blocks
     )
+    progress.emit(
+        "completed", 1.0, "LOCO completed successfully.", iteration=nIter
+    )
+    return result
 
 
 # ----------------------- SAVE DICTIONARY -----------------------

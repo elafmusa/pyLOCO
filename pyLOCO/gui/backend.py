@@ -116,6 +116,7 @@ def run_loco_request(
     log_callback=None,
     cancel_callback=None,
     svd_selection_callback=None,
+    progress_callback=None,
 ) -> LocoRunResult:
     """Execute the existing pyLOCO API for a GUI request.
 
@@ -245,6 +246,8 @@ def run_loco_request(
         kwargs["iteration_metrics_callback"] = persist_iteration
         kwargs["calculator_trace_callback"] = calculator_trace.append
         kwargs["cancel_callback"] = cancelled
+        if progress_callback is not None:
+            kwargs["progress_callback"] = progress_callback
         if interactive_svd:
             if svd_selection_callback is None:
                 raise RuntimeError(

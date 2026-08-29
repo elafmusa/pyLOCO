@@ -29,8 +29,12 @@ class ResultsWorkspace(QWidget):
         title = QLabel("Results Workspace"); title.setObjectName("pageTitle")
         self.run_status_label = QLabel("No LOCO run has been started.")
         self.run_status_label.setWordWrap(True)
+        self.run_iteration_label = QLabel("Not running")
         self.run_elapsed_label = QLabel("0.0 s")
-        self.run_progress = QProgressBar(); self.run_progress.setRange(0, 1); self.run_progress.setValue(0)
+        self.run_progress = QProgressBar(); self.run_progress.setRange(0, 100); self.run_progress.setValue(0)
+        self.run_progress.setFormat("%p%")
+        self.run_progress.setMinimumHeight(24)
+        self._last_progress_value = 0
         self.run_output_dir = QLineEdit("—")
         self.run_output_dir.setReadOnly(True)
         self.run_output_dir.setObjectName("runOutputDirectory")
@@ -44,11 +48,13 @@ class ResultsWorkspace(QWidget):
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         form.setLabelAlignment(Qt.AlignLeft | Qt.AlignTop)
-        form.addRow("Status", self.run_status_label); form.addRow("Elapsed", self.run_elapsed_label)
+        form.addRow("Status", self.run_status_label)
+        form.addRow("Iteration", self.run_iteration_label)
+        form.addRow("Elapsed", self.run_elapsed_label)
         form.addRow("Progress", self.run_progress); form.addRow("Results directory", self.run_output_dir)
         self._progress_label = form.labelForField(self.run_progress)
         self._output_label = form.labelForField(self.run_output_dir)
-        self.monitor = QGroupBox("Backend Run Monitor"); self.monitor.setLayout(form)
+        self.monitor = QGroupBox("LOCO Fit"); self.monitor.setLayout(form)
         monitor_actions = QVBoxLayout(); monitor_actions.addWidget(self.cancel_button); monitor_actions.addWidget(self.waiting_games_button); monitor_actions.addStretch(1)
         monitor_row = QHBoxLayout(); monitor_row.addWidget(self.monitor, 1); monitor_row.addLayout(monitor_actions)
         self.compact_monitor = QWidget()
@@ -96,8 +102,11 @@ class ResultsWorkspace(QWidget):
     def begin_run(self) -> None:
         self.loader = None
         self.log.clear_for_run()
-        self.run_status_label.setText("Running pyLOCO backend…")
-        self.run_progress.setRange(0, 0)
+        self.run_status_label.setText("Initializing LOCO fit…")
+        self.run_iteration_label.setText("Preparing workflow")
+        self.run_elapsed_label.setText("Elapsed: 0s")
+        self._last_progress_value = 0
+        self.run_progress.setRange(0, 100); self.run_progress.setValue(0)
         self.run_output_dir.setText("Preparing results directory…")
         self.run_output_dir.setCursorPosition(0)
         self.cancel_button.setEnabled(True)
@@ -111,6 +120,32 @@ class ResultsWorkspace(QWidget):
         self.monitor.setMaximumHeight(16777215)
         self.tabs.setCurrentIndex(self.tabs.count() - 1)
 
+    @staticmethod
+    def format_elapsed(seconds: float) -> str:
+        total = max(0, int(seconds))
+        hours, remainder = divmod(total, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            value = f"{hours}h {minutes:02d}m {secs:02d}s"
+        elif minutes:
+            value = f"{minutes}m {secs:02d}s"
+        else:
+            value = f"{secs}s"
+        return f"Elapsed: {value}"
+
+    def update_progress(self, event: dict) -> None:
+        fraction = min(1.0, max(0.0, float(event.get("workflow_fraction", 0.0))))
+        value = max(self._last_progress_value, int(round(100.0 * fraction)))
+        self._last_progress_value = value
+        self.run_progress.setRange(0, 100)
+        self.run_progress.setValue(value)
+        iteration = int(event.get("iteration", 0) or 0)
+        total = int(event.get("total_iterations", 0) or 0)
+        self.run_iteration_label.setText(
+            f"Iteration {iteration} of {total}" if iteration > 0 else f"Preparing {total} iteration(s)"
+        )
+        self.run_status_label.setText(str(event.get("message") or event.get("phase") or "Running LOCO"))
+
     def append_log(self, message: str) -> None:
         self.log.append(message)
         if message.startswith("Results directory:"):
@@ -120,25 +155,28 @@ class ResultsWorkspace(QWidget):
             self.run_output_dir.setCursorPosition(0)
 
     def complete_run(self, result) -> None:
-        self.run_progress.setRange(0, 1); self.run_progress.setValue(1)
-        self.run_status_label.setText(f"Completed in {result.elapsed_seconds:.1f} s")
-        self.run_elapsed_label.setText(f"{result.elapsed_seconds:.1f} s")
+        self._last_progress_value = 100
+        self.run_progress.setRange(0, 100); self.run_progress.setValue(100)
+        self.run_status_label.setText("LOCO completed")
+        self.run_elapsed_label.setText(self.format_elapsed(result.elapsed_seconds))
         self.run_output_dir.setText(result.results_dir)
         self.run_output_dir.setToolTip(result.results_dir)
         self.run_output_dir.setCursorPosition(0); self.cancel_button.setEnabled(False)
         self.cancel_button.setVisible(False)
         self.waiting_games_button.hide()
         self.load_results(result.results_dir, runtime=result.elapsed_seconds)
+        self.run_progress.setVisible(True)
+        self._progress_label.setVisible(True)
+        self.run_status_label.setText("LOCO completed")
+        self.run_elapsed_label.setText(self.format_elapsed(result.elapsed_seconds))
         log_path = Path(result.results_dir) / "backend.log"
         if log_path.exists():
             try: self.log.set_log(log_path.read_text(encoding="utf-8"))
             except OSError: pass
         self.tabs.setCurrentIndex(0)
-        for widget in (self.run_progress, self.run_output_dir, self._progress_label, self._output_label):
-            widget.setVisible(False)
-        self.compact_status.setText(f"✓ Completed in {result.elapsed_seconds:.1f} s — Results saved")
-        self.compact_monitor.show()
-        self.monitor.hide()
+        self.compact_status.setText(f"✓ LOCO completed — 100% — Results saved")
+        self.compact_monitor.hide()
+        self.monitor.show()
         self.details_button.setChecked(False)
         self.monitor.setMaximumHeight(16777215)
 
@@ -181,13 +219,17 @@ class ResultsWorkspace(QWidget):
             view.set_loader(self.loader)
 
     def fail_run(self, *, cancelled: bool = False) -> Path | None:
-        self.run_progress.setRange(0, 1); self.run_progress.setValue(0)
+        self.run_progress.setRange(0, 100); self.run_progress.setValue(self._last_progress_value)
         self.run_status_label.setText("Cancelled" if cancelled else "Failed"); self.cancel_button.setEnabled(False)
         self.waiting_games_button.hide()
         candidate = Path(self.run_output_dir.text()).expanduser()
         manifest = candidate / "iterations" / "manifest.json"
         if candidate.is_dir() and manifest.is_file():
             self.load_results(candidate)
+            self.run_progress.setVisible(True)
+            self._progress_label.setVisible(True)
+            self.monitor.show()
+            self.compact_monitor.hide()
             self.run_status_label.setText(("Run cancelled" if cancelled else "Run failed") + "; completed iteration states remain available")
             self.compact_status.setText(("■ Run cancelled" if cancelled else "⚠ Run incomplete") + " — completed iterations preserved")
             self.tabs.setCurrentIndex(0)
