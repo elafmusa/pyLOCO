@@ -110,7 +110,9 @@ def remove_coupling(orm1, orm2, W=None, Jacobian=None,
     Parameters
     ----------
     orm1, orm2 : np.ndarray
-        ORM-related arrays (e.g., measured and model ORMs), shape: (nBPM * nCOR [+disp], 1)
+        Canonically flattened response arrays. Column-major ordering is all
+        ORM columns first, followed by the RF-response column containing
+        ``eta_x`` rows then ``eta_y`` rows.
     W : np.ndarray, shape (nBPM * nCOR [+disp], 1)
         Weight vector or matrix
     Jacobian : np.ndarray, shape (nBPM * nCOR [+disp], nParams)
@@ -118,7 +120,8 @@ def remove_coupling(orm1, orm2, W=None, Jacobian=None,
     nHBPM, nVBPM, nHorCOR, nVerCOR : int
         Number of horizontal/vertical BPMs and correctors
     include_dispersion : bool
-        Whether dispersion terms are included
+        Whether the final RF-response column is included. Both horizontal and
+        vertical RF-response entries are retained by coupling removal.
 
     Returns
     -------
@@ -131,44 +134,22 @@ def remove_coupling(orm1, orm2, W=None, Jacobian=None,
     if None in [nHBPM, nVBPM, nHorCOR, nVerCOR]:
         raise ValueError("Must provide all BPM and corrector counts.")
 
-    nBPM = nHBPM + nVBPM
-    nCOR = nHorCOR + nVerCOR
-
-    # Build base coupling filter matrix
-    CF = np.block([
-        [np.ones((nHBPM, nHorCOR)), np.zeros((nHBPM, nVerCOR))],
-        [np.zeros((nVBPM, nHorCOR)), np.ones((nVBPM, nVerCOR))]
-    ])
-
-    if include_dispersion:
-        dispersion_column_chi = np.concatenate([
-            2 * np.ones((nHBPM, 1)),
-            3 * np.ones((nVBPM, 1))
-        ])
-
-        dispersion_column = np.concatenate([
-            2 * np.ones((nHBPM, 1)),
-            np.zeros((nVBPM, 1))
-        ])
-
-        CF_chi = np.hstack((CF, dispersion_column_chi))
-        CF_flat_chi = CF_chi.flatten(order='F')
-        iNoCoupling_chi = np.where(CF_flat_chi > 0)[0]
-
-        CF = np.hstack((CF, dispersion_column))
-        CF_flat = CF.flatten(order='F')
-        iNoCoupling = np.where(CF_flat > 0)[0]
-
-    else:
-        CF_flat = CF.flatten(order='F')
-        iNoCoupling = np.where(CF_flat > 0)[0]
-        iNoCoupling_chi = iNoCoupling
+    _validate_loco_system_dimensions(
+        orm1, orm2, W, Jacobian,
+        nHBPM=nHBPM, nVBPM=nVBPM,
+        nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+        include_dispersion=include_dispersion,
+    )
+    iNoCoupling, iNoCoupling_chi, _ = build_iNoCoupling(
+        nHBPM, nVBPM, nHorCOR, nVerCOR, include_dispersion
+    )
+    selected = iNoCoupling_chi if for_chi_squared else iNoCoupling
 
     # Apply filtering
-    orm1_filtered = orm1[iNoCoupling]
-    orm2_filtered = orm2[iNoCoupling]
-    W_filtered = W[iNoCoupling] if W is not None else None
-    Jacobian_filtered = Jacobian[iNoCoupling, :] if Jacobian is not None else None
+    orm1_filtered = orm1[selected]
+    orm2_filtered = orm2[selected]
+    W_filtered = W[selected] if W is not None else None
+    Jacobian_filtered = Jacobian[selected, :] if Jacobian is not None else None
 
     return orm1_filtered, orm2_filtered, W_filtered, Jacobian_filtered, iNoCoupling, iNoCoupling_chi
 
@@ -182,13 +163,15 @@ def build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion):
     ])
 
     if includeDispersion:
-        # fit mask: keep horizontal dispersion only (match MATLAB CF=[...; zeros(VBPM,1)])
-        disp_fit = np.concatenate([2 * np.ones((nHBPM, 1)), np.zeros((nVBPM, 1))])
+        # Dispersion is an independent RF-response measurement, not an ORM
+        # cross-plane block. Retain both eta_x and eta_y while removing only
+        # H-corrector -> V-BPM and V-corrector -> H-BPM terms.
+        disp_fit = np.ones((nBPM, 1))
         CF_fit = np.hstack((CF, disp_fit))
         iNoCoupling = np.where(CF_fit.flatten(order="F") > 0)[0]
 
-        # chi mask (your choice): often keep both planes for chi² (or match MATLAB if you prefer)
-        disp_chi = np.concatenate([2 * np.ones((nHBPM, 1)), 3 * np.ones((nVBPM, 1))])
+        # Fit and chi-squared use the same scientific response components.
+        disp_chi = np.ones((nBPM, 1))
         CF_chi = np.hstack((CF, disp_chi))
         iNoCoupling_chi = np.where(CF_chi.flatten(order="F") > 0)[0]
     else:
@@ -196,6 +179,97 @@ def build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion):
         iNoCoupling_chi = iNoCoupling.copy()
 
     return iNoCoupling, iNoCoupling_chi, nBPM
+
+
+def _canonicalize_measured_response(
+        orm_measured, measured_eta_x, measured_eta_y, *,
+        nHBPM, nVBPM, nHorCOR, nVerCOR, include_dispersion):
+    """Return the canonical response matrix consumed by the LOCO core.
+
+    Public callers may pass the pure ORM plus separate ``measured_eta_x/y``
+    vectors (the preferred interface), while legacy callers that already
+    appended the RF-response column remain supported. Canonical matrix order
+    is ORM columns first and ``[eta_x, eta_y]`` as the final column.
+    """
+    measured = np.asarray(orm_measured, dtype=float)
+    n_bpm = int(nHBPM) + int(nVBPM)
+    n_cor = int(nHorCOR) + int(nVerCOR)
+    if measured.ndim != 2 or measured.shape[0] != n_bpm:
+        raise ValueError(
+            f"Measured response shape {measured.shape} is invalid; expected "
+            f"{n_bpm} BPM rows (nHBPM={nHBPM}, nVBPM={nVBPM})."
+        )
+    expected_columns = n_cor + int(bool(include_dispersion))
+    if not include_dispersion:
+        if measured.shape[1] != n_cor:
+            raise ValueError(
+                f"Measured ORM shape {measured.shape} is invalid without "
+                f"dispersion; expected ({n_bpm}, {n_cor})."
+            )
+        return measured
+
+    eta_available = measured_eta_x is not None and measured_eta_y is not None
+    eta = None
+    if eta_available:
+        eta_x = np.asarray(measured_eta_x, dtype=float).ravel()
+        eta_y = np.asarray(measured_eta_y, dtype=float).ravel()
+        if eta_x.size != nHBPM or eta_y.size != nVBPM:
+            raise ValueError(
+                "Dispersion vector dimensions are inconsistent with the BPM "
+                f"ordering: eta_x={eta_x.size} (expected {nHBPM}), "
+                f"eta_y={eta_y.size} (expected {nVBPM})."
+            )
+        eta = np.concatenate((eta_x, eta_y))
+
+    if measured.shape[1] == n_cor:
+        if eta is None:
+            raise ValueError(
+                "includeDispersion=True with a pure ORM requires separate "
+                "measured_eta_x and measured_eta_y arrays."
+            )
+        return np.hstack((measured, eta[:, None]))
+    if measured.shape[1] == expected_columns:
+        if eta is not None and not np.allclose(
+                measured[:, -1], eta, rtol=1e-12, atol=1e-15,
+                equal_nan=True):
+            raise ValueError(
+                "The appended RF-response column disagrees with the supplied "
+                "measured_eta_x/measured_eta_y arrays."
+            )
+        return measured
+    raise ValueError(
+        f"Measured response shape {measured.shape} is invalid with dispersion; "
+        f"expected pure ORM ({n_bpm}, {n_cor}) plus separate eta arrays or "
+        f"canonical response ({n_bpm}, {expected_columns})."
+    )
+
+
+def _validate_loco_system_dimensions(
+        measured, model, weights, jacobian, *, nHBPM, nVBPM,
+        nHorCOR, nVerCOR, include_dispersion):
+    """Validate flattened residual/Jacobian invariants before any indexing."""
+    expected = (int(nHBPM) + int(nVBPM)) * (
+        int(nHorCOR) + int(nVerCOR) + int(bool(include_dispersion))
+    )
+    sizes = {
+        "measured": np.asarray(measured).size,
+        "model": np.asarray(model).size,
+        "weights": None if weights is None else np.asarray(weights).size,
+        "jacobian_rows": None if jacobian is None else np.asarray(jacobian).shape[0],
+    }
+    inconsistent = any(
+        value is not None and value != expected for value in sizes.values()
+    )
+    if inconsistent:
+        raise ValueError(
+            "Inconsistent LOCO residual/Jacobian dimensions with dispersion: "
+            f"measured={sizes['measured']}, model={sizes['model']}, "
+            f"weights={sizes['weights']}, jacobian_rows={sizes['jacobian_rows']}, "
+            f"expected={expected}, nHBPM={nHBPM}, nVBPM={nVBPM}, "
+            f"nHCor={nHorCOR}, nVCor={nVerCOR}, "
+            f"includeDispersion={bool(include_dispersion)}"
+        )
+    return expected
 
 
 def select_equally_spaced_elements(total_elements, num_elements):
@@ -4883,6 +4957,16 @@ def pyloco(
 
     deltaqt = np.zeros(len(quads_tilt_ind)) if ('quads_tilt' in fit_list) else None
 
+    # The public production interface accepts the pure ORM and separate RF
+    # response vectors. Normalize that representation once, without asking
+    # drivers to append the dispersion column themselves.
+    orm_measured = _canonicalize_measured_response(
+        orm_measured, measured_eta_x, measured_eta_y,
+        nHBPM=nHBPM, nVBPM=nVBPM,
+        nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+        include_dispersion=includeDispersion,
+    )
+
 
     quads_fit, _ = build_initial_fit_parameters(
     ring=ring,
@@ -5149,6 +5233,12 @@ def pyloco(
         y_meas_ = orm_measured.reshape(-1, 1, order="F")
         y_model_ = orm_model.reshape(-1, 1, order="F")
         J_ = Jfull.transpose(1, 2, 0).reshape(-1, Jfull.shape[0], order="F")
+        _validate_loco_system_dimensions(
+            y_meas_, y_model_, weights_flat_, J_,
+            nHBPM=nHBPM, nVBPM=nVBPM,
+            nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+            include_dispersion=includeDispersion,
+        )
         if jacobian_callback is not None:
             jacobian_callback(J_.copy(), iteration=it + 1)
 
