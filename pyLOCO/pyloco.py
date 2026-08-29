@@ -748,6 +748,7 @@ def compute_jacobian(
                     VCMCoupling,
                     rf_step,
                     block="quads",
+                    CAVords=CAVords,
                     auto_correct_delta=auto_correct_delta,
                     fit_cfg=fit_cfg,
                     includeDispersion=includeDispersion,
@@ -852,6 +853,7 @@ def compute_jacobian(
                         HCMCoupling=HCMCoupling,
                         VCMCoupling=VCMCoupling,
                         rf_step=rf_step,
+                        CAVords=CAVords,
                         auto_correct_delta=auto_correct_delta,
                         fit_cfg=fit_cfg,
                         orm_calculator=response_matrix_calculator,
@@ -1062,6 +1064,7 @@ def compute_jacobian(
                 J_skew, delta_skew = calculate_quads_jacobian(
                     ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
                     skew_individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
+                    CAVords=CAVords,
                     auto_correct_delta=auto_correct_delta,
                     fit_cfg=fit_cfg, includeDispersion=includeDispersion, output_dir=output_dir,
                     log_filename="skew_jacobian_logs.txt",
@@ -1092,6 +1095,7 @@ def compute_jacobian(
                         ring, C_model, dkick, CMords, bpm_indexes, skew_ind,
                         delta_skew_, C, skew_individuals, HCMCoupling,
                         VCMCoupling, rf_step, block="skew_quads",
+                        CAVords=CAVords,
                         auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
                         includeDispersion=True, output_dir=output_dir,
                         log_filename="skew_dispersion_jacobian_logs.txt",
@@ -1380,7 +1384,7 @@ def full_jacobian_(
 
 def calculate_quads_jacobian(
         ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind, dk, C,
-        individuals, HCMCoupling, VCMCoupling, rf_step, block,
+        individuals, HCMCoupling, VCMCoupling, rf_step, block, CAVords=None,
         auto_correct_delta=True,
         fit_cfg=None, output_dir="output",
         log_filename="quad_jacobian_logs.txt", processes=None, includeDispersion=False,
@@ -1408,7 +1412,7 @@ def calculate_quads_jacobian(
                 quad_index, ring, dkick, used_cor_ind, bpm_indexes, dk,
                 individuals, HCMCoupling, VCMCoupling, rf_step,
                 auto_correct_delta,
-                block, fit_cfg_dict, includeDispersion, orm_calculator
+                block, fit_cfg_dict, includeDispersion, orm_calculator, CAVords
             ))
 
         with ctx.Pool(
@@ -1472,6 +1476,7 @@ def calculate_quads_dispersion_jacobian(
     HCMCoupling,
     VCMCoupling,
     rf_step,
+    CAVords=None,
     auto_correct_delta=True,
     fit_cfg=None,
     orm_calculator="Linear",
@@ -1637,6 +1642,7 @@ def calculate_quads_dispersion_jacobian(
         dkick=dkick,
         bpm_ords=bpm_indexes,
         cm_ords=used_cor_ind,
+        cav_ords=CAVords,
         HCMCoupling=HCMCoupling,
         VCMCoupling=VCMCoupling,
         includeDispersion=True,
@@ -2758,7 +2764,7 @@ def generating_quads_response_matrices(
         quad_index, ring, dkick, cor_indexes, bpm_indexes,
         delta_init, individuals, HCMCoupling, VCMCoupling,
         rf_step, auto_correct_delta, block, fit_cfg,
-        includeDispersion, orm_calculator="Linear"
+        includeDispersion, orm_calculator="Linear", CAVords=None
 ):
     """
     Generate the numerical quadrupole Jacobian for one fitted
@@ -2923,6 +2929,7 @@ def generating_quads_response_matrices(
         dkick=dkick,
         bpm_ords=bpm_indexes,
         cm_ords=cor_indexes,
+        cav_ords=CAVords,
         HCMCoupling=HCMCoupling,
         VCMCoupling=VCMCoupling,
         includeDispersion=includeDispersion,
