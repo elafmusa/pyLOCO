@@ -449,7 +449,7 @@ def compute_delta_chi2(
     quad_individuals,
     skew_individuals,
     tilt_individuals, fit_cfg,
-    used_bpms_ords, used_cor_ords,
+    used_bpms_ords, used_cor_ords, CAVords,
     CMstep, rfStep,
     HCMCoupling, VCMCoupling,
     hbpm_gain, hbpm_coupling,
@@ -473,6 +473,7 @@ def compute_delta_chi2(
         dkick=CMstep,
         bpm_ords=used_bpms_ords,
         cm_ords=used_cor_ords,
+        cav_ords=CAVords,
         HCMCoupling=HCMCoupling,
         VCMCoupling=VCMCoupling,
         rfStep=rfStep,
@@ -521,6 +522,7 @@ def compute_delta_chi2(
             fit_cfg=fit_cfg,
             used_bpms_ords=used_bpms_ords,
             used_cor_ords=used_cor_ords,
+            CAVords=CAVords,
             CMstep=CMstep,
             rfStep=rfStep,
             HCMCoupling=HCMCoupling,
@@ -4570,7 +4572,7 @@ def _prepare_ring_and_rmconfig(
         base_ring, fit_vec, *, fit_list, nHBPM, nVBPM, nHorCOR, nVerCOR,
         quads_ords, quads_tilt_ind, skew_ords, quad_individuals,
         skew_individuals, tilt_individuals, fit_cfg,
-        used_bpms_ords, used_cor_ords, CMstep, rfStep,
+        used_bpms_ords, used_cor_ords, CAVords, CMstep, rfStep,
         HCMCoupling, VCMCoupling,
         hbpm_gain, hbpm_coupling, vbpm_coupling, vbpm_gain,
         HCMEnergyShift, VCMEnergyShift, includeDispersion,
@@ -4607,6 +4609,7 @@ def _prepare_ring_and_rmconfig(
         dkick=dkick,
         bpm_ords=used_bpms_ords,
         cm_ords=used_cor_ords,
+        cav_ords=CAVords,
         HCMCoupling=prop.get('hcor_coupling', HCMCoupling),
         VCMCoupling=prop.get('vcor_coupling', VCMCoupling),
         rfStep=float(np.asarray(prop.get('delta_rf', rfStep)).ravel()[0]),
@@ -5126,6 +5129,7 @@ def pyloco(
         print(f"\n==== Iteration {it + 1}/{nIter} – {algorithm.upper()} ====")
         # --- 1) ORM model ---
         cfg = RMConfig(dkick=CMstep, bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
+                       cav_ords=CAVords,
                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling, rfStep=rfStep,
                        includeDispersion=includeDispersion,
                        calculator=response_matrix_calculator)
@@ -5469,6 +5473,7 @@ def pyloco(
                     skew_individuals=skew_individuals,
                     tilt_individuals=tilt_individuals, fit_cfg=fit_cfg,
                     used_bpms_ords=used_bpms_ords, used_cor_ords=used_cor_ords,
+                    CAVords=CAVords,
                     CMstep=CMstep, rfStep=rfStep,
                     HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
                     hbpm_gain=hbpm_gain, hbpm_coupling=hbpm_coupling,
@@ -5642,6 +5647,7 @@ def pyloco(
         # --- Recompute chi²  ---
         cfg3 = RMConfig(dkick=[CMstep[0], CMstep[1]],
                         bpm_ords=used_bpms_ords, cm_ords=used_cor_ords,
+                        cav_ords=CAVords,
                         HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
                         rfStep=rfStep, includeDispersion=includeDispersion,
                         calculator=response_matrix_calculator)
@@ -5753,6 +5759,7 @@ def pyloco(
                 fit_cfg=fit_cfg,
                 used_bpms_ords=used_bpms_ords,
                 used_cor_ords=used_cor_ords,
+                CAVords=CAVords,
                 CMstep=CMstep,
                 rfStep=rfStep,
                 HCMCoupling=HCMCoupling,
