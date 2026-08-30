@@ -179,6 +179,7 @@ def test_jacobian_calculators_round_trip_and_reach_backend_kwargs(
     config.rejection.analytical_thick_steerers = True
     config.rejection.analytical_verbose = True
     config.rejection.analytical_use_mp = True
+    config.rejection.analytical_implementation = "legacy"
     config.rejection.analytical_thick_skew = False
     config.rejection.analytical_skew_thick_steerers = True
     config.rejection.analytical_skew_verbose = True
@@ -231,6 +232,7 @@ def test_jacobian_calculators_round_trip_and_reach_backend_kwargs(
     ):
         assert kwargs[key] is True
     assert kwargs["analytical_thick_quadrupole"] is False
+    assert kwargs["analytical_implementation"] == "legacy"
     assert kwargs["analytical_thick_skew"] is False
 
 
@@ -242,6 +244,7 @@ def test_jacobian_gui_controls_restore_and_disable_without_losing_values():
         config.rejection.quad_jacobian_calculator = "Analytical"
         config.rejection.skew_jacobian_calculator = "Analytical"
         config.rejection.analytical_verbose = True
+        config.rejection.analytical_implementation = "legacy"
         config.rejection.analytical_skew_verbose = True
         window._load_config_to_widgets()
         assert [window.quad_jacobian_calculator.itemText(index) for index in range(2)] == [
@@ -250,6 +253,7 @@ def test_jacobian_gui_controls_restore_and_disable_without_losing_values():
         assert window.quad_jacobian_calculator.currentText() == "Analytical"
         assert window.skew_jacobian_calculator.currentText() == "Analytical"
         assert window.normal_analytical_options.isEnabled()
+        assert window.analytical_implementation.currentData() == "legacy"
         assert window.skew_analytical_options.isEnabled()
 
         window.quad_jacobian_calculator.setCurrentText("Numerical")

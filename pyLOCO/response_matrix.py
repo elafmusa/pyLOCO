@@ -9,6 +9,47 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 
+def calculate_rf_response(
+        ring, bpm_ords, cav_ords, rf_step, *, calculator="Linear",
+        bidirectional=True, frequency=None, harm_number=None,
+        rf_attr="Frequency", orbit0=None):
+    """Calculate only the RF-response column used by ``response_matrix``."""
+    bpm_ords = np.atleast_1d(np.asarray(bpm_ords, dtype=int))
+    calculator = "Numerical" if str(calculator).strip().lower() == "tracking" else calculator
+    frequency = fixed_parameters.Frequency if frequency is None else frequency
+    harm_number = fixed_parameters.HarmNumber if harm_number is None else harm_number
+
+    if calculator in ("Linear", "Analytical"):
+        speed_of_light = 2.99792458e8
+        dp = (-speed_of_light * rf_step * harm_number / frequency ** 2) / 2.0
+        _, plus = at.find_sync_orbit(ring, dp, refpts=bpm_ords)
+        _, minus = at.find_sync_orbit(ring, -dp, refpts=bpm_ords)
+        return np.concatenate((plus[:, 0] - minus[:, 0], plus[:, 2] - minus[:, 2]))
+
+    if calculator != "Numerical":
+        raise ValueError(f"Unknown calculator={calculator!r} for RF response")
+
+    if orbit0 is None:
+        _, orbit0 = at.find_orbit4(ring, 0, bpm_ords)
+    orbit0_x = orbit0[:, 0]
+    orbit0_y = orbit0[:, 2]
+    if bidirectional:
+        shift_rf(ring, cav_ords, +rf_step / 2, attr=rf_attr)
+        _, plus = at.find_orbit4(ring, 0, bpm_ords)
+        shift_rf(ring, cav_ords, -rf_step, attr=rf_attr)
+        _, minus = at.find_orbit4(ring, 0, bpm_ords)
+        shift_rf(ring, cav_ords, +rf_step / 2, attr=rf_attr)
+        return np.concatenate((
+            plus[:, 0] - minus[:, 0] - orbit0_x,
+            plus[:, 2] - minus[:, 2] - orbit0_y,
+        ))
+
+    shift_rf(ring, cav_ords, +rf_step, attr=rf_attr)
+    _, shifted = at.find_orbit4(ring, 0, bpm_ords)
+    shift_rf(ring, cav_ords, -rf_step, attr=rf_attr)
+    return np.concatenate((shifted[:, 0] - orbit0_x, shifted[:, 2] - orbit0_y))
+
+
 def response_matrix(
     ring,
     bpm_ords=None,

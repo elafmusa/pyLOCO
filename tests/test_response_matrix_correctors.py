@@ -2,7 +2,7 @@ import at
 import numpy as np
 
 from pyLOCO.config import RMConfig
-from pyLOCO.response_matrix import response_matrix
+from pyLOCO.response_matrix import calculate_rf_response, response_matrix
 
 
 def _fodo_ring_with_correctors():
@@ -77,3 +77,32 @@ def test_analytical_calculator_reaches_uncoupled_implementation():
     np.testing.assert_allclose(analytical, linear, rtol=1e-9, atol=1e-15)
     with np.testing.assert_raises_regex(ValueError, "uncoupled"):
         response_matrix(ring, config=RMConfig(calculator="Analytical", coupling_orm=True, **common))
+
+
+def test_dispersion_only_response_matches_full_linear_response_column():
+    ring = _fodo_ring_with_correctors()
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    hcor = np.asarray(at.get_refpts(ring, "HCOR*"), dtype=int)
+    vcor = np.asarray(at.get_refpts(ring, "VCOR*"), dtype=int)
+    kick = 10e-6
+    config = RMConfig(
+        bpm_ords=bpm,
+        cm_ords=[hcor, vcor],
+        cav_ords=np.asarray([], dtype=int),
+        dkick=[[kick] * len(hcor), [kick] * len(vcor)],
+        calculator="Linear",
+        bidirectional=True,
+        includeDispersion=True,
+        rfStep=-3000.0,
+        fixedpathlength=False,
+    )
+    full = response_matrix(ring, config=config)
+    dispersion = calculate_rf_response(
+        ring, bpm, config.cav_ords, config.rfStep,
+        calculator=config.calculator,
+        bidirectional=config.bidirectional,
+        frequency=config.Frequency,
+        harm_number=config.HarmNumber,
+        rf_attr=config.RFAttr,
+    )
+    np.testing.assert_array_equal(dispersion, full[:, -1])

@@ -15,7 +15,7 @@ import h5py
 import multiprocessing as mp
 from multiprocessing import shared_memory
 from .config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
-from .response_matrix import response_matrix
+from .response_matrix import calculate_rf_response, response_matrix
 import time
 fit_cfg = FitInitConfig()
 import warnings
@@ -225,7 +225,7 @@ def build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion):
 
     if includeDispersion:
         # Dispersion is an independent RF-response measurement, not an ORM
-        # cross-plane block. Retain both eta_x and eta_y while removing only
+        # cross-plane block.  Retain both eta_x and eta_y while removing only
         # H-corrector -> V-BPM and V-corrector -> H-BPM terms.
         disp_fit = np.ones((nBPM, 1))
         CF_fit = np.hstack((CF, disp_fit))
@@ -249,7 +249,7 @@ def _canonicalize_measured_response(
 
     Public callers may pass the pure ORM plus separate ``measured_eta_x/y``
     vectors (the preferred interface), while legacy callers that already
-    appended the RF-response column remain supported. Canonical matrix order
+    appended the RF-response column remain supported.  Canonical matrix order
     is ORM columns first and ``[eta_x, eta_y]`` as the final column.
     """
     measured = np.asarray(orm_measured, dtype=float)
@@ -689,6 +689,7 @@ def compute_jacobian(
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    analytical_implementation="vectorized",
     analytical_thick_skew=True,
     analytical_skew_thick_steerers=False,
     analytical_skew_verbose=False,
@@ -696,6 +697,8 @@ def compute_jacobian(
     response_matrix_calculator="Linear",
     calculator_trace_callback=None,
     cancel_callback=None,
+    analytical_progress_callback=None,
+    analytical_timing_callback=None,
 ):
     """
     Master function to compute full LOCO Jacobian including:
@@ -708,6 +711,9 @@ def compute_jacobian(
     output_dir = Path(output_dir)
     calculator_plan = _calculator_execution_plan(
         response_matrix_calculator, quad_jacobian_calculator
+    )
+    analytical_implementation = _normalize_analytical_implementation(
+        analytical_implementation
     )
     response_matrix_calculator = calculator_plan["response_matrix_calculator"]
 
@@ -827,6 +833,11 @@ def compute_jacobian(
 
             elif method == "analytical":
 
+                print(
+                    "[Analytical Jacobian] implementation: "
+                    f"{analytical_implementation}"
+                )
+
                 _trace_calculator(
                     calculator_trace_callback,
                     "normal_quad_analytical_derivative",
@@ -892,7 +903,11 @@ def compute_jacobian(
                     analytical_thick_steerers=analytical_thick_steerers,
                     analytical_verbose=analytical_verbose,
                     analytical_use_mp=analytical_use_mp,
+                    analytical_implementation=analytical_implementation,
                     cancel_callback=cancel_callback,
+                    progress_callback=analytical_progress_callback,
+                    timing_callback=analytical_timing_callback,
+                    reserve_dispersion_column=includeDispersion,
                 )
 
 
@@ -902,6 +917,7 @@ def compute_jacobian(
 
                 if includeDispersion:
 
+                    dispersion_started = time.perf_counter()
                     J_eta, delta_eta = calculate_quads_dispersion_jacobian(
                         ring=ring,
                         C_model=C_model,
@@ -920,7 +936,17 @@ def compute_jacobian(
                         fit_cfg=fit_cfg,
                         orm_calculator=response_matrix_calculator,
                         cancel_callback=cancel_callback,
+                        use_mp=analytical_use_mp,
+                        progress_callback=analytical_progress_callback,
                     )
+                    if analytical_timing_callback is not None:
+                        analytical_timing_callback({
+                            "dispersion_derivative_seconds": (
+                                time.perf_counter() - dispersion_started
+                            ),
+                            "dispersion_output_bytes": int(J_eta.nbytes),
+                            "dispersion_multiprocessing": bool(analytical_use_mp),
+                        })
 
 
                     # ----------------------------------------------------
@@ -975,13 +1001,20 @@ def compute_jacobian(
                     # includeDispersion=True)
                     # ----------------------------------------------------
 
-                    J_quad = np.concatenate(
-                        (
-                            J_quad,
-                            J_eta[:, :, np.newaxis],
-                        ),
-                        axis=2,
-                    )
+                    hybrid_assembly_started = time.perf_counter()
+                    if J_quad.shape[2] == nHorCOR + nVerCOR + 1:
+                        J_quad[:, :, -1] = J_eta
+                    else:
+                        J_quad = np.concatenate(
+                            (J_quad, J_eta[:, :, np.newaxis]), axis=2
+                        )
+                    if analytical_timing_callback is not None:
+                        analytical_timing_callback({
+                            "hybrid_assembly_seconds": (
+                                time.perf_counter() - hybrid_assembly_started
+                            ),
+                            "hybrid_output_bytes": int(J_quad.nbytes),
+                        })
 
 
                     # ----------------------------------------------------
@@ -1044,6 +1077,7 @@ def compute_jacobian(
         # Save each freshly computed, iteration-specific Jacobian. Never
         # overwrite a user-supplied file that was loaded for iteration 1.
         if save_jacobians and quad_elapsed is not None:
+            save_started = time.perf_counter()
             with h5py.File(J_path, "w") as f:
                 f.create_dataset("J_quads", data=J_quad)
                 f.create_dataset("C_model", data=jacobian_reference_model)
@@ -1075,9 +1109,18 @@ def compute_jacobian(
                 "analytical_thick_steerers": analytical_thick_steerers,
                 "analytical_verbose": analytical_verbose,
                 "analytical_use_mp": analytical_use_mp,
+                "analytical_implementation": (
+                    analytical_implementation if method == "analytical" else "not_applicable"
+                ),
             })
 
             print(f"[Jacobian] Saved normal-quadrupole Jacobian to {J_path}")
+            if analytical_timing_callback is not None and method == "analytical":
+                analytical_timing_callback({
+                    "hdf5_save_seconds": time.perf_counter() - save_started,
+                    "hdf5_path": str(J_path),
+                    "hdf5_bytes": int(J_path.stat().st_size),
+                })
 
     # --- SKEW QUADS ---
     J_skew, delta_skew = None, None
@@ -1125,8 +1168,8 @@ def compute_jacobian(
             if skew_method == "numerical":
                 J_skew, delta_skew = calculate_quads_jacobian(
                     ring, C_model, dkick, CMords, bpm_indexes, skew_ind, delta_skew_, C,
-                    skew_individuals, HCMCoupling, VCMCoupling, rf_step, block="skew_quads",
-                    CAVords=CAVords,
+                    skew_individuals, HCMCoupling, VCMCoupling, rf_step,
+                    block="skew_quads", CAVords=CAVords,
                     auto_correct_delta=auto_correct_delta,
                     fit_cfg=fit_cfg, includeDispersion=includeDispersion, output_dir=output_dir,
                     log_filename="skew_jacobian_logs.txt",
@@ -1157,8 +1200,7 @@ def compute_jacobian(
                     J_skew_numerical, delta_skew = calculate_quads_jacobian(
                         ring, C_model, dkick, CMords, bpm_indexes, skew_ind,
                         delta_skew_, C, skew_individuals, HCMCoupling,
-                        VCMCoupling, rf_step, block="skew_quads",
-                        CAVords=CAVords,
+                        VCMCoupling, rf_step, block="skew_quads", CAVords=CAVords,
                         auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
                         includeDispersion=True, output_dir=output_dir,
                         log_filename="skew_dispersion_jacobian_logs.txt",
@@ -1457,13 +1499,33 @@ def calculate_quads_jacobian(
     from pathlib import Path
 
     output_dir = Path(output_dir)
-    # Shared matrices (read-only)
-    shm_C = shared_memory.SharedMemory(create=True, size=C.nbytes)
-    C_sh = np.ndarray(C.shape, dtype=C.dtype, buffer=shm_C.buf);
-    C_sh[:] = C
-    shm_Cm = shared_memory.SharedMemory(create=True, size=C_model.nbytes)
-    Cmodel_sh = np.ndarray(C_model.shape, dtype=C_model.dtype, buffer=shm_Cm.buf);
-    Cmodel_sh[:] = C_model
+    # Shared matrices (read-only). Some sandboxed/macOS environments deny
+    # POSIX shared-memory creation. In that case the spawn initializer receives
+    # the exact same arrays by pickle; only transport changes, never numerics.
+    shm_C = shm_Cm = None
+    try:
+        shm_C = shared_memory.SharedMemory(create=True, size=C.nbytes)
+        C_sh = np.ndarray(C.shape, dtype=C.dtype, buffer=shm_C.buf)
+        C_sh[:] = C
+        shm_Cm = shared_memory.SharedMemory(create=True, size=C_model.nbytes)
+        Cmodel_sh = np.ndarray(C_model.shape, dtype=C_model.dtype, buffer=shm_Cm.buf)
+        Cmodel_sh[:] = C_model
+        worker_initializer = _init_shared
+        worker_initargs = (
+            shm_C.name, C.shape, C.dtype.str,
+            shm_Cm.name, C_model.shape, C_model.dtype.str,
+        )
+    except PermissionError:
+        for shm in (shm_C, shm_Cm):
+            if shm is not None:
+                try:
+                    shm.close(); shm.unlink()
+                except Exception:
+                    pass
+        shm_C = shm_Cm = None
+        worker_initializer = _init_direct
+        worker_initargs = (np.asarray(C), np.asarray(C_model))
+        print("[Numerical Jacobian] POSIX shared memory unavailable; using direct worker-array transport.")
 
     all_logs = []
     ctx = mp.get_context("spawn")
@@ -1482,9 +1544,8 @@ def calculate_quads_jacobian(
 
         with ctx.Pool(
                 processes=processes,
-                initializer=_init_shared,
-                initargs=(shm_C.name, C.shape, C.dtype.str,
-                          shm_Cm.name, C_model.shape, C_model.dtype.str),
+                initializer=worker_initializer,
+                initargs=worker_initargs,
                 maxtasksperchild=64,
         ) as pool:
             pending = pool.starmap_async(generating_quads_response_matrices, quad_args, chunksize=1)
@@ -1530,6 +1591,8 @@ def calculate_quads_jacobian(
 
     finally:
         for shm in (shm_C, shm_Cm):
+            if shm is None:
+                continue
             try:
                 shm.close(); shm.unlink()
             except Exception:
@@ -1553,6 +1616,8 @@ def calculate_quads_dispersion_jacobian(
     fit_cfg=None,
     orm_calculator="Linear",
     cancel_callback=None,
+    use_mp=False,
+    progress_callback=None,
 ):
     """
     Calculate only the dispersion-column derivative with respect
@@ -1648,6 +1713,23 @@ def calculate_quads_dispersion_jacobian(
     delta_vec : ndarray
         Final numerical dK used for each fit parameter.
     """
+
+    if use_mp:
+        full_jacobian, delta_vec = calculate_quads_jacobian(
+            ring=ring, C_model=C_model, dkick=dkick,
+            used_cor_ind=used_cor_ind, bpm_indexes=bpm_indexes,
+            quads_ind=quads_ind, dk=dk, C=C, individuals=individuals,
+            HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
+            rf_step=rf_step, block="quads", CAVords=CAVords,
+            auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
+            output_dir="output",
+            log_filename="quad_dispersion_jacobian_logs.txt",
+            includeDispersion=True, orm_calculator=orm_calculator,
+            cancel_callback=cancel_callback,
+        )
+        if progress_callback is not None:
+            progress_callback("dispersion", len(quads_ind), len(quads_ind))
+        return full_jacobian[:, :, -1], delta_vec
 
     # ============================================================
     # 0. Basic checks
@@ -2084,21 +2166,17 @@ def calculate_quads_dispersion_jacobian(
                 config=fit_cfg,
             )
 
-            C_plus = response_matrix(
+            eta_plus = C @ calculate_rf_response(
                 ring,
-                config=cfg,
+                bpm_indexes,
+                CAVords,
+                rf_step,
+                calculator=orm_calculator,
+                bidirectional=cfg.bidirectional,
+                frequency=cfg.Frequency,
+                harm_number=cfg.HarmNumber,
+                rf_attr=cfg.RFAttr,
             )
-
-            C_plus = (
-                C
-                @
-                C_plus
-            )
-
-            eta_plus = np.asarray(
-                C_plus[:, -1],
-                dtype=float,
-            ).copy()
 
             # ====================================================
             # 9. Restore nominal before negative perturbation
@@ -2134,21 +2212,17 @@ def calculate_quads_dispersion_jacobian(
                 config=fit_cfg,
             )
 
-            C_minus = response_matrix(
+            eta_minus = C @ calculate_rf_response(
                 ring,
-                config=cfg,
+                bpm_indexes,
+                CAVords,
+                rf_step,
+                calculator=orm_calculator,
+                bidirectional=cfg.bidirectional,
+                frequency=cfg.Frequency,
+                harm_number=cfg.HarmNumber,
+                rf_attr=cfg.RFAttr,
             )
-
-            C_minus = (
-                C
-                @
-                C_minus
-            )
-
-            eta_minus = np.asarray(
-                C_minus[:, -1],
-                dtype=float,
-            ).copy()
 
             # ====================================================
             # 11. CENTRAL FINITE DIFFERENCE
@@ -2171,6 +2245,10 @@ def calculate_quads_dispersion_jacobian(
             delta_used.append(
                 step
             )
+            if progress_callback is not None:
+                stride = max(1, len(quads_ind) // 20)
+                if (p + 1) % stride == 0 or p + 1 == len(quads_ind):
+                    progress_callback("dispersion", p + 1, len(quads_ind))
 
         finally:
 
@@ -2230,7 +2308,11 @@ def calculate_quads_jacobian_analytical(
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    analytical_implementation="vectorized",
     cancel_callback=None,
+    progress_callback=None,
+    timing_callback=None,
+    reserve_dispersion_column=False,
 ):
     """
     # Analytical ORM derivative formulas based on:
@@ -2342,6 +2424,10 @@ def calculate_quads_jacobian_analytical(
         f"{len(physical_quads)} physical quadrupoles"
     )
 
+    optics_started = time.perf_counter()
+    _, _, opt_all_location = ring.linopt6(range(len(ring)))
+    optics_seconds = time.perf_counter() - optics_started
+
     # ----------------------------------------------------------
     # Analytical derivatives
     #
@@ -2350,6 +2436,7 @@ def calculate_quads_jacobian_analytical(
     # Therefore calculate them separately.
     # ----------------------------------------------------------
 
+    horizontal_started = time.perf_counter()
     dMH, _ = analytic_orm_variation_with_normal_quadrupole(
         ring,
         ind_bpms=bpm_indexes,
@@ -2358,10 +2445,22 @@ def calculate_quads_jacobian_analytical(
         thick_quadrupole=analytical_thick_quadrupole,
         thick_steerers=analytical_thick_steerers,
         verbose=analytical_verbose,
+        opt_all_location=opt_all_location,
         use_mp=analytical_use_mp,
+        implementation=analytical_implementation,
         cancel_callback=cancel_callback,
+        progress_callback=(
+            (lambda done, total: progress_callback("horizontal", done, total))
+            if progress_callback is not None else None
+        ),
+        timing_callback=(
+            (lambda data: timing_callback({"plane": "horizontal", **data}))
+            if timing_callback is not None else None
+        ),
     )
+    horizontal_seconds = time.perf_counter() - horizontal_started
 
+    vertical_started = time.perf_counter()
     _, dMV = analytic_orm_variation_with_normal_quadrupole(
         ring,
         ind_bpms=bpm_indexes,
@@ -2370,9 +2469,20 @@ def calculate_quads_jacobian_analytical(
         thick_quadrupole=analytical_thick_quadrupole,
         thick_steerers=analytical_thick_steerers,
         verbose=analytical_verbose,
+        opt_all_location=opt_all_location,
         use_mp=analytical_use_mp,
+        implementation=analytical_implementation,
         cancel_callback=cancel_callback,
+        progress_callback=(
+            (lambda done, total: progress_callback("vertical", done, total))
+            if progress_callback is not None else None
+        ),
+        timing_callback=(
+            (lambda data: timing_callback({"plane": "vertical", **data}))
+            if timing_callback is not None else None
+        ),
     )
+    vertical_seconds = time.perf_counter() - vertical_started
 
     # physical quad index -> analytical-array index
     q_to_pos = {
@@ -2384,11 +2494,12 @@ def calculate_quads_jacobian_analytical(
     # Allocate pyLOCO Jacobian
     # ----------------------------------------------------------
 
+    assembly_started = time.perf_counter()
     J_quad = np.zeros(
         (
             len(groups),
             n_rows,
-            n_cols,
+            n_cols + int(bool(reserve_dispersion_column)),
         ),
         dtype=float,
     )
@@ -2441,7 +2552,7 @@ def calculate_quads_jacobian_analytical(
             J_quad[
                 p,
                 nHBPM:,
-                nHorCOR:,
+                nHorCOR:nHorCOR + nVerCOR,
             ] += (
                 dMV[:, :, aq]
                 * Lq
@@ -2452,13 +2563,34 @@ def calculate_quads_jacobian_analytical(
     # Apply BPM calibration/coupling matrix
     # ----------------------------------------------------------
 
-    for p in range(J_quad.shape[0]):
-        J_quad[p] = C @ J_quad[p]
+    diagonal = np.diag(C)
+    nonzero_rows, nonzero_cols = np.nonzero(C)
+    if np.all(nonzero_rows == nonzero_cols):
+        J_quad *= diagonal[np.newaxis, :, np.newaxis]
+    else:
+        for p in range(J_quad.shape[0]):
+            J_quad[p] = C @ J_quad[p]
+    assembly_seconds = time.perf_counter() - assembly_started
 
     print(
         "[Analytical Jacobian] shape:",
         J_quad.shape,
     )
+    if analytical_verbose:
+        print(f"[Analytical Jacobian] shared optics preparation: {optics_seconds:.3f} s")
+    if timing_callback is not None:
+        timing_callback({
+            "analytical_implementation": analytical_implementation,
+            "optics_preparation_seconds": optics_seconds,
+            "horizontal_derivative_seconds": horizontal_seconds,
+            "vertical_derivative_seconds": vertical_seconds,
+            "derivative_seconds": horizontal_seconds + vertical_seconds,
+            "assembly_and_calibration_seconds": assembly_seconds,
+            "analytical_output_bytes": int(J_quad.nbytes),
+            "multiprocessing": bool(analytical_use_mp),
+            "thick_quadrupole": bool(analytical_thick_quadrupole),
+            "thick_steerers": bool(analytical_thick_steerers),
+        })
 
     return J_quad, None
 
@@ -2607,29 +2739,30 @@ def calculate_quads_tilt_jacobian(
     # Shared memory
     # ============================================================
 
-    shm_C = shared_memory.SharedMemory(
-        create=True,
-        size=C.nbytes,
-    )
-
-    C_sh = np.ndarray(
-        C.shape,
-        dtype=C.dtype,
-        buffer=shm_C.buf,
-    )
-    C_sh[:] = C
-
-    shm_Cm = shared_memory.SharedMemory(
-        create=True,
-        size=C_model.nbytes,
-    )
-
-    Cmodel_sh = np.ndarray(
-        C_model.shape,
-        dtype=C_model.dtype,
-        buffer=shm_Cm.buf,
-    )
-    Cmodel_sh[:] = C_model
+    shm_C = shm_Cm = None
+    try:
+        shm_C = shared_memory.SharedMemory(create=True, size=C.nbytes)
+        C_sh = np.ndarray(C.shape, dtype=C.dtype, buffer=shm_C.buf)
+        C_sh[:] = C
+        shm_Cm = shared_memory.SharedMemory(create=True, size=C_model.nbytes)
+        Cmodel_sh = np.ndarray(C_model.shape, dtype=C_model.dtype, buffer=shm_Cm.buf)
+        Cmodel_sh[:] = C_model
+        worker_initializer = _init_shared
+        worker_initargs = (
+            shm_C.name, C.shape, C.dtype.str,
+            shm_Cm.name, C_model.shape, C_model.dtype.str,
+        )
+    except PermissionError:
+        for shm in (shm_C, shm_Cm):
+            if shm is not None:
+                try:
+                    shm.close(); shm.unlink()
+                except Exception:
+                    pass
+        shm_C = shm_Cm = None
+        worker_initializer = _init_direct
+        worker_initargs = (np.asarray(C), np.asarray(C_model))
+        print("[Numerical tilt Jacobian] POSIX shared memory unavailable; using direct worker-array transport.")
 
     all_logs = []
 
@@ -2685,15 +2818,8 @@ def calculate_quads_tilt_jacobian(
 
         with ctx.Pool(
             processes=processes,
-            initializer=_init_shared,
-            initargs=(
-                shm_C.name,
-                C.shape,
-                C.dtype.str,
-                shm_Cm.name,
-                C_model.shape,
-                C_model.dtype.str,
-            ),
+            initializer=worker_initializer,
+            initargs=worker_initargs,
             maxtasksperchild=64,
         ) as pool:
 
@@ -2813,17 +2939,14 @@ def calculate_quads_tilt_jacobian(
         # Clean shared memory
         # ========================================================
 
-        try:
-            shm_C.close()
-            shm_C.unlink()
-        except Exception:
-            pass
-
-        try:
-            shm_Cm.close()
-            shm_Cm.unlink()
-        except Exception:
-            pass
+        for shm in (shm_C, shm_Cm):
+            if shm is None:
+                continue
+            try:
+                shm.close()
+                shm.unlink()
+            except Exception:
+                pass
 
 def _init_shared(shm_name_C, shape_C, dtype_C, shm_name_Cm, shape_Cm, dtype_Cm):
     global G_C, G_CMODEL, _shm_C, _shm_Cm
@@ -2831,6 +2954,14 @@ def _init_shared(shm_name_C, shape_C, dtype_C, shm_name_Cm, shape_Cm, dtype_Cm):
     _shm_Cm = shared_memory.SharedMemory(name=shm_name_Cm)
     G_C = np.ndarray(shape_C, dtype=np.dtype(dtype_C), buffer=_shm_C.buf)
     G_CMODEL = np.ndarray(shape_Cm, dtype=np.dtype(dtype_Cm), buffer=_shm_Cm.buf)
+
+
+def _init_direct(C, C_model):
+    """Initialize numerical-Jacobian workers without POSIX shared memory."""
+    global G_C, G_CMODEL, _shm_C, _shm_Cm
+    _shm_C = _shm_Cm = None
+    G_C = np.asarray(C)
+    G_CMODEL = np.asarray(C_model)
 
 def generating_quads_response_matrices(
         quad_index, ring, dkick, cor_indexes, bpm_indexes,
@@ -4550,6 +4681,24 @@ def augment_system_with_constraints(
     return Jw, y, G, yc
 
 
+def _preflight_constraint_configuration(
+        n_params, blocks, fit_list, constraint_cfg):
+    """Validate active constraint metadata before expensive calculations."""
+    if constraint_cfg is None or not constraint_cfg.enable:
+        return
+    # Reuse the authoritative constraint builder with an empty data system.
+    # This checks sigma/weight/mask dimensions and positivity without changing
+    # the actual fit or duplicating its scientific rules.
+    augment_system_with_constraints(
+        np.zeros((0, n_params), dtype=float),
+        np.zeros((0, 1), dtype=float),
+        blocks,
+        fit_list,
+        constraint_cfg=constraint_cfg,
+        param_scale=np.ones(n_params, dtype=float),
+    )
+
+
 
 # ============================================================================== #
 #                               LOCO Minimization
@@ -5028,6 +5177,7 @@ def pyloco(
         analytical_thick_steerers=False,
         analytical_verbose=False,
         analytical_use_mp=False,
+        analytical_implementation="vectorized",
         analytical_thick_skew=True,
         analytical_skew_thick_steerers=False,
         analytical_skew_verbose=False,
@@ -5047,11 +5197,14 @@ def pyloco(
         jacobian_callback=None,
         cancel_callback=None,
         progress_callback=None,
+        analytical_timing_callback=None,
         output_dir='output',
         save_jacobians=False,
 
 ):
-
+    analytical_implementation = _normalize_analytical_implementation(
+        analytical_implementation
+    )
     progress = _WorkflowProgressReporter(progress_callback, nIter)
     progress.emit(
         "initialization", 0.0, "Initializing LOCO fit and validating configuration."
@@ -5101,7 +5254,7 @@ def pyloco(
     deltaqt = np.zeros(len(quads_tilt_ind)) if ('quads_tilt' in fit_list) else None
 
     # The public production interface accepts the pure ORM and separate RF
-    # response vectors. Normalize that representation once, without asking
+    # response vectors.  Normalize that representation once, without asking
     # drivers to append the dispersion column themselves.
     orm_measured = _canonicalize_measured_response(
         orm_measured, measured_eta_x, measured_eta_y,
@@ -5252,6 +5405,22 @@ def pyloco(
     inetial_fit_parameters = np.asarray(inetial_fit_parameters).ravel()
     current_fit_parameters = inetial_fit_parameters.copy()
 
+    if constraint_cfg is not None:
+        if "blocks" not in locals():
+            _, blocks = build_initial_fit_parameters(
+                ring=ring, fit_list=fit_list,
+                nHBPM=nHBPM, nVBPM=nVBPM,
+                nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+                quads_ords=quads_ords, skew_ords=skew_ords,
+                quads_tilt=quads_tilt_ind, CMstep=CMstep, rfStep=rfStep,
+                quad_individuals=quad_individuals,
+                skew_individuals=skew_individuals,
+                tilt_individuals=tilt_individuals, config=fit_cfg,
+            )
+        _preflight_constraint_configuration(
+            current_fit_parameters.size, blocks, fit_list, constraint_cfg
+        )
+
     p_initial = inetial_fit_parameters.copy()
     delta_chi2_history = []
     group_delta_history = []
@@ -5310,11 +5479,24 @@ def pyloco(
         progress.emit(
             "jacobian_calculation",
             progress.iteration_fraction(iteration, 0.15),
-            f"Computing {jacobian_description} Jacobian.",
+            f"Computing {jacobian_description} Jacobian"
+            + (f" ({analytical_implementation})." if include_quads and
+               str(quad_jacobian_calculator).strip().lower() == "analytical" else "."),
             iteration=iteration,
         )
 
         jacobian_started = time.perf_counter()
+
+        def analytical_progress(plane, done, total):
+            elapsed = time.perf_counter() - jacobian_started
+            progress.emit(
+                "jacobian_calculation",
+                progress.iteration_fraction(iteration, 0.15),
+                f"Analytical normal Jacobian ({plane}): {done} / {total} "
+                f"parameters, elapsed {elapsed:.1f} s.",
+                iteration=iteration,
+            )
+
         Jfull, dq, dskew, dtilt = compute_jacobian(
             ring, C_model=orm_model, dkick=CMstep,
             bpm_indexes=used_bpms_ords, CMords=used_cor_ords, quads_ind=quads_ords,
@@ -5354,6 +5536,7 @@ def pyloco(
             analytical_thick_steerers=analytical_thick_steerers,
             analytical_verbose=analytical_verbose,
             analytical_use_mp=analytical_use_mp,
+            analytical_implementation=analytical_implementation,
             analytical_thick_skew=analytical_thick_skew,
             analytical_skew_thick_steerers=analytical_skew_thick_steerers,
             analytical_skew_verbose=analytical_skew_verbose,
@@ -5361,6 +5544,8 @@ def pyloco(
             response_matrix_calculator=response_matrix_calculator,
             calculator_trace_callback=calculator_trace_callback,
             cancel_callback=cancel_callback,
+            analytical_progress_callback=analytical_progress,
+            analytical_timing_callback=analytical_timing_callback,
             quads_tilt_jacobian_file=quads_tilt_jacobian_file,
             force_recompute=force_recompute,
             output_dir=output_dir,
@@ -6226,6 +6411,17 @@ def _calculator_execution_plan(response_matrix_calculator, quad_jacobian_calcula
         "normal_quad_jacobian": jacobian,
         "numerical_jacobian_orm_calculator": response if jacobian == "Numerical" else None,
     }
+
+
+def _normalize_analytical_implementation(value):
+    """Validate the public normal analytical-Jacobian implementation choice."""
+    implementation = str(value).strip().lower()
+    if implementation not in {"legacy", "vectorized"}:
+        raise ValueError(
+            f"Unknown analytical_implementation={value!r}. "
+            "Choose 'legacy' or 'vectorized'."
+        )
+    return implementation
 
 
 def _trace_calculator(callback, stage, calculator):

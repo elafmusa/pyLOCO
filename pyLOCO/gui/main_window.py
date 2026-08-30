@@ -1286,12 +1286,16 @@ class MainWindow(QMainWindow):
         self.analytical_thick_steerers = QCheckBox("Thick steerers for normal Jacobian")
         self.analytical_verbose = QCheckBox("Verbose normal analytical calculation")
         self.analytical_use_mp = QCheckBox("Multiprocessing for normal analytical calculation")
+        self.analytical_implementation = QComboBox()
+        self.analytical_implementation.addItem("Vectorized (production)", "vectorized")
+        self.analytical_implementation.addItem("Legacy (reference)", "legacy")
         self.analytical_thick_skew = QCheckBox("Thick skew quadrupoles")
         self.analytical_skew_thick_steerers = QCheckBox("Thick steerers for skew Jacobian")
         self.analytical_skew_verbose = QCheckBox("Verbose skew analytical calculation")
         self.analytical_skew_use_mp = QCheckBox("Multiprocessing for skew analytical calculation")
 
         normal_options_form = QFormLayout()
+        normal_options_form.addRow("Implementation", self.analytical_implementation)
         for widget in (
             self.analytical_thick_quadrupole,
             self.analytical_thick_steerers,
@@ -1729,6 +1733,7 @@ class MainWindow(QMainWindow):
             self.quad_jacobian_calculator, self.skew_jacobian_calculator,
             self.analytical_thick_quadrupole, self.analytical_thick_steerers,
             self.analytical_verbose, self.analytical_use_mp,
+            self.analytical_implementation,
             self.analytical_thick_skew, self.analytical_skew_thick_steerers,
             self.analytical_skew_verbose, self.analytical_skew_use_mp,
             self.rm_vectorized, self.rm_dkick_h, self.rm_dkick_v, self.rm_rf_step,
@@ -2022,6 +2027,10 @@ class MainWindow(QMainWindow):
         self.analytical_thick_steerers.setChecked(cfg.rejection.analytical_thick_steerers)
         self.analytical_verbose.setChecked(cfg.rejection.analytical_verbose)
         self.analytical_use_mp.setChecked(cfg.rejection.analytical_use_mp)
+        implementation_index = self.analytical_implementation.findData(
+            cfg.rejection.analytical_implementation
+        )
+        self.analytical_implementation.setCurrentIndex(max(0, implementation_index))
         self.analytical_thick_skew.setChecked(cfg.rejection.analytical_thick_skew)
         self.analytical_skew_thick_steerers.setChecked(cfg.rejection.analytical_skew_thick_steerers)
         self.analytical_skew_verbose.setChecked(cfg.rejection.analytical_skew_verbose)
@@ -2140,6 +2149,7 @@ class MainWindow(QMainWindow):
         cfg.rejection.analytical_thick_steerers = self.analytical_thick_steerers.isChecked()
         cfg.rejection.analytical_verbose = self.analytical_verbose.isChecked()
         cfg.rejection.analytical_use_mp = self.analytical_use_mp.isChecked()
+        cfg.rejection.analytical_implementation = self.analytical_implementation.currentData()
         cfg.rejection.analytical_thick_skew = self.analytical_thick_skew.isChecked()
         cfg.rejection.analytical_skew_thick_steerers = self.analytical_skew_thick_steerers.isChecked()
         cfg.rejection.analytical_skew_verbose = self.analytical_skew_verbose.isChecked()
