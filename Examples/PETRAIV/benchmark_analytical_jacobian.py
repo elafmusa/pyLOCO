@@ -92,8 +92,15 @@ def _json_value(value):
     raise TypeError(f"Cannot serialize {type(value).__name__}")
 
 
-def _selection(ring):
-    correctors = np.load(production.CORRECTOR_FILE)
+def _resolve_input_path(value, label):
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"{label} file not found: {path}")
+    return path
+
+
+def _selection(ring, corrector_selection):
+    correctors = np.load(corrector_selection)
     selection = {
         "bpms": np.asarray(at.get_refpts(ring, at.Monitor), dtype=int),
         "horizontal_correctors": np.asarray(correctors["hcor_inds"], dtype=int),
@@ -137,8 +144,16 @@ def _timing_summary(events):
     }
 
 
-def main(argv=None):
+def _parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--lattice", type=Path, default=production.LATTICE_FILE,
+        help="PETRA-IV design lattice (default: repository production lattice).",
+    )
+    parser.add_argument(
+        "--corrector-selection", type=Path, default=production.CORRECTOR_FILE,
+        help="Production H/V corrector-selection NPZ file.",
+    )
     parser.add_argument(
         "--implementation", choices=("vectorized", "legacy"),
         default="vectorized",
@@ -151,10 +166,18 @@ def main(argv=None):
         "--no-multiprocessing", action="store_true",
         help="Diagnostic override; Maxwell production validation should omit this.",
     )
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = _parse_args(argv)
 
     implementation = args.implementation
     use_mp = not args.no_multiprocessing
+    lattice_path = _resolve_input_path(args.lattice, "Lattice")
+    corrector_selection_path = _resolve_input_path(
+        args.corrector_selection, "Corrector selection"
+    )
     output_dir = args.output_root.resolve() / implementation
     output_dir.mkdir(parents=True, exist_ok=True)
     jacobian_path = output_dir / "petra_iv_normal_analytical_jacobian.h5"
@@ -166,9 +189,9 @@ def main(argv=None):
         )
 
     wall_started = time.perf_counter()
-    ring = at.load_lattice(production.LATTICE_FILE)
+    ring = at.load_lattice(lattice_path)
     ring.disable_6d()
-    selection = _selection(ring)
+    selection = _selection(ring, corrector_selection_path)
     bpms = selection["bpms"]
     hcors = selection["horizontal_correctors"]
     vcors = selection["vertical_correctors"]
@@ -263,8 +286,8 @@ def main(argv=None):
     summary = {
         "benchmark": "PETRA-IV normal analytical Jacobian",
         "production_settings_source": str(production.SOURCE_FILE.resolve()),
-        "lattice": str(production.LATTICE_FILE.resolve()),
-        "corrector_selection": str(production.CORRECTOR_FILE.resolve()),
+        "lattice": str(lattice_path),
+        "corrector_selection": str(corrector_selection_path),
         "implementation": saved_implementation,
         "analytical_use_mp": use_mp,
         "multiprocessing_worker_count": timings["multiprocessing_worker_count"],
