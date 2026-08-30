@@ -54,6 +54,40 @@ class _WorkflowProgressReporter:
         return 0.05 + 0.90 * (((int(iteration) - 1) + within) / total)
 
 
+def _require_finite_evaluation(
+        values, *, evaluation, calculator, iteration=None,
+        block=None, group=None, step=None, raise_on_nonfinite=True):
+    """Raise with actionable context when an ORM/Jacobian evaluation is invalid."""
+    array = np.asarray(values)
+    nonfinite_count = int(array.size - np.count_nonzero(np.isfinite(array)))
+    if nonfinite_count == 0:
+        return 0
+
+    details = [
+        f"evaluation={evaluation}",
+        f"calculator={calculator}",
+        f"iteration={iteration if iteration is not None else 'unknown'}",
+        f"nonfinite_count={nonfinite_count}",
+        f"shape={array.shape}",
+    ]
+    if block is not None:
+        details.append(f"block={block}")
+    if group is not None:
+        details.append(f"group={list(group)}")
+    if step is not None:
+        details.append(f"step={float(step):.12e}")
+    message = "Non-finite LOCO evaluation: " + ", ".join(details)
+    print(
+        "\n========== NON-FINITE LOCO EVALUATION ==========\n"
+        f"{message}\n"
+        "================================================\n",
+        flush=True,
+    )
+    if raise_on_nonfinite:
+        raise FloatingPointError(message)
+    return nonfinite_count
+
+
 def _raise_if_cancelled(cancel_callback):
     if cancel_callback is not None and cancel_callback():
         raise RuntimeError("LOCO run cancelled by the user.")
@@ -783,6 +817,7 @@ def compute_jacobian(
                     log_filename="quad_jacobian_logs2.txt",
                     orm_calculator=orm_calculator,
                     cancel_callback=cancel_callback,
+                    iteration=iteration,
                 )
 
 
@@ -1097,6 +1132,7 @@ def compute_jacobian(
                     log_filename="skew_jacobian_logs.txt",
                     orm_calculator=response_matrix_calculator,
                     cancel_callback=cancel_callback,
+                    iteration=iteration,
                 )
             elif skew_method == "analytical":
                 C_model_orm = C_model[:, :-1] if includeDispersion else C_model
@@ -1128,6 +1164,7 @@ def compute_jacobian(
                         log_filename="skew_dispersion_jacobian_logs.txt",
                         orm_calculator=response_matrix_calculator,
                         cancel_callback=cancel_callback,
+                        iteration=iteration,
                     )
                     J_skew = np.concatenate(
                         (J_skew, J_skew_numerical[:, :, -1, np.newaxis]), axis=2
@@ -1415,7 +1452,7 @@ def calculate_quads_jacobian(
         auto_correct_delta=True,
         fit_cfg=None, output_dir="output",
         log_filename="quad_jacobian_logs.txt", processes=None, includeDispersion=False,
-        orm_calculator="Linear", cancel_callback=None,
+        orm_calculator="Linear", cancel_callback=None, iteration=None,
 ):
     from pathlib import Path
 
@@ -1439,7 +1476,8 @@ def calculate_quads_jacobian(
                 quad_index, ring, dkick, used_cor_ind, bpm_indexes, dk,
                 individuals, HCMCoupling, VCMCoupling, rf_step,
                 auto_correct_delta,
-                block, fit_cfg_dict, includeDispersion, orm_calculator, CAVords
+                block, fit_cfg_dict, includeDispersion, orm_calculator,
+                CAVords, iteration,
             ))
 
         with ctx.Pool(
@@ -1461,6 +1499,13 @@ def calculate_quads_jacobian(
                     all_logs.extend(_logs)
             J_blocks = [np.asarray(blk) for blk in J_blocks]
             J_quad = np.stack(J_blocks, axis=0)  # (P, rows, cols)
+            _require_finite_evaluation(
+                J_quad,
+                evaluation="assembled_numerical_jacobian",
+                calculator=orm_calculator,
+                iteration=iteration,
+                block=block,
+            )
             delta_vec = np.concatenate([np.atleast_1d(d) for d in deltas])
         else:
             J_quad = np.empty((0, C.shape[0], C.shape[1]))
@@ -2791,7 +2836,8 @@ def generating_quads_response_matrices(
         quad_index, ring, dkick, cor_indexes, bpm_indexes,
         delta_init, individuals, HCMCoupling, VCMCoupling,
         rf_step, auto_correct_delta, block, fit_cfg,
-        includeDispersion, orm_calculator="Linear", CAVords=None
+        includeDispersion, orm_calculator="Linear", CAVords=None,
+        iteration=None,
 ):
     """
     Generate the numerical quadrupole Jacobian for one fitted
@@ -3009,6 +3055,15 @@ def generating_quads_response_matrices(
             G_C
             @
             C_plus_step_test
+        )
+        _require_finite_evaluation(
+            C_plus_step_test,
+            evaluation="finite_difference_step_selection_plus_orm",
+            calculator=orm_calculator,
+            iteration=iteration,
+            block=block,
+            group=group,
+            step=float(delta_local[0]),
         )
 
         # --------------------------------------------------------
@@ -3229,6 +3284,15 @@ def generating_quads_response_matrices(
         @
         C_plus
     )
+    _require_finite_evaluation(
+        C_plus,
+        evaluation="central_difference_plus_orm",
+        calculator=orm_calculator,
+        iteration=iteration,
+        block=block,
+        group=group,
+        step=step,
+    )
 
     # ============================================================
     # 10. Restore nominal before negative perturbation
@@ -3274,6 +3338,15 @@ def generating_quads_response_matrices(
         @
         C_minus
     )
+    _require_finite_evaluation(
+        C_minus,
+        evaluation="central_difference_minus_orm",
+        calculator=orm_calculator,
+        iteration=iteration,
+        block=block,
+        group=group,
+        step=-step,
+    )
 
     # ============================================================
     # 12. Restore nominal lattice
@@ -3305,6 +3378,15 @@ def generating_quads_response_matrices(
         C_minus
     ) / (
         2.0 * step
+    )
+    _require_finite_evaluation(
+        J_block,
+        evaluation="central_difference_jacobian_block",
+        calculator=orm_calculator,
+        iteration=iteration,
+        block=block,
+        group=group,
+        step=step,
     )
 
     # ============================================================
@@ -4798,6 +4880,19 @@ def solve_step_lm(
     before LM damping is added.
     """
 
+    _require_finite_evaluation(
+        J_weighted,
+        evaluation="lm_solver_weighted_jacobian",
+        calculator="LM",
+        iteration=tag or None,
+    )
+    _require_finite_evaluation(
+        y,
+        evaluation="lm_solver_residual",
+        calculator="LM",
+        iteration=tag or None,
+    )
+
     # ============================================================
     # 1. Build constraints
     # ============================================================
@@ -5567,6 +5662,24 @@ def pyloco(
                 trial_orm_seconds += time.perf_counter() - trial_orm_started
                 orm_trial = Cmat2 @ orm_trial
 
+                nonfinite_trial_count = _require_finite_evaluation(
+                    orm_trial,
+                    evaluation=f"lm_trial_orm_inner_{j + 1}",
+                    calculator=response_matrix_calculator,
+                    iteration=iteration,
+                    raise_on_nonfinite=False,
+                )
+                if nonfinite_trial_count:
+                    print(
+                        f"  LM inner {j + 1}: rejecting non-finite trial ORM "
+                        f"({nonfinite_trial_count} invalid values), λ={LMlambda:g}"
+                    )
+                    LMlambda *= 10.0
+                    if LMlambda > max_lm_lambda:
+                        print("  λ exceeded maximum; stop inner loop.")
+                        break
+                    continue
+
                 # Fixed path length adjustment (trial)
                 if fixedmomentum == True:
                     AlphaMCF = get_mcf(ring_tmp)
@@ -5580,6 +5693,25 @@ def pyloco(
                         jcol = nHorCOR + iV
                         orm_trial[:nHBPM, jcol] += Vshift2[iV] * eta_x_mcf
                         orm_trial[nHBPM:, jcol] += Vshift2[iV] * eta_y_mcf
+
+                postprocessed_nonfinite_count = _require_finite_evaluation(
+                    orm_trial,
+                    evaluation=f"lm_trial_postprocessed_orm_inner_{j + 1}",
+                    calculator=response_matrix_calculator,
+                    iteration=iteration,
+                    raise_on_nonfinite=False,
+                )
+                if postprocessed_nonfinite_count:
+                    print(
+                        f"  LM inner {j + 1}: rejecting non-finite postprocessed "
+                        f"trial ORM ({postprocessed_nonfinite_count} invalid values), "
+                        f"λ={LMlambda:g}"
+                    )
+                    LMlambda *= 10.0
+                    if LMlambda > max_lm_lambda:
+                        print("  λ exceeded maximum; stop inner loop.")
+                        break
+                    continue
 
                 y_model_trial_ = orm_trial.reshape(-1, 1, order="F")
 
