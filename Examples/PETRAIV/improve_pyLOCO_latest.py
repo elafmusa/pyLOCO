@@ -156,6 +156,7 @@ QUAD_JACOBIAN_CALCULATOR = "Numerical"
 SKEW_JACOBIAN_CALCULATOR = "Numerical"
 ANALYTICAL_IMPLEMENTATION = "vectorized"
 ANALYTICAL_USE_MP = True
+ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
 FORCE_RECOMPUTE_JACOBIANS = True
 
 # Avoid creating multiple very large Jacobian artifacts during the first
@@ -446,6 +447,7 @@ def run_latest_pyloco_two_stage(
         skew_jacobian_calculator=SKEW_JACOBIAN_CALCULATOR,
         analytical_implementation=ANALYTICAL_IMPLEMENTATION,
         analytical_use_mp=ANALYTICAL_USE_MP,
+        analytical_dispersion_calculator=ANALYTICAL_DISPERSION_CALCULATOR,
         force_recompute=FORCE_RECOMPUTE_JACOBIANS,
         save_jacobians=SAVE_JACOBIANS,
 
@@ -1109,6 +1111,9 @@ def main() -> int:
             "stage2_response_matrix_calculator": STAGE2_RESPONSE_MATRIX_CALCULATOR,
             "quad_jacobian_calculator": QUAD_JACOBIAN_CALCULATOR,
             "skew_jacobian_calculator": SKEW_JACOBIAN_CALCULATOR,
+            "analytical_implementation": ANALYTICAL_IMPLEMENTATION,
+            "analytical_use_mp": ANALYTICAL_USE_MP,
+            "analytical_dispersion_calculator": ANALYTICAL_DISPERSION_CALCULATOR,
             "save_jacobians": SAVE_JACOBIANS,
             "saved_corrected_lattice": str(saved_path),
             "elapsed_seconds": elapsed,

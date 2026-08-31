@@ -1,7 +1,8 @@
 import at
 import numpy as np
 
-from pyLOCO.config import RMConfig
+from pyLOCO.config import FitInitConfig, RMConfig
+from pyLOCO.pyloco import calculate_quads_dispersion_jacobian
 from pyLOCO.response_matrix import calculate_rf_response, response_matrix
 
 
@@ -106,3 +107,55 @@ def test_dispersion_only_response_matches_full_linear_response_column():
         rf_attr=config.RFAttr,
     )
     np.testing.assert_array_equal(dispersion, full[:, -1])
+
+
+def test_tracking_rf_response_is_zero_in_current_4d_path():
+    ring = _fodo_ring_with_correctors()
+    ring.append(at.RFCavity("RFC", 0.0, 3e6, 5e8, 100, 1e9))
+    ring.disable_6d()
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    cavity = np.asarray(at.get_refpts(ring, at.elements.RFCavity), dtype=int)
+
+    linear = calculate_rf_response(
+        ring, bpm, cavity, 40.0, calculator="Linear", frequency=5e8,
+    )
+    tracking = calculate_rf_response(
+        ring, bpm, cavity, 40.0, calculator="Tracking", frequency=5e8,
+    )
+
+    assert np.linalg.norm(linear) > 0.0
+    np.testing.assert_array_equal(tracking, np.zeros_like(tracking))
+
+
+def test_linear_and_analytical_normal_quad_dispersion_derivatives_match():
+    ring = _fodo_ring_with_correctors()
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    hcor = np.asarray(at.get_refpts(ring, "HCOR*"), dtype=int)[:2]
+    vcor = np.asarray(at.get_refpts(ring, "VCOR*"), dtype=int)[:2]
+    quads = np.asarray(at.get_refpts(ring, at.elements.Quadrupole), dtype=int)[:2]
+    kicks = (np.full(len(hcor), 1e-5), np.full(len(vcor), 1e-5))
+    common_config = dict(
+        bpm_ords=bpm, cm_ords=(hcor, vcor), cav_ords=np.asarray([], dtype=int),
+        dkick=kicks, includeDispersion=True, rfStep=40.0,
+    )
+    results = {}
+    for calculator in ("Linear", "Analytical"):
+        model = response_matrix(
+            ring, config=RMConfig(calculator=calculator, **common_config)
+        )
+        results[calculator] = calculate_quads_dispersion_jacobian(
+            ring=ring, C_model=model, dkick=kicks,
+            used_cor_ind=(hcor, vcor), bpm_indexes=bpm,
+            quads_ind=quads, dk=None, C=np.eye(2 * len(bpm)), individuals=True,
+            HCMCoupling=np.zeros(len(hcor)), VCMCoupling=np.zeros(len(vcor)),
+            rf_step=40.0, CAVords=np.asarray([], dtype=int),
+            auto_correct_delta=True, fit_cfg=FitInitConfig(),
+            orm_calculator=calculator, use_mp=False,
+        )
+
+    np.testing.assert_allclose(
+        results["Linear"][1], results["Analytical"][1], rtol=1e-12, atol=1e-15
+    )
+    np.testing.assert_allclose(
+        results["Linear"][0], results["Analytical"][0], rtol=2e-12, atol=1e-15
+    )

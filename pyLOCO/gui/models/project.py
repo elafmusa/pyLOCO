@@ -194,6 +194,7 @@ class RejectionConfig:
     analytical_verbose: bool = False
     analytical_use_mp: bool = False
     analytical_implementation: str = "vectorized"
+    analytical_dispersion_calculator: str | None = None
     analytical_thick_skew: bool = True
     analytical_skew_thick_steerers: bool = False
     analytical_skew_verbose: bool = False
@@ -660,6 +661,7 @@ class LocoConfiguration:
             "analytical_verbose": self.rejection.analytical_verbose,
             "analytical_use_mp": self.rejection.analytical_use_mp,
             "analytical_implementation": self.rejection.analytical_implementation,
+            "analytical_dispersion_calculator": self.rejection.analytical_dispersion_calculator,
             "analytical_thick_skew": self.rejection.analytical_thick_skew,
             "analytical_skew_thick_steerers": self.rejection.analytical_skew_thick_steerers,
             "analytical_skew_verbose": self.rejection.analytical_skew_verbose,
@@ -1120,6 +1122,9 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "analytical_verbose": loco.get("analytical_verbose", False),
             "analytical_use_mp": loco.get("analytical_use_mp", False),
             "analytical_implementation": loco.get("analytical_implementation", "vectorized"),
+            "analytical_dispersion_calculator": loco.get(
+                "analytical_dispersion_calculator"
+            ),
             "analytical_thick_skew": loco.get("analytical_thick_skew", True),
             "analytical_skew_thick_steerers": loco.get("analytical_skew_thick_steerers", False),
             "analytical_skew_verbose": loco.get("analytical_skew_verbose", False),
@@ -1164,7 +1169,8 @@ _EDITABLE_YAML_PATHS.update(f"loco.{name}" for name in (
     "plot_fit_parameters", "auto_correct_delta", "fixedpathlength", "calculate_delta_chi2",
     "quad_jacobian_calculator", "skew_jacobian_calculator",
     "analytical_thick_quadrupole", "analytical_thick_steerers",
-    "analytical_verbose", "analytical_use_mp", "analytical_implementation", "analytical_thick_skew",
+    "analytical_verbose", "analytical_use_mp", "analytical_implementation",
+    "analytical_dispersion_calculator", "analytical_thick_skew",
     "analytical_skew_thick_steerers", "analytical_skew_verbose",
     "analytical_skew_use_mp", "skew_analytical_implementation",
 ))

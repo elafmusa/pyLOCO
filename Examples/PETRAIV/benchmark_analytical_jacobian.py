@@ -280,6 +280,9 @@ def main(argv=None):
     with h5py.File(jacobian_path, "r") as handle:
         compute_seconds = float(handle.attrs["computation_seconds"])
         saved_implementation = str(handle.attrs["analytical_implementation"])
+        saved_dispersion_calculator = str(
+            handle.attrs["analytical_dispersion_calculator"]
+        )
 
     array = np.asarray(jacobian)
     finite_count = int(np.count_nonzero(np.isfinite(array)))
@@ -289,6 +292,7 @@ def main(argv=None):
         "lattice": str(lattice_path),
         "corrector_selection": str(corrector_selection_path),
         "implementation": saved_implementation,
+        "analytical_dispersion_calculator": saved_dispersion_calculator,
         "analytical_use_mp": use_mp,
         "multiprocessing_worker_count": timings["multiprocessing_worker_count"],
         "slurm_cpus_per_task": os.environ.get("SLURM_CPUS_PER_TASK"),

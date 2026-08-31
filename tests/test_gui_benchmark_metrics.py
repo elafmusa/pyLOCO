@@ -193,6 +193,7 @@ def test_saved_summary_records_independent_calculator_metadata(tmp_path):
         response_matrix_backend_calculator="Numerical",
         normal_quad_jacobian="Numerical",
         analytical_implementation="legacy",
+        analytical_dispersion_calculator="Linear",
         skew_analytical_implementation="legacy",
         calculator_trace=[{
             "stage": "normal_quad_numerical_perturbation_orm",
@@ -204,6 +205,7 @@ def test_saved_summary_records_independent_calculator_metadata(tmp_path):
     assert summary["response_matrix_backend_calculator"] == "Numerical"
     assert summary["normal_quad_jacobian"] == "Numerical"
     assert summary["analytical_implementation"] == "legacy"
+    assert summary["analytical_dispersion_calculator"] == "Linear"
     assert summary["skew_analytical_implementation"] == "legacy"
     assert summary["normal_quad_jacobian_orm_calculator"] == "Tracking"
     assert summary["calculator_trace"][0]["calculator"] == "Numerical"

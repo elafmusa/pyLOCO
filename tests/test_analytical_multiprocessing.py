@@ -137,6 +137,24 @@ def test_analytical_implementation_is_validated_and_identified_in_timing():
         )
 
 
+def test_analytical_dispersion_calculator_validation_and_compatible_default():
+    assert pyloco_module._normalize_analytical_dispersion_calculator(
+        None, fallback="Linear"
+    ) == "Linear"
+    assert pyloco_module._normalize_analytical_dispersion_calculator(
+        None, fallback="Numerical"
+    ) == "Tracking"
+    for calculator in ("Linear", "Analytical", "Tracking"):
+        assert pyloco_module._normalize_analytical_dispersion_calculator(
+            calculator, fallback="Linear"
+        ) == calculator
+    import pytest
+    with pytest.raises(ValueError, match="Linear.*Analytical.*Tracking"):
+        pyloco_module._normalize_analytical_dispersion_calculator(
+            "Numerical", fallback="Linear"
+        )
+
+
 def test_dispersion_enabled_jacobian_propagates_both_implementations(monkeypatch, tmp_path):
     ring, bpms, correctors, quadrupoles = _ring_and_indices()
     seen = []
@@ -148,12 +166,14 @@ def test_dispersion_enabled_jacobian_propagates_both_implementations(monkeypatch
         return values, values + 1.0
 
     def fake_dispersion(**kwargs):
+        saved_dispersion_calculators.append(kwargs["orm_calculator"])
         return np.full((len(kwargs["quads_ind"]), 2 * len(kwargs["bpm_indexes"])), 7.0), None
 
     monkeypatch.setattr(pyloco_module, "analytic_orm_variation_with_normal_quadrupole", fake_formula)
     monkeypatch.setattr(pyloco_module, "calculate_quads_dispersion_jacobian", fake_dispersion)
     results = []
     saved_implementations = []
+    saved_dispersion_calculators = []
     for implementation in ("legacy", "vectorized"):
         jacobian, *_ = pyloco_module.compute_jacobian(
             ring, C_model=np.zeros((2 * len(bpms), 2 * len(correctors) + 1)),
@@ -165,6 +185,7 @@ def test_dispersion_enabled_jacobian_propagates_both_implementations(monkeypatch
             includeDispersion=True, include_quads=True,
             quad_jacobian_calculator="Analytical",
             analytical_implementation=implementation, output_dir=tmp_path,
+            analytical_dispersion_calculator="Linear",
             save_jacobians=True,
         )
         results.append(jacobian)
@@ -174,12 +195,14 @@ def test_dispersion_enabled_jacobian_propagates_both_implementations(monkeypatch
         with h5py.File(saved[0], "r") as handle:
             saved_implementations.append(handle.attrs["analytical_implementation"])
             assert int(handle.attrs["analytical_worker_count"]) == 1
+            assert handle.attrs["analytical_dispersion_calculator"] == "Linear"
     assert seen == ["legacy", "legacy", "vectorized", "vectorized"]
     np.testing.assert_array_equal(results[0], results[1])
     assert results[0].shape == (
         len(quadrupoles), 2 * len(bpms), 2 * len(correctors) + 1
     )
     assert saved_implementations == ["legacy", "vectorized"]
+    assert saved_dispersion_calculators == ["Linear", "Linear"]
 
 
 def test_skew_multiprocessing_accepts_python_integer_ordinals(monkeypatch):

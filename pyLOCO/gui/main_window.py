@@ -1289,6 +1289,10 @@ class MainWindow(QMainWindow):
         self.analytical_implementation = QComboBox()
         self.analytical_implementation.addItem("Vectorized (production)", "vectorized")
         self.analytical_implementation.addItem("Legacy (reference)", "legacy")
+        self.analytical_dispersion_calculator = QComboBox()
+        self.analytical_dispersion_calculator.addItem("Same as model ORM (compatible)", None)
+        for calculator in ("Linear", "Analytical", "Tracking"):
+            self.analytical_dispersion_calculator.addItem(calculator, calculator)
         self.analytical_thick_skew = QCheckBox("Thick skew quadrupoles")
         self.analytical_skew_thick_steerers = QCheckBox("Thick steerers for skew Jacobian")
         self.analytical_skew_verbose = QCheckBox("Verbose skew analytical calculation")
@@ -1299,6 +1303,9 @@ class MainWindow(QMainWindow):
 
         normal_options_form = QFormLayout()
         normal_options_form.addRow("Implementation", self.analytical_implementation)
+        normal_options_form.addRow(
+            "Dispersion calculator", self.analytical_dispersion_calculator
+        )
         for widget in (
             self.analytical_thick_quadrupole,
             self.analytical_thick_steerers,
@@ -1738,6 +1745,7 @@ class MainWindow(QMainWindow):
             self.analytical_thick_quadrupole, self.analytical_thick_steerers,
             self.analytical_verbose, self.analytical_use_mp,
             self.analytical_implementation,
+            self.analytical_dispersion_calculator,
             self.analytical_thick_skew, self.analytical_skew_thick_steerers,
             self.analytical_skew_verbose, self.analytical_skew_use_mp,
             self.skew_analytical_implementation,
@@ -2036,6 +2044,12 @@ class MainWindow(QMainWindow):
             cfg.rejection.analytical_implementation
         )
         self.analytical_implementation.setCurrentIndex(max(0, implementation_index))
+        dispersion_calculator_index = self.analytical_dispersion_calculator.findData(
+            cfg.rejection.analytical_dispersion_calculator
+        )
+        self.analytical_dispersion_calculator.setCurrentIndex(
+            max(0, dispersion_calculator_index)
+        )
         self.analytical_thick_skew.setChecked(cfg.rejection.analytical_thick_skew)
         self.analytical_skew_thick_steerers.setChecked(cfg.rejection.analytical_skew_thick_steerers)
         self.analytical_skew_verbose.setChecked(cfg.rejection.analytical_skew_verbose)
@@ -2161,6 +2175,9 @@ class MainWindow(QMainWindow):
         cfg.rejection.analytical_verbose = self.analytical_verbose.isChecked()
         cfg.rejection.analytical_use_mp = self.analytical_use_mp.isChecked()
         cfg.rejection.analytical_implementation = self.analytical_implementation.currentData()
+        cfg.rejection.analytical_dispersion_calculator = (
+            self.analytical_dispersion_calculator.currentData()
+        )
         cfg.rejection.analytical_thick_skew = self.analytical_thick_skew.isChecked()
         cfg.rejection.analytical_skew_thick_steerers = self.analytical_skew_thick_steerers.isChecked()
         cfg.rejection.analytical_skew_verbose = self.analytical_skew_verbose.isChecked()

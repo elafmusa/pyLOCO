@@ -691,6 +691,7 @@ def compute_jacobian(
     analytical_verbose=False,
     analytical_use_mp=False,
     analytical_implementation="vectorized",
+    analytical_dispersion_calculator=None,
     analytical_thick_skew=True,
     analytical_skew_thick_steerers=False,
     analytical_skew_verbose=False,
@@ -722,6 +723,10 @@ def compute_jacobian(
         skew_analytical_implementation
     )
     response_matrix_calculator = calculator_plan["response_matrix_calculator"]
+    analytical_dispersion_calculator = _normalize_analytical_dispersion_calculator(
+        analytical_dispersion_calculator,
+        fallback=response_matrix_calculator,
+    )
 
     nCOR = nHorCOR + nVerCOR
     C_inv = np.linalg.inv(C)
@@ -928,6 +933,11 @@ def compute_jacobian(
                 if includeDispersion:
 
                     dispersion_started = time.perf_counter()
+                    _trace_calculator(
+                        calculator_trace_callback,
+                        "normal_quad_analytical_dispersion_derivative",
+                        analytical_dispersion_calculator,
+                    )
                     J_eta, delta_eta = calculate_quads_dispersion_jacobian(
                         ring=ring,
                         C_model=C_model,
@@ -944,7 +954,7 @@ def compute_jacobian(
                         CAVords=CAVords,
                         auto_correct_delta=auto_correct_delta,
                         fit_cfg=fit_cfg,
-                        orm_calculator=response_matrix_calculator,
+                        orm_calculator=analytical_dispersion_calculator,
                         cancel_callback=cancel_callback,
                         use_mp=analytical_use_mp,
                         progress_callback=analytical_progress_callback,
@@ -956,6 +966,9 @@ def compute_jacobian(
                             ),
                             "dispersion_output_bytes": int(J_eta.nbytes),
                             "dispersion_multiprocessing": bool(analytical_use_mp),
+                            "analytical_dispersion_calculator": (
+                                analytical_dispersion_calculator
+                            ),
                             "dispersion_worker_count": (
                                 available_worker_count(task_count=len(quads_ind))
                                 if analytical_use_mp else 1
@@ -1129,6 +1142,11 @@ def compute_jacobian(
                 ),
                 "analytical_implementation": (
                     analytical_implementation if method == "analytical" else "not_applicable"
+                ),
+                "analytical_dispersion_calculator": (
+                    analytical_dispersion_calculator
+                    if method == "analytical" and includeDispersion
+                    else "not_applicable"
                 ),
             })
 
@@ -5290,6 +5308,7 @@ def pyloco(
         analytical_verbose=False,
         analytical_use_mp=False,
         analytical_implementation="vectorized",
+        analytical_dispersion_calculator=None,
         analytical_thick_skew=True,
         analytical_skew_thick_steerers=False,
         analytical_skew_verbose=False,
@@ -5321,6 +5340,12 @@ def pyloco(
     )
     skew_analytical_implementation = _normalize_skew_analytical_implementation(
         skew_analytical_implementation
+    )
+    analytical_dispersion_calculator = _normalize_analytical_dispersion_calculator(
+        analytical_dispersion_calculator,
+        fallback=_calculator_execution_plan(
+            response_matrix_calculator, quad_jacobian_calculator
+        )["response_matrix_calculator"],
     )
     progress = _WorkflowProgressReporter(progress_callback, nIter)
     progress.emit(
@@ -5658,6 +5683,7 @@ def pyloco(
             analytical_verbose=analytical_verbose,
             analytical_use_mp=analytical_use_mp,
             analytical_implementation=analytical_implementation,
+            analytical_dispersion_calculator=analytical_dispersion_calculator,
             analytical_thick_skew=analytical_thick_skew,
             analytical_skew_thick_steerers=analytical_skew_thick_steerers,
             analytical_skew_verbose=analytical_skew_verbose,
@@ -6545,6 +6571,28 @@ def _normalize_analytical_implementation(value):
             "Choose 'legacy' or 'vectorized'."
         )
     return implementation
+
+
+def _normalize_analytical_dispersion_calculator(value, *, fallback):
+    """Resolve the independent backend for the analytical-J dispersion column.
+
+    ``None`` deliberately preserves the historical behavior by inheriting the
+    model ORM calculator.  ``Numerical`` is accepted only as the canonical
+    internal form of the public ``Tracking`` model-calculator choice.
+    """
+    inherited = value is None
+    candidate = fallback if inherited else value
+    key = str(candidate).strip().lower()
+    aliases = {"linear": "Linear", "analytical": "Analytical", "tracking": "Tracking"}
+    if inherited:
+        aliases["numerical"] = "Tracking"
+    calculator = aliases.get(key)
+    if calculator is None:
+        raise ValueError(
+            f"Unknown analytical_dispersion_calculator={value!r}. "
+            "Choose 'Linear', 'Analytical', or 'Tracking'."
+        )
+    return calculator
 
 
 def _normalize_skew_analytical_implementation(value):
