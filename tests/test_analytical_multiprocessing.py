@@ -205,6 +205,61 @@ def test_dispersion_enabled_jacobian_propagates_both_implementations(monkeypatch
     assert saved_dispersion_calculators == ["Linear", "Linear"]
 
 
+def test_analytical_dispersion_uses_matching_backend_nominal_reference(monkeypatch, tmp_path):
+    ring, bpms, correctors, quadrupoles = _ring_and_indices()
+    rows = 2 * len(bpms)
+    columns = 2 * len(correctors) + 1
+    calibration = np.eye(rows) * 2.0
+    raw_linear_reference = np.arange(rows * columns, dtype=float).reshape(rows, columns)
+    captured = {}
+    trace = []
+    timings = []
+
+    def fake_formula(_ring, ind_bpms, ind_cors, ind_quads, **_kwargs):
+        shape = (len(ind_bpms), len(ind_cors), len(ind_quads))
+        return np.zeros(shape), np.zeros(shape)
+
+    def fake_response_matrix(_ring, *, config):
+        captured["reference_calculator"] = config.calculator
+        return raw_linear_reference.copy()
+
+    def fake_dispersion(**kwargs):
+        captured["dispersion_reference"] = kwargs["C_model"].copy()
+        captured["dispersion_calculator"] = kwargs["orm_calculator"]
+        return np.zeros((len(kwargs["quads_ind"]), rows)), None
+
+    monkeypatch.setattr(pyloco_module, "analytic_orm_variation_with_normal_quadrupole", fake_formula)
+    monkeypatch.setattr(pyloco_module, "response_matrix", fake_response_matrix)
+    monkeypatch.setattr(pyloco_module, "calculate_quads_dispersion_jacobian", fake_dispersion)
+
+    pyloco_module.compute_jacobian(
+        ring, C_model=np.full((rows, columns), -9.0),
+        dkick=(np.ones(len(correctors)), np.ones(len(correctors))),
+        bpm_indexes=bpms, CMords=(correctors, correctors),
+        quads_ind=quadrupoles[:1], nHorCOR=len(correctors),
+        nVerCOR=len(correctors), nHBPM=len(bpms), nVBPM=len(bpms),
+        C=calibration, dk=1e-6, CAVords=[], includeDispersion=True,
+        include_quads=True, quad_jacobian_calculator="Analytical",
+        response_matrix_calculator="Analytical",
+        analytical_dispersion_calculator="Linear", output_dir=tmp_path,
+        calculator_trace_callback=trace.append,
+        analytical_timing_callback=timings.append,
+    )
+
+    assert captured["reference_calculator"] == "Linear"
+    assert captured["dispersion_calculator"] == "Linear"
+    np.testing.assert_array_equal(
+        captured["dispersion_reference"], calibration @ raw_linear_reference
+    )
+    assert {
+        "stage": "normal_quad_analytical_dispersion_nominal_orm",
+        "calculator": "Linear",
+    } in trace
+    dispersion_timing = next(item for item in timings if "dispersion_reference_reused" in item)
+    assert dispersion_timing["dispersion_reference_reused"] is False
+    assert dispersion_timing["dispersion_reference_seconds"] >= 0.0
+
+
 def test_skew_multiprocessing_accepts_python_integer_ordinals(monkeypatch):
     ring, bpms, correctors, quadrupoles = _ring_and_indices()
     monkeypatch.setattr(skew_module.multiprocessing, "Pool", _SerialPool)

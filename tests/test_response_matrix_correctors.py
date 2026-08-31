@@ -1,6 +1,7 @@
 import at
 import numpy as np
 
+import pyLOCO.pyloco as pyloco_module
 from pyLOCO.config import FitInitConfig, RMConfig
 from pyLOCO.pyloco import calculate_quads_dispersion_jacobian
 from pyLOCO.response_matrix import calculate_rf_response, response_matrix
@@ -159,3 +160,36 @@ def test_linear_and_analytical_normal_quad_dispersion_derivatives_match():
     np.testing.assert_allclose(
         results["Linear"][0], results["Analytical"][0], rtol=2e-12, atol=1e-15
     )
+
+
+def test_adaptive_step_selection_has_finite_iteration_limit(monkeypatch):
+    ring = _fodo_ring_with_correctors()
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    hcor = np.asarray(at.get_refpts(ring, "HCOR*"), dtype=int)[:2]
+    vcor = np.asarray(at.get_refpts(ring, "VCOR*"), dtype=int)[:2]
+    quad = int(np.asarray(at.get_refpts(ring, at.elements.Quadrupole), dtype=int)[0])
+    rows = 2 * len(bpm)
+    columns = len(hcor) + len(vcor) + 1
+    calls = []
+
+    def mismatched_response(_ring, *, config):
+        calls.append(config.calculator)
+        return np.ones((rows, columns))
+
+    monkeypatch.setattr(pyloco_module, "response_matrix", mismatched_response)
+    monkeypatch.setattr(pyloco_module, "G_C", np.eye(rows))
+    monkeypatch.setattr(pyloco_module, "G_CMODEL", np.zeros((rows, columns)))
+
+    import pytest
+    with pytest.raises(RuntimeError, match=(
+        r"did not converge after 25 iterations.*calculator=Linear.*"
+        r"group=.*RMSDelta=.*target_range="
+    )):
+        pyloco_module.generating_quads_response_matrices(
+            quad, ring, (np.full(len(hcor), 1e-5), np.full(len(vcor), 1e-5)),
+            (hcor, vcor), bpm, None, True,
+            np.zeros(len(hcor)), np.zeros(len(vcor)), 40.0, True,
+            "quads", FitInitConfig(), True, "Linear", np.asarray([], dtype=int), 1,
+        )
+
+    assert calls == ["Linear"] * pyloco_module.MAX_ADAPTIVE_STEP_ITERATIONS

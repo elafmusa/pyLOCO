@@ -28,6 +28,9 @@ from .analytic_orm_with_skew_quad_errors import analytic_orm_variation_with_skew
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 
 
+MAX_ADAPTIVE_STEP_ITERATIONS = 25
+
+
 class _WorkflowProgressReporter:
     """Emit monotonic, bounded LOCO workflow checkpoints."""
 
@@ -938,9 +941,39 @@ def compute_jacobian(
                         "normal_quad_analytical_dispersion_derivative",
                         analytical_dispersion_calculator,
                     )
+                    if analytical_dispersion_calculator == response_matrix_calculator:
+                        dispersion_reference_model = C_model
+                        dispersion_reference_seconds = 0.0
+                        dispersion_reference_reused = True
+                    else:
+                        reference_started = time.perf_counter()
+                        _trace_calculator(
+                            calculator_trace_callback,
+                            "normal_quad_analytical_dispersion_nominal_orm",
+                            analytical_dispersion_calculator,
+                        )
+                        dispersion_reference_cfg = RMConfig(
+                            dkick=dkick,
+                            bpm_ords=bpm_indexes,
+                            cm_ords=CMords,
+                            cav_ords=CAVords,
+                            HCMCoupling=HCMCoupling,
+                            VCMCoupling=VCMCoupling,
+                            includeDispersion=True,
+                            rfStep=rf_step,
+                            calculator=analytical_dispersion_calculator,
+                            Frequency=Frequency,
+                        )
+                        dispersion_reference_model = C @ response_matrix(
+                            ring, config=dispersion_reference_cfg
+                        )
+                        dispersion_reference_seconds = (
+                            time.perf_counter() - reference_started
+                        )
+                        dispersion_reference_reused = False
                     J_eta, delta_eta = calculate_quads_dispersion_jacobian(
                         ring=ring,
-                        C_model=C_model,
+                        C_model=dispersion_reference_model,
                         dkick=dkick,
                         used_cor_ind=CMords,
                         bpm_indexes=bpm_indexes,
@@ -968,6 +1001,12 @@ def compute_jacobian(
                             "dispersion_multiprocessing": bool(analytical_use_mp),
                             "analytical_dispersion_calculator": (
                                 analytical_dispersion_calculator
+                            ),
+                            "dispersion_reference_seconds": (
+                                dispersion_reference_seconds
+                            ),
+                            "dispersion_reference_reused": (
+                                dispersion_reference_reused
                             ),
                             "dispersion_worker_count": (
                                 available_worker_count(task_count=len(quads_ind))
@@ -2084,7 +2123,20 @@ def calculate_quads_dispersion_jacobian(
             # not on dispersion.
             # ====================================================
 
+            adaptive_step_attempt = 0
+            last_rms_delta = None
             while True:
+                adaptive_step_attempt += 1
+                if adaptive_step_attempt > MAX_ADAPTIVE_STEP_ITERATIONS:
+                    raise RuntimeError(
+                        "Adaptive finite-difference step selection did not "
+                        f"converge after {MAX_ADAPTIVE_STEP_ITERATIONS} iterations: "
+                        f"calculator={orm_calculator}, block={block}, group={group}, "
+                        f"step={float(delta_local[0]):.12e}, "
+                        f"RMSDelta={last_rms_delta!r}, target_range="
+                        f"[{RMSGoal / RMSTol:.12e}, "
+                        f"{RMSGoal * RMSTol / 3.0:.12e}]"
+                    )
 
                 plus_test_values = (
                     nominal_values
@@ -2153,6 +2205,7 @@ def calculate_quads_dispersion_jacobian(
                         )
                     )
                 )
+                last_rms_delta = RMSDelta
 
                 if (
                     not np.isfinite(RMSDelta)
@@ -3282,7 +3335,20 @@ def generating_quads_response_matrices(
     # This response is NOT used as the final Jacobian.
     # ============================================================
 
+    adaptive_step_attempt = 0
+    last_rms_delta = None
     while True:
+        adaptive_step_attempt += 1
+        if adaptive_step_attempt > MAX_ADAPTIVE_STEP_ITERATIONS:
+            raise RuntimeError(
+                "Adaptive finite-difference step selection did not "
+                f"converge after {MAX_ADAPTIVE_STEP_ITERATIONS} iterations: "
+                f"calculator={orm_calculator}, block={block}, group={group}, "
+                f"step={float(delta_local[0]):.12e}, "
+                f"RMSDelta={last_rms_delta!r}, target_range="
+                f"[{RMSGoal / RMSTol:.12e}, "
+                f"{RMSGoal * RMSTol / 3.0:.12e}]"
+            )
 
         plus_values = (
             nominal_values
@@ -3363,6 +3429,7 @@ def generating_quads_response_matrices(
                 )
             )
         )
+        last_rms_delta = RMSDelta
 
         if (
         not np.isfinite(RMSDelta)
