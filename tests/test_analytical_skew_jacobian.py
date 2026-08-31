@@ -9,6 +9,9 @@ from pyLOCO.pyloco import (
     pyloco,
 )
 from pyLOCO.response_matrix import response_matrix
+from pyLOCO.analytic_orm_with_skew_quad_errors import (
+    analytic_orm_variation_with_skew_quadrupole,
+)
 
 
 def _ring_and_indices():
@@ -158,7 +161,8 @@ def test_skew_family_matches_numerical_and_sum_of_individuals():
 
 
 def _computed_skew_jacobian(
-    ring, bpm, hcor, vcor, skew_parameters, *, individuals, method, output_dir
+    ring, bpm, hcor, vcor, skew_parameters, *, individuals, method, output_dir,
+    implementation="vectorized",
 ):
     kick = 1e-5
     model = _orm(
@@ -189,10 +193,58 @@ def _computed_skew_jacobian(
         VCMCoupling=np.zeros(len(vcor)),
         fit_cfg=FitInitConfig(),
         skew_jacobian_calculator=method,
+        skew_analytical_implementation=implementation,
         force_recompute=True,
         output_dir=output_dir,
     )
     return jacobian, delta_skew
+
+
+def test_legacy_and_vectorized_skew_formulas_match_thick_thin_and_subsets():
+    ring, bpm, hcor, _, skews = _ring_and_indices()
+    subset = skews[[11, 3, 7]]
+    for thick_skew in (False, True):
+        legacy = analytic_orm_variation_with_skew_quadrupole(
+            ring, bpm[:8], hcor[:5], subset, verbose=False,
+            thick_skew=thick_skew, thick_steerer=False,
+            implementation="legacy",
+        )
+        vectorized = analytic_orm_variation_with_skew_quadrupole(
+            ring, bpm[:8], hcor[:5], subset, verbose=False,
+            thick_skew=thick_skew, thick_steerer=False,
+            implementation="vectorized",
+        )
+        for legacy_block, vectorized_block in zip(legacy, vectorized):
+            assert legacy_block.shape == (8, 5, 3)
+            np.testing.assert_allclose(
+                vectorized_block, legacy_block, rtol=5e-15, atol=3e-14
+            )
+
+
+def test_legacy_and_vectorized_full_skew_jacobian_match_with_dispersion(tmp_path):
+    ring, bpm, hcor, vcor, skews = _ring_and_indices()
+    parameters = [int(skews[3]), int(skews[11])]
+    results = {}
+    for implementation in ("legacy", "vectorized"):
+        results[implementation], _ = _computed_skew_jacobian(
+            ring, bpm, hcor, vcor, parameters, individuals=True,
+            method="Analytical", implementation=implementation,
+            output_dir=tmp_path / implementation,
+        )
+    legacy = results["legacy"]
+    vectorized = results["vectorized"]
+    assert legacy.shape == vectorized.shape == (
+        len(parameters), 2 * len(bpm), len(hcor) + len(vcor) + 1
+    )
+    assert np.isfinite(legacy).sum() == np.isfinite(vectorized).sum() == legacy.size
+    np.testing.assert_allclose(vectorized, legacy, rtol=5e-15, atol=3e-14)
+    difference = vectorized - legacy
+    assert np.sqrt(np.mean(difference**2)) < 1e-15
+    assert np.linalg.norm(difference) / np.linalg.norm(legacy) < 1e-14
+    for parameter in (0, len(parameters) - 1):
+        np.testing.assert_allclose(
+            vectorized[parameter], legacy[parameter], rtol=5e-15, atol=3e-14
+        )
 
 
 def test_hybrid_skew_dispersion_individual_and_family(tmp_path):
@@ -397,6 +449,14 @@ def test_two_iteration_normal_and_skew_calculator_comparison(tmp_path):
                 with h5py.File(files[0], "r") as handle:
                     assert dataset in handle
                     assert str(handle.attrs[attr]).lower() == method.lower()
+                    if block == "skew":
+                        expected_implementation = (
+                            "vectorized" if method == "Analytical" else "not_applicable"
+                        )
+                        assert (
+                            str(handle.attrs["skew_analytical_implementation"]).lower()
+                            == expected_implementation.lower()
+                        )
                     metadata.append(float(handle.attrs["computation_seconds"]))
         results[method] = {
             "initial_chi2": initial_chi2[0],

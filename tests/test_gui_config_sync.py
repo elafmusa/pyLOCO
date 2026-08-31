@@ -184,6 +184,7 @@ def test_jacobian_calculators_round_trip_and_reach_backend_kwargs(
     config.rejection.analytical_skew_thick_steerers = True
     config.rejection.analytical_skew_verbose = True
     config.rejection.analytical_skew_use_mp = True
+    config.rejection.skew_analytical_implementation = "legacy"
     target = tmp_path / "jacobian-options.json"
     config.save(target)
     reloaded = LocoConfiguration.load(target)
@@ -234,6 +235,7 @@ def test_jacobian_calculators_round_trip_and_reach_backend_kwargs(
     assert kwargs["analytical_thick_quadrupole"] is False
     assert kwargs["analytical_implementation"] == "legacy"
     assert kwargs["analytical_thick_skew"] is False
+    assert kwargs["skew_analytical_implementation"] == "legacy"
 
 
 def test_jacobian_gui_controls_restore_and_disable_without_losing_values():
@@ -246,6 +248,7 @@ def test_jacobian_gui_controls_restore_and_disable_without_losing_values():
         config.rejection.analytical_verbose = True
         config.rejection.analytical_implementation = "legacy"
         config.rejection.analytical_skew_verbose = True
+        config.rejection.skew_analytical_implementation = "legacy"
         window._load_config_to_widgets()
         assert [window.quad_jacobian_calculator.itemText(index) for index in range(2)] == [
             "Numerical", "Analytical"
@@ -255,6 +258,7 @@ def test_jacobian_gui_controls_restore_and_disable_without_losing_values():
         assert window.normal_analytical_options.isEnabled()
         assert window.analytical_implementation.currentData() == "legacy"
         assert window.skew_analytical_options.isEnabled()
+        assert window.skew_analytical_implementation.currentData() == "legacy"
 
         window.quad_jacobian_calculator.setCurrentText("Numerical")
         window.skew_jacobian_calculator.setCurrentText("Numerical")

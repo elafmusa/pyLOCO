@@ -694,11 +694,13 @@ def compute_jacobian(
     analytical_skew_thick_steerers=False,
     analytical_skew_verbose=False,
     analytical_skew_use_mp=False,
+    skew_analytical_implementation="vectorized",
     response_matrix_calculator="Linear",
     calculator_trace_callback=None,
     cancel_callback=None,
     analytical_progress_callback=None,
     analytical_timing_callback=None,
+    skew_analytical_timing_callback=None,
 ):
     """
     Master function to compute full LOCO Jacobian including:
@@ -714,6 +716,9 @@ def compute_jacobian(
     )
     analytical_implementation = _normalize_analytical_implementation(
         analytical_implementation
+    )
+    skew_analytical_implementation = _normalize_skew_analytical_implementation(
+        skew_analytical_implementation
     )
     response_matrix_calculator = calculator_plan["response_matrix_calculator"]
 
@@ -1192,25 +1197,45 @@ def compute_jacobian(
                     analytical_thick_steerers=analytical_skew_thick_steerers,
                     analytical_verbose=analytical_skew_verbose,
                     analytical_use_mp=analytical_skew_use_mp,
+                    skew_analytical_implementation=skew_analytical_implementation,
                     cancel_callback=cancel_callback,
+                    progress_callback=analytical_progress_callback,
+                    timing_callback=skew_analytical_timing_callback,
+                    reserve_dispersion_column=includeDispersion,
                 )
                 if includeDispersion:
-                    # Reuse the exact numerical skew perturbation and central-
-                    # difference implementation, retaining only d(eta)/dKs.
-                    J_skew_numerical, delta_skew = calculate_quads_jacobian(
-                        ring, C_model, dkick, CMords, bpm_indexes, skew_ind,
-                        delta_skew_, C, skew_individuals, HCMCoupling,
-                        VCMCoupling, rf_step, block="skew_quads", CAVords=CAVords,
+                    dispersion_started = time.perf_counter()
+                    # Reuse the same central-difference and automatic-step
+                    # selection as the numerical skew Jacobian, but retain
+                    # only the RF-response derivative that is needed here.
+                    J_eta, delta_skew = calculate_quads_dispersion_jacobian(
+                        ring=ring, C_model=C_model, dkick=dkick,
+                        used_cor_ind=CMords, bpm_indexes=bpm_indexes,
+                        quads_ind=skew_ind, dk=delta_skew_, C=C,
+                        individuals=skew_individuals,
+                        HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
+                        rf_step=rf_step, CAVords=CAVords,
                         auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
-                        includeDispersion=True, output_dir=output_dir,
-                        log_filename="skew_dispersion_jacobian_logs.txt",
                         orm_calculator=response_matrix_calculator,
                         cancel_callback=cancel_callback,
-                        iteration=iteration,
+                        use_mp=analytical_skew_use_mp,
+                        progress_callback=analytical_progress_callback,
+                        block="skew_quads",
                     )
-                    J_skew = np.concatenate(
-                        (J_skew, J_skew_numerical[:, :, -1, np.newaxis]), axis=2
-                    )
+                    dispersion_assembly_started = time.perf_counter()
+                    if J_skew.shape[2] == nHorCOR + nVerCOR + 1:
+                        J_skew[:, :, -1] = J_eta
+                    else:
+                        J_skew = np.concatenate(
+                            (J_skew, J_eta[:, :, np.newaxis]), axis=2
+                        )
+                    if skew_analytical_timing_callback is not None:
+                        skew_analytical_timing_callback({
+                            "skew_analytical_implementation": skew_analytical_implementation,
+                            "numerical_dispersion_seconds": time.perf_counter() - dispersion_started,
+                            "dispersion_assembly_seconds": time.perf_counter() - dispersion_assembly_started,
+                        })
+                    del J_eta
                     print("[Analytical skew Jacobian] Added numerical dispersion derivative")
             else:
                 raise ValueError(
@@ -1221,6 +1246,7 @@ def compute_jacobian(
             print(f"Skew quad Jacobian: {skew_elapsed:.1f} s")
 
             if save_jacobians:
+                skew_save_started = time.perf_counter()
                 with h5py.File(J_path_skew, "w") as f:
                     f.create_dataset("J_skew", data=J_skew)
                     f.create_dataset("C_model", data=C_model)
@@ -1250,6 +1276,10 @@ def compute_jacobian(
                     f.attrs["analytical_thick_skew"] = analytical_thick_skew
                     f.attrs["analytical_thick_steerers"] = analytical_skew_thick_steerers
                     f.attrs["analytical_use_mp"] = analytical_skew_use_mp
+                    f.attrs["skew_analytical_implementation"] = (
+                        skew_analytical_implementation
+                        if skew_method == "analytical" else "not_applicable"
+                    )
                     f.attrs["HCMCoupling"] = json.dumps(
                         np.asarray(HCMCoupling).tolist()
                     )
@@ -1258,6 +1288,14 @@ def compute_jacobian(
                     )
                     f.attrs["date"] = time.ctime()
                     f.attrs["computation_seconds"] = skew_elapsed
+                if (skew_analytical_timing_callback is not None
+                        and skew_method == "analytical"):
+                    skew_analytical_timing_callback({
+                        "skew_analytical_implementation": skew_analytical_implementation,
+                        "hdf5_save_seconds": time.perf_counter() - skew_save_started,
+                        "hdf5_path": str(J_path_skew),
+                        "hdf5_bytes": int(J_path_skew.stat().st_size),
+                    })
 
                 print(
                     f"[Jacobian] Saved skew-quadrupole Jacobian to {J_path_skew}"
@@ -1618,6 +1656,7 @@ def calculate_quads_dispersion_jacobian(
     cancel_callback=None,
     use_mp=False,
     progress_callback=None,
+    block="quads",
 ):
     """
     Calculate only the dispersion-column derivative with respect
@@ -1720,7 +1759,7 @@ def calculate_quads_dispersion_jacobian(
             used_cor_ind=used_cor_ind, bpm_indexes=bpm_indexes,
             quads_ind=quads_ind, dk=dk, C=C, individuals=individuals,
             HCMCoupling=HCMCoupling, VCMCoupling=VCMCoupling,
-            rf_step=rf_step, block="quads", CAVords=CAVords,
+            rf_step=rf_step, block=block, CAVords=CAVords,
             auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
             output_dir="output",
             log_filename="quad_dispersion_jacobian_logs.txt",
@@ -1780,10 +1819,7 @@ def calculate_quads_dispersion_jacobian(
     # Same mechanism used by generating_quads_response_matrices()
     # ============================================================
 
-    attr_name, attr_idx = _resolve_attr_for_block_read(
-        "quads",
-        fit_cfg,
-    )
+    attr_name, attr_idx = _resolve_attr_for_block_read(block, fit_cfg)
 
     # ============================================================
     # 2. Response-matrix configuration
@@ -2022,7 +2058,7 @@ def calculate_quads_dispersion_jacobian(
                     plus_test_values,
                     correction_indices,
                     individuals=individuals,
-                    block="quads",
+                    block=block,
                     config=fit_cfg,
                 )
 
@@ -2045,7 +2081,7 @@ def calculate_quads_dispersion_jacobian(
                     nominal_values,
                     correction_indices,
                     individuals=individuals,
-                    block="quads",
+                    block=block,
                     config=fit_cfg,
                 )
 
@@ -2162,7 +2198,7 @@ def calculate_quads_dispersion_jacobian(
                 plus_values,
                 correction_indices,
                 individuals=individuals,
-                block="quads",
+                block=block,
                 config=fit_cfg,
             )
 
@@ -2187,7 +2223,7 @@ def calculate_quads_dispersion_jacobian(
                 nominal_values,
                 correction_indices,
                 individuals=individuals,
-                block="quads",
+                block=block,
                 config=fit_cfg,
             )
 
@@ -2208,7 +2244,7 @@ def calculate_quads_dispersion_jacobian(
                 minus_values,
                 correction_indices,
                 individuals=individuals,
-                block="quads",
+                block=block,
                 config=fit_cfg,
             )
 
@@ -2261,7 +2297,7 @@ def calculate_quads_dispersion_jacobian(
                 nominal_values,
                 correction_indices,
                 individuals=individuals,
-                block="quads",
+                block=block,
                 config=fit_cfg,
             )
 
@@ -2450,7 +2486,7 @@ def calculate_quads_jacobian_analytical(
         implementation=analytical_implementation,
         cancel_callback=cancel_callback,
         progress_callback=(
-            (lambda done, total: progress_callback("horizontal", done, total))
+            (lambda done, total: progress_callback("skew horizontal", done, total))
             if progress_callback is not None else None
         ),
         timing_callback=(
@@ -2474,7 +2510,7 @@ def calculate_quads_jacobian_analytical(
         implementation=analytical_implementation,
         cancel_callback=cancel_callback,
         progress_callback=(
-            (lambda done, total: progress_callback("vertical", done, total))
+            (lambda done, total: progress_callback("skew vertical", done, total))
             if progress_callback is not None else None
         ),
         timing_callback=(
@@ -2608,7 +2644,11 @@ def calculate_skew_jacobian_analytical(
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    skew_analytical_implementation="vectorized",
     cancel_callback=None,
+    progress_callback=None,
+    timing_callback=None,
+    reserve_dispersion_column=False,
 ):
     """Return the analytical skew ORM Jacobian in pyLOCO layout.
 
@@ -2661,8 +2701,13 @@ def calculate_skew_jacobian_analytical(
     physical_skews = sorted({q for group in groups for q in group})
     skew_to_pos = {q: pos for pos, q in enumerate(physical_skews)}
 
+    optics_started = time.perf_counter()
+    _, _, opt_all_location = ring.linopt6(range(len(ring)))
+    optics_seconds = time.perf_counter() - optics_started
+
     # The formula accepts a common corrector list.  Evaluate the horizontal
     # and vertical selections separately because pyLOCO permits them to differ.
+    horizontal_started = time.perf_counter()
     d_yx, _ = analytic_orm_variation_with_skew_quadrupole(
         ring, ind_bpms=bpm_indexes, ind_cors=hcor,
         ind_skews=physical_skews, verbose=analytical_verbose,
@@ -2670,7 +2715,19 @@ def calculate_skew_jacobian_analytical(
         thick_steerer=analytical_thick_steerers,
         use_mp=analytical_use_mp,
         cancel_callback=cancel_callback,
+        opt_all_location=opt_all_location,
+        implementation=skew_analytical_implementation,
+        progress_callback=(
+            (lambda done, total: progress_callback("horizontal", done, total))
+            if progress_callback is not None else None
+        ),
+        timing_callback=(
+            (lambda data: timing_callback({"plane": "horizontal", **data}))
+            if timing_callback is not None else None
+        ),
     )
+    horizontal_seconds = time.perf_counter() - horizontal_started
+    vertical_started = time.perf_counter()
     _, d_xy = analytic_orm_variation_with_skew_quadrupole(
         ring, ind_bpms=bpm_indexes, ind_cors=vcor,
         ind_skews=physical_skews, verbose=analytical_verbose,
@@ -2678,9 +2735,24 @@ def calculate_skew_jacobian_analytical(
         thick_steerer=analytical_thick_steerers,
         use_mp=analytical_use_mp,
         cancel_callback=cancel_callback,
+        opt_all_location=opt_all_location,
+        implementation=skew_analytical_implementation,
+        progress_callback=(
+            (lambda done, total: progress_callback("vertical", done, total))
+            if progress_callback is not None else None
+        ),
+        timing_callback=(
+            (lambda data: timing_callback({"plane": "vertical", **data}))
+            if timing_callback is not None else None
+        ),
     )
+    vertical_seconds = time.perf_counter() - vertical_started
 
-    jacobian = np.zeros((len(groups), *expected_shape), dtype=float)
+    assembly_started = time.perf_counter()
+    jacobian = np.zeros(
+        (len(groups), expected_shape[0], expected_shape[1] + int(reserve_dispersion_column)),
+        dtype=float,
+    )
     for parameter, group in enumerate(groups):
         for skew in group:
             formula_index = skew_to_pos[skew]
@@ -2691,18 +2763,37 @@ def calculate_skew_jacobian_analytical(
             jacobian[parameter, n_bpm:, :n_hcor] += (
                 -d_yx[:, :, formula_index] * length * kick_h[np.newaxis, :]
             )
-            jacobian[parameter, :n_bpm, n_hcor:] += (
+            jacobian[parameter, :n_bpm, n_hcor:n_hcor + n_vcor] += (
                 d_xy[:, :, formula_index] * length * kick_v[np.newaxis, :]
             )
 
-    for parameter in range(jacobian.shape[0]):
-        jacobian[parameter] = C @ jacobian[parameter]
+    diagonal = np.diag(C)
+    nonzero_rows, nonzero_cols = np.nonzero(C)
+    if np.all(nonzero_rows == nonzero_cols):
+        jacobian *= diagonal[np.newaxis, :, np.newaxis]
+    else:
+        for parameter in range(jacobian.shape[0]):
+            jacobian[parameter] = C @ jacobian[parameter]
+    assembly_seconds = time.perf_counter() - assembly_started
 
     print(
         "[Analytical skew Jacobian] "
         f"{len(groups)} fit parameters, {len(physical_skews)} physical magnets, "
         f"shape={jacobian.shape}"
     )
+    if timing_callback is not None:
+        timing_callback({
+            "skew_analytical_implementation": skew_analytical_implementation,
+            "optics_preparation_seconds": optics_seconds,
+            "horizontal_derivative_seconds": horizontal_seconds,
+            "vertical_derivative_seconds": vertical_seconds,
+            "derivative_seconds": horizontal_seconds + vertical_seconds,
+            "assembly_and_calibration_seconds": assembly_seconds,
+            "analytical_output_bytes": int(jacobian.nbytes),
+            "multiprocessing": bool(analytical_use_mp),
+            "thick_skew": bool(analytical_thick_skew),
+            "thick_steerers": bool(analytical_thick_steerers),
+        })
     return jacobian, None
 
 # ---------- worker globals ----------
@@ -5182,6 +5273,7 @@ def pyloco(
         analytical_skew_thick_steerers=False,
         analytical_skew_verbose=False,
         analytical_skew_use_mp=False,
+        skew_analytical_implementation="vectorized",
         force_recompute=True,
         # Fit multi stage
         continue_from_previous=False,
@@ -5198,12 +5290,16 @@ def pyloco(
         cancel_callback=None,
         progress_callback=None,
         analytical_timing_callback=None,
+        skew_analytical_timing_callback=None,
         output_dir='output',
         save_jacobians=False,
 
 ):
     analytical_implementation = _normalize_analytical_implementation(
         analytical_implementation
+    )
+    skew_analytical_implementation = _normalize_skew_analytical_implementation(
+        skew_analytical_implementation
     )
     progress = _WorkflowProgressReporter(progress_callback, nIter)
     progress.emit(
@@ -5472,16 +5568,20 @@ def pyloco(
 
         jacobian_parts = []
         if include_quads:
-            jacobian_parts.append(f"{str(quad_jacobian_calculator).lower()} quadrupole")
+            normal_description = f"{str(quad_jacobian_calculator).lower()} quadrupole"
+            if str(quad_jacobian_calculator).strip().lower() == "analytical":
+                normal_description += f" ({analytical_implementation})"
+            jacobian_parts.append(normal_description)
         if include_skew:
-            jacobian_parts.append(f"{str(skew_jacobian_calculator).lower()} skew-quadrupole")
+            skew_description = f"{str(skew_jacobian_calculator).lower()} skew-quadrupole"
+            if str(skew_jacobian_calculator).strip().lower() == "analytical":
+                skew_description += f" ({skew_analytical_implementation})"
+            jacobian_parts.append(skew_description)
         jacobian_description = " and ".join(jacobian_parts) or "configured"
         progress.emit(
             "jacobian_calculation",
             progress.iteration_fraction(iteration, 0.15),
-            f"Computing {jacobian_description} Jacobian"
-            + (f" ({analytical_implementation})." if include_quads and
-               str(quad_jacobian_calculator).strip().lower() == "analytical" else "."),
+            f"Computing {jacobian_description} Jacobian.",
             iteration=iteration,
         )
 
@@ -5492,7 +5592,7 @@ def pyloco(
             progress.emit(
                 "jacobian_calculation",
                 progress.iteration_fraction(iteration, 0.15),
-                f"Analytical normal Jacobian ({plane}): {done} / {total} "
+                f"Analytical Jacobian ({plane}): {done} / {total} "
                 f"parameters, elapsed {elapsed:.1f} s.",
                 iteration=iteration,
             )
@@ -5541,11 +5641,13 @@ def pyloco(
             analytical_skew_thick_steerers=analytical_skew_thick_steerers,
             analytical_skew_verbose=analytical_skew_verbose,
             analytical_skew_use_mp=analytical_skew_use_mp,
+            skew_analytical_implementation=skew_analytical_implementation,
             response_matrix_calculator=response_matrix_calculator,
             calculator_trace_callback=calculator_trace_callback,
             cancel_callback=cancel_callback,
             analytical_progress_callback=analytical_progress,
             analytical_timing_callback=analytical_timing_callback,
+            skew_analytical_timing_callback=skew_analytical_timing_callback,
             quads_tilt_jacobian_file=quads_tilt_jacobian_file,
             force_recompute=force_recompute,
             output_dir=output_dir,
@@ -6419,6 +6521,17 @@ def _normalize_analytical_implementation(value):
     if implementation not in {"legacy", "vectorized"}:
         raise ValueError(
             f"Unknown analytical_implementation={value!r}. "
+            "Choose 'legacy' or 'vectorized'."
+        )
+    return implementation
+
+
+def _normalize_skew_analytical_implementation(value):
+    """Validate the public skew analytical-Jacobian implementation choice."""
+    implementation = str(value).strip().lower()
+    if implementation not in {"legacy", "vectorized"}:
+        raise ValueError(
+            f"Unknown skew_analytical_implementation={value!r}. "
             "Choose 'legacy' or 'vectorized'."
         )
     return implementation

@@ -286,6 +286,9 @@ def run_loco_request(
             response_matrix_backend_calculator=rm_cfg.calculator,
             normal_quad_jacobian=options.get("quad_jacobian_calculator", "Numerical"),
             analytical_implementation=options.get("analytical_implementation", "vectorized"),
+            skew_analytical_implementation=options.get(
+                "skew_analytical_implementation", "vectorized"
+            ),
             calculator_trace=calculator_trace,
         )
         optics_path = _save_optics_results(
@@ -763,6 +766,9 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
         analytical_skew_thick_steerers=options.get("analytical_skew_thick_steerers", False),
         analytical_skew_verbose=options.get("analytical_skew_verbose", False),
         analytical_skew_use_mp=options.get("analytical_skew_use_mp", False),
+        skew_analytical_implementation=options.get(
+            "skew_analytical_implementation", "vectorized"
+        ),
         save_jacobians=options.get("save_jacobians", False),
     )
 
@@ -1152,7 +1158,7 @@ def _save_optics_results(
     return path
 
 
-def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict, *, initial_chi2=None, runtime_seconds=None, resume_mapping=None, iteration_metrics=None, response_matrix_calculator=None, response_matrix_backend_calculator=None, normal_quad_jacobian=None, analytical_implementation="vectorized", calculator_trace=None):
+def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_bpms, chi2_history, delta_chi2_history, blocks, save_fit_dict, *, initial_chi2=None, runtime_seconds=None, resume_mapping=None, iteration_metrics=None, response_matrix_calculator=None, response_matrix_backend_calculator=None, normal_quad_jacobian=None, analytical_implementation="vectorized", skew_analytical_implementation="vectorized", calculator_trace=None):
     import numpy as np
 
     files = []
@@ -1189,6 +1195,7 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
         "response_matrix_backend_calculator": response_matrix_backend_calculator,
         "normal_quad_jacobian": normal_quad_jacobian,
         "analytical_implementation": analytical_implementation,
+        "skew_analytical_implementation": skew_analytical_implementation,
         "normal_quad_jacobian_orm_calculator": (
             response_matrix_calculator if normal_quad_jacobian == "Numerical" else None
         ),

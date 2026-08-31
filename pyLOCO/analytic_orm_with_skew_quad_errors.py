@@ -10,6 +10,7 @@ import math
 import cmath
 import numpy as np
 import multiprocessing
+import time
 from itertools import repeat
 
 __author__='Simone Maria Liuzzo, Andrea Franchi'
@@ -24,7 +25,10 @@ def analytic_orm_variation_with_skew_quadrupole(
         thick_steerer=True,
         opt_all_location=None,
         use_mp=False,
-        cancel_callback=None):
+        cancel_callback=None,
+        implementation="vectorized",
+        progress_callback=None,
+        timing_callback=None):
     """
     Computes the derivative of the orbit response matrix compared to skew quadrupoles
 
@@ -45,23 +49,42 @@ def analytic_orm_variation_with_skew_quadrupole(
     ORM_HorSteererToVerBPM_over_Ks[BPMS][CORRECTORS][SKEW], ORM_VerSteererToHorBPM_over_Ks[BPMS][CORRECTORS][SKEW],
     """
 
-    MH2V = np.zeros(shape=(len(ind_bpms), len(ind_cors), len(ind_skews)))
-    MV2H = np.zeros(shape=(len(ind_bpms), len(ind_cors), len(ind_skews)))
+    implementation = str(implementation).strip().lower()
+    if implementation not in {"legacy", "vectorized"}:
+        raise ValueError(
+            f"Unknown skew analytical implementation {implementation!r}; "
+            "choose 'legacy' or 'vectorized'."
+        )
+    if len(ind_skews) == 0:
+        shape = (len(ind_bpms), len(ind_cors), 0)
+        return np.zeros(shape), np.zeros(shape)
+
+    started = time.perf_counter()
+    worker = (
+        _analytic_orm_variation_with_skew_quadrupole_legacy
+        if implementation == "legacy"
+        else _analytic_orm_variation_with_skew_quadrupole_vectorized
+    )
 
     # loop quadrupoles
     if use_mp:
 
         n_cpu = multiprocessing.cpu_count()
-        n_processes = n_cpu
+        n_processes = min(n_cpu, len(ind_skews))
+        skew_chunks = [
+            chunk.tolist()
+            for chunk in np.array_split(np.asarray(ind_skews, dtype=int), n_processes)
+            if len(chunk)
+        ]
         if verbose:
             print('parallel computation using {} cores'.format(n_processes))
 
-        with multiprocessing.Pool() as p:
-            pending = p.starmap_async(_analytic_orm_variation_with_skew_quadrupole,
+        with multiprocessing.Pool(processes=n_processes) as p:
+            pending = p.starmap_async(worker,
                                  zip(repeat(ring),
                                      repeat(ind_bpms),
                                      repeat(ind_cors),
-                                     ind_skews,    # loop index
+                                     skew_chunks,
                                      repeat(verbose),
                                      repeat(thick_skew),
                                      repeat(thick_steerer),
@@ -78,15 +101,21 @@ def analytic_orm_variation_with_skew_quadrupole(
                         p.terminate()
                         raise RuntimeError("LOCO run cancelled during analytical skew Jacobian calculation.")
 
-        for m, _ in enumerate(ind_skews):
-            _MH2V=results[m][0]
-            _MV2H = results[m][1]
-            MH2V[:, :, m] = _MH2V[:,:,0]
-            MV2H[:, :, m] = _MV2H[:,:,0]
+        MH2V = np.concatenate([result[0] for result in results], axis=2)
+        MV2H = np.concatenate([result[1] for result in results], axis=2)
+        if progress_callback is not None:
+            progress_callback(len(ind_skews), len(ind_skews))
+        if timing_callback is not None:
+            timing_callback({
+                "skew_analytical_implementation": implementation,
+                "multiprocessing_total_seconds": time.perf_counter() - started,
+                "workers": n_processes,
+                "chunks": len(skew_chunks),
+            })
 
     else:  # sequential
 
-        MH2V, MV2H = _analytic_orm_variation_with_skew_quadrupole(
+        MH2V, MV2H = worker(
                         ring,
                         ind_bpms=ind_bpms,
                         ind_cors=ind_cors,
@@ -95,12 +124,19 @@ def analytic_orm_variation_with_skew_quadrupole(
                         thick_skew=thick_skew,
                         thick_steerer=thick_steerer,
                         opt_all_location=opt_all_location,
-                        cancel_callback=cancel_callback)
+                        cancel_callback=cancel_callback,
+                        progress_callback=progress_callback,
+                        timing_callback=timing_callback)
+        if timing_callback is not None:
+            timing_callback({
+                "skew_analytical_implementation": implementation,
+                "serial_total_seconds": time.perf_counter() - started,
+            })
 
     return MH2V, MV2H
 
 
-def _analytic_orm_variation_with_skew_quadrupole(
+def _analytic_orm_variation_with_skew_quadrupole_legacy(
         ring,
         ind_bpms=None,
         ind_cors=None,
@@ -109,7 +145,9 @@ def _analytic_orm_variation_with_skew_quadrupole(
         thick_skew=True,
         thick_steerer=True,
         opt_all_location=None,
-        cancel_callback=None):
+        cancel_callback=None,
+        progress_callback=None,
+        timing_callback=None):
     """
     analytic orbit response matrix derivative with integrated (KL) errors at skew quadrupoles
 
@@ -410,7 +448,189 @@ def _analytic_orm_variation_with_skew_quadrupole(
                        )
                 """
 
+        if progress_callback is not None:
+            progress_callback(countm + 1, len(qua))
+
     return MH2V, MV2H
+
+
+def _analytic_orm_variation_with_skew_quadrupole_vectorized(
+        ring,
+        ind_bpms=None,
+        ind_cors=None,
+        ind_skews=None,
+        verbose=True,
+        thick_skew=True,
+        thick_steerer=True,
+        opt_all_location=None,
+        cancel_callback=None,
+        progress_callback=None,
+        timing_callback=None):
+    """Vectorized evaluation of the existing analytical skew equations.
+
+    The skew loop is retained so thick-element factors and cancellation remain
+    easy to audit.  BPM and corrector dimensions are evaluated with NumPy
+    arrays; no analytical term or sign convention differs from the legacy
+    implementation above.
+    """
+    total_started = time.perf_counter()
+    optics_started = time.perf_counter()
+    if opt_all_location is None:
+        _, _, opt_all_location = ring.linopt6(range(len(ring)))
+    optics_seconds = time.perf_counter() - optics_started
+
+    ind_bpms = np.asarray(ind_bpms, dtype=int)
+    ind_cors = np.asarray(ind_cors, dtype=int)
+    ind_skews = np.atleast_1d(np.asarray(ind_skews, dtype=int))
+    bpm = opt_all_location[ind_bpms]
+    cor = opt_all_location[ind_cors]
+    qua = opt_all_location[ind_skews]
+    tune = np.asarray(at.get_tune(ring, get_integer=True), dtype=float)
+
+    bpm_mu = np.asarray([item.mu for item in bpm], dtype=float)
+    cor_mu = np.asarray([item.mu for item in cor], dtype=float)
+    skew_mu = np.asarray([item.mu for item in qua], dtype=float)
+
+    def tau_matrix(mu_a, mu_b, idx_a, idx_b, plane):
+        a = np.asarray(mu_a, dtype=float)
+        b = np.asarray(mu_b, dtype=float)
+        ia = np.asarray(idx_a)
+        ib = np.asarray(idx_b)
+        delta = b - a
+        equal = np.isclose(b, a, rtol=0.0, atol=1e-12)
+        wrap = np.where(equal, ib < ia, b < a)
+        return delta + wrap * (2.0 * math.pi * tune[plane]) - math.pi * tune[plane]
+
+    # Corrector-to-BPM phase is invariant for every skew parameter.
+    twj = np.empty((2, len(bpm), len(cor)), dtype=float)
+    for plane in (0, 1):
+        twj[plane] = tau_matrix(
+            cor_mu[:, plane][None, :], bpm_mu[:, plane][:, None],
+            ind_cors[None, :], ind_bpms[:, None], plane,
+        )
+
+    ts = np.zeros((len(cor), 2), dtype=float)
+    tc = np.empty((len(cor), 2), dtype=float)
+    for w, ordinal in enumerate(ind_cors):
+        beta = np.asarray(cor[w].beta, dtype=float)
+        if thick_steerer:
+            length = float(ring[int(ordinal)].Length)
+            alpha = np.asarray(cor[w].alpha, dtype=float)
+            ts[w] = length / (2.0 * np.sqrt(beta))
+            tc[w] = np.sqrt(beta) - length * alpha / (2.0 * np.sqrt(beta))
+        else:
+            tc[w] = np.sqrt(beta)
+
+    inv_minus = 1.0 / math.sin(math.pi * (tune[0] - tune[1]))
+    inv_plus = 1.0 / math.sin(math.pi * (tune[0] + tune[1]))
+    sin_tune = np.sin(math.pi * tune)
+    sqrt_beta_bpm = np.sqrt(np.asarray([item.beta for item in bpm], dtype=float))
+    mh2v = np.zeros((len(bpm), len(cor), len(qua)), dtype=float)
+    mv2h = np.zeros_like(mh2v)
+
+    def cosabc(ax, sign_by, by, sign_c, c, gc, gs, tcw, tsw):
+        jsmjx = np.sin(ax) * gc[0] - np.cos(ax) * gs[0]
+        jcmjx = np.cos(ax) * gc[0] + np.sin(ax) * gs[0]
+        jsmjy = sign_by * (np.sin(by) * gc[1] - np.cos(by) * gs[1])
+        jcmjy = np.cos(by) * gc[1] + np.sin(by) * gs[1]
+        jswj = sign_c * (np.sin(c) * tcw - np.cos(c) * tsw)
+        jcwj = np.cos(c) * tcw + np.sin(c) * tsw
+        return (jcmjx * jcmjy * jcwj - jcmjx * jsmjy * jswj
+                - jsmjx * jsmjy * jcwj - jsmjx * jcmjy * jswj)
+
+    formula_started = time.perf_counter()
+    for m, ordinal in enumerate(ind_skews):
+        if cancel_callback is not None and cancel_callback():
+            raise RuntimeError(
+                "LOCO run cancelled during analytical skew Jacobian calculation."
+            )
+        length = float(ring[int(ordinal)].Length)
+        beta = np.asarray(qua[m].beta, dtype=float)
+        alpha = np.asarray(qua[m].alpha, dtype=float)
+        if thick_skew:
+            normal_k = float(ring[int(ordinal)].PolynomB[1])
+            if normal_k != 0.0:
+                gs = np.empty(2, dtype=float)
+                gc = np.empty(2, dtype=float)
+                for plane, signed_k in enumerate((normal_k, -normal_k)):
+                    lsk = length * cmath.sqrt(signed_k)
+                    gs[plane] = (
+                        (1.0 - cmath.cos(lsk))
+                        / (length * signed_k * math.sqrt(beta[plane]))
+                    ).real
+                    gc[plane] = (
+                        math.sqrt(beta[plane]) / lsk * cmath.sin(lsk)
+                        - alpha[plane] * gs[plane]
+                    ).real
+            else:
+                if verbose:
+                    print(
+                        f"{ring[int(ordinal)].FamName} is not a quadrupole. "
+                        f"PolynomA[1] = {ring[int(ordinal)].PolynomA[1]:.3f}, "
+                        f"PolynomB[1] = {normal_k:.3f}"
+                    )
+                gs = length / (2.0 * np.sqrt(beta))
+                gc = np.sqrt(beta) - length * alpha / (2.0 * np.sqrt(beta))
+        else:
+            gs = np.zeros(2, dtype=float)
+            gc = np.sqrt(beta)
+
+        tmj = np.empty((2, len(bpm)), dtype=float)
+        tmw = np.empty((2, len(cor)), dtype=float)
+        for plane in (0, 1):
+            tmj[plane] = tau_matrix(
+                skew_mu[m, plane], bpm_mu[:, plane],
+                int(ordinal), ind_bpms, plane,
+            )
+            tmw[plane] = tau_matrix(
+                skew_mu[m, plane], cor_mu[:, plane],
+                int(ordinal), ind_cors, plane,
+            )
+
+        # BPM-dependent skew phases broadcast down columns; corrector-
+        # dependent skew phases broadcast across rows.
+        jx, jy = tmj[0][:, None], tmj[1][:, None]
+        wx, wy = tmw[0][None, :], tmw[1][None, :]
+        tx, ty = twj[0], twj[1]
+        tcx, tcy = tc[:, 0][None, :], tc[:, 1][None, :]
+        tsx, tsy = ts[:, 0][None, :], ts[:, 1][None, :]
+
+        mv2h[:, :, m] = 0.125 * sqrt_beta_bpm[:, 0][:, None] * (
+            inv_minus * (
+                cosabc(jx, -1, jy, +1, ty, gc, gs, tcy, tsy) / sin_tune[1]
+                - cosabc(wx, -1, wy, +1, tx, gc, gs, tcy, tsy) / sin_tune[0]
+            )
+            + inv_plus * (
+                cosabc(jx, +1, jy, -1, ty, gc, gs, tcy, tsy) / sin_tune[1]
+                + cosabc(wx, +1, wy, +1, tx, gc, gs, tcy, tsy) / sin_tune[0]
+            )
+        )
+        mh2v[:, :, m] = -0.125 * sqrt_beta_bpm[:, 1][:, None] * (
+            inv_minus * (
+                -cosabc(jx, -1, jy, -1, tx, gc, gs, tcx, tsx) / sin_tune[0]
+                + cosabc(wx, -1, wy, -1, ty, gc, gs, tcx, tsx) / sin_tune[1]
+            )
+            + inv_plus * (
+                cosabc(jx, +1, jy, -1, tx, gc, gs, tcx, tsx) / sin_tune[0]
+                + cosabc(wx, +1, wy, +1, ty, gc, gs, tcx, tsx) / sin_tune[1]
+            )
+        )
+        if progress_callback is not None:
+            stride = max(1, len(ind_skews) // 20)
+            if (m + 1) % stride == 0 or m + 1 == len(ind_skews):
+                progress_callback(m + 1, len(ind_skews))
+
+    if timing_callback is not None:
+        timing_callback({
+            "skew_analytical_implementation": "vectorized",
+            "optics_preparation_seconds": optics_seconds,
+            "formula_seconds": time.perf_counter() - formula_started,
+            "total_seconds": time.perf_counter() - total_started,
+            "output_bytes": int(mh2v.nbytes + mv2h.nbytes),
+            "thick_skew": bool(thick_skew),
+            "thick_steerers": bool(thick_steerer),
+        })
+    return mh2v, mv2h
 
 
 def _test_orm_skew_deriv(

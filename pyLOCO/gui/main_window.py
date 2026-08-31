@@ -1293,6 +1293,9 @@ class MainWindow(QMainWindow):
         self.analytical_skew_thick_steerers = QCheckBox("Thick steerers for skew Jacobian")
         self.analytical_skew_verbose = QCheckBox("Verbose skew analytical calculation")
         self.analytical_skew_use_mp = QCheckBox("Multiprocessing for skew analytical calculation")
+        self.skew_analytical_implementation = QComboBox()
+        self.skew_analytical_implementation.addItem("Vectorized (production)", "vectorized")
+        self.skew_analytical_implementation.addItem("Legacy (reference)", "legacy")
 
         normal_options_form = QFormLayout()
         normal_options_form.addRow("Implementation", self.analytical_implementation)
@@ -1307,6 +1310,7 @@ class MainWindow(QMainWindow):
         self.normal_analytical_options.setLayout(normal_options_form)
 
         skew_options_form = QFormLayout()
+        skew_options_form.addRow("Implementation", self.skew_analytical_implementation)
         for widget in (
             self.analytical_thick_skew,
             self.analytical_skew_thick_steerers,
@@ -1736,6 +1740,7 @@ class MainWindow(QMainWindow):
             self.analytical_implementation,
             self.analytical_thick_skew, self.analytical_skew_thick_steerers,
             self.analytical_skew_verbose, self.analytical_skew_use_mp,
+            self.skew_analytical_implementation,
             self.rm_vectorized, self.rm_dkick_h, self.rm_dkick_v, self.rm_rf_step,
             self.rm_delta_coupling, self.rm_fixedpath, self.rm_log_info, self.solver_algorithm, self.solver_n_iter,
             self.solver_lm_iter, self.solver_lambda, self.solver_max_lambda,
@@ -2035,6 +2040,12 @@ class MainWindow(QMainWindow):
         self.analytical_skew_thick_steerers.setChecked(cfg.rejection.analytical_skew_thick_steerers)
         self.analytical_skew_verbose.setChecked(cfg.rejection.analytical_skew_verbose)
         self.analytical_skew_use_mp.setChecked(cfg.rejection.analytical_skew_use_mp)
+        skew_implementation_index = self.skew_analytical_implementation.findData(
+            cfg.rejection.skew_analytical_implementation
+        )
+        self.skew_analytical_implementation.setCurrentIndex(
+            max(0, skew_implementation_index)
+        )
         self._update_jacobian_option_availability()
         self.constraint_enabled.setChecked(cfg.constraints.enable)
         self.constraint_quad_sigma.setValue(cfg.constraints.quad_sigma)
@@ -2154,6 +2165,9 @@ class MainWindow(QMainWindow):
         cfg.rejection.analytical_skew_thick_steerers = self.analytical_skew_thick_steerers.isChecked()
         cfg.rejection.analytical_skew_verbose = self.analytical_skew_verbose.isChecked()
         cfg.rejection.analytical_skew_use_mp = self.analytical_skew_use_mp.isChecked()
+        cfg.rejection.skew_analytical_implementation = (
+            self.skew_analytical_implementation.currentData()
+        )
         cfg.constraints.enable = self.constraint_enabled.isChecked()
         cfg.constraints.quad_sigma = self.constraint_quad_sigma.value()
         cfg.constraints.skew_sigma = self.constraint_skew_sigma.value()

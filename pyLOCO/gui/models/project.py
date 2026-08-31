@@ -198,6 +198,7 @@ class RejectionConfig:
     analytical_skew_thick_steerers: bool = False
     analytical_skew_verbose: bool = False
     analytical_skew_use_mp: bool = False
+    skew_analytical_implementation: str = "vectorized"
     save_jacobians: bool = False
 
 
@@ -663,6 +664,7 @@ class LocoConfiguration:
             "analytical_skew_thick_steerers": self.rejection.analytical_skew_thick_steerers,
             "analytical_skew_verbose": self.rejection.analytical_skew_verbose,
             "analytical_skew_use_mp": self.rejection.analytical_skew_use_mp,
+            "skew_analytical_implementation": self.rejection.skew_analytical_implementation,
         })
         data["loco"] = loco
         inverse_groups = {
@@ -1122,6 +1124,9 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "analytical_skew_thick_steerers": loco.get("analytical_skew_thick_steerers", False),
             "analytical_skew_verbose": loco.get("analytical_skew_verbose", False),
             "analytical_skew_use_mp": loco.get("analytical_skew_use_mp", False),
+            "skew_analytical_implementation": loco.get(
+                "skew_analytical_implementation", "vectorized"
+            ),
         },
         "parameters": parameters,
         "constraints": constraints,
@@ -1161,7 +1166,7 @@ _EDITABLE_YAML_PATHS.update(f"loco.{name}" for name in (
     "analytical_thick_quadrupole", "analytical_thick_steerers",
     "analytical_verbose", "analytical_use_mp", "analytical_implementation", "analytical_thick_skew",
     "analytical_skew_thick_steerers", "analytical_skew_verbose",
-    "analytical_skew_use_mp",
+    "analytical_skew_use_mp", "skew_analytical_implementation",
 ))
 
 

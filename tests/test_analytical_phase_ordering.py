@@ -22,11 +22,15 @@ def _module_tree(path: Path) -> tuple[str, ast.Module]:
 
 
 def _analytical_function(tree: ast.Module) -> ast.FunctionDef:
-    return next(
+    candidates = [
         node
         for node in tree.body
         if isinstance(node, ast.FunctionDef)
         and node.name.startswith("_analytic_orm_variation_with_")
+    ]
+    return next(
+        (node for node in candidates if node.name.endswith("_legacy")),
+        candidates[0],
     )
 
 
