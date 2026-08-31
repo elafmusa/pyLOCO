@@ -31,6 +31,7 @@ def driver():
             except (ValueError, TypeError):
                 pass
     namespace["FitInitConfig"] = lambda **kwargs: kwargs
+    namespace["save_json"] = lambda *_args, **_kwargs: None
     exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source_path), "exec"), namespace)
     return namespace
 
@@ -90,6 +91,8 @@ def test_two_stage_wrapper_passes_independent_orm_calculators(driver, monkeypatc
     ]
     assert calls[0]["nIter"] == 4
     assert calls[1]["nIter"] == 4
+    assert all(call["analytical_implementation"] == "vectorized" for call in calls)
+    assert all(call["analytical_use_mp"] is True for call in calls)
 
 
 def test_linear_numerical_defaults_remain_linear_in_both_stages(driver):

@@ -15,6 +15,7 @@ import h5py
 import multiprocessing as mp
 from multiprocessing import shared_memory
 from .config import RMConfig, FitInitConfig, get_mcf, fixed_parameters
+from .parallel import available_worker_count
 from .response_matrix import calculate_rf_response, response_matrix
 import time
 fit_cfg = FitInitConfig()
@@ -842,6 +843,10 @@ def compute_jacobian(
                     "[Analytical Jacobian] implementation: "
                     f"{analytical_implementation}"
                 )
+                # The formula itself is analytical, but its hybrid dispersion
+                # column uses the configured response-matrix calculator.
+                # Preserve that backend in saved metadata for runtime audits.
+                orm_calculator_used = response_matrix_calculator
 
                 _trace_calculator(
                     calculator_trace_callback,
@@ -951,6 +956,10 @@ def compute_jacobian(
                             ),
                             "dispersion_output_bytes": int(J_eta.nbytes),
                             "dispersion_multiprocessing": bool(analytical_use_mp),
+                            "dispersion_worker_count": (
+                                available_worker_count(task_count=len(quads_ind))
+                                if analytical_use_mp else 1
+                            ),
                         })
 
 
@@ -1114,6 +1123,10 @@ def compute_jacobian(
                 "analytical_thick_steerers": analytical_thick_steerers,
                 "analytical_verbose": analytical_verbose,
                 "analytical_use_mp": analytical_use_mp,
+                "analytical_worker_count": (
+                    available_worker_count(task_count=len(quads_ind))
+                    if analytical_use_mp else 1
+                ),
                 "analytical_implementation": (
                     analytical_implementation if method == "analytical" else "not_applicable"
                 ),
@@ -1580,8 +1593,16 @@ def calculate_quads_jacobian(
                 CAVords, iteration,
             ))
 
+        worker_count = available_worker_count(
+            requested=processes,
+            task_count=len(quad_args),
+        )
+        print(
+            f"[Numerical Jacobian] multiprocessing workers: {worker_count} "
+            f"for {len(quad_args)} parameters"
+        )
         with ctx.Pool(
-                processes=processes,
+                processes=worker_count,
                 initializer=worker_initializer,
                 initargs=worker_initargs,
                 maxtasksperchild=64,

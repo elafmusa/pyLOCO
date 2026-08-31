@@ -173,6 +173,7 @@ def test_dispersion_enabled_jacobian_propagates_both_implementations(monkeypatch
         assert len(saved) == 1
         with h5py.File(saved[0], "r") as handle:
             saved_implementations.append(handle.attrs["analytical_implementation"])
+            assert int(handle.attrs["analytical_worker_count"]) == 1
     assert seen == ["legacy", "legacy", "vectorized", "vectorized"]
     np.testing.assert_array_equal(results[0], results[1])
     assert results[0].shape == (

@@ -154,6 +154,8 @@ STAGE1_RESPONSE_MATRIX_CALCULATOR = "Linear"
 STAGE2_RESPONSE_MATRIX_CALCULATOR = "Linear"
 QUAD_JACOBIAN_CALCULATOR = "Numerical"
 SKEW_JACOBIAN_CALCULATOR = "Numerical"
+ANALYTICAL_IMPLEMENTATION = "vectorized"
+ANALYTICAL_USE_MP = True
 FORCE_RECOMPUTE_JACOBIANS = True
 
 # Avoid creating multiple very large Jacobian artifacts during the first
@@ -378,6 +380,16 @@ def run_latest_pyloco_two_stage(
         model_ring, quad_indices, skew_quad_indices
     )
 
+    def capture_iteration_timing(destination):
+        def capture(metrics):
+            destination.append({
+                "iteration": int(metrics["iteration"]),
+                "chi2_before": float(metrics["chi2_before"]),
+                "chi2_after": float(metrics["chi2_after"]),
+                "timings": dict(metrics["timings"]),
+            })
+        return capture
+
     common_kwargs = dict(
         used_bpms_ords=used_bpms_ords,
         used_cor_ords=used_cor_ords,
@@ -432,6 +444,8 @@ def run_latest_pyloco_two_stage(
         quads_tilt_jacobian_file=None,
         quad_jacobian_calculator=QUAD_JACOBIAN_CALCULATOR,
         skew_jacobian_calculator=SKEW_JACOBIAN_CALCULATOR,
+        analytical_implementation=ANALYTICAL_IMPLEMENTATION,
+        analytical_use_mp=ANALYTICAL_USE_MP,
         force_recompute=FORCE_RECOMPUTE_JACOBIANS,
         save_jacobians=SAVE_JACOBIANS,
 
@@ -468,6 +482,9 @@ def run_latest_pyloco_two_stage(
     print(f"ORM calculator          : {stage1_orm_calculator}")
     print(f"Output                   : {stage1_dir}")
 
+    stage1_analytical_timing = []
+    stage1_iteration_timing = []
+
     stage1 = pyloco(
         model_ring,
         algorithm=ALGORITHM,
@@ -478,6 +495,8 @@ def run_latest_pyloco_two_stage(
         cut_=STAGE1_SVD_CUT,
         fit_cfg=stage1_fit_cfg,
         response_matrix_calculator=stage1_orm_calculator,
+        analytical_timing_callback=stage1_analytical_timing.append,
+        iteration_metrics_callback=capture_iteration_timing(stage1_iteration_timing),
         output_dir=str(stage1_dir),
         **{
             k: v for k, v in common_kwargs.items()
@@ -507,6 +526,10 @@ def run_latest_pyloco_two_stage(
         delta_chi2_history=delta_chi2_history1,
         blocks=blocks1,
     )
+    save_json(stage1_dir / "runtime_breakdown.json", {
+        "analytical_jacobian_events": stage1_analytical_timing,
+        "iterations": stage1_iteration_timing,
+    })
 
     # -------------------------------------------------------------------------
     # Stage 2: skew + coupling, continuing from Stage 1
@@ -537,6 +560,10 @@ def run_latest_pyloco_two_stage(
     print(f"ORM calculator          : {stage2_orm_calculator}")
     print(f"Output                   : {stage2_dir}")
 
+    stage2_analytical_timing = []
+    stage2_skew_analytical_timing = []
+    stage2_iteration_timing = []
+
     stage2 = pyloco(
         ring_stage1,
         algorithm=ALGORITHM,
@@ -547,6 +574,9 @@ def run_latest_pyloco_two_stage(
         cut_=STAGE2_SVD_CUT,
         fit_cfg=stage2_fit_cfg,
         response_matrix_calculator=stage2_orm_calculator,
+        analytical_timing_callback=stage2_analytical_timing.append,
+        skew_analytical_timing_callback=stage2_skew_analytical_timing.append,
+        iteration_metrics_callback=capture_iteration_timing(stage2_iteration_timing),
         output_dir=str(stage2_dir),
 
         continue_from_previous=True,
@@ -559,6 +589,12 @@ def run_latest_pyloco_two_stage(
             if k not in {"svd_selection_method"}
         },
     )
+
+    save_json(stage2_dir / "runtime_breakdown.json", {
+        "analytical_jacobian_events": stage2_analytical_timing,
+        "skew_analytical_jacobian_events": stage2_skew_analytical_timing,
+        "iterations": stage2_iteration_timing,
+    })
 
     (
         fit_results2,

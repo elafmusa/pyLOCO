@@ -13,6 +13,8 @@ import multiprocessing
 import time
 from itertools import repeat
 
+from .parallel import available_worker_count
+
 __author__='Simone Maria Liuzzo, Andrea Franchi'
 
 def analytic_orm_variation_with_normal_quadrupole(
@@ -72,8 +74,7 @@ def analytic_orm_variation_with_normal_quadrupole(
     # loop quadrupoles
     if use_mp:
 
-        n_cpu = multiprocessing.cpu_count()
-        n_processes = min(n_cpu, len(ind_quads))
+        n_processes = available_worker_count(task_count=len(ind_quads))
         quad_chunks = [
             chunk.tolist()
             for chunk in np.array_split(np.asarray(ind_quads, dtype=int), n_processes)
