@@ -145,6 +145,17 @@ def _parse_args(argv=None):
         "--dispersion-difference", choices=("central", "forward"),
         default="central",
     )
+    parser.add_argument(
+        "--dispersion-step-metric", choices=("full_orm", "rf_only"),
+        default="full_orm",
+        help="Experimental adaptive-step metric; production reference is full_orm.",
+    )
+    parser.add_argument(
+        "--dispersion-worker-transport", choices=("per_task", "initializer"),
+        default="per_task",
+    )
+    parser.add_argument("--dispersion-chunksize", type=int, default=1)
+    parser.add_argument("--reuse-adaptive-plus-rf", action="store_true")
     parser.add_argument("--implementation", choices=("legacy", "vectorized"), default="vectorized")
     parser.add_argument(
         "--output-root", type=Path,
@@ -234,6 +245,10 @@ def main(argv=None):
             skew_analytical_dispersion_calculator=args.dispersion_calculator,
             skew_analytical_dispersion_worker=args.dispersion_worker,
             skew_analytical_dispersion_difference=args.dispersion_difference,
+            skew_analytical_dispersion_step_metric=args.dispersion_step_metric,
+            skew_analytical_dispersion_worker_transport=args.dispersion_worker_transport,
+            skew_analytical_dispersion_worker_chunksize=args.dispersion_chunksize,
+            skew_analytical_dispersion_reuse_adaptive_plus_rf=args.reuse_adaptive_plus_rf,
             skew_individuals=True, delta_skew_=fixed_parameters.delta_skew,
             auto_correct_delta=production.AUTO_CORRECT_DELTA,
             rf_step=production.RF_STEP_HZ,
@@ -275,6 +290,10 @@ def main(argv=None):
         "dispersion_calculator": args.dispersion_calculator,
         "dispersion_worker": args.dispersion_worker,
         "dispersion_difference": args.dispersion_difference,
+        "dispersion_step_metric": args.dispersion_step_metric,
+        "dispersion_worker_transport": args.dispersion_worker_transport,
+        "dispersion_worker_chunksize": args.dispersion_chunksize,
+        "reuse_adaptive_plus_rf": args.reuse_adaptive_plus_rf,
         "multiprocessing": use_mp,
         "formula_multiprocessing": formula_use_mp,
         "formula_workers_requested": args.formula_workers,

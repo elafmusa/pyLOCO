@@ -182,6 +182,17 @@ def _parse_args(argv=None):
         "--dispersion-difference", choices=("central", "forward"),
         default="central",
     )
+    parser.add_argument(
+        "--dispersion-step-metric", choices=("full_orm", "rf_only"),
+        default="full_orm",
+        help="Experimental adaptive-step metric; production reference is full_orm.",
+    )
+    parser.add_argument(
+        "--dispersion-worker-transport", choices=("per_task", "initializer"),
+        default="per_task",
+    )
+    parser.add_argument("--dispersion-chunksize", type=int, default=1)
+    parser.add_argument("--reuse-adaptive-plus-rf", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -294,6 +305,10 @@ def main(argv=None):
             analytical_dispersion_workers=dispersion_workers,
             analytical_dispersion_worker=args.dispersion_worker,
             analytical_dispersion_difference=args.dispersion_difference,
+            analytical_dispersion_step_metric=args.dispersion_step_metric,
+            analytical_dispersion_worker_transport=args.dispersion_worker_transport,
+            analytical_dispersion_worker_chunksize=args.dispersion_chunksize,
+            analytical_dispersion_reuse_adaptive_plus_rf=args.reuse_adaptive_plus_rf,
             response_matrix_calculator=production.STAGE1_RESPONSE_MATRIX_CALCULATOR,
             analytical_timing_callback=timing_events.append,
         )
@@ -326,6 +341,10 @@ def main(argv=None):
         "analytical_dispersion_workers_requested": dispersion_workers,
         "analytical_dispersion_worker": args.dispersion_worker,
         "analytical_dispersion_difference": args.dispersion_difference,
+        "analytical_dispersion_step_metric": args.dispersion_step_metric,
+        "analytical_dispersion_worker_transport": args.dispersion_worker_transport,
+        "analytical_dispersion_worker_chunksize": args.dispersion_chunksize,
+        "analytical_dispersion_reuse_adaptive_plus_rf": args.reuse_adaptive_plus_rf,
         "formula_worker_count_resolved": int(next((
             event["formula_worker_count"] for event in reversed(timing_events)
             if "formula_worker_count" in event
