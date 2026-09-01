@@ -193,3 +193,40 @@ def test_adaptive_step_selection_has_finite_iteration_limit(monkeypatch):
         )
 
     assert calls == ["Linear"] * pyloco_module.MAX_ADAPTIVE_STEP_ITERATIONS
+
+
+def test_rf_only_dispersion_worker_matches_legacy_full_orm_column(monkeypatch):
+    ring = _fodo_ring_with_correctors()
+    ring.append(at.RFCavity("RFC", 0.0, 3e6, 5e8, 100, 1e9))
+    ring.disable_6d()
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    hcor = np.asarray(at.get_refpts(ring, "HCOR*"), dtype=int)[:2]
+    vcor = np.asarray(at.get_refpts(ring, "VCOR*"), dtype=int)[:2]
+    cavity = np.asarray(at.get_refpts(ring, at.elements.RFCavity), dtype=int)
+    skew = int(np.asarray(at.get_refpts(ring, at.elements.Quadrupole), dtype=int)[0])
+    kicks = (np.full(len(hcor), 1e-5), np.full(len(vcor), 1e-5))
+    calibration = np.eye(2 * len(bpm))
+    fit = FitInitConfig(fit_list=("skew_quads",), individuals=True)
+    model = response_matrix(
+        ring, config=RMConfig(
+            bpm_ords=bpm, cm_ords=(hcor, vcor), cav_ords=cavity,
+            dkick=kicks, includeDispersion=True, rfStep=40.0,
+            calculator="Linear", Frequency=5e8,
+        )
+    )
+    monkeypatch.setattr(pyloco_module, "G_C", calibration)
+    monkeypatch.setattr(pyloco_module, "G_CMODEL", model)
+
+    legacy, legacy_step, _ = pyloco_module.generating_quads_response_matrices(
+        skew, ring, kicks, (hcor, vcor), bpm, 1e-3, True,
+        np.zeros(len(hcor)), np.zeros(len(vcor)), 40.0, True,
+        "skew_quads", fit, True, "Linear", cavity, 1,
+    )
+    rf_only, rf_step = pyloco_module._dispersion_rf_only_worker(
+        skew, 1e-3, ring, kicks, (hcor, vcor), bpm, True,
+        np.zeros(len(hcor)), np.zeros(len(vcor)), 40.0, cavity, True,
+        fit, "Linear", "skew_quads",
+    )
+
+    np.testing.assert_allclose(rf_only, legacy[:, -1], rtol=1e-13, atol=1e-15)
+    np.testing.assert_allclose(rf_step, legacy_step[0], rtol=0.0, atol=0.0)

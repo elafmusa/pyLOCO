@@ -200,6 +200,8 @@ class RejectionConfig:
     analytical_skew_verbose: bool = False
     analytical_skew_use_mp: bool = False
     skew_analytical_implementation: str = "vectorized"
+    skew_analytical_dispersion_calculator: str | None = None
+    skew_analytical_dispersion_worker: str = "legacy_full_orm"
     save_jacobians: bool = False
 
 
@@ -667,6 +669,8 @@ class LocoConfiguration:
             "analytical_skew_verbose": self.rejection.analytical_skew_verbose,
             "analytical_skew_use_mp": self.rejection.analytical_skew_use_mp,
             "skew_analytical_implementation": self.rejection.skew_analytical_implementation,
+            "skew_analytical_dispersion_calculator": self.rejection.skew_analytical_dispersion_calculator,
+            "skew_analytical_dispersion_worker": self.rejection.skew_analytical_dispersion_worker,
         })
         data["loco"] = loco
         inverse_groups = {
@@ -1132,6 +1136,12 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "skew_analytical_implementation": loco.get(
                 "skew_analytical_implementation", "vectorized"
             ),
+            "skew_analytical_dispersion_calculator": loco.get(
+                "skew_analytical_dispersion_calculator"
+            ),
+            "skew_analytical_dispersion_worker": loco.get(
+                "skew_analytical_dispersion_worker", "legacy_full_orm"
+            ),
         },
         "parameters": parameters,
         "constraints": constraints,
@@ -1173,6 +1183,7 @@ _EDITABLE_YAML_PATHS.update(f"loco.{name}" for name in (
     "analytical_dispersion_calculator", "analytical_thick_skew",
     "analytical_skew_thick_steerers", "analytical_skew_verbose",
     "analytical_skew_use_mp", "skew_analytical_implementation",
+    "skew_analytical_dispersion_calculator", "skew_analytical_dispersion_worker",
 ))
 
 

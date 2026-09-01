@@ -157,6 +157,8 @@ SKEW_JACOBIAN_CALCULATOR = "Numerical"
 ANALYTICAL_IMPLEMENTATION = "vectorized"
 ANALYTICAL_USE_MP = True
 ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
+SKEW_ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
+SKEW_ANALYTICAL_DISPERSION_WORKER = "rf_only"
 FORCE_RECOMPUTE_JACOBIANS = True
 
 # Avoid creating multiple very large Jacobian artifacts during the first
@@ -448,6 +450,9 @@ def run_latest_pyloco_two_stage(
         analytical_implementation=ANALYTICAL_IMPLEMENTATION,
         analytical_use_mp=ANALYTICAL_USE_MP,
         analytical_dispersion_calculator=ANALYTICAL_DISPERSION_CALCULATOR,
+        analytical_skew_use_mp=ANALYTICAL_USE_MP,
+        skew_analytical_dispersion_calculator=SKEW_ANALYTICAL_DISPERSION_CALCULATOR,
+        skew_analytical_dispersion_worker=SKEW_ANALYTICAL_DISPERSION_WORKER,
         force_recompute=FORCE_RECOMPUTE_JACOBIANS,
         save_jacobians=SAVE_JACOBIANS,
 
@@ -1114,6 +1119,8 @@ def main() -> int:
             "analytical_implementation": ANALYTICAL_IMPLEMENTATION,
             "analytical_use_mp": ANALYTICAL_USE_MP,
             "analytical_dispersion_calculator": ANALYTICAL_DISPERSION_CALCULATOR,
+            "skew_analytical_dispersion_calculator": SKEW_ANALYTICAL_DISPERSION_CALCULATOR,
+            "skew_analytical_dispersion_worker": SKEW_ANALYTICAL_DISPERSION_WORKER,
             "save_jacobians": SAVE_JACOBIANS,
             "saved_corrected_lattice": str(saved_path),
             "elapsed_seconds": elapsed,

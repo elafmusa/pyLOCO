@@ -186,6 +186,8 @@ def test_jacobian_calculators_round_trip_and_reach_backend_kwargs(
     config.rejection.analytical_skew_verbose = True
     config.rejection.analytical_skew_use_mp = True
     config.rejection.skew_analytical_implementation = "legacy"
+    config.rejection.skew_analytical_dispersion_calculator = "Linear"
+    config.rejection.skew_analytical_dispersion_worker = "rf_only"
     target = tmp_path / "jacobian-options.json"
     config.save(target)
     reloaded = LocoConfiguration.load(target)
@@ -238,6 +240,8 @@ def test_jacobian_calculators_round_trip_and_reach_backend_kwargs(
     assert kwargs["analytical_dispersion_calculator"] == "Linear"
     assert kwargs["analytical_thick_skew"] is False
     assert kwargs["skew_analytical_implementation"] == "legacy"
+    assert kwargs["skew_analytical_dispersion_calculator"] == "Linear"
+    assert kwargs["skew_analytical_dispersion_worker"] == "rf_only"
 
 
 def test_jacobian_gui_controls_restore_and_disable_without_losing_values():

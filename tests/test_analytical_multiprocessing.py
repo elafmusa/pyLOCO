@@ -153,6 +153,10 @@ def test_analytical_dispersion_calculator_validation_and_compatible_default():
         pyloco_module._normalize_analytical_dispersion_calculator(
             "Numerical", fallback="Linear"
         )
+    assert pyloco_module._normalize_skew_dispersion_worker("legacy") == "legacy_full_orm"
+    assert pyloco_module._normalize_skew_dispersion_worker("rf_only") == "rf_only"
+    with pytest.raises(ValueError, match="legacy_full_orm.*rf_only"):
+        pyloco_module._normalize_skew_dispersion_worker("fast")
 
 
 def test_dispersion_enabled_jacobian_propagates_both_implementations(monkeypatch, tmp_path):

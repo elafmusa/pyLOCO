@@ -94,6 +94,9 @@ def test_two_stage_wrapper_passes_independent_orm_calculators(driver, monkeypatc
     assert all(call["analytical_implementation"] == "vectorized" for call in calls)
     assert all(call["analytical_use_mp"] is True for call in calls)
     assert all(call["analytical_dispersion_calculator"] == "Linear" for call in calls)
+    assert all(call["skew_analytical_dispersion_calculator"] == "Linear" for call in calls)
+    assert all(call["skew_analytical_dispersion_worker"] == "rf_only" for call in calls)
+    assert all(call["analytical_skew_use_mp"] is True for call in calls)
 
 
 def test_linear_numerical_defaults_remain_linear_in_both_stages(driver):
