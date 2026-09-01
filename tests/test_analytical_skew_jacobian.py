@@ -14,19 +14,19 @@ from pyLOCO.analytic_orm_with_skew_quad_errors import (
 )
 
 
-def _ring_and_indices():
+def _ring_and_indices(corrector_length=0.0):
     half_drift = at.Drift("Dr", 0.25)
     drift = at.Drift("Dr", 0.5)
     bend = at.Dipole("Bend", 1.0, 2 * np.pi / 40)
     cell = at.Lattice(
         [
             half_drift, bend, drift, at.Monitor("BPM_F"),
-            at.Corrector("HCOR_F", 0.0, [0.0, 0.0]),
-            at.Corrector("VCOR_F", 0.0, [0.0, 0.0]),
+            at.Corrector("HCOR_F", corrector_length, [0.0, 0.0]),
+            at.Corrector("VCOR_F", corrector_length, [0.0, 0.0]),
             at.Quadrupole("QF", 0.5, 1.2), drift, bend, drift,
             at.Monitor("BPM_D"),
-            at.Corrector("HCOR_D", 0.0, [0.0, 0.0]),
-            at.Corrector("VCOR_D", 0.0, [0.0, 0.0]),
+            at.Corrector("HCOR_D", corrector_length, [0.0, 0.0]),
+            at.Corrector("VCOR_D", corrector_length, [0.0, 0.0]),
             at.Quadrupole("QD", 0.5, -1.2), half_drift,
         ],
         energy=1e9,
@@ -109,10 +109,8 @@ def test_individual_skew_full_four_block_jacobian():
         else:
             relative_error = np.linalg.norm(expected - actual) / np.linalg.norm(expected)
             correlation = np.corrcoef(actual.ravel(), expected.ravel())[0, 1]
-            # Preserve visibility of the accepted ~0.17% thick-skew
-            # analytical residual; no empirical rescaling is applied.
-            assert relative_error < 0.002
-            assert correlation > 0.99999
+            assert relative_error < 2e-6
+            assert correlation > 0.999999999
 
 
 def test_skew_family_matches_numerical_and_sum_of_individuals():
@@ -156,8 +154,41 @@ def test_skew_family_matches_numerical_and_sum_of_individuals():
         if name in {"XX", "YY"}:
             np.testing.assert_allclose(actual, expected, rtol=0.0, atol=2e-13)
         else:
-            assert np.linalg.norm(expected - actual) / np.linalg.norm(expected) < 0.002
-            assert np.corrcoef(actual.ravel(), expected.ravel())[0, 1] > 0.99999
+            assert np.linalg.norm(expected - actual) / np.linalg.norm(expected) < 2e-6
+            assert np.corrcoef(actual.ravel(), expected.ravel())[0, 1] > 0.999999999
+
+
+def test_finite_correctors_require_matching_endpoint_kicks():
+    ring, bpm, hcor, vcor, skews = _ring_and_indices(corrector_length=0.15)
+    skew = int(skews[3])
+    numerical = _central_skew_derivative(ring, skew, bpm, hcor, vcor)
+    common = dict(
+        ring=ring,
+        C_model=_orm(ring, bpm, hcor, vcor),
+        dkick=[[1e-5] * len(hcor), [1e-5] * len(vcor)],
+        used_cor_ind=[hcor, vcor], bpm_indexes=bpm, skew_ind=[skew],
+        C=np.eye(2 * len(bpm)), fit_cfg=FitInitConfig(),
+        analytical_thick_skew=True, analytical_verbose=False,
+        analytical_use_mp=False,
+    )
+    matched, _ = calculate_skew_jacobian_analytical(
+        analytical_thick_steerers=True, **common
+    )
+    point_kick, _ = calculate_skew_jacobian_analytical(
+        analytical_thick_steerers=False, **common
+    )
+    n_bpm = len(bpm)
+    n_hcor = len(hcor)
+    cross = (
+        (slice(n_bpm, None), slice(None, n_hcor)),
+        (slice(None, n_bpm), slice(n_hcor, None)),
+    )
+    for rows, columns in cross:
+        expected = numerical[rows, columns]
+        matched_error = np.linalg.norm(matched[0, rows, columns] - expected)
+        point_error = np.linalg.norm(point_kick[0, rows, columns] - expected)
+        assert matched_error / np.linalg.norm(expected) < 2e-6
+        assert matched_error < 0.001 * point_error
 
 
 def _computed_skew_jacobian(
@@ -200,28 +231,25 @@ def _computed_skew_jacobian(
     return jacobian, delta_skew
 
 
-def test_legacy_and_vectorized_skew_formulas_match_thick_thin_and_subsets():
+def test_legacy_and_vectorized_skew_formulas_match_thin_subsets():
     ring, bpm, hcor, _, skews = _ring_and_indices()
     subset = skews[[11, 3, 7]]
-    for thick_skew in (False, True):
-        legacy = analytic_orm_variation_with_skew_quadrupole(
-            ring, bpm[:8], hcor[:5], subset, verbose=False,
-            thick_skew=thick_skew, thick_steerer=False,
-            implementation="legacy",
+    legacy = analytic_orm_variation_with_skew_quadrupole(
+        ring, bpm[:8], hcor[:5], subset, verbose=False,
+        thick_skew=False, thick_steerer=False, implementation="legacy",
+    )
+    vectorized = analytic_orm_variation_with_skew_quadrupole(
+        ring, bpm[:8], hcor[:5], subset, verbose=False,
+        thick_skew=False, thick_steerer=False, implementation="vectorized",
+    )
+    for legacy_block, vectorized_block in zip(legacy, vectorized):
+        assert legacy_block.shape == (8, 5, 3)
+        np.testing.assert_allclose(
+            vectorized_block, legacy_block, rtol=5e-15, atol=3e-14
         )
-        vectorized = analytic_orm_variation_with_skew_quadrupole(
-            ring, bpm[:8], hcor[:5], subset, verbose=False,
-            thick_skew=thick_skew, thick_steerer=False,
-            implementation="vectorized",
-        )
-        for legacy_block, vectorized_block in zip(legacy, vectorized):
-            assert legacy_block.shape == (8, 5, 3)
-            np.testing.assert_allclose(
-                vectorized_block, legacy_block, rtol=5e-15, atol=3e-14
-            )
 
 
-def test_legacy_and_vectorized_full_skew_jacobian_match_with_dispersion(tmp_path):
+def test_corrected_vectorized_full_skew_jacobian_preserves_dispersion(tmp_path):
     ring, bpm, hcor, vcor, skews = _ring_and_indices()
     parameters = [int(skews[3]), int(skews[11])]
     results = {}
@@ -237,14 +265,19 @@ def test_legacy_and_vectorized_full_skew_jacobian_match_with_dispersion(tmp_path
         len(parameters), 2 * len(bpm), len(hcor) + len(vcor) + 1
     )
     assert np.isfinite(legacy).sum() == np.isfinite(vectorized).sum() == legacy.size
-    np.testing.assert_allclose(vectorized, legacy, rtol=5e-15, atol=3e-14)
-    difference = vectorized - legacy
-    assert np.sqrt(np.mean(difference**2)) < 1e-15
-    assert np.linalg.norm(difference) / np.linalg.norm(legacy) < 1e-14
-    for parameter in (0, len(parameters) - 1):
-        np.testing.assert_allclose(
-            vectorized[parameter], legacy[parameter], rtol=5e-15, atol=3e-14
-        )
+    # The thick transverse formula is intentionally corrected only in the
+    # vectorized implementation.  The independently numerical RF column is
+    # unaffected, while the legacy implementation remains a historical
+    # reference for the previous product-of-averages treatment.
+    np.testing.assert_array_equal(vectorized[:, :, -1], legacy[:, :, -1])
+    numerical, _ = _computed_skew_jacobian(
+        ring, bpm, hcor, vcor, parameters, individuals=True,
+        method="Numerical", output_dir=tmp_path / "numerical",
+    )
+    transverse = np.s_[:, :, :-1]
+    vectorized_error = np.linalg.norm(vectorized[transverse] - numerical[transverse])
+    legacy_error = np.linalg.norm(legacy[transverse] - numerical[transverse])
+    assert vectorized_error < 0.01 * legacy_error
 
 
 def test_hybrid_skew_dispersion_individual_and_family(tmp_path):

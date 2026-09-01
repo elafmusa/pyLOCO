@@ -470,12 +470,13 @@ def _analytic_orm_variation_with_skew_quadrupole_vectorized(
         cancel_callback=None,
         progress_callback=None,
         timing_callback=None):
-    """Vectorized evaluation of the existing analytical skew equations.
+    """Vectorized analytical skew response with finite-element integration.
 
-    The skew loop is retained so thick-element factors and cancellation remain
-    easy to audit.  BPM and corrector dimensions are evaluated with NumPy
-    arrays; no analytical term or sign convention differs from the legacy
-    implementation above.
+    BPM and corrector dimensions are evaluated with NumPy arrays.  For a
+    thick skew, Gauss-Legendre nodes integrate the unchanged thin-skew
+    response density through the element, with both transverse planes
+    evaluated at the same longitudinal location.  The historical
+    product-of-plane-averages treatment remains available in ``legacy``.
     """
     total_started = time.perf_counter()
     optics_started = time.perf_counter()
@@ -492,7 +493,6 @@ def _analytic_orm_variation_with_skew_quadrupole_vectorized(
     tune = np.asarray(at.get_tune(ring, get_integer=True), dtype=float)
 
     bpm_mu = np.asarray([item.mu for item in bpm], dtype=float)
-    cor_mu = np.asarray([item.mu for item in cor], dtype=float)
     skew_mu = np.asarray([item.mu for item in qua], dtype=float)
 
     def tau_matrix(mu_a, mu_b, idx_a, idx_b, plane):
@@ -505,25 +505,34 @@ def _analytic_orm_variation_with_skew_quadrupole_vectorized(
         wrap = np.where(equal, ib < ia, b < a)
         return delta + wrap * (2.0 * math.pi * tune[plane]) - math.pi * tune[plane]
 
+    # AT's Linear ORM represents a finite corrector by equal kicks at its
+    # entrance and exit.  Evaluate those two physical locations explicitly;
+    # this also handles combined-function transport without a drift-only
+    # approximation.  The legacy point-corrector convention remains
+    # selectable with ``thick_steerer=False``.
+    if thick_steerer:
+        cor_ord_eval = np.repeat(ind_cors, 2)
+        cor_mu_eval = np.empty((2 * len(cor), 2), dtype=float)
+        cor_beta_eval = np.empty_like(cor_mu_eval)
+        for w, ordinal in enumerate(ind_cors):
+            entrance = opt_all_location[int(ordinal)]
+            exit_location = opt_all_location[(int(ordinal) + 1) % len(ring)]
+            cor_mu_eval[2 * w] = entrance.mu
+            cor_mu_eval[2 * w + 1] = exit_location.mu
+            cor_beta_eval[2 * w] = entrance.beta
+            cor_beta_eval[2 * w + 1] = exit_location.beta
+    else:
+        cor_ord_eval = ind_cors
+        cor_mu_eval = np.asarray([item.mu for item in cor], dtype=float)
+        cor_beta_eval = np.asarray([item.beta for item in cor], dtype=float)
+
     # Corrector-to-BPM phase is invariant for every skew parameter.
-    twj = np.empty((2, len(bpm), len(cor)), dtype=float)
+    twj = np.empty((2, len(bpm), len(cor_ord_eval)), dtype=float)
     for plane in (0, 1):
         twj[plane] = tau_matrix(
-            cor_mu[:, plane][None, :], bpm_mu[:, plane][:, None],
-            ind_cors[None, :], ind_bpms[:, None], plane,
+            cor_mu_eval[:, plane][None, :], bpm_mu[:, plane][:, None],
+            cor_ord_eval[None, :], ind_bpms[:, None], plane,
         )
-
-    ts = np.zeros((len(cor), 2), dtype=float)
-    tc = np.empty((len(cor), 2), dtype=float)
-    for w, ordinal in enumerate(ind_cors):
-        beta = np.asarray(cor[w].beta, dtype=float)
-        if thick_steerer:
-            length = float(ring[int(ordinal)].Length)
-            alpha = np.asarray(cor[w].alpha, dtype=float)
-            ts[w] = length / (2.0 * np.sqrt(beta))
-            tc[w] = np.sqrt(beta) - length * alpha / (2.0 * np.sqrt(beta))
-        else:
-            tc[w] = np.sqrt(beta)
 
     inv_minus = 1.0 / math.sin(math.pi * (tune[0] - tune[1]))
     inv_plus = 1.0 / math.sin(math.pi * (tune[0] + tune[1]))
@@ -542,6 +551,35 @@ def _analytic_orm_variation_with_skew_quadrupole_vectorized(
         return (jcmjx * jcmjy * jcwj - jcmjx * jsmjy * jswj
                 - jsmjx * jsmjy * jcwj - jsmjx * jcmjy * jswj)
 
+    def interior_twiss(beta0, alpha0, signed_k, offset):
+        """Twiss and phase at ``offset`` inside a constant-gradient element."""
+        beta0 = float(beta0)
+        alpha0 = float(alpha0)
+        gamma0 = (1.0 + alpha0 * alpha0) / beta0
+        if abs(signed_k) < 1.0e-15:
+            m11, m12, m21, m22 = 1.0, offset, 0.0, 1.0
+        elif signed_k > 0.0:
+            root = math.sqrt(signed_k)
+            phase = root * offset
+            m11 = m22 = math.cos(phase)
+            m12 = math.sin(phase) / root
+            m21 = -root * math.sin(phase)
+        else:
+            root = math.sqrt(-signed_k)
+            phase = root * offset
+            m11 = m22 = math.cosh(phase)
+            m12 = math.sinh(phase) / root
+            m21 = root * math.sinh(phase)
+        beta = m11 * m11 * beta0 - 2.0 * m11 * m12 * alpha0 + m12 * m12 * gamma0
+        alpha = (-m11 * m21 * beta0
+                 + (m11 * m22 + m12 * m21) * alpha0
+                 - m12 * m22 * gamma0)
+        root_beta = math.sqrt(beta0 * beta)
+        cos_mu = (m11 * beta0 - m12 * alpha0) / root_beta
+        sin_mu = m12 / root_beta
+        return beta, alpha, math.atan2(sin_mu, cos_mu)
+
+    thick_nodes, thick_weights = np.polynomial.legendre.leggauss(8)
     formula_started = time.perf_counter()
     for m, ordinal in enumerate(ind_skews):
         if cancel_callback is not None and cancel_callback():
@@ -549,76 +587,67 @@ def _analytic_orm_variation_with_skew_quadrupole_vectorized(
                 "LOCO run cancelled during analytical skew Jacobian calculation."
             )
         length = float(ring[int(ordinal)].Length)
-        beta = np.asarray(qua[m].beta, dtype=float)
-        alpha = np.asarray(qua[m].alpha, dtype=float)
         if thick_skew:
             normal_k = float(ring[int(ordinal)].PolynomB[1])
-            if normal_k != 0.0:
-                gs = np.empty(2, dtype=float)
-                gc = np.empty(2, dtype=float)
-                for plane, signed_k in enumerate((normal_k, -normal_k)):
-                    lsk = length * cmath.sqrt(signed_k)
-                    gs[plane] = (
-                        (1.0 - cmath.cos(lsk))
-                        / (length * signed_k * math.sqrt(beta[plane]))
-                    ).real
-                    gc[plane] = (
-                        math.sqrt(beta[plane]) / lsk * cmath.sin(lsk)
-                        - alpha[plane] * gs[plane]
-                    ).real
-            else:
-                if verbose:
-                    print(
-                        f"{ring[int(ordinal)].FamName} is not a quadrupole. "
-                        f"PolynomA[1] = {ring[int(ordinal)].PolynomA[1]:.3f}, "
-                        f"PolynomB[1] = {normal_k:.3f}"
-                    )
-                gs = length / (2.0 * np.sqrt(beta))
-                gc = np.sqrt(beta) - length * alpha / (2.0 * np.sqrt(beta))
+            offsets = 0.5 * length * (thick_nodes + 1.0)
+            quadrature_weights = 0.5 * thick_weights
         else:
+            normal_k = float(ring[int(ordinal)].PolynomB[1])
+            offsets = np.asarray([0.0])
+            quadrature_weights = np.asarray([1.0])
+
+        accumulated_h = np.zeros((len(bpm), len(cor_ord_eval)), dtype=float)
+        accumulated_v = np.zeros_like(accumulated_h)
+        for offset, quadrature_weight in zip(offsets, quadrature_weights):
+            beta_at = np.empty(2, dtype=float)
+            mu_at = np.empty(2, dtype=float)
+            for plane, signed_k in enumerate((normal_k, -normal_k)):
+                beta_at[plane], _, delta_mu = interior_twiss(
+                    qua[m].beta[plane], qua[m].alpha[plane],
+                    signed_k, float(offset)
+                )
+                mu_at[plane] = skew_mu[m, plane] + delta_mu
+            gc = np.sqrt(beta_at)
             gs = np.zeros(2, dtype=float)
-            gc = np.sqrt(beta)
-
-        tmj = np.empty((2, len(bpm)), dtype=float)
-        tmw = np.empty((2, len(cor)), dtype=float)
-        for plane in (0, 1):
-            tmj[plane] = tau_matrix(
-                skew_mu[m, plane], bpm_mu[:, plane],
-                int(ordinal), ind_bpms, plane,
-            )
-            tmw[plane] = tau_matrix(
-                skew_mu[m, plane], cor_mu[:, plane],
-                int(ordinal), ind_cors, plane,
-            )
-
-        # BPM-dependent skew phases broadcast down columns; corrector-
-        # dependent skew phases broadcast across rows.
-        jx, jy = tmj[0][:, None], tmj[1][:, None]
-        wx, wy = tmw[0][None, :], tmw[1][None, :]
-        tx, ty = twj[0], twj[1]
-        tcx, tcy = tc[:, 0][None, :], tc[:, 1][None, :]
-        tsx, tsy = ts[:, 0][None, :], ts[:, 1][None, :]
-
-        mv2h[:, :, m] = 0.125 * sqrt_beta_bpm[:, 0][:, None] * (
-            inv_minus * (
-                cosabc(jx, -1, jy, +1, ty, gc, gs, tcy, tsy) / sin_tune[1]
-                - cosabc(wx, -1, wy, +1, tx, gc, gs, tcy, tsy) / sin_tune[0]
-            )
-            + inv_plus * (
-                cosabc(jx, +1, jy, -1, ty, gc, gs, tcy, tsy) / sin_tune[1]
-                + cosabc(wx, +1, wy, +1, tx, gc, gs, tcy, tsy) / sin_tune[0]
-            )
-        )
-        mh2v[:, :, m] = -0.125 * sqrt_beta_bpm[:, 1][:, None] * (
-            inv_minus * (
-                -cosabc(jx, -1, jy, -1, tx, gc, gs, tcx, tsx) / sin_tune[0]
-                + cosabc(wx, -1, wy, -1, ty, gc, gs, tcx, tsx) / sin_tune[1]
-            )
-            + inv_plus * (
-                cosabc(jx, +1, jy, -1, tx, gc, gs, tcx, tsx) / sin_tune[0]
-                + cosabc(wx, +1, wy, +1, ty, gc, gs, tcx, tsx) / sin_tune[1]
-            )
-        )
+            tmj = np.empty((2, len(bpm)), dtype=float)
+            tmw = np.empty((2, len(cor_ord_eval)), dtype=float)
+            for plane in (0, 1):
+                tmj[plane] = tau_matrix(
+                    mu_at[plane], bpm_mu[:, plane],
+                    int(ordinal), ind_bpms, plane,
+                )
+                tmw[plane] = tau_matrix(
+                    mu_at[plane], cor_mu_eval[:, plane],
+                    int(ordinal), cor_ord_eval, plane,
+                )
+            jx, jy = tmj[0][:, None], tmj[1][:, None]
+            wx, wy = tmw[0][None, :], tmw[1][None, :]
+            tx, ty = twj[0], twj[1]
+            tcx = np.sqrt(cor_beta_eval[:, 0])[None, :]
+            tcy = np.sqrt(cor_beta_eval[:, 1])[None, :]
+            zeros = np.zeros_like(tcx)
+            accumulated_v += quadrature_weight * 0.125 * sqrt_beta_bpm[:, 0][:, None] * (
+                inv_minus * (
+                    cosabc(jx, -1, jy, +1, ty, gc, gs, tcy, zeros) / sin_tune[1]
+                    - cosabc(wx, -1, wy, +1, tx, gc, gs, tcy, zeros) / sin_tune[0]
+                ) + inv_plus * (
+                    cosabc(jx, +1, jy, -1, ty, gc, gs, tcy, zeros) / sin_tune[1]
+                    + cosabc(wx, +1, wy, +1, tx, gc, gs, tcy, zeros) / sin_tune[0]
+                ))
+            accumulated_h += quadrature_weight * -0.125 * sqrt_beta_bpm[:, 1][:, None] * (
+                inv_minus * (
+                    -cosabc(jx, -1, jy, -1, tx, gc, gs, tcx, zeros) / sin_tune[0]
+                    + cosabc(wx, -1, wy, -1, ty, gc, gs, tcx, zeros) / sin_tune[1]
+                ) + inv_plus * (
+                    cosabc(jx, +1, jy, -1, tx, gc, gs, tcx, zeros) / sin_tune[0]
+                    + cosabc(wx, +1, wy, +1, ty, gc, gs, tcx, zeros) / sin_tune[1]
+                ))
+        if thick_steerer:
+            mh2v[:, :, m] = accumulated_h.reshape(len(bpm), len(cor), 2).sum(axis=2) * 0.5
+            mv2h[:, :, m] = accumulated_v.reshape(len(bpm), len(cor), 2).sum(axis=2) * 0.5
+        else:
+            mh2v[:, :, m] = accumulated_h
+            mv2h[:, :, m] = accumulated_v
         if progress_callback is not None:
             stride = max(1, len(ind_skews) // 20)
             if (m + 1) % stride == 0 or m + 1 == len(ind_skews):
