@@ -62,6 +62,72 @@ def test_tracking_orm_supports_at_corrector_and_restores_kicks():
         np.testing.assert_array_equal(ring[index].KickAngle, [0.0, 0.0])
 
 
+def _replace_first_correctors(ring, horizontal, vertical):
+    h_index = int(np.asarray(at.get_refpts(ring, "HCOR*"), dtype=int)[0])
+    v_index = int(np.asarray(at.get_refpts(ring, "VCOR*"), dtype=int)[0])
+    ring[h_index] = horizontal
+    ring[v_index] = vertical
+    return h_index, v_index
+
+
+def _two_corrector_orm(ring, indices, calculator, kick=10e-6):
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    return response_matrix(
+        ring,
+        config=RMConfig(
+            bpm_ords=bpm,
+            cm_ords=[[indices[0]], [indices[1]]],
+            dkick=[[kick], [kick]],
+            calculator=calculator,
+            bidirectional=True,
+            includeDispersion=False,
+            fixedpathlength=False,
+        ),
+    )
+
+
+def test_tracking_orm_converts_distinct_finite_multipole_lengths_to_integrated_kicks():
+    ring = _fodo_ring_with_correctors()
+    horizontal = at.Multipole("MH", 0.23, [0.0], [0.0])
+    vertical = at.Multipole("MV", 0.41, [0.0], [0.0])
+    indices = _replace_first_correctors(ring, horizontal, vertical)
+
+    linear = _two_corrector_orm(ring, indices, "Linear")
+    tracking = _two_corrector_orm(ring, indices, "Tracking")
+
+    np.testing.assert_allclose(tracking, linear, rtol=5e-11, atol=5e-15)
+    assert np.vdot(tracking[:, 0], linear[:, 0]) > 0.0
+    assert np.vdot(tracking[:, 1], linear[:, 1]) > 0.0
+    np.testing.assert_array_equal(horizontal.PolynomB, [0.0])
+    np.testing.assert_array_equal(vertical.PolynomA, [0.0])
+
+
+def test_tracking_orm_uses_integrated_polynomials_for_thin_correctors():
+    ring = _fodo_ring_with_correctors()
+    horizontal = at.ThinMultipole("TH", [0.0], [0.0])
+    vertical = at.ThinMultipole("TV", [0.0], [0.0])
+    indices = _replace_first_correctors(ring, horizontal, vertical)
+
+    linear = _two_corrector_orm(ring, indices, "Linear")
+    tracking = _two_corrector_orm(ring, indices, "Tracking")
+
+    np.testing.assert_allclose(tracking, linear, rtol=5e-11, atol=5e-15)
+    np.testing.assert_array_equal(horizontal.PolynomB, [0.0])
+    np.testing.assert_array_equal(vertical.PolynomA, [0.0])
+
+
+def test_tracking_orm_rejects_zero_length_thick_multipole_representation():
+    ring = _fodo_ring_with_correctors()
+    invalid = at.Multipole(
+        "BAD", 0.0, [0.0], [0.0], PassMethod="StrMPoleSymplectic4Pass"
+    )
+    vertical = at.ThinMultipole("TV", [0.0], [0.0])
+    indices = _replace_first_correctors(ring, invalid, vertical)
+
+    with np.testing.assert_raises_regex(TypeError, "no integrated-kick representation"):
+        _two_corrector_orm(ring, indices, "Tracking")
+
+
 def test_analytical_calculator_reaches_uncoupled_implementation():
     ring = _fodo_ring_with_correctors()
     bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)

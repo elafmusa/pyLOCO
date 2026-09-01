@@ -9,6 +9,53 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 
+def _corrector_kick_component(corrector, plane):
+    """Return ``(array, index, scale)`` for an integrated AT kick.
+
+    ``dkick`` is public API and is always an integrated physical angle. AT's
+    dedicated ``KickAngle`` storage uses that convention directly. Multipole
+    dipole coefficients follow AT's canonical signs,
+
+        dpx = -Length * dPolynomB[0]
+        dpy = +Length * dPolynomA[0],
+
+    while ``ThinMultipole`` coefficients are already integrated. A
+    zero-length element using a thick multipole pass cannot generate a kick
+    through its polynomial coefficients and is therefore rejected.
+    """
+    if plane not in (0, 1):
+        raise ValueError(f"Corrector plane must be 0 or 1, got {plane!r}")
+
+    if hasattr(corrector, "KickAngle"):
+        return corrector.KickAngle, plane, 1.0
+
+    attribute = "PolynomB" if plane == 0 else "PolynomA"
+    if not hasattr(corrector, attribute):
+        raise TypeError(
+            f"Corrector {getattr(corrector, 'FamName', '')!r} must provide "
+            "KickAngle or PolynomA/PolynomB."
+        )
+
+    coefficients = getattr(corrector, attribute)
+    length = float(getattr(corrector, "Length", 0.0) or 0.0)
+    pass_method = str(getattr(corrector, "PassMethod", ""))
+    # AT's finite ``Multipole`` inherits from ``ThinMultipole`` in some
+    # releases, so class membership alone does not identify the storage
+    # convention. The pass method and zero length do.
+    is_thin = length == 0.0 and "ThinMPole" in pass_method
+    sign = -1.0 if plane == 0 else 1.0
+
+    if is_thin:
+        return coefficients, 0, sign
+    if length > 0.0:
+        return coefficients, 0, sign / length
+    raise TypeError(
+        f"Zero-length corrector {getattr(corrector, 'FamName', '')!r} uses "
+        f"{pass_method or 'an unspecified thick pass method'} and has no "
+        "integrated-kick representation. Use KickAngle or ThinMultipole."
+    )
+
+
 def calculate_rf_response(
         ring, bpm_ords, cav_ords, rf_step, *, calculator="Linear",
         bidirectional=True, frequency=None, harm_number=None,
@@ -1352,99 +1399,14 @@ def response_matrix(
                     cm_ord
                 ]
 
-                # ------------------------------------------------------
-                # Determine kick representation
-                # ------------------------------------------------------
-
-                if hasattr(
-                    corrector,
-                    "KickAngle"
-                ):
-
-                    kick_attribute = (
-                        "KickAngle"
-                    )
-
-                    kick_index = n_dim
-
-                    other_attribute = (
-                        "KickAngle"
-                    )
-
-                    other_index = (
-                        other_dim
-                    )
-
-                elif (
-                    n_dim == 0
-                    and hasattr(
-                        corrector,
-                        "PolynomB"
-                    )
-                ):
-
-                    kick_attribute = (
-                        "PolynomB"
-                    )
-
-                    kick_index = 0
-
-                    other_attribute = (
-                        "PolynomA"
-                    )
-
-                    other_index = 0
-
-                elif (
-                    n_dim == 1
-                    and hasattr(
-                        corrector,
-                        "PolynomA"
-                    )
-                ):
-
-                    kick_attribute = (
-                        "PolynomA"
-                    )
-
-                    kick_index = 0
-
-                    other_attribute = (
-                        "PolynomB"
-                    )
-
-                    other_index = 0
-
-                else:
-
-                    raise TypeError(
-                        f"Corrector at index "
-                        f"{cm_ord} must provide "
-                        "KickAngle or "
-                        "PolynomA/PolynomB."
-                    )
-
-                kick_array = getattr(
-                    corrector,
-                    kick_attribute
+                kick_array, kick_index, kick_scale = _corrector_kick_component(
+                    corrector, n_dim
                 )
-
-                base_kick = (
-                    kick_array[
-                        kick_index
-                    ]
+                other_array, other_index, other_scale = _corrector_kick_component(
+                    corrector, other_dim
                 )
-
-                other_array = getattr(
-                    corrector,
-                    other_attribute
-                )
-
-                other_kick = (
-                    other_array[
-                        other_index
-                    ]
-                )
+                base_kick = kick_array[kick_index]
+                other_kick = other_array[other_index]
 
                 # ======================================================
                 # BIDIRECTIONAL
@@ -1459,7 +1421,7 @@ def response_matrix(
                     ] = (
                         base_kick
                         +
-                        this_dkick /
+                        kick_scale * this_dkick /
                         2.0
                     )
 
@@ -1486,7 +1448,7 @@ def response_matrix(
                     ] = (
                         base_kick
                         -
-                        this_dkick /
+                        kick_scale * this_dkick /
                         2.0
                     )
 
@@ -1535,7 +1497,7 @@ def response_matrix(
                     ] = (
                         base_kick
                         +
-                        this_dkick
+                        kick_scale * this_dkick
                     )
 
                     if (
@@ -1548,9 +1510,7 @@ def response_matrix(
                         ] = (
                             other_kick
                             +
-                            this_dkick
-                            *
-                            delta_coupling
+                            other_scale * this_dkick * delta_coupling
                         )
 
                     _, orbit = (
