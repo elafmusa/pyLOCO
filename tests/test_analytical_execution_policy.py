@@ -1,6 +1,18 @@
 import inspect
+import importlib
+
+import pytest
 
 from pyLOCO.pyloco import compute_jacobian, pyloco
+
+pyloco_module = importlib.import_module("pyLOCO.pyloco")
+
+
+def test_dispersion_difference_validation():
+    assert pyloco_module._normalize_dispersion_difference("Central") == "central"
+    assert pyloco_module._normalize_dispersion_difference("forward") == "forward"
+    with pytest.raises(ValueError, match="central.*forward"):
+        pyloco_module._normalize_dispersion_difference("backward")
 
 
 def test_new_execution_policy_defaults_preserve_legacy_fallbacks():
@@ -11,10 +23,12 @@ def test_new_execution_policy_defaults_preserve_legacy_fallbacks():
         assert parameters["analytical_dispersion_use_mp"].default is None
         assert parameters["analytical_dispersion_workers"].default is None
         assert parameters["analytical_dispersion_worker"].default == "legacy_full_orm"
+        assert parameters["analytical_dispersion_difference"].default == "central"
         assert parameters["skew_analytical_formula_use_mp"].default is None
         assert parameters["skew_analytical_formula_workers"].default is None
         assert parameters["skew_analytical_dispersion_use_mp"].default is None
         assert parameters["skew_analytical_dispersion_workers"].default is None
+        assert parameters["skew_analytical_dispersion_difference"].default == "central"
 
 
 def test_petra_benchmarks_expose_independent_formula_and_dispersion_workers():
@@ -24,16 +38,19 @@ def test_petra_benchmarks_expose_independent_formula_and_dispersion_workers():
     normal_args = normal._parse_args([
         "--formula-workers", "0", "--dispersion-workers", "64",
         "--dispersion-worker", "rf_only",
+        "--dispersion-difference", "forward",
     ])
     assert normal_args.formula_workers == 0
     assert normal_args.dispersion_workers == 64
     assert normal_args.dispersion_worker == "rf_only"
+    assert normal_args.dispersion_difference == "forward"
 
     skew_args = skew._parse_args([
         "--formula-workers", "0", "--dispersion-workers", "32",
         "--dispersion-worker", "rf_only",
+        "--dispersion-difference", "forward",
     ])
     assert skew_args.formula_workers == 0
     assert skew_args.dispersion_workers == 32
     assert skew_args.dispersion_worker == "rf_only"
-
+    assert skew_args.dispersion_difference == "forward"

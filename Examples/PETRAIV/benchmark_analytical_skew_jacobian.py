@@ -141,6 +141,10 @@ def _parse_args(argv=None):
         "--dispersion-worker", choices=("legacy_full_orm", "rf_only"),
         default=production.SKEW_ANALYTICAL_DISPERSION_WORKER,
     )
+    parser.add_argument(
+        "--dispersion-difference", choices=("central", "forward"),
+        default="central",
+    )
     parser.add_argument("--implementation", choices=("legacy", "vectorized"), default="vectorized")
     parser.add_argument(
         "--output-root", type=Path,
@@ -229,6 +233,7 @@ def main(argv=None):
             skew_analytical_implementation=args.implementation,
             skew_analytical_dispersion_calculator=args.dispersion_calculator,
             skew_analytical_dispersion_worker=args.dispersion_worker,
+            skew_analytical_dispersion_difference=args.dispersion_difference,
             skew_individuals=True, delta_skew_=fixed_parameters.delta_skew,
             auto_correct_delta=production.AUTO_CORRECT_DELTA,
             rf_step=production.RF_STEP_HZ,
@@ -269,6 +274,7 @@ def main(argv=None):
         "implementation": args.implementation,
         "dispersion_calculator": args.dispersion_calculator,
         "dispersion_worker": args.dispersion_worker,
+        "dispersion_difference": args.dispersion_difference,
         "multiprocessing": use_mp,
         "formula_multiprocessing": formula_use_mp,
         "formula_workers_requested": args.formula_workers,
@@ -332,6 +338,7 @@ def main(argv=None):
         "peak_rss_after_bytes": _peak_rss_bytes(),
         "jacobian_file": str(jacobian_path),
         "summary_file": str(summary_path),
+        "timing_events": timing_events,
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     for label, key in (

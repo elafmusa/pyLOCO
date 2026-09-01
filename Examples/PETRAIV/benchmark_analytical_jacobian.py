@@ -178,6 +178,10 @@ def _parse_args(argv=None):
         "--dispersion-worker", choices=("legacy_full_orm", "rf_only"),
         default="legacy_full_orm",
     )
+    parser.add_argument(
+        "--dispersion-difference", choices=("central", "forward"),
+        default="central",
+    )
     return parser.parse_args(argv)
 
 
@@ -289,6 +293,7 @@ def main(argv=None):
             analytical_dispersion_use_mp=dispersion_use_mp,
             analytical_dispersion_workers=dispersion_workers,
             analytical_dispersion_worker=args.dispersion_worker,
+            analytical_dispersion_difference=args.dispersion_difference,
             response_matrix_calculator=production.STAGE1_RESPONSE_MATRIX_CALCULATOR,
             analytical_timing_callback=timing_events.append,
         )
@@ -320,6 +325,7 @@ def main(argv=None):
         "analytical_dispersion_use_mp": dispersion_use_mp,
         "analytical_dispersion_workers_requested": dispersion_workers,
         "analytical_dispersion_worker": args.dispersion_worker,
+        "analytical_dispersion_difference": args.dispersion_difference,
         "formula_worker_count_resolved": int(next((
             event["formula_worker_count"] for event in reversed(timing_events)
             if "formula_worker_count" in event
@@ -368,6 +374,7 @@ def main(argv=None):
         "finite_difference_steps": np.asarray(delta).tolist(),
         "jacobian_file": str(jacobian_path),
         "summary_file": str(summary_path),
+        "timing_events": timing_events,
     }
     summary_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True, default=_json_value) + "\n",

@@ -162,12 +162,14 @@ ANALYTICAL_DISPERSION_USE_MP = True
 ANALYTICAL_DISPERSION_WORKERS = None
 ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
 ANALYTICAL_DISPERSION_WORKER = "rf_only"
+ANALYTICAL_DISPERSION_DIFFERENCE = "central"
 SKEW_ANALYTICAL_FORMULA_USE_MP = False
 SKEW_ANALYTICAL_FORMULA_WORKERS = None
 SKEW_ANALYTICAL_DISPERSION_USE_MP = True
 SKEW_ANALYTICAL_DISPERSION_WORKERS = None
 SKEW_ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
 SKEW_ANALYTICAL_DISPERSION_WORKER = "rf_only"
+SKEW_ANALYTICAL_DISPERSION_DIFFERENCE = "central"
 FORCE_RECOMPUTE_JACOBIANS = True
 
 # Avoid creating multiple very large Jacobian artifacts during the first
@@ -464,6 +466,7 @@ def run_latest_pyloco_two_stage(
         analytical_dispersion_workers=ANALYTICAL_DISPERSION_WORKERS,
         analytical_dispersion_calculator=ANALYTICAL_DISPERSION_CALCULATOR,
         analytical_dispersion_worker=ANALYTICAL_DISPERSION_WORKER,
+        analytical_dispersion_difference=ANALYTICAL_DISPERSION_DIFFERENCE,
         analytical_skew_use_mp=ANALYTICAL_USE_MP,
         skew_analytical_formula_use_mp=SKEW_ANALYTICAL_FORMULA_USE_MP,
         skew_analytical_formula_workers=SKEW_ANALYTICAL_FORMULA_WORKERS,
@@ -471,6 +474,7 @@ def run_latest_pyloco_two_stage(
         skew_analytical_dispersion_workers=SKEW_ANALYTICAL_DISPERSION_WORKERS,
         skew_analytical_dispersion_calculator=SKEW_ANALYTICAL_DISPERSION_CALCULATOR,
         skew_analytical_dispersion_worker=SKEW_ANALYTICAL_DISPERSION_WORKER,
+        skew_analytical_dispersion_difference=SKEW_ANALYTICAL_DISPERSION_DIFFERENCE,
         force_recompute=FORCE_RECOMPUTE_JACOBIANS,
         save_jacobians=SAVE_JACOBIANS,
 
