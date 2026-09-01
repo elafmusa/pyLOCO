@@ -27,6 +27,7 @@ def analytic_orm_variation_with_normal_quadrupole(
         thick_steerers=True,
         opt_all_location=None,
         use_mp=False,
+        workers=None,
         cancel_callback=None,
         implementation="vectorized",
         progress_callback=None,
@@ -74,7 +75,9 @@ def analytic_orm_variation_with_normal_quadrupole(
     # loop quadrupoles
     if use_mp:
 
-        n_processes = available_worker_count(task_count=len(ind_quads))
+        n_processes = available_worker_count(
+            requested=workers, task_count=len(ind_quads)
+        )
         quad_chunks = [
             chunk.tolist()
             for chunk in np.array_split(np.asarray(ind_quads, dtype=int), n_processes)

@@ -166,6 +166,18 @@ def _parse_args(argv=None):
         "--no-multiprocessing", action="store_true",
         help="Diagnostic override; Maxwell production validation should omit this.",
     )
+    parser.add_argument(
+        "--formula-workers", type=int, default=None,
+        help="Formula workers; 0 selects serial. Unspecified preserves legacy coupling.",
+    )
+    parser.add_argument(
+        "--dispersion-workers", type=int, default=None,
+        help="Dispersion workers; 0 selects serial. Unspecified preserves legacy coupling.",
+    )
+    parser.add_argument(
+        "--dispersion-worker", choices=("legacy_full_orm", "rf_only"),
+        default="legacy_full_orm",
+    )
     return parser.parse_args(argv)
 
 
@@ -174,6 +186,10 @@ def main(argv=None):
 
     implementation = args.implementation
     use_mp = not args.no_multiprocessing
+    formula_use_mp = use_mp if args.formula_workers is None else args.formula_workers > 0
+    dispersion_use_mp = use_mp if args.dispersion_workers is None else args.dispersion_workers > 0
+    formula_workers = args.formula_workers if formula_use_mp else None
+    dispersion_workers = args.dispersion_workers if dispersion_use_mp else None
     lattice_path = _resolve_input_path(args.lattice, "Lattice")
     corrector_selection_path = _resolve_input_path(
         args.corrector_selection, "Corrector selection"
@@ -268,6 +284,11 @@ def main(argv=None):
             analytical_thick_steerers=False,
             analytical_verbose=False,
             analytical_use_mp=use_mp,
+            analytical_formula_use_mp=formula_use_mp,
+            analytical_formula_workers=formula_workers,
+            analytical_dispersion_use_mp=dispersion_use_mp,
+            analytical_dispersion_workers=dispersion_workers,
+            analytical_dispersion_worker=args.dispersion_worker,
             response_matrix_calculator=production.STAGE1_RESPONSE_MATRIX_CALCULATOR,
             analytical_timing_callback=timing_events.append,
         )
@@ -294,6 +315,27 @@ def main(argv=None):
         "implementation": saved_implementation,
         "analytical_dispersion_calculator": saved_dispersion_calculator,
         "analytical_use_mp": use_mp,
+        "analytical_formula_use_mp": formula_use_mp,
+        "analytical_formula_workers_requested": formula_workers,
+        "analytical_dispersion_use_mp": dispersion_use_mp,
+        "analytical_dispersion_workers_requested": dispersion_workers,
+        "analytical_dispersion_worker": args.dispersion_worker,
+        "formula_worker_count_resolved": int(next((
+            event["formula_worker_count"] for event in reversed(timing_events)
+            if "formula_worker_count" in event
+        ), 1)),
+        "dispersion_worker_count_resolved": int(next((
+            event["dispersion_worker_count"] for event in reversed(timing_events)
+            if "dispersion_worker_count" in event
+        ), 1)),
+        "dispersion_worker_payload_bytes": int(next((
+            event["dispersion_worker_payload_bytes"] for event in reversed(timing_events)
+            if "dispersion_worker_payload_bytes" in event
+        ), 0)),
+        "adaptive_step_evaluation_counts": next((
+            event["adaptive_step_evaluation_counts"] for event in reversed(timing_events)
+            if "adaptive_step_evaluation_counts" in event
+        ), []),
         "multiprocessing_worker_count": timings["multiprocessing_worker_count"],
         "slurm_cpus_per_task": os.environ.get("SLURM_CPUS_PER_TASK"),
         "host_cpu_count": multiprocessing.cpu_count(),
@@ -323,6 +365,7 @@ def main(argv=None):
         "jacobian_call_including_hdf5_seconds": jacobian_call_seconds,
         "total_wall_seconds": time.perf_counter() - wall_started,
         "finite_difference_steps_shape": list(np.asarray(delta).shape),
+        "finite_difference_steps": np.asarray(delta).tolist(),
         "jacobian_file": str(jacobian_path),
         "summary_file": str(summary_path),
     }

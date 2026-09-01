@@ -156,7 +156,16 @@ QUAD_JACOBIAN_CALCULATOR = "Numerical"
 SKEW_JACOBIAN_CALCULATOR = "Numerical"
 ANALYTICAL_IMPLEMENTATION = "vectorized"
 ANALYTICAL_USE_MP = True
+ANALYTICAL_FORMULA_USE_MP = False
+ANALYTICAL_FORMULA_WORKERS = None
+ANALYTICAL_DISPERSION_USE_MP = True
+ANALYTICAL_DISPERSION_WORKERS = None
 ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
+ANALYTICAL_DISPERSION_WORKER = "rf_only"
+SKEW_ANALYTICAL_FORMULA_USE_MP = False
+SKEW_ANALYTICAL_FORMULA_WORKERS = None
+SKEW_ANALYTICAL_DISPERSION_USE_MP = True
+SKEW_ANALYTICAL_DISPERSION_WORKERS = None
 SKEW_ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
 SKEW_ANALYTICAL_DISPERSION_WORKER = "rf_only"
 FORCE_RECOMPUTE_JACOBIANS = True
@@ -449,8 +458,17 @@ def run_latest_pyloco_two_stage(
         skew_jacobian_calculator=SKEW_JACOBIAN_CALCULATOR,
         analytical_implementation=ANALYTICAL_IMPLEMENTATION,
         analytical_use_mp=ANALYTICAL_USE_MP,
+        analytical_formula_use_mp=ANALYTICAL_FORMULA_USE_MP,
+        analytical_formula_workers=ANALYTICAL_FORMULA_WORKERS,
+        analytical_dispersion_use_mp=ANALYTICAL_DISPERSION_USE_MP,
+        analytical_dispersion_workers=ANALYTICAL_DISPERSION_WORKERS,
         analytical_dispersion_calculator=ANALYTICAL_DISPERSION_CALCULATOR,
+        analytical_dispersion_worker=ANALYTICAL_DISPERSION_WORKER,
         analytical_skew_use_mp=ANALYTICAL_USE_MP,
+        skew_analytical_formula_use_mp=SKEW_ANALYTICAL_FORMULA_USE_MP,
+        skew_analytical_formula_workers=SKEW_ANALYTICAL_FORMULA_WORKERS,
+        skew_analytical_dispersion_use_mp=SKEW_ANALYTICAL_DISPERSION_USE_MP,
+        skew_analytical_dispersion_workers=SKEW_ANALYTICAL_DISPERSION_WORKERS,
         skew_analytical_dispersion_calculator=SKEW_ANALYTICAL_DISPERSION_CALCULATOR,
         skew_analytical_dispersion_worker=SKEW_ANALYTICAL_DISPERSION_WORKER,
         force_recompute=FORCE_RECOMPUTE_JACOBIANS,
@@ -1118,7 +1136,16 @@ def main() -> int:
             "skew_jacobian_calculator": SKEW_JACOBIAN_CALCULATOR,
             "analytical_implementation": ANALYTICAL_IMPLEMENTATION,
             "analytical_use_mp": ANALYTICAL_USE_MP,
+            "analytical_formula_use_mp": ANALYTICAL_FORMULA_USE_MP,
+            "analytical_formula_workers": ANALYTICAL_FORMULA_WORKERS,
+            "analytical_dispersion_use_mp": ANALYTICAL_DISPERSION_USE_MP,
+            "analytical_dispersion_workers": ANALYTICAL_DISPERSION_WORKERS,
             "analytical_dispersion_calculator": ANALYTICAL_DISPERSION_CALCULATOR,
+            "analytical_dispersion_worker": ANALYTICAL_DISPERSION_WORKER,
+            "skew_analytical_formula_use_mp": SKEW_ANALYTICAL_FORMULA_USE_MP,
+            "skew_analytical_formula_workers": SKEW_ANALYTICAL_FORMULA_WORKERS,
+            "skew_analytical_dispersion_use_mp": SKEW_ANALYTICAL_DISPERSION_USE_MP,
+            "skew_analytical_dispersion_workers": SKEW_ANALYTICAL_DISPERSION_WORKERS,
             "skew_analytical_dispersion_calculator": SKEW_ANALYTICAL_DISPERSION_CALCULATOR,
             "skew_analytical_dispersion_worker": SKEW_ANALYTICAL_DISPERSION_WORKER,
             "save_jacobians": SAVE_JACOBIANS,

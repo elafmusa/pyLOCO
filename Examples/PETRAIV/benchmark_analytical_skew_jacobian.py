@@ -147,6 +147,10 @@ def _parse_args(argv=None):
         default=Path(__file__).resolve().parent / "analytical_skew_jacobian_benchmark",
     )
     parser.add_argument("--no-multiprocessing", action="store_true")
+    parser.add_argument("--formula-workers", type=int, default=None,
+                        help="Formula workers; 0 selects serial.")
+    parser.add_argument("--dispersion-workers", type=int, default=None,
+                        help="Dispersion workers; 0 selects serial.")
     return parser.parse_args(argv)
 
 
@@ -155,6 +159,8 @@ def main(argv=None):
     lattice_path = _resolve_input_path(args.lattice, "Lattice")
     corrector_path = _resolve_input_path(args.corrector_selection, "Corrector selection")
     use_mp = not args.no_multiprocessing
+    formula_use_mp = use_mp if args.formula_workers is None else args.formula_workers > 0
+    dispersion_use_mp = use_mp if args.dispersion_workers is None else args.dispersion_workers > 0
     tag = (
         f"model_{args.model_orm.lower()}__disp_{args.dispersion_calculator.lower()}__"
         f"worker_{args.dispersion_worker}__{args.implementation}"
@@ -216,6 +222,10 @@ def main(argv=None):
             analytical_skew_thick_steerers=False,
             analytical_skew_verbose=False,
             analytical_skew_use_mp=use_mp,
+            skew_analytical_formula_use_mp=formula_use_mp,
+            skew_analytical_formula_workers=(args.formula_workers if formula_use_mp else None),
+            skew_analytical_dispersion_use_mp=dispersion_use_mp,
+            skew_analytical_dispersion_workers=(args.dispersion_workers if dispersion_use_mp else None),
             skew_analytical_implementation=args.implementation,
             skew_analytical_dispersion_calculator=args.dispersion_calculator,
             skew_analytical_dispersion_worker=args.dispersion_worker,
@@ -235,7 +245,8 @@ def main(argv=None):
     append_started = time.perf_counter()
     with h5py.File(jacobian_path, "a") as handle:
         total_skew_jacobian_seconds = float(handle.attrs["computation_seconds"])
-        handle.create_dataset("finite_difference_steps", data=np.asarray(steps))
+        if "finite_difference_steps" not in handle:
+            handle.create_dataset("finite_difference_steps", data=np.asarray(steps))
         handle.create_dataset("skew_ordinals", data=skews)
         handle.attrs["model_orm_calculator"] = args.model_orm
         handle.attrs["production_settings_source"] = str(production.SOURCE_FILE.resolve())
@@ -259,7 +270,27 @@ def main(argv=None):
         "dispersion_calculator": args.dispersion_calculator,
         "dispersion_worker": args.dispersion_worker,
         "multiprocessing": use_mp,
+        "formula_multiprocessing": formula_use_mp,
+        "formula_workers_requested": args.formula_workers,
+        "dispersion_multiprocessing": dispersion_use_mp,
+        "dispersion_workers_requested": args.dispersion_workers,
         "worker_count": worker_count,
+        "formula_worker_count_resolved": int(next((
+            event["formula_worker_count"] for event in reversed(timing_events)
+            if "formula_worker_count" in event
+        ), 1)),
+        "dispersion_worker_count_resolved": int(next((
+            event["dispersion_worker_count"] for event in reversed(timing_events)
+            if "dispersion_worker_count" in event
+        ), 1)),
+        "dispersion_worker_payload_bytes": int(next((
+            event["dispersion_worker_payload_bytes"] for event in reversed(timing_events)
+            if "dispersion_worker_payload_bytes" in event
+        ), 0)),
+        "adaptive_step_evaluation_counts": next((
+            event["adaptive_step_evaluation_counts"] for event in reversed(timing_events)
+            if "adaptive_step_evaluation_counts" in event
+        ), []),
         "slurm_cpus_per_task": os.environ.get("SLURM_CPUS_PER_TASK"),
         "host_cpu_count": multiprocessing.cpu_count(),
         "include_dispersion": True,
