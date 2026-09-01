@@ -169,6 +169,7 @@ ANALYTICAL_DISPERSION_WORKER_CHUNKSIZE = 1
 ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF = True
 SKEW_ANALYTICAL_FORMULA_USE_MP = False
 SKEW_ANALYTICAL_FORMULA_WORKERS = None
+ANALYTICAL_SKEW_THICK_STEERERS = True
 SKEW_ANALYTICAL_DISPERSION_USE_MP = True
 SKEW_ANALYTICAL_DISPERSION_WORKERS = None
 SKEW_ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
@@ -480,6 +481,7 @@ def run_latest_pyloco_two_stage(
         analytical_dispersion_worker_chunksize=ANALYTICAL_DISPERSION_WORKER_CHUNKSIZE,
         analytical_dispersion_reuse_adaptive_plus_rf=ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF,
         analytical_skew_use_mp=ANALYTICAL_USE_MP,
+        analytical_skew_thick_steerers=ANALYTICAL_SKEW_THICK_STEERERS,
         skew_analytical_formula_use_mp=SKEW_ANALYTICAL_FORMULA_USE_MP,
         skew_analytical_formula_workers=SKEW_ANALYTICAL_FORMULA_WORKERS,
         skew_analytical_dispersion_use_mp=SKEW_ANALYTICAL_DISPERSION_USE_MP,
@@ -1169,6 +1171,7 @@ def main() -> int:
             "analytical_dispersion_reuse_adaptive_plus_rf": ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF,
             "skew_analytical_formula_use_mp": SKEW_ANALYTICAL_FORMULA_USE_MP,
             "skew_analytical_formula_workers": SKEW_ANALYTICAL_FORMULA_WORKERS,
+            "analytical_skew_thick_steerers": ANALYTICAL_SKEW_THICK_STEERERS,
             "skew_analytical_dispersion_use_mp": SKEW_ANALYTICAL_DISPERSION_USE_MP,
             "skew_analytical_dispersion_workers": SKEW_ANALYTICAL_DISPERSION_WORKERS,
             "skew_analytical_dispersion_calculator": SKEW_ANALYTICAL_DISPERSION_CALCULATOR,

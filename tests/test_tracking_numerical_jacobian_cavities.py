@@ -8,14 +8,17 @@ from pyLOCO.config import FitInitConfig
 
 def test_tracking_numerical_quad_perturbations_keep_cavity_ordinals(monkeypatch):
     cavity_ordinals = np.asarray([17], dtype=int)
+    rf_frequency = 499654096.6666667
     ring = [SimpleNamespace(PolynomB=np.asarray([0.0, 1.0]))]
     seen_cavities = []
+    seen_frequencies = []
 
     def fake_set_correction(ring, values, indices, **_kwargs):
         ring[0].PolynomB[1] = float(np.asarray(values).ravel()[0])
 
     def fake_response_matrix(ring, *, config):
         seen_cavities.append(np.asarray(config.cav_ords, dtype=int).copy())
+        seen_frequencies.append(config.Frequency)
         strength = float(ring[0].PolynomB[1])
         return np.asarray([[strength, 2.0 * strength], [strength, 2.0 * strength]])
 
@@ -41,6 +44,7 @@ def test_tracking_numerical_quad_perturbations_keep_cavity_ordinals(monkeypatch)
         True,
         "Tracking",
         cavity_ordinals,
+        Frequency=rf_frequency,
     )
 
     assert jacobian.shape == (2, 2)
@@ -48,3 +52,4 @@ def test_tracking_numerical_quad_perturbations_keep_cavity_ordinals(monkeypatch)
     assert len(seen_cavities) == 3  # step selection, +dK, and -dK
     for received in seen_cavities:
         np.testing.assert_array_equal(received, cavity_ordinals)
+    assert seen_frequencies == [rf_frequency] * 3

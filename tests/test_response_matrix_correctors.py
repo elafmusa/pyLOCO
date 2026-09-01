@@ -288,3 +288,52 @@ def test_forward_rf_only_reuses_nominal_column_and_preserves_step(monkeypatch):
     assert len(calls) == 1
     assert np.all(np.isfinite(central))
     assert np.all(np.isfinite(forward))
+
+
+def test_numerical_normal_and_skew_mp_workers_preserve_explicit_rf_frequency(tmp_path):
+    ring = _fodo_ring_with_correctors()
+    ring.append(at.RFCavity("RFC", 0.0, 3e6, 5e8, 100, 1e9))
+    ring.disable_6d()
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    hcor = np.asarray(at.get_refpts(ring, "HCOR*"), dtype=int)[:2]
+    vcor = np.asarray(at.get_refpts(ring, "VCOR*"), dtype=int)[:2]
+    cavity = np.asarray(at.get_refpts(ring, at.elements.RFCavity), dtype=int)
+    magnets = np.asarray(at.get_refpts(ring, at.elements.Quadrupole), dtype=int)[:2]
+    kicks = (np.full(len(hcor), 1e-5), np.full(len(vcor), 1e-5))
+    calibration = np.eye(2 * len(bpm))
+    frequency = 5e8
+    model = response_matrix(
+        ring, config=RMConfig(
+            bpm_ords=bpm, cm_ords=(hcor, vcor), cav_ords=cavity,
+            dkick=kicks, includeDispersion=True, rfStep=40.0,
+            calculator="Linear", Frequency=frequency,
+        )
+    )
+
+    for block in ("quads", "skew_quads"):
+        fit = FitInitConfig(fit_list=(block,), individuals=True)
+        numerical, numerical_steps = pyloco_module.calculate_quads_jacobian(
+            ring=ring, C_model=model, dkick=kicks,
+            used_cor_ind=(hcor, vcor), bpm_indexes=bpm,
+            quads_ind=magnets, dk=1e-3, C=calibration,
+            individuals=True, HCMCoupling=np.zeros(len(hcor)),
+            VCMCoupling=np.zeros(len(vcor)), rf_step=40.0,
+            block=block, CAVords=cavity, auto_correct_delta=False,
+            fit_cfg=fit, output_dir=tmp_path / block,
+            includeDispersion=True, orm_calculator="Linear",
+            Frequency=frequency, processes=2,
+        )
+        rf_only, rf_only_steps = calculate_quads_dispersion_jacobian(
+            ring=ring, C_model=model, dkick=kicks,
+            used_cor_ind=(hcor, vcor), bpm_indexes=bpm,
+            quads_ind=magnets, dk=1e-3, C=calibration,
+            individuals=True, HCMCoupling=np.zeros(len(hcor)),
+            VCMCoupling=np.zeros(len(vcor)), rf_step=40.0,
+            CAVords=cavity, auto_correct_delta=False, fit_cfg=fit,
+            orm_calculator="Linear", use_mp=True, workers=2,
+            block=block, mp_worker_mode="rf_only",
+            difference="central", step_metric="full_orm",
+            frequency=frequency, report=False,
+        )
+        np.testing.assert_array_equal(numerical_steps, rf_only_steps)
+        np.testing.assert_array_equal(numerical[:, :, -1], rf_only)

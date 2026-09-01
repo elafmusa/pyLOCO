@@ -110,6 +110,8 @@ def test_two_stage_wrapper_passes_independent_orm_calculators(driver, monkeypatc
     assert all(call["skew_analytical_dispersion_worker_chunksize"] == 1 for call in calls)
     assert all(call["skew_analytical_dispersion_reuse_adaptive_plus_rf"] is True for call in calls)
     assert all(call["analytical_skew_use_mp"] is True for call in calls)
+    assert all(call["analytical_skew_thick_steerers"] is True for call in calls)
+    assert all("analytical_thick_steerers" not in call for call in calls)
 
 
 def test_linear_numerical_defaults_remain_linear_in_both_stages(driver):

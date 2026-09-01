@@ -3,6 +3,16 @@ formulas from
 A.Franchi (ESRF), Z.Marti (CELLS),
 "Analytic formulas for the rapid evaluation of the orbit response matrix and chromatic functions from lattice
 parameters in circular accelerators" arXiv:1711:06589v2 17 Apr 2018
+
+Vectorized analytical Jacobian implementation
+---------------------------------------------
+Vectorized implementation and computational optimization by:
+
+    Elaf Musa
+    Deutsches Elektronen-Synchrotron DESY
+    elaf.musa@desy.de
+
+The analytical formalism is based on the references cited in this module.
 """
 
 import at
