@@ -163,6 +163,10 @@ ANALYTICAL_DISPERSION_WORKERS = None
 ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
 ANALYTICAL_DISPERSION_WORKER = "rf_only"
 ANALYTICAL_DISPERSION_DIFFERENCE = "central"
+ANALYTICAL_DISPERSION_STEP_METRIC = "full_orm"
+ANALYTICAL_DISPERSION_WORKER_TRANSPORT = "initializer"
+ANALYTICAL_DISPERSION_WORKER_CHUNKSIZE = 1
+ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF = True
 SKEW_ANALYTICAL_FORMULA_USE_MP = False
 SKEW_ANALYTICAL_FORMULA_WORKERS = None
 SKEW_ANALYTICAL_DISPERSION_USE_MP = True
@@ -170,6 +174,10 @@ SKEW_ANALYTICAL_DISPERSION_WORKERS = None
 SKEW_ANALYTICAL_DISPERSION_CALCULATOR = "Linear"
 SKEW_ANALYTICAL_DISPERSION_WORKER = "rf_only"
 SKEW_ANALYTICAL_DISPERSION_DIFFERENCE = "central"
+SKEW_ANALYTICAL_DISPERSION_STEP_METRIC = "full_orm"
+SKEW_ANALYTICAL_DISPERSION_WORKER_TRANSPORT = "per_task"
+SKEW_ANALYTICAL_DISPERSION_WORKER_CHUNKSIZE = 1
+SKEW_ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF = True
 FORCE_RECOMPUTE_JACOBIANS = True
 
 # Avoid creating multiple very large Jacobian artifacts during the first
@@ -467,6 +475,10 @@ def run_latest_pyloco_two_stage(
         analytical_dispersion_calculator=ANALYTICAL_DISPERSION_CALCULATOR,
         analytical_dispersion_worker=ANALYTICAL_DISPERSION_WORKER,
         analytical_dispersion_difference=ANALYTICAL_DISPERSION_DIFFERENCE,
+        analytical_dispersion_step_metric=ANALYTICAL_DISPERSION_STEP_METRIC,
+        analytical_dispersion_worker_transport=ANALYTICAL_DISPERSION_WORKER_TRANSPORT,
+        analytical_dispersion_worker_chunksize=ANALYTICAL_DISPERSION_WORKER_CHUNKSIZE,
+        analytical_dispersion_reuse_adaptive_plus_rf=ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF,
         analytical_skew_use_mp=ANALYTICAL_USE_MP,
         skew_analytical_formula_use_mp=SKEW_ANALYTICAL_FORMULA_USE_MP,
         skew_analytical_formula_workers=SKEW_ANALYTICAL_FORMULA_WORKERS,
@@ -475,6 +487,10 @@ def run_latest_pyloco_two_stage(
         skew_analytical_dispersion_calculator=SKEW_ANALYTICAL_DISPERSION_CALCULATOR,
         skew_analytical_dispersion_worker=SKEW_ANALYTICAL_DISPERSION_WORKER,
         skew_analytical_dispersion_difference=SKEW_ANALYTICAL_DISPERSION_DIFFERENCE,
+        skew_analytical_dispersion_step_metric=SKEW_ANALYTICAL_DISPERSION_STEP_METRIC,
+        skew_analytical_dispersion_worker_transport=SKEW_ANALYTICAL_DISPERSION_WORKER_TRANSPORT,
+        skew_analytical_dispersion_worker_chunksize=SKEW_ANALYTICAL_DISPERSION_WORKER_CHUNKSIZE,
+        skew_analytical_dispersion_reuse_adaptive_plus_rf=SKEW_ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF,
         force_recompute=FORCE_RECOMPUTE_JACOBIANS,
         save_jacobians=SAVE_JACOBIANS,
 
@@ -1146,12 +1162,22 @@ def main() -> int:
             "analytical_dispersion_workers": ANALYTICAL_DISPERSION_WORKERS,
             "analytical_dispersion_calculator": ANALYTICAL_DISPERSION_CALCULATOR,
             "analytical_dispersion_worker": ANALYTICAL_DISPERSION_WORKER,
+            "analytical_dispersion_difference": ANALYTICAL_DISPERSION_DIFFERENCE,
+            "analytical_dispersion_step_metric": ANALYTICAL_DISPERSION_STEP_METRIC,
+            "analytical_dispersion_worker_transport": ANALYTICAL_DISPERSION_WORKER_TRANSPORT,
+            "analytical_dispersion_worker_chunksize": ANALYTICAL_DISPERSION_WORKER_CHUNKSIZE,
+            "analytical_dispersion_reuse_adaptive_plus_rf": ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF,
             "skew_analytical_formula_use_mp": SKEW_ANALYTICAL_FORMULA_USE_MP,
             "skew_analytical_formula_workers": SKEW_ANALYTICAL_FORMULA_WORKERS,
             "skew_analytical_dispersion_use_mp": SKEW_ANALYTICAL_DISPERSION_USE_MP,
             "skew_analytical_dispersion_workers": SKEW_ANALYTICAL_DISPERSION_WORKERS,
             "skew_analytical_dispersion_calculator": SKEW_ANALYTICAL_DISPERSION_CALCULATOR,
             "skew_analytical_dispersion_worker": SKEW_ANALYTICAL_DISPERSION_WORKER,
+            "skew_analytical_dispersion_difference": SKEW_ANALYTICAL_DISPERSION_DIFFERENCE,
+            "skew_analytical_dispersion_step_metric": SKEW_ANALYTICAL_DISPERSION_STEP_METRIC,
+            "skew_analytical_dispersion_worker_transport": SKEW_ANALYTICAL_DISPERSION_WORKER_TRANSPORT,
+            "skew_analytical_dispersion_worker_chunksize": SKEW_ANALYTICAL_DISPERSION_WORKER_CHUNKSIZE,
+            "skew_analytical_dispersion_reuse_adaptive_plus_rf": SKEW_ANALYTICAL_DISPERSION_REUSE_ADAPTIVE_PLUS_RF,
             "save_jacobians": SAVE_JACOBIANS,
             "saved_corrected_lattice": str(saved_path),
             "elapsed_seconds": elapsed,
