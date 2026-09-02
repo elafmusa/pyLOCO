@@ -38,6 +38,33 @@ def test_unscaled_orm_is_orbit_difference_not_kick_normalized():
     result=ORMAcquirer(adapter,bpms,h,v).acquire(kicks[:3],kicks[3:],scaled=False,readings=3,delay_seconds=0,settling_delay_seconds=0)
     np.testing.assert_allclose(result.response_matrix,known*kicks[None,:],atol=2e-12)
 
+def test_bipolar_orm_restores_and_verifies_k0_before_negative_kick():
+    bpms,h,_,_,base=setup(2,1,0,2)
+    original=17e-6; base.write(h[0].setpoint_channel,original)
+    writes=[]; events=[]
+    class InstrumentedMock(MockAdapter):
+        def write(self,channel,value):
+            writes.append((channel,float(value)))
+            return super().write(channel,value)
+    adapter=InstrumentedMock(base._channels,allow_simulated_writes=True,sequences=base._sequences,device_catalog=base._device_catalog,setpoint_dependent_channels=base._setpoint_dependent_channels)
+    result=ORMAcquirer(adapter,bpms,h,()).acquire([100e-6],[],readings=2,delay_seconds=0,settling_delay_seconds=0,progress=events.append)
+    np.testing.assert_allclose([value for _,value in writes],[original+50e-6,original,original-50e-6,original],rtol=0,atol=1e-15)
+    assert [event["event"] for event in events if event["event"].startswith("intermediate_")]==["intermediate_restore","intermediate_restored"]
+    assert result.intermediate_restoration_status==("restored",)
+    np.testing.assert_allclose(result.intermediate_restored_setpoints_rad,[original],rtol=0,atol=1e-15)
+    np.testing.assert_allclose(result.final_setpoints_rad,[original],rtol=0,atol=1e-15)
+
+def test_negative_kick_never_starts_when_intermediate_restore_fails():
+    bpms,h,_,_,base=setup(2,1,0,2); writes=[]
+    class RejectRestore(MockAdapter):
+        def write(self,channel,value):
+            writes.append(float(value))
+            if len(writes)>=2 and value==0:raise RuntimeError("injected K0 restore failure")
+            return super().write(channel,value)
+    adapter=RejectRestore(base._channels,allow_simulated_writes=True,sequences=base._sequences,device_catalog=base._device_catalog,setpoint_dependent_channels=base._setpoint_dependent_channels)
+    with pytest.raises(ORMAcquisitionError):ORMAcquirer(adapter,bpms,h,()).acquire([100e-6],[],readings=2,delay_seconds=0)
+    assert not any(value<0 for value in writes),"K− must not be applied until K0 restoration succeeds"
+
 def test_cancellation_and_failures_attempt_restoration():
     bpms,h,v,_,adapter=setup(2,1,0,3); cancel=Event()
     def stop(event):
@@ -83,13 +110,16 @@ def test_schema_session_and_main_importer(app,tmp_path):
     info=validate_measurement_file(window.saved_measurement_path); assert info["kind"]=="orm"
     with h5py.File(window.saved_measurement_path,"r") as f:
         assert f["response_matrix"].shape==(8,5); assert f.attrs["response_matrix_unit"]=="m/rad"; assert f["raw/orbit_plus_m"].shape==(5,3,8); assert len(f["setpoints/restoration_status"])==5
+        np.testing.assert_allclose(f["setpoints/intermediate_restored"][:],f["setpoints/original"][:],rtol=0,atol=1e-12)
+        assert all(value.decode()=="restored" for value in f["setpoints/intermediate_restoration_status"][:])
         metadata=json.loads(f["metadata/json"][()].decode() if isinstance(f["metadata/json"][()],bytes) else f["metadata/json"][()])
         assert metadata["machine_identity"]=="Mock / offline"
     window._show_result(result); transaction=window.rf_diagnostics.text()
-    assert "Original:" in transaction and "requested +/−:" in transaction
-    assert "Readback +/−:" in transaction and "restoration error:" in transaction
+    assert "Original K0:" in transaction and "requested K+/K−:" in transaction
+    assert "Readback K+:" in transaction and "Final restore K− → K0:" in transaction
     assert "orbit(+) − orbit(−)" in transaction
-    assert window.orm_restoration_status.text()=="All correctors restored: ✓ YES"
+    assert window.orm_restoration_status.text()=="All correctors restored between kicks and finally: ✓ YES"
+    assert "Intermediate restore K+ → K0" in transaction
     assert "Matrix shape: 8 × 5" in window.orm_measurement_summary.text()
     assert len(window.x_plot.figure.axes[0].lines)>=2  # X/Y and H/V boundaries
     window._set_completed_result_view(True)
@@ -152,6 +182,8 @@ def test_strict_orm_validation_rejects_sign_normalization_restoration_and_order(
         "actual_kick":lambda f:f["kicks/horizontal/actual"].__setitem__(0,2e-4),
         "row_order":lambda f:f.attrs.__setitem__("row_order","vertical_bpms,horizontal_bpms"),
         "restoration_status":lambda f:f["setpoints/restoration_status"].__setitem__(0,"restore_failed"),
+        "intermediate_restoration_status":lambda f:f["setpoints/intermediate_restoration_status"].__setitem__(0,"restore_failed"),
+        "intermediate_readback":lambda f:f["setpoints/intermediate_restored"].__setitem__(0,1e-6),
         "final_readback":lambda f:f["setpoints/final"].__setitem__(0,1e-6),
     }
     import shutil
