@@ -176,7 +176,7 @@ def test_dispersion_only_response_matches_full_linear_response_column():
     np.testing.assert_array_equal(dispersion, full[:, -1])
 
 
-def test_tracking_rf_response_is_zero_in_current_4d_path():
+def test_tracking_rf_response_matches_linear_with_disabled_4d_cavity():
     ring = _fodo_ring_with_correctors()
     ring.append(at.RFCavity("RFC", 0.0, 3e6, 5e8, 100, 1e9))
     ring.disable_6d()
@@ -185,13 +185,79 @@ def test_tracking_rf_response_is_zero_in_current_4d_path():
 
     linear = calculate_rf_response(
         ring, bpm, cavity, 40.0, calculator="Linear", frequency=5e8,
+        harm_number=100,
     )
     tracking = calculate_rf_response(
         ring, bpm, cavity, 40.0, calculator="Tracking", frequency=5e8,
+        harm_number=100,
+    )
+    hcor = np.asarray(at.get_refpts(ring, "HCOR*"), dtype=int)
+    vcor = np.asarray(at.get_refpts(ring, "VCOR*"), dtype=int)
+    full_tracking = response_matrix(ring, config=RMConfig(
+        bpm_ords=bpm, cm_ords=(hcor, vcor), cav_ords=cavity,
+        dkick=(np.full(len(hcor), 1e-5), np.full(len(vcor), 1e-5)),
+        calculator="Tracking", bidirectional=True, includeDispersion=True,
+        rfStep=40.0, Frequency=5e8, HarmNumber=100,
+        fixedpathlength=False,
+    ))
+
+    assert np.linalg.norm(linear[:len(bpm)]) > 0.0
+    assert np.all(np.isfinite(tracking))
+    np.testing.assert_allclose(tracking, linear, rtol=2e-12, atol=1e-15)
+    np.testing.assert_allclose(full_tracking[:, -1], linear, rtol=2e-12, atol=1e-15)
+    assert ring.is_6d is False
+    assert ring[int(cavity[0])].PassMethod == "IdentityPass"
+    assert ring[int(cavity[0])].Frequency == 5e8
+
+
+def test_tracking_rf_response_uses_central_frequency_shift_in_active_6d_ring(
+        monkeypatch):
+    ring = _fodo_ring_with_correctors()
+    ring.append(at.RFCavity("RFC", 0.0, 3e6, 5e8, 100, 1e9))
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    cavity = np.asarray(at.get_refpts(ring, at.elements.RFCavity), dtype=int)
+    initial_state = (ring.is_6d, ring[int(cavity[0])].PassMethod,
+                     ring[int(cavity[0])].Frequency)
+    seen_frequencies = []
+
+    def fake_find_orbit6(test_ring, *, refpts):
+        frequency = test_ring[int(cavity[0])].Frequency
+        seen_frequencies.append(frequency)
+        orbit = np.zeros((len(refpts), 6))
+        orbit[:, 0] = frequency - initial_state[2]
+        orbit[:, 2] = 2.0 * (frequency - initial_state[2])
+        return np.zeros(6), orbit
+
+    monkeypatch.setattr(at, "find_orbit6", fake_find_orbit6)
+    tracking = calculate_rf_response(
+        ring, bpm, cavity, 40.0, calculator="Tracking", frequency=5e8,
+        bidirectional=True,
     )
 
-    assert np.linalg.norm(linear) > 0.0
-    np.testing.assert_array_equal(tracking, np.zeros_like(tracking))
+    assert seen_frequencies == [5e8 + 20.0, 5e8 - 20.0]
+    np.testing.assert_array_equal(tracking[:len(bpm)], np.full(len(bpm), 40.0))
+    np.testing.assert_array_equal(tracking[len(bpm):], np.full(len(bpm), 80.0))
+    assert (ring.is_6d, ring[int(cavity[0])].PassMethod,
+            ring[int(cavity[0])].Frequency) == initial_state
+
+
+def test_tracking_rf_response_is_finite_nonzero_with_active_6d_cavity():
+    ring = _fodo_ring_with_correctors()
+    ring.append(at.RFCavity("RFC", 0.0, 3e6, 5e8, 100, 1e9))
+    bpm = np.asarray(at.get_refpts(ring, at.Monitor), dtype=int)
+    cavity = np.asarray(at.get_refpts(ring, at.elements.RFCavity), dtype=int)
+    initial_state = (ring.is_6d, ring[int(cavity[0])].PassMethod,
+                     ring[int(cavity[0])].Frequency)
+
+    tracking = calculate_rf_response(
+        ring, bpm, cavity, 40.0, calculator="Tracking", frequency=5e8,
+        harm_number=100, bidirectional=True,
+    )
+
+    assert np.all(np.isfinite(tracking))
+    assert np.linalg.norm(tracking[:len(bpm)]) > 0.0
+    assert (ring.is_6d, ring[int(cavity[0])].PassMethod,
+            ring[int(cavity[0])].Frequency) == initial_state
 
 
 def test_linear_and_analytical_normal_quad_dispersion_derivatives_match():
