@@ -53,6 +53,8 @@ class ORMResult:
     requested_state_b_rad: np.ndarray
     actual_state_a_rad: np.ndarray
     actual_state_b_rad: np.ndarray
+    intermediate_restored_setpoints_rad: np.ndarray
+    intermediate_restoration_status: tuple[str, ...]
     final_setpoints_rad: np.ndarray
     raw_state_a_m: np.ndarray
     raw_state_b_m: np.ndarray
@@ -304,9 +306,9 @@ class ORMAcquirer:
         kicks=np.concatenate((np.asarray(requested_kick_h_rad,float).ravel(),np.asarray(requested_kick_v_rad,float).ravel()))
         if kicks.shape!=(len(correctors),) or not np.isfinite(kicks).all() or np.any(kicks<=0): raise ValueError("Requested kick arrays must contain one positive finite value per corrector")
         cancel=cancel_event or Event(); nrows=2*len(self.bpms); ncor=len(correctors)
-        arrays={name:np.full(ncor,np.nan) for name in ("original","req_a","req_b","act_a","act_b","final","effective")}
+        arrays={name:np.full(ncor,np.nan) for name in ("original","req_a","req_b","act_a","act_b","intermediate","final","effective")}
         raw_a=np.full((ncor,readings,nrows),np.nan); raw_b=np.full_like(raw_a,np.nan); ts_a=np.full((ncor,readings),np.nan); ts_b=np.full_like(ts_a,np.nan)
-        matrix=np.full((nrows,ncor),np.nan); statuses=[]; start=clock()
+        matrix=np.full((nrows,ncor),np.nan); intermediate_statuses=[]; statuses=[]; start=clock()
         for index,(corrector,dkick) in enumerate(zip(correctors,kicks)):
             original=float(self.adapter.read(corrector.readback_channel).value); arrays["original"][index]=original
             if direction=="bipolar": target_a,target_b=original+dkick/2,original-dkick/2; label_a,label_b="+kick","−kick"
@@ -321,6 +323,15 @@ class ORMAcquirer:
                     actual=float(self.adapter.read(corrector.readback_channel).value); arrays[f"act_{slot}"][index]=actual
                     samples,times=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":label})
                     raw[index]=samples; timestamps[index]=times+clock()
+                    if direction=="bipolar" and slot=="a":
+                        if cancel.is_set(): raise AcquisitionCancelled("ORM acquisition was cancelled before intermediate restoration")
+                        if progress: progress({"event":"intermediate_restore","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"restore K0 before −kick","elapsed":clock()-start})
+                        self.adapter.write(corrector.setpoint_channel,original); sleeper(settling_delay_seconds)
+                        arrays["intermediate"][index]=float(self.adapter.read(corrector.readback_channel).value)
+                        if not np.isclose(arrays["intermediate"][index],original,rtol=0,atol=1e-12):
+                            raise RuntimeError(f"Intermediate restoration verification failed: {arrays['intermediate'][index]!r} != {original!r}")
+                        intermediate_statuses.append("restored")
+                        if progress: progress({"event":"intermediate_restored","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"K0 restored and verified","readback":arrays["intermediate"][index],"original":original,"elapsed":clock()-start})
                 effective=arrays["act_a"][index]-arrays["act_b"][index]; arrays["effective"][index]=effective
                 column=np.mean(raw_a[index],axis=0)-np.mean(raw_b[index],axis=0)
                 matrix[:,index]=column/effective if scaled else column
@@ -337,4 +348,5 @@ class ORMAcquirer:
                 try:self.adapter.write(corrector.setpoint_channel,original); arrays["final"][index]=float(self.adapter.read(corrector.readback_channel).value); restoration="restored" if np.isclose(arrays["final"][index],original) else "verification_failed"
                 except Exception as exc: raise ORMAcquisitionError(f"Restoration failed for {corrector.name}: {exc}",restoration_status="restore_failed") from exc
                 statuses.append(restoration)
-        return ORMResult(self.bpms,self.horizontal_correctors,self.vertical_correctors,matrix,direction,bool(scaled),kicks,arrays["effective"],arrays["original"],arrays["req_a"],arrays["req_b"],arrays["act_a"],arrays["act_b"],arrays["final"],raw_a,raw_b,ts_a,ts_b,tuple(statuses),clock()-start)
+                if direction!="bipolar":intermediate_statuses.append("not_applicable")
+        return ORMResult(self.bpms,self.horizontal_correctors,self.vertical_correctors,matrix,direction,bool(scaled),kicks,arrays["effective"],arrays["original"],arrays["req_a"],arrays["req_b"],arrays["act_a"],arrays["act_b"],arrays["intermediate"],tuple(intermediate_statuses),arrays["final"],raw_a,raw_b,ts_a,ts_b,tuple(statuses),clock()-start)

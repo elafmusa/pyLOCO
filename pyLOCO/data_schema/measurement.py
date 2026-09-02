@@ -78,6 +78,8 @@ def write_orm(
     requested_state_b_rad: Any | None = None,
     actual_state_a_rad: Any | None = None,
     actual_state_b_rad: Any | None = None,
+    intermediate_restored_setpoints_rad: Any | None = None,
+    intermediate_restoration_status: Sequence[str] | None = None,
     final_setpoints_rad: Any | None = None,
     orbit_std_plus_m: Any | None = None,
     orbit_std_minus_m: Any | None = None,
@@ -116,6 +118,8 @@ def write_orm(
     if std_plus.shape!=raw_shape or std_minus.shape!=raw_shape: raise ValueError("ORM orbit standard-deviation shapes are inconsistent")
     statuses=tuple(restoration_status or ("not_verified",)*raw_shape[0])
     if len(statuses)!=raw_shape[0]: raise ValueError("restoration_status length does not match correctors")
+    intermediate_statuses=tuple(intermediate_restoration_status or ("not_recorded",)*raw_shape[0])
+    if len(intermediate_statuses)!=raw_shape[0]: raise ValueError("intermediate_restoration_status length does not match correctors")
 
     with _initialize(path, "orm", metadata) as handle:
         handle.create_dataset("response_matrix", data=matrix, compression="gzip")
@@ -159,13 +163,14 @@ def write_orm(
                 raw.create_dataset(name,data=array)
         state = handle.create_group("setpoints")
         state.attrs["unit"]="rad"
-        optional_vectors=(("original",original_setpoints_rad),("requested_state_a",requested_state_a_rad),("requested_state_b",requested_state_b_rad),("actual_state_a",actual_state_a_rad),("actual_state_b",actual_state_b_rad),("final",final_setpoints_rad))
+        optional_vectors=(("original",original_setpoints_rad),("requested_state_a",requested_state_a_rad),("requested_state_b",requested_state_b_rad),("actual_state_a",actual_state_a_rad),("actual_state_b",actual_state_b_rad),("intermediate_restored",intermediate_restored_setpoints_rad),("final",final_setpoints_rad))
         for name,value in optional_vectors:
             if value is not None:
                 array=_array(value,name,ndim=1)
                 if array.size!=raw_shape[0]: raise ValueError(f"{name} length does not match correctors")
                 state.create_dataset(name,data=array)
         _create_text_dataset(state,"restoration_status",statuses)
+        _create_text_dataset(state,"intermediate_restoration_status",intermediate_statuses)
         _write_diagnostics(handle, diagnostics)
     return Path(path)
 
@@ -354,7 +359,9 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
         kind = str(handle.attrs.get("measurement_kind", ""))
         try: measurement_metadata=json.loads(handle["metadata/json"][()])
         except Exception: measurement_metadata={}
-        strict_orm=kind=="orm" and measurement_metadata.get("orm_validation_convention")=="historical_petra_bipolar_v1"
+        orm_validation_convention=measurement_metadata.get("orm_validation_convention")
+        strict_orm=kind=="orm" and orm_validation_convention in {"historical_petra_bipolar_v1","historical_petra_bipolar_v2"}
+        intermediate_restore_orm=kind=="orm" and orm_validation_convention=="historical_petra_bipolar_v2"
         if handle.attrs.get("pyloco_file_type") != FILE_TYPE:
             errors.append("invalid or missing pyloco_file_type")
         if str(handle.attrs.get("schema_version", "")) != SCHEMA_VERSION:
@@ -416,6 +423,15 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
                         if any(status!="restored" for status in statuses):errors.append("not all ORM correctors have successful restoration status")
                         if not np.allclose(final,original,rtol=0,atol=tolerance):errors.append("final ORM readbacks do not match original setpoints within tolerance")
                 elif strict_orm:errors.append("missing ORM restoration/readback diagnostics")
+                if intermediate_restore_orm and str(handle.attrs.get("direction",""))=="bipolar":
+                    intermediate_required=("setpoints/original","setpoints/intermediate_restored","setpoints/intermediate_restoration_status")
+                    if all(name in handle for name in intermediate_required):
+                        original=handle["setpoints/original"][:]; intermediate=handle["setpoints/intermediate_restored"][:]; intermediate_status=decode(handle["setpoints/intermediate_restoration_status"][:]); tolerance=float(handle.attrs.get("restoration_tolerance_rad",1e-12))
+                        if len(intermediate)!=nh+nv or len(intermediate_status)!=nh+nv:errors.append("ORM intermediate-restoration vectors do not match corrector ordering")
+                        else:
+                            if any(status!="restored" for status in intermediate_status):errors.append("not all ORM correctors were restored between positive and negative kicks")
+                            if not np.allclose(intermediate,original,rtol=0,atol=tolerance):errors.append("intermediate ORM readbacks do not match original setpoints within tolerance")
+                    else:errors.append("missing ORM intermediate restoration/readback diagnostics")
                 if strict_orm and measurement_metadata.get("backend_key")=="pysc":
                     for field in ("machine","profile","profile_key","lattice_file","lattice_provenance"):
                         if not measurement_metadata.get(field):errors.append(f"missing ORM machine/profile provenance field {field}")
