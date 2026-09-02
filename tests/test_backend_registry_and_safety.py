@@ -32,9 +32,12 @@ def test_registry_has_exact_three_persistent_badges(tmp_path):
 
 
 def test_pysc_registry_uses_its_own_generated_catalog(tmp_path):
-    demo=tmp_path/"Examples"/"Demo"; demo.mkdir(parents=True)
-    (demo/"pysc_demo_catalog.json").write_text(
-        '{"bpms":["SC-B1"],"horizontal_correctors":["SC-H1"],'
+    profile=tmp_path/"Examples"/"pySC_profiles"/"ebs"/"validated_demo"; profile.mkdir(parents=True)
+    (profile/"profile.yaml").write_text(
+        "key: ebs\nlabel: EBS\nscenario: test\nmachine: test\ncatalog_file: catalog.json\n"
+    )
+    (profile/"catalog.json").write_text(
+        '{"profile":"ebs","bpms":["SC-B1"],"horizontal_correctors":["SC-H1"],'
         '"vertical_correctors":["SC-V1"],"host":"127.0.0.1","port":13131,"rf_system":"main"}'
     )
     session=InterfaceRegistry(repository_root=tmp_path,interface_loaders={"pysc":FakeInterface}).create("pysc")
@@ -44,8 +47,25 @@ def test_pysc_registry_uses_its_own_generated_catalog(tmp_path):
 
 
 def test_pysc_registry_refuses_missing_catalog_instead_of_falling_back(tmp_path):
+    profile=tmp_path/"Examples"/"pySC_profiles"/"ebs"/"validated_demo"; profile.mkdir(parents=True)
+    (profile/"profile.yaml").write_text(
+        "key: ebs\nlabel: EBS\nscenario: test\nmachine: test\ncatalog_file: catalog.json\n"
+    )
     with pytest.raises(RuntimeError,match="catalog is missing"):
         InterfaceRegistry(repository_root=tmp_path,interface_loaders={"pysc":FakeInterface}).create("pysc")
+
+
+def test_pysc_profiles_have_independent_native_catalogs():
+    ebs=InterfaceRegistry(pysc_profile="ebs",interface_loaders={"pysc":FakeInterface}).create("pysc")
+    petra=InterfaceRegistry(pysc_profile="petra3",interface_loaders={"pysc":FakeInterface}).create("pysc")
+    assert len(ebs.adapter.list_devices("bpm"))==320
+    assert len(ebs.adapter.list_devices("hcor"))==288
+    assert len(ebs.adapter.list_devices("vcor"))==288
+    assert len(petra.adapter.list_devices("bpm"))==246
+    assert len(petra.adapter.list_devices("hcor"))==219
+    assert len(petra.adapter.list_devices("vcor"))==194
+    assert petra.adapter.list_devices("hcor")[0]["name"].endswith("/B1L")
+    assert petra.adapter.list_devices("vcor")[0]["name"].endswith("/A1L")
 
 
 def test_petra_registry_uses_only_its_own_catalog_and_is_hard_read_only(tmp_path):

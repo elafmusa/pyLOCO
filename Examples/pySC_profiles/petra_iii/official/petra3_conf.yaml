@@ -1,0 +1,49 @@
+error_table:
+  calibration_error_corrector: 0
+  calibration_error: 0.15
+  orbit_noise: 15e-6
+
+lattice:
+  lattice_file: data/p3_v24.mat
+  #lattice_file: data/p3_low_beta.mat
+  simulator: at
+  use: RING
+  #use: lat
+  no_6d: True
+  naming: CommonName
+
+bpms:
+  bpms:  ## looks redundant but allows for different bpm families
+    mapping: data/p3_BPM_mapping.yaml
+    orbit_noise: orbit_noise 
+    #regex: ^BPM_
+
+magnets:
+  # bad_quad:
+  #   mapping: data/bad_quad.yaml
+  #   components:
+  #     - B2L: calibration_error
+  HCM:
+    mapping: data/p3_HCM_mapping.yaml
+    #regex: HCM
+    components:
+      - B1L: null
+    invert:
+      - B1L
+  VCM:
+    mapping: data/p3_VCM_mapping.yaml
+    components:
+      - A1L: null
+   # dx: corr_offsets
+   # dy: corr_offsets
+   # roll: corr_rolls
+
+rf:
+  main:
+    regex: ^CAV
+
+tuning:
+  HCORR:
+    - HCM: B1L
+  VCORR:
+    - VCM: A1L

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import import_module
-import json
 from pathlib import Path
 from time import time
 from typing import Callable, Iterable, Sequence
@@ -17,6 +16,7 @@ import numpy as np
 
 from .adapters import AdapterCapability, ChannelSample, WritableAdapter
 from .petra import PETRAReadOnlyAdapter
+from .pysc_profiles import load_pysc_catalog
 
 
 @dataclass(frozen=True)
@@ -152,10 +152,12 @@ class InterfaceRegistry:
 
     def __init__(self, *, mock_factory: Callable[[], object] | None = None,
                  interface_loaders: dict[str, Callable[[], object]] | None = None,
-                 repository_root: Path | None = None) -> None:
+                 repository_root: Path | None = None,
+                 pysc_profile: str = "ebs") -> None:
         self.mock_factory = mock_factory
         self.interface_loaders = dict(interface_loaders or {})
         self.root = repository_root or Path(__file__).resolve().parents[2]
+        self.pysc_profile = pysc_profile
 
     def descriptors(self):
         return self.DESCRIPTORS
@@ -169,19 +171,7 @@ class InterfaceRegistry:
         return tuple(line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
 
     def _pysc_catalog(self):
-        path = self.root / "Examples" / "Demo" / "pysc_demo_catalog.json"
-        if not path.exists():
-            raise RuntimeError(
-                f"pySC demo catalog is missing: {path}. Start the demo server once; "
-                "it generates the catalog from the served SimulatedCommissioning object."
-            )
-        data = json.loads(path.read_text(encoding="utf-8"))
-        required = ("bpms", "horizontal_correctors", "vertical_correctors")
-        for key in required:
-            values = data.get(key)
-            if not isinstance(values, list) or not values or len(values) != len(set(values)):
-                raise RuntimeError(f"Invalid pySC demo catalog field: {key}")
-        return data
+        return load_pysc_catalog(self.pysc_profile, repository_root=self.root)
 
     def create(self, key: str) -> BackendSession:
         descriptor = self.descriptor(key)

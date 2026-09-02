@@ -1,0 +1,17 @@
+schema_version: '1.0'
+key: ebs
+label: EBS
+scenario: validated_demo
+machine: ESRF-EBS pySC demo
+builder: saved_state
+state_file: ../../../EBS_pySC/com_simu_loco_example/ESRF_pySC_state.json
+lattice_file: ../../../EBS_pySC/com_simu_loco_example/betamodel.mat
+catalog_file: catalog.json
+legacy_catalog_file: ../../../Demo/pysc_demo_catalog.json
+rf_system: main
+demo_bpm_noise_sigma_x_m: 1.5e-6
+demo_bpm_noise_sigma_y_m: 1.5e-6
+provenance:
+  description: Existing validated EBS SimulatedCommissioning state used by the Monday demo
+  state_is_modified: false
+  served_noise_override_is_runtime_only: true

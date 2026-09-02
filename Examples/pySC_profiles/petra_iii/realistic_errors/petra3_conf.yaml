@@ -1,0 +1,62 @@
+error_table:
+  quadrupole_calibration: 5.0e-4
+  # Gentle, uncorrected realization intended to resemble a post-commissioning
+  # machine rather than a first-turn alignment study.  The fixed profile seed
+  # makes these truncated-Gaussian draws reproducible.
+  quadrupole_offset: 1.0e-6
+  quadrupole_roll: 50.0e-6
+  corrector_calibration: 5.0e-3
+  corrector_roll: 50.0e-6
+  bpm_offset: 20.0e-6
+  bpm_roll: 100.0e-6
+  bpm_calibration: 5.0e-3
+  bpm_orbit_noise: 2.0e-6
+
+lattice:
+  lattice_file: data/p3_v24.mat
+  simulator: at
+  use: RING
+  no_6d: true
+  # Keep the authoritative control-system identities, including twelve unique
+  # RF cavity CommonNames. Quadrupoles use their own explicit mapping below.
+  naming: CommonName
+
+bpms:
+  bpms:
+    mapping: data/p3_BPM_mapping.yaml
+    dx: bpm_offset
+    dy: bpm_offset
+    roll: bpm_roll
+    orbit_noise: bpm_orbit_noise
+    calibration_error: bpm_calibration
+
+magnets:
+  quadrupoles:
+    mapping: data/p3_quadrupole_mapping.yaml
+    components:
+      - B2: quadrupole_calibration
+    dx: quadrupole_offset
+    dy: quadrupole_offset
+    roll: quadrupole_roll
+  HCM:
+    mapping: data/p3_HCM_mapping.yaml
+    components:
+      - B1L: corrector_calibration
+    invert:
+      - B1L
+    roll: corrector_roll
+  VCM:
+    mapping: data/p3_VCM_mapping.yaml
+    components:
+      - A1L: corrector_calibration
+    roll: corrector_roll
+
+rf:
+  main:
+    regex: ^CAV
+
+tuning:
+  HCORR:
+    - HCM: B1L
+  VCORR:
+    - VCM: A1L

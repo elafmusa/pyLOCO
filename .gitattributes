@@ -1,1 +1,8 @@
-*.h5 filter=lfs diff=lfs merge=lfs -text
+# Colleague-supplied PETRA III baseline files are retained byte-for-byte.
+Examples/pySC_profiles/petra_iii/official/** -whitespace
+Examples/pySC_profiles/petra_iii/realistic_errors/data/BPM_names.txt -whitespace
+Examples/pySC_profiles/petra_iii/realistic_errors/data/HCM_names.txt -whitespace
+Examples/pySC_profiles/petra_iii/realistic_errors/data/VCM_names.txt -whitespace
+Examples/pySC_profiles/petra_iii/realistic_errors/data/p3_BPM_mapping.yaml -whitespace
+Examples/pySC_profiles/petra_iii/realistic_errors/data/p3_HCM_mapping.yaml -whitespace
+Examples/pySC_profiles/petra_iii/realistic_errors/data/p3_VCM_mapping.yaml -whitespace

@@ -15,6 +15,8 @@ from .adapters import (
 from .petra import PETRAReadOnlyAdapter, OptionalDependencyUnavailable
 from .backends import (AbstractInterfaceAdapter, BackendDescriptor, BackendSession,
                        InterfaceRegistry)
+from .pysc_profiles import (PySCMachineProfile, available_pysc_profiles,
+                            load_pysc_catalog, load_pysc_profile)
 
 __all__ = [
     "AdapterCapability",
@@ -26,4 +28,5 @@ __all__ = [
     "PETRAReadOnlyAdapter",
     "AbstractInterfaceAdapter", "BackendDescriptor", "BackendSession", "InterfaceRegistry",
     "OptionalDependencyUnavailable",
+    "PySCMachineProfile", "available_pysc_profiles", "load_pysc_catalog", "load_pysc_profile",
 ]
