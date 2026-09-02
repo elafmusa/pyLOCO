@@ -71,6 +71,9 @@ def write_orm(
     actual_kick_v_rad: Any,
     orbit_plus_m: Any,
     orbit_minus_m: Any,
+    reference_before_m: Any | None = None,
+    reference_intermediate_m: Any | None = None,
+    reference_final_m: Any | None = None,
     scaled: bool = False,
     direction: str = "bipolar",
     original_setpoints_rad: Any | None = None,
@@ -156,6 +159,11 @@ def write_orm(
         raw.create_dataset("mean_orbit_minus_m",data=mean_minus)
         raw.create_dataset("std_orbit_plus_m",data=std_plus)
         raw.create_dataset("std_orbit_minus_m",data=std_minus)
+        for name,value in (("reference_before_m",reference_before_m),("reference_intermediate_m",reference_intermediate_m),("reference_final_m",reference_final_m)):
+            if value is not None:
+                array=_array(value,name)
+                if array.shape!=plus.shape:raise ValueError(f"{name} must match raw kick-orbit dimensions")
+                raw.create_dataset(name,data=array,compression="gzip")
         for name,value in (("timestamps_plus_s",timestamps_plus_s),("timestamps_minus_s",timestamps_minus_s)):
             if value is not None:
                 array=_array(value,name,ndim=2)
@@ -360,8 +368,9 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
         try: measurement_metadata=json.loads(handle["metadata/json"][()])
         except Exception: measurement_metadata={}
         orm_validation_convention=measurement_metadata.get("orm_validation_convention")
-        strict_orm=kind=="orm" and orm_validation_convention in {"historical_petra_bipolar_v1","historical_petra_bipolar_v2"}
-        intermediate_restore_orm=kind=="orm" and orm_validation_convention=="historical_petra_bipolar_v2"
+        strict_orm=kind=="orm" and orm_validation_convention in {"historical_petra_bipolar_v1","historical_petra_bipolar_v2","historical_petra_bipolar_v3"}
+        intermediate_restore_orm=kind=="orm" and orm_validation_convention in {"historical_petra_bipolar_v2","historical_petra_bipolar_v3"}
+        restored_orbit_orm=kind=="orm" and orm_validation_convention=="historical_petra_bipolar_v3"
         if handle.attrs.get("pyloco_file_type") != FILE_TYPE:
             errors.append("invalid or missing pyloco_file_type")
         if str(handle.attrs.get("schema_version", "")) != SCHEMA_VERSION:
@@ -432,6 +441,14 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
                             if any(status!="restored" for status in intermediate_status):errors.append("not all ORM correctors were restored between positive and negative kicks")
                             if not np.allclose(intermediate,original,rtol=0,atol=tolerance):errors.append("intermediate ORM readbacks do not match original setpoints within tolerance")
                     else:errors.append("missing ORM intermediate restoration/readback diagnostics")
+                if restored_orbit_orm:
+                    for name in ("raw/reference_before_m","raw/reference_final_m"):
+                        if name not in handle:errors.append(f"missing ORM restored-orbit diagnostic {name}")
+                        elif "raw/orbit_plus_m" in handle and (handle[name].shape!=handle["raw/orbit_plus_m"].shape or not np.isfinite(handle[name][:]).all()):errors.append(f"invalid ORM restored-orbit diagnostic {name}")
+                    if str(handle.attrs.get("direction",""))=="bipolar":
+                        name="raw/reference_intermediate_m"
+                        if name not in handle:errors.append(f"missing ORM restored-orbit diagnostic {name}")
+                        elif "raw/orbit_plus_m" in handle and (handle[name].shape!=handle["raw/orbit_plus_m"].shape or not np.isfinite(handle[name][:]).all()):errors.append(f"invalid ORM restored-orbit diagnostic {name}")
                 if strict_orm and measurement_metadata.get("backend_key")=="pysc":
                     for field in ("machine","profile","profile_key","lattice_file","lattice_provenance"):
                         if not measurement_metadata.get(field):errors.append(f"missing ORM machine/profile provenance field {field}")
