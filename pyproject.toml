@@ -16,9 +16,11 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = ["PySide6", "matplotlib"]
+pysc-demo = ["accelerator-commissioning==1.5.2"]
 
 [project.scripts]
 pyloco-gui = "pyLOCO.gui.app:main"
+pyloco-measure = "pyLOCO.measure.app:main"
 
 [tool.hatch.build]
 artifacts = ["pyLOCO/gui/assets/*.png"]

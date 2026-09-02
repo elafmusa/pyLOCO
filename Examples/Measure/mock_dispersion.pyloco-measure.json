@@ -1,0 +1,23 @@
+{
+  "measurement_type": "dispersion",
+  "measurement_name": "mock-dispersion",
+  "measurement_label": "Portable Mock manual-RF dispersion example",
+  "operator_comments": "Offline guided demonstration. pyLOCO Measure performs no RF writes.",
+  "adapter": "Mock",
+  "bpm_selection_method": "all",
+  "bpm_manual": "",
+  "bpm_names_file": "",
+  "readings": 20,
+  "delay_seconds": 0.05,
+  "settling_delay_seconds": 0.0,
+  "rf_control_mode": "manual",
+  "nominal_rf_hz": 500000000.0,
+  "nominal_rf_source": "manual",
+  "rf_step_hz": 1500.0,
+  "dispersion_direction": "bipolar",
+  "output_directory": "output",
+  "theme": "dark",
+  "metadata": {},
+  "file_type": "pyloco.measure_project",
+  "schema_version": "1.0"
+}
