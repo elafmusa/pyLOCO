@@ -76,25 +76,68 @@ def calculate_rf_response(
     if calculator != "Numerical":
         raise ValueError(f"Unknown calculator={calculator!r} for RF response")
 
-    if orbit0 is None:
-        _, orbit0 = at.find_orbit4(ring, 0, bpm_ords)
-    orbit0_x = orbit0[:, 0]
-    orbit0_y = orbit0[:, 2]
-    if bidirectional:
-        shift_rf(ring, cav_ords, +rf_step / 2, attr=rf_attr)
-        _, plus = at.find_orbit4(ring, 0, bpm_ords)
-        shift_rf(ring, cav_ords, -rf_step, attr=rf_attr)
-        _, minus = at.find_orbit4(ring, 0, bpm_ords)
-        shift_rf(ring, cav_ords, +rf_step / 2, attr=rf_attr)
+    cav_ords = np.atleast_1d(np.asarray(cav_ords, dtype=int))
+    attrs = ([rf_attr] * len(cav_ords) if isinstance(rf_attr, str)
+             else list(rf_attr))
+    if len(attrs) != len(cav_ords):
+        raise ValueError("Length of 'rf_attr' must match 'cav_ords'.")
+
+    active_cavity = bool(getattr(ring, "is_6d", False)) and any(
+        str(getattr(ring[int(cavity)], "PassMethod", "")) != "IdentityPass"
+        for cavity in cav_ords
+    )
+
+    if not active_cavity:
+        # A disabled cavity has no dynamical effect in 4D. Translate the
+        # public RF-frequency step to the synchronous momentum offset used by
+        # the Linear calculator instead.
+        speed_of_light = 2.99792458e8
+        half_dp = -speed_of_light * rf_step * harm_number / frequency ** 2 / 2.0
+        if bidirectional:
+            _, plus = at.find_sync_orbit(ring, half_dp, refpts=bpm_ords)
+            _, minus = at.find_sync_orbit(ring, -half_dp, refpts=bpm_ords)
+            return np.concatenate((
+                plus[:, 0] - minus[:, 0],
+                plus[:, 2] - minus[:, 2],
+            ))
+        if orbit0 is None:
+            _, orbit0 = at.find_orbit4(ring, 0.0, bpm_ords)
+        _, shifted = at.find_sync_orbit(
+            ring, 2.0 * half_dp, refpts=bpm_ords
+        )
         return np.concatenate((
-            plus[:, 0] - minus[:, 0] - orbit0_x,
-            plus[:, 2] - minus[:, 2] - orbit0_y,
+            shifted[:, 0] - orbit0[:, 0],
+            shifted[:, 2] - orbit0[:, 2],
         ))
 
-    shift_rf(ring, cav_ords, +rf_step, attr=rf_attr)
-    _, shifted = at.find_orbit4(ring, 0, bpm_ords)
-    shift_rf(ring, cav_ords, -rf_step, attr=rf_attr)
-    return np.concatenate((shifted[:, 0] - orbit0_x, shifted[:, 2] - orbit0_y))
+    original_rf = [getattr(ring[int(cavity)], attr)
+                   for cavity, attr in zip(cav_ords, attrs)]
+
+    def set_rf_offset(offset):
+        for cavity, attr, initial in zip(cav_ords, attrs, original_rf):
+            setattr(ring[int(cavity)], attr, initial + offset)
+
+    try:
+        if bidirectional:
+            set_rf_offset(+rf_step / 2.0)
+            _, plus = at.find_orbit6(ring, refpts=bpm_ords)
+            set_rf_offset(-rf_step / 2.0)
+            _, minus = at.find_orbit6(ring, refpts=bpm_ords)
+            return np.concatenate((
+                plus[:, 0] - minus[:, 0],
+                plus[:, 2] - minus[:, 2],
+            ))
+        if orbit0 is None:
+            _, orbit0 = at.find_orbit6(ring, refpts=bpm_ords)
+        set_rf_offset(+rf_step)
+        _, shifted = at.find_orbit6(ring, refpts=bpm_ords)
+        return np.concatenate((
+            shifted[:, 0] - orbit0[:, 0],
+            shifted[:, 2] - orbit0[:, 2],
+        ))
+    finally:
+        for cavity, attr, initial in zip(cav_ords, attrs, original_rf):
+            setattr(ring[int(cavity)], attr, initial)
 
 
 def response_matrix(
@@ -1590,228 +1633,19 @@ def response_matrix(
 
     if includeDispersion:
 
-        C = 2.99792458e8
-
-        # --------------------------------------------------------------
-        # Linear / Analytical
-        # --------------------------------------------------------------
-
-        if calculator in (
-            'Linear',
-            'Analytical'
-        ):
-
-            f_rf = Frequency
-            h_rf = HarmNumber
-
-            _, ORBITPLUS = (
-                at.find_sync_orbit(
-                    ring,
-                    (
-                        -C
-                        *
-                        rfStep
-                        *
-                        h_rf
-                        /
-                        f_rf ** 2
-                    )
-                    /
-                    2.0,
-                    refpts=bpm_ords
-                )
-            )
-
-            dx = ORBITPLUS[:, 0]
-            dy = ORBITPLUS[:, 2]
-
-            _, ORBIT0 = (
-                at.find_sync_orbit(
-                    ring,
-                    (
-                        C
-                        *
-                        rfStep
-                        *
-                        h_rf
-                        /
-                        f_rf ** 2
-                    )
-                    /
-                    2.0,
-                    refpts=bpm_ords
-                )
-            )
-
-            dx0 = ORBIT0[:, 0]
-            dy0 = ORBIT0[:, 2]
-
-            dispersion_meas = (
-                np.concatenate(
-                    (
-                        dx - dx0,
-                        dy - dy0
-                    )
-                )
-            )
-
-            response_matrix = np.hstack(
-                (
-                    response_matrix,
-                    dispersion_meas.reshape(
-                        -1,
-                        1
-                    )
-                )
-            )
-
-        # --------------------------------------------------------------
-        # Numerical
-        # --------------------------------------------------------------
-
-        elif calculator == 'Numerical':
-
-            if bidirectional:
-
-                shift_rf(
-                    ring,
-                    cav_ords,
-                    +rfStep / 2,
-                    attr=RFAttr
-                )
-
-                _, orbit = (
-                    at.find_orbit4(
-                        ring,
-                        0,
-                        bpm_ords
-                    )
-                )
-
-                orbit_plus_x = (
-                    orbit[:, 0]
-                )
-
-                orbit_plus_y = (
-                    orbit[:, 2]
-                )
-
-                shift_rf(
-                    ring,
-                    cav_ords,
-                    -rfStep / 2,
-                    attr=RFAttr
-                )
-
-                shift_rf(
-                    ring,
-                    cav_ords,
-                    -rfStep / 2,
-                    attr=RFAttr
-                )
-
-                _, orbit = (
-                    at.find_orbit4(
-                        ring,
-                        0,
-                        bpm_ords
-                    )
-                )
-
-                orbit_minus_x = (
-                    orbit[:, 0]
-                )
-
-                orbit_minus_y = (
-                    orbit[:, 2]
-                )
-
-                # Restore RF
-
-                shift_rf(
-                    ring,
-                    cav_ords,
-                    +rfStep / 2,
-                    attr=RFAttr
-                )
-
-                dx = (
-                    orbit_plus_x
-                    -
-                    orbit_minus_x
-                    -
-                    orbit0_x
-                )
-
-                dy = (
-                    orbit_plus_y
-                    -
-                    orbit_minus_y
-                    -
-                    orbit0_y
-                )
-
-            else:
-
-                shift_rf(
-                    ring,
-                    cav_ords,
-                    +rfStep,
-                    attr=RFAttr
-                )
-
-                _, orbit = (
-                    at.find_orbit4(
-                        ring,
-                        0,
-                        bpm_ords
-                    )
-                )
-
-                orbit_new_x = (
-                    orbit[:, 0]
-                )
-
-                orbit_new_y = (
-                    orbit[:, 2]
-                )
-
-                # Restore RF
-
-                shift_rf(
-                    ring,
-                    cav_ords,
-                    -rfStep,
-                    attr=RFAttr
-                )
-
-                dx = (
-                    orbit_new_x
-                    -
-                    orbit0_x
-                )
-
-                dy = (
-                    orbit_new_y
-                    -
-                    orbit0_y
-                )
-
-            dispersion_meas = (
-                np.concatenate(
-                    (dx, dy)
-                )
-            )
-
-            response_matrix = np.hstack(
-                (
-                    response_matrix,
-                    dispersion_meas.reshape(
-                        -1,
-                        1
-                    )
-                )
-            )
+        dispersion_meas = calculate_rf_response(
+            ring,
+            bpm_ords,
+            cav_ords,
+            rfStep,
+            calculator=calculator,
+            bidirectional=bidirectional,
+            frequency=Frequency,
+            harm_number=HarmNumber,
+            rf_attr=RFAttr,
+            orbit0=orbit0 if calculator == 'Numerical' else None,
+        )
+        response_matrix = np.hstack((response_matrix, dispersion_meas[:, None]))
 
     return response_matrix
 
