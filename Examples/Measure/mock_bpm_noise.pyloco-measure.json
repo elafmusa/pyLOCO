@@ -1,0 +1,16 @@
+{
+  "measurement_name": "mock-bpm-noise",
+  "measurement_label": "Portable Mock BPM-noise example",
+  "operator_comments": "Offline demonstration; no machine connection or writes.",
+  "adapter": "Mock",
+  "bpm_selection_method": "all",
+  "bpm_manual": "",
+  "bpm_names_file": "",
+  "readings": 20,
+  "delay_seconds": 0.05,
+  "output_directory": "output",
+  "theme": "dark",
+  "metadata": {},
+  "file_type": "pyloco.measure_project",
+  "schema_version": "1.0"
+}
