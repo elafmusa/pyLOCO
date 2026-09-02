@@ -1,0 +1,25 @@
+schema_version: '1.0'
+key: petra3
+label: PETRA III
+scenario: official_nominal
+machine: PETRA III official pySC simulation
+builder: generated_configuration
+configuration_file: petra3_conf.yaml
+original_launcher_file: run_pysc.py
+lattice_file: data/p3_v24.mat
+bpm_mapping_file: data/p3_BPM_mapping.yaml
+hcor_mapping_file: data/p3_HCM_mapping.yaml
+vcor_mapping_file: data/p3_VCM_mapping.yaml
+bpm_names_file: data/BPM_names.txt
+hcor_names_file: data/HCM_names.txt
+vcor_names_file: data/VCM_names.txt
+catalog_file: catalog.json
+rf_system: main
+immutable_baseline: true
+provenance:
+  source: colleague-supplied PetraIII server.zip
+  received_date: '2026-09-02'
+  lattice_sha1: 2c966698981886f172ece1bffc33eaaa4e13adfc
+  configuration_sha1: da1c66173ac7c0d73972eb35cd7ef96d628a53aa
+  original_launcher_sha1: 6f1522f42bf60c1e32e37cd8d25c7996b52fd2ee
+  scientific_content_modified: false

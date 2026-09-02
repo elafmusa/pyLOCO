@@ -156,6 +156,27 @@ def test_responsive_measure_pages_do_not_overlap_or_elide(app, size, theme):
     window.close()
 
 
+def test_pysc_machine_profile_selector_uses_native_catalogs(app):
+    window=MeasureMainWindow(devices=default_mock_devices(2))
+    assert not window.pysc_profile_combo.isVisible()
+    window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("pysc"))
+    window.show(); app.processEvents()
+    assert window.pysc_profile_combo.isVisible()
+    assert window.pysc_profile_combo.currentData()=="ebs"
+    assert (len(window.devices),len(window.horizontal_correctors),len(window.vertical_correctors))==(320,288,288)
+    window.pysc_profile_combo.setCurrentIndex(window.pysc_profile_combo.findData("petra3")); app.processEvents()
+    assert (len(window.devices),len(window.horizontal_correctors),len(window.vertical_correctors))==(246,219,194)
+    assert window.status_badge.text()=="DEMO • pySC SERVER"
+    assert "PETRA III simulation" in window.machine_info["adapter"].text()
+    window.pysc_profile_combo.setCurrentIndex(window.pysc_profile_combo.findData("petra3_realistic")); app.processEvents()
+    assert (len(window.devices),len(window.horizontal_correctors),len(window.vertical_correctors))==(246,219,194)
+    assert "realistic errors" in window.pysc_profile_combo.currentText()
+    window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("petra")); app.processEvents()
+    assert not window.pysc_profile_combo.isVisible()
+    assert window.status_badge.text()=="LIVE • PETRA III DOOCS"
+    window.close()
+
+
 def test_measurement_plan_and_acquisition_status_are_structured(app):
     window = MeasureMainWindow(devices=default_mock_devices(3))
     assert {

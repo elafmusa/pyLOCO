@@ -41,7 +41,7 @@ Terminal 1 — server:
 
 ```bash
 cd /Users/musa/Desktop/pyLOCO
-MPLCONFIGDIR=/tmp/pyloco-mpl-pysc .venv/bin/python Examples/Demo/start_pysc_demo_server.py
+MPLCONFIGDIR=/tmp/pyloco-mpl-pysc .venv/bin/python Examples/Demo/start_pysc_server.py --profile ebs
 ```
 
 Wait for `Listening on 127.0.0.1:13131` and `Accepting commands...`.
@@ -50,6 +50,9 @@ The launcher loads the existing EBS pySC state and regenerates
 It applies a demo-only BPM-noise override of σx = σy = 1.5 µm without changing
 the saved EBS state. Override it when needed with `--bpm-noise-x-um VALUE` and
 `--bpm-noise-y-um VALUE`.
+
+The independent official PETRA III simulation uses `--profile petra3`. It is
+still `DEMO • pySC SERVER`; it does not select or modify LIVE PETRA III DOOCS.
 
 ### pySC corrector units
 
@@ -72,7 +75,7 @@ MPLCONFIGDIR=/tmp/pyloco-mpl-measure .venv/bin/python -m pyLOCO.measure.app
 
 ## Monday Measure / Correct click script
 
-1. In **Machine**, select **pySC Server**. Confirm the persistent `DEMO • pySC SERVER` badge, then click **Test connection**. It should report 320 BPMs plus RF and H/V corrector readback.
+1. In **Machine**, select **pySC Server**, then choose the **EBS** machine profile. Confirm the persistent `DEMO • pySC SERVER` badge, then click **Test connection**. It should report 320 BPMs plus RF and H/V corrector readback.
 2. In **BPMs**, choose **Manual names / positions**, enter `0, 1, 2`, and click **Preview selection**. These are zero-based catalog positions and display the real EBS SC BPM names.
 3. Open **Measurement**. Configuration is on the left and the complete acquisition workspace is visible on the right—no Review-tab navigation or resizing is required. Choose **BPM Noise**, 5 readings, 0.05 s delay, then click **Start BPM-noise measurement**; show live orbit, four final plots, and the highlighted saved HDF5/session path.
 4. Choose **Dispersion**, **Automatic**, a 200 Hz total bipolar RF separation (±100 Hz), 3 readings, 0.05 s delay and 0.05 s settling. The plan shows the calculated negative/positive RF frequencies. Start once. Show the pyLOCO-compatible `negative − positive` RF orbit difference, physical Dₓ/Dᵧ using the served EBS lattice slip factor, and the `restored` RF status.

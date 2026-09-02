@@ -18,6 +18,7 @@ class MeasureProject:
     measurement_label: str = "Mock BPM noise"
     operator_comments: str = ""
     adapter: str = "Mock"
+    pysc_profile: str = "ebs"
     bpm_selection_method: str = "all"
     bpm_manual: str = ""
     bpm_names_file: str = ""
@@ -56,6 +57,8 @@ class MeasureProject:
             raise ValueError("Invalid or unsupported pyLOCO Measure project")
         if self.adapter not in {"Mock","pySC Server","PETRA / DOOCS","PETRA III DOOCS"}:
             raise ValueError("Unsupported Measure adapter")
+        if self.pysc_profile not in {"ebs", "petra3", "petra3_realistic"}:
+            raise ValueError("Unsupported pySC machine profile")
         if self.measurement_type not in {"bpm_noise", "dispersion", "orm"}:
             raise ValueError("Unsupported measurement type")
         if self.adapter in {"PETRA / DOOCS","PETRA III DOOCS"} and self.measurement_type=="orm":

@@ -1,0 +1,45 @@
+schema_version: '1.0'
+key: petra3_realistic
+label: PETRA III / realistic errors
+scenario: realistic_errors
+machine: PETRA III pySC simulation — fixed-seed uncorrected realistic errors
+builder: generated_configuration
+configuration_file: petra3_conf.yaml
+lattice_file: data/p3_v24.mat
+bpm_mapping_file: data/p3_BPM_mapping.yaml
+quadrupole_mapping_file: data/p3_quadrupole_mapping.yaml
+hcor_mapping_file: data/p3_HCM_mapping.yaml
+vcor_mapping_file: data/p3_VCM_mapping.yaml
+bpm_names_file: data/BPM_names.txt
+hcor_names_file: data/HCM_names.txt
+vcor_names_file: data/VCM_names.txt
+catalog_file: catalog.json
+rf_system: main
+random_seed: 20260907
+sigma_truncate: 2.5
+immutable_baseline: false
+uncorrected: true
+error_distribution:
+  family: zero_mean_gaussian
+  truncation_sigma: 2.5
+  quadrupole_alignment_x_rms_m: 1.0e-6
+  quadrupole_alignment_y_rms_m: 1.0e-6
+  quadrupole_roll_rms_rad: 50.0e-6
+  quadrupole_relative_calibration_rms: 5.0e-4
+  corrector_relative_calibration_rms: 5.0e-3
+  corrector_roll_rms_rad: 50.0e-6
+  bpm_offset_x_rms_m: 20.0e-6
+  bpm_offset_y_rms_m: 20.0e-6
+  bpm_roll_rms_rad: 100.0e-6
+  bpm_relative_gain_rms: 5.0e-3
+  bpm_orbit_noise_rms_m: 2.0e-6
+  automatic_correction: none
+provenance:
+  baseline: colleague-supplied PETRA III official nominal profile
+  baseline_lattice_sha256: e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512
+  bpm_mapping_sha256: 00cea77162c935c2327ef96efc760c88c130e8b8897b6dcd6d47792c4207383f
+  hcor_mapping_sha256: 74ca5e9bc8d326bd707a8e4157554c60f8effeb9d44dd65257a649c44e6200fc
+  vcor_mapping_sha256: cde2cf13ef32452795e0322e8950c9870ae8a9acd7fa01a471d0cfa5fa85ed0d
+  quadrupole_identity: explicit unique FamName-to-index mapping, preserving lattice order while global CommonName naming preserves unique RF cavity identities
+  tolerance_rationale: gentle post-commissioning-style uncorrected realization; orbit-driving alignment and BPM offsets reduced after the initial profile produced millimetre-scale orbit, while retaining the measured/demo 2 um BPM noise and small nonzero optics/instrument calibration errors
+  scientific_content_modified: errors applied at SC construction only; baseline lattice file is an exact byte copy

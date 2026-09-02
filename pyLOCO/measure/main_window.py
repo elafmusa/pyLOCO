@@ -20,7 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from pyLOCO.control_system import (AdapterCapability, InterfaceRegistry, MockAdapter,
-                                   PETRAReadOnlyAdapter, OptionalDependencyUnavailable)
+                                   PETRAReadOnlyAdapter, OptionalDependencyUnavailable,
+                                   available_pysc_profiles)
 from pyLOCO.data_schema import (
     MeasurementSession, SessionFile, load_session, save_session,
     validate_measurement_file, write_bpm_noise, write_dispersion, write_orm,
@@ -344,8 +345,13 @@ class MeasureMainWindow(QMainWindow):
         for descriptor in InterfaceRegistry.DESCRIPTORS:
             self.adapter_combo.addItem(descriptor.label,descriptor.key)
         self.adapter_combo.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        self.pysc_profile_combo=QComboBox()
+        for profile in available_pysc_profiles():
+            self.pysc_profile_combo.addItem(profile.label,profile.key)
+        self.pysc_profile_combo.setToolTip("Machine configuration served by the generic pySC Server backend")
         rows=(
             ("Control system",self.adapter_combo),
+            ("Machine profile",self.pysc_profile_combo,None,"profile"),
             ("Adapter",QLabel("Mock — deterministic offline data source"),"adapter"),
             ("Connection",QLabel("Offline simulation"),"connection"),
             ("Access",QLabel("Read only — no real machine writes"),"access"),
@@ -360,11 +366,15 @@ class MeasureMainWindow(QMainWindow):
             label=QLabel(name); label.setMinimumWidth(180); label.setAlignment(Qt.AlignLeft|Qt.AlignVCenter)
             value.setMinimumHeight(36); value.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
             if isinstance(value,QLabel): value.setAlignment(Qt.AlignLeft|Qt.AlignVCenter); self.machine_value_labels.append(value)
-            grid.addWidget(label,row,0); grid.addWidget(value,row,1); grid.setRowMinimumHeight(row,36)
-            self.machine_rows.append((label,value))
+            grid.addWidget(label,row,0); grid.addWidget(value,row,1)
+            if not (len(item)>3 and item[3]=="profile"): grid.setRowMinimumHeight(row,36)
+            if len(item)>3 and item[3]=="profile": self.pysc_profile_row=(label,value)
+            else: self.machine_rows.append((label,value))
             if key:self.machine_info[key]=value
         self.test_connection_button=QPushButton("Test connection"); self.test_connection_button.setMinimumHeight(36); self.test_connection_button.clicked.connect(self._test_connection); grid.addWidget(self.test_connection_button,0,2)
         self.adapter_combo.currentIndexChanged.connect(self._adapter_changed)
+        self.pysc_profile_combo.currentIndexChanged.connect(self._pysc_profile_changed)
+        for widget in self.pysc_profile_row: widget.setVisible(False)
         layout.addWidget(self.machine_group); return self._scroll_page(content)
 
     def _bpms_page(self):
@@ -399,21 +409,24 @@ class MeasureMainWindow(QMainWindow):
 
     def _adapter_changed(self,*_):
         key=self.adapter_combo.currentData(); petra=key=="petra"; pysc=key=="pysc"
+        for widget in self.pysc_profile_row: widget.setVisible(pysc)
         if petra:
             bpm_names=self._load_repository_names("BPM_names.txt"); hnames=self._load_repository_names("HCM_names_control.txt"); vnames=self._load_repository_names("VCM_names_control.txt")
             self.adapter=PETRAReadOnlyAdapter(bpm_names,hnames,vnames)
             self.devices=tuple(BpmDevice(**item) for item in self.adapter.list_devices("bpm")); self.horizontal_correctors=tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("hcor")); self.vertical_correctors=tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("vcor"))
             self.status_badge.setText("LIVE • PETRA III DOOCS"); self._set_connection_state(False,"DISCONNECTED"); self.subtitle.setText("LIVE PETRA III selection — PETRA read-only safety access remains active until a verified write interface is connected."); self.machine_info["adapter"].setText("PETRA III DOOCS"); self.machine_info["connection"].setText("Not tested — use Test connection"); self.machine_info["access"].setText("READ ONLY safety adapter"); self.machine_info["bpm_orbit"].setText("not tested"); self.machine_info["corrector_readback"].setText("not tested"); self.machine_info["calibration"].setText("not tested"); self.machine_info["rf_readback"].setText("unavailable — no verified channel mapping")
         elif pysc:
+            profile_key=self.pysc_profile_combo.currentData() or "ebs"
+            profile_label=self.pysc_profile_combo.currentText()
             try:
-                session=InterfaceRegistry(interface_loaders={}).create("pysc")
+                session=InterfaceRegistry(interface_loaders={},pysc_profile=profile_key).create("pysc")
             except Exception as exc:
                 self.devices=(); self.horizontal_correctors=(); self.vertical_correctors=(); self.selected_devices=(); self.selected_hcorrectors=(); self.selected_vcorrectors=()
-                self.status_badge.setText("DEMO • pySC SERVER"); self._set_connection_state(False,"DISCONNECTED"); self.subtitle.setText("pySC Server demo backend selected — connect to start acquisition."); self.machine_info["adapter"].setText("pySC Server"); self.machine_info["connection"].setText(f"Unavailable: {exc}"); self.machine_info["access"].setText("DEMO — acquisition blocked while unavailable"); self.machine_info["bpm_orbit"].setText("unavailable"); self.machine_info["corrector_readback"].setText("unavailable"); self.machine_info["calibration"].setText("backend managed"); self.machine_info["rf_readback"].setText("unavailable");
+                self.status_badge.setText("DEMO • pySC SERVER"); self._set_connection_state(False,"DISCONNECTED"); self.subtitle.setText(f"pySC Server {profile_label} simulation selected — connect to start acquisition."); self.machine_info["adapter"].setText(f"pySC Server — {profile_label} simulation"); self.machine_info["connection"].setText(f"Unavailable: {exc}"); self.machine_info["access"].setText("DEMO — acquisition blocked while unavailable"); self.machine_info["bpm_orbit"].setText("unavailable"); self.machine_info["corrector_readback"].setText("unavailable"); self.machine_info["calibration"].setText("backend managed"); self.machine_info["rf_readback"].setText("unavailable");
                 if hasattr(self,"start_button"):self.start_button.setEnabled(False)
                 return
             self.adapter=session.adapter; self.devices=tuple(BpmDevice(**item) for item in self.adapter.list_devices("bpm")); self.horizontal_correctors=tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("hcor")); self.vertical_correctors=tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("vcor"))
-            self.status_badge.setText(session.badge); self._set_connection_state(False,"DISCONNECTED"); self.subtitle.setText("DEMO MODE — pySC Server simulation. Temporary measurement writes are restoration-protected."); self.machine_info["adapter"].setText("pySC Server"); self.machine_info["connection"].setText("Configured — use Test connection"); self.machine_info["access"].setText("DEMO — temporary writes are restoration-protected"); self.machine_info["bpm_orbit"].setText("not tested"); self.machine_info["corrector_readback"].setText("not tested"); self.machine_info["calibration"].setText("backend managed"); self.machine_info["rf_readback"].setText("not tested")
+            self.status_badge.setText(session.badge); self._set_connection_state(False,"DISCONNECTED"); self.subtitle.setText(f"DEMO MODE — pySC Server {profile_label} simulation. Temporary measurement writes are restoration-protected."); self.machine_info["adapter"].setText(f"pySC Server — {profile_label} simulation"); self.machine_info["connection"].setText("Configured — use Test connection"); self.machine_info["access"].setText("DEMO — temporary writes are restoration-protected"); self.machine_info["bpm_orbit"].setText("not tested"); self.machine_info["corrector_readback"].setText("not tested"); self.machine_info["calibration"].setText("backend managed"); self.machine_info["rf_readback"].setText("not tested")
         else:
             self.devices=default_mock_devices(); self.horizontal_correctors,self.vertical_correctors=default_mock_correctors(); self.adapter=build_mock_adapter(self.devices,horizontal_correctors=self.horizontal_correctors,vertical_correctors=self.vertical_correctors)
             self.status_badge.setText("MOCK • READ ONLY"); self._set_connection_state(True,"OFFLINE READY"); self.subtitle.setText("Offline measurement planning and deterministic Mock acquisition — no machine writes are available."); self.machine_info["adapter"].setText("Mock — deterministic offline data source"); self.machine_info["connection"].setText("Offline simulation"); self.machine_info["access"].setText("Read only — no real machine writes"); self.machine_info["bpm_orbit"].setText(f"available — {len(self.devices)} mock BPM devices"); self.machine_info["corrector_readback"].setText("simulated diagnostics available"); self.machine_info["calibration"].setText("not applicable in Mock mode"); self.machine_info["rf_readback"].setText("simulated internally")
@@ -425,11 +438,14 @@ class MeasureMainWindow(QMainWindow):
             if petra and self.measurement_type.currentData()=="orm":self.measurement_type.setCurrentIndex(self.measurement_type.findData("bpm_noise"))
             automatic=self.rf_control_mode.model().item(self.rf_control_mode.findData("automatic")); automatic.setEnabled(AdapterCapability.RF_WRITE in self.adapter.capabilities)
             if pysc: self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("automatic"))
-            if pysc and self.measurement_label.text().startswith("Mock"):
-                labels={"bpm_noise":"EBS pySC BPM noise","dispersion":"EBS pySC dispersion","orm":"EBS pySC small ORM"}; self.measurement_label.setText(labels[self.measurement_type.currentData()])
-            elif key=="mock" and self.measurement_label.text().startswith("EBS pySC"):
+            if pysc and (self.measurement_label.text().startswith("Mock") or " pySC " in self.measurement_label.text()):
+                prefix=f"{profile_label} pySC"; labels={"bpm_noise":f"{prefix} BPM noise","dispersion":f"{prefix} dispersion","orm":f"{prefix} small ORM"}; self.measurement_label.setText(labels[self.measurement_type.currentData()])
+            elif key=="mock" and " pySC " in self.measurement_label.text():
                 labels={"bpm_noise":"Mock BPM noise","dispersion":"Mock manual-RF dispersion","orm":"Mock orbit response matrix"}; self.measurement_label.setText(labels[self.measurement_type.currentData()])
         self.refresh_preview(); self.statusBar().showMessage("PETRA adapter selected — no connection attempted" if petra else "pySC Server configured — test connection before acquisition" if pysc else "Mock adapter ready — read-only acquisition"); self._sync_rf_presentation()
+
+    def _pysc_profile_changed(self,*_):
+        if self.adapter_combo.currentData()=="pysc": self._adapter_changed()
 
     def _sync_rf_presentation(self, *_):
         if not hasattr(self,"rf_control_mode"):return
@@ -453,7 +469,7 @@ class MeasureMainWindow(QMainWindow):
         if self.adapter_combo.currentData()=="pysc":
             try:self._adapter_changed(); result=self.adapter.test_connection()
             except Exception as exc:self._set_connection_state(False,"DISCONNECTED"); QMessageBox.warning(self,"pySC Server unavailable",str(exc)); return
-            self._set_connection_state(True,"CONNECTED"); self.machine_info["connection"].setText("Connected — demo server reads succeeded"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(str(result["corrector_readback"])); self.machine_info["rf_readback"].setText(f"available — {result['rf_readback']:.6f} Hz"); self.nominal_rf.setText(f"{result['rf_readback']:.12f}"); self.statusBar().showMessage(f"CONNECTED • {self.status_badge.text()} • {result['bpms']} BPMs"); QMessageBox.information(self,"pySC Server",f"Connected to DEMO backend; {result['bpms']} BPMs available."); return
+            profile=self.pysc_profile_combo.currentText(); self._set_connection_state(True,"CONNECTED"); self.machine_info["connection"].setText(f"Connected — {profile} demo-server reads succeeded"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(str(result["corrector_readback"])); self.machine_info["rf_readback"].setText(f"available — {result['rf_readback']:.6f} Hz"); self.nominal_rf.setText(f"{result['rf_readback']:.12f}"); self.statusBar().showMessage(f"CONNECTED • {self.status_badge.text()} • {profile} • {result['bpms']} BPMs"); QMessageBox.information(self,"pySC Server",f"Connected to {profile} DEMO profile; {result['bpms']} BPMs available."); return
         if not isinstance(self.adapter,PETRAReadOnlyAdapter):
             QMessageBox.information(self,"Mock connection","Deterministic Mock adapter is ready. No external system is contacted."); return
         self.test_connection_button.setEnabled(False); self.machine_info["connection"].setText("Testing safe reads…"); QApplication.processEvents()
@@ -676,7 +692,7 @@ class MeasureMainWindow(QMainWindow):
             self.validate_button.setEnabled(False); self.open_button.setEnabled(False)
         if hasattr(self,"live_plot"): self._reset_live_plot()
         if hasattr(self,"plan_values"): self.refresh_plan()
-        backend=self.adapter_combo.currentData() if hasattr(self,"adapter_combo") else "mock"; prefix="EBS pySC" if backend=="pysc" else "Mock"
+        backend=self.adapter_combo.currentData() if hasattr(self,"adapter_combo") else "mock"; prefix=f"{self.pysc_profile_combo.currentText()} pySC" if backend=="pysc" else "Mock"
         if dispersion and self.measurement_name.text() in {"bpm-noise","mock-dispersion","pysc-dispersion"}:
             self.measurement_name.setText("pysc-dispersion" if backend=="pysc" else "mock-dispersion"); self.measurement_label.setText(f"{prefix} dispersion" if backend=="pysc" else "Mock manual-RF dispersion")
         elif not dispersion and not orm and self.measurement_name.text() in {"mock-dispersion","pysc-dispersion","mock-orm","pysc-small-orm"}:
@@ -1146,7 +1162,7 @@ class MeasureMainWindow(QMainWindow):
     def _save_result(self,result):
         output=self._resolved_output_directory(); output.mkdir(parents=True,exist_ok=True); safe=re.sub(r"[^A-Za-z0-9_.-]+","_",self.measurement_name.text().strip()).strip("_") or "measurement"; stamp=datetime.now().strftime("%Y%m%d-%H%M%S"); measurement=output/f"{safe}-{stamp}.h5"; is_dispersion=isinstance(result,DispersionResult)
         descriptor=InterfaceRegistry().descriptor(self.adapter_combo.currentData())
-        metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"readings_per_state":self.readings.value(),"delay_seconds":self.delay.value(),"elapsed_seconds":result.elapsed_seconds}
+        metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"pysc_machine_profile":self.pysc_profile_combo.currentData() if descriptor.key=="pysc" else None,"readings_per_state":self.readings.value(),"delay_seconds":self.delay.value(),"elapsed_seconds":result.elapsed_seconds}
         if isinstance(result,ORMResult):
             nh=len(result.horizontal_correctors); write_orm(measurement,response_matrix=result.response_matrix,bpm_names=[d.name for d in result.bpms],horizontal_corrector_names=[d.name for d in result.horizontal_correctors],vertical_corrector_names=[d.name for d in result.vertical_correctors],requested_kick_h_rad=result.requested_kicks_rad[:nh],requested_kick_v_rad=result.requested_kicks_rad[nh:],actual_kick_h_rad=result.effective_kicks_rad[:nh],actual_kick_v_rad=result.effective_kicks_rad[nh:],orbit_plus_m=result.raw_state_a_m,orbit_minus_m=result.raw_state_b_m,scaled=result.scaled,direction=result.direction,original_setpoints_rad=result.original_setpoints_rad,requested_state_a_rad=result.requested_state_a_rad,requested_state_b_rad=result.requested_state_b_rad,actual_state_a_rad=result.actual_state_a_rad,actual_state_b_rad=result.actual_state_b_rad,final_setpoints_rad=result.final_setpoints_rad,timestamps_plus_s=result.timestamps_state_a_s,timestamps_minus_s=result.timestamps_state_b_s,restoration_status=result.restoration_status,metadata={**metadata,"response_matrix_unit":"m/rad" if result.scaled else "m","row_order":"horizontal_bpms,vertical_bpms","column_order":"horizontal_correctors,vertical_correctors"})
         elif is_dispersion:
@@ -1358,9 +1374,10 @@ class MeasureMainWindow(QMainWindow):
 
     def _collect_project(self):
         h=self.corrector_selection_widgets["hcor"]; v=self.corrector_selection_widgets["vcor"]
-        return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),readings=self.readings.value(),delay_seconds=self.delay.value(),settling_delay_seconds=self.settling_delay.value(),verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=self.orm_scaled.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme)
+        return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),readings=self.readings.value(),delay_seconds=self.delay.value(),settling_delay_seconds=self.settling_delay.value(),verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=self.orm_scaled.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme)
 
     def _load_project_widgets(self):
+        self.pysc_profile_combo.setCurrentIndex(max(0,self.pysc_profile_combo.findData(self.project.pysc_profile)))
         self.adapter_combo.setCurrentIndex(max(0,self.adapter_combo.findText(self.project.adapter)))
         p=self.project; self.measurement_type.setCurrentIndex(max(0,self.measurement_type.findData(p.measurement_type))); self.measurement_name.setText(p.measurement_name); self.measurement_label.setText(p.measurement_label); self.comments.setPlainText(p.operator_comments); self.selection_method.setCurrentIndex(max(0,self.selection_method.findData(p.bpm_selection_method))); self.manual_input.setText(p.bpm_manual); self.names_file.setText(p.bpm_names_file); self.bpm_exclusions.setText(p.excluded_bpm_positions); self.readings.setValue(p.readings); self.delay.setValue(p.delay_seconds); self.settling_delay.setValue(p.settling_delay_seconds); self.verify_restored_orbit.setChecked(p.verify_restored_orbit); self.nominal_rf.setText("" if p.nominal_rf_hz is None else f"{p.nominal_rf_hz:g}"); self.rf_step.setValue(p.rf_step_hz); self.dispersion_direction.setCurrentIndex(max(0,self.dispersion_direction.findData(p.dispersion_direction))); self.orm_direction.setCurrentIndex(max(0,self.orm_direction.findData(p.orm_direction))); self.orm_kick_mode.setCurrentIndex(max(0,self.orm_kick_mode.findData(p.orm_kick_mode))); self.orm_hkick.setValue(p.orm_horizontal_kick_rad*1e6); self.orm_vkick.setValue(p.orm_vertical_kick_rad*1e6); self.orm_kick_file.setText(p.orm_kick_file); self.orm_scaled.setChecked(p.orm_scaled)
         for key,prefix in (("hcor","hcor"),("vcor","vcor")):
