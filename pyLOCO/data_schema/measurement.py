@@ -125,6 +125,10 @@ def write_orm(
         handle.attrs["scaled"] = bool(scaled)
         handle.attrs["direction"] = str(direction)
         handle.attrs["canonical_definition"] = "state_a orbit minus state_b orbit; divided by actual effective kick only when scaled"
+        handle.attrs["bipolar_kick_definition"] = "K_plus=K0+delta_K/2; K_minus=K0-delta_K/2; delta_K=K_plus_readback-K_minus_readback"
+        handle.attrs["bpm_name_order"] = "dataset:names/bpms; identical order in horizontal and vertical row blocks"
+        handle.attrs["corrector_name_order"] = "names/horizontal_correctors followed by names/vertical_correctors"
+        handle.attrs["restoration_tolerance_rad"] = 1.0e-12
         names = handle.create_group("names")
         _create_text_dataset(names, "bpms", bpm_names)
         _create_text_dataset(names, "horizontal_correctors", horizontal_corrector_names)
@@ -348,13 +352,17 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
     errors: list[str] = []
     with h5py.File(source, "r") as handle:
         kind = str(handle.attrs.get("measurement_kind", ""))
+        try: measurement_metadata=json.loads(handle["metadata/json"][()])
+        except Exception: measurement_metadata={}
+        strict_orm=kind=="orm" and measurement_metadata.get("orm_validation_convention")=="historical_petra_bipolar_v1"
         if handle.attrs.get("pyloco_file_type") != FILE_TYPE:
             errors.append("invalid or missing pyloco_file_type")
         if str(handle.attrs.get("schema_version", "")) != SCHEMA_VERSION:
             errors.append("unsupported schema_version")
         required = {
             "orm": ("response_matrix", "kicks/horizontal/requested", "kicks/horizontal/actual",
-                    "kicks/vertical/requested", "kicks/vertical/actual", "raw/orbit_plus_m", "raw/orbit_minus_m"),
+                    "kicks/vertical/requested", "kicks/vertical/actual", "raw/orbit_plus_m", "raw/orbit_minus_m",
+                    "names/bpms", "names/horizontal_correctors", "names/vertical_correctors"),
             "bpm_noise": ("Noise_BPMx", "Noise_BPMy", "raw/orbits_x_m", "raw/orbits_y_m"),
             "dispersion": ("measured_eta_x", "measured_eta_y", "raw/rf_frequency_hz",
                            "raw/rf_setpoint_hz", "raw/rf_readback_hz", "raw/orbits_x_m", "raw/orbits_y_m"),
@@ -373,6 +381,12 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
             if str(handle.attrs.get("response_matrix_unit","m")) not in {"m","m/rad"}: errors.append("invalid ORM response unit")
             if all(name in handle for name in ("names/bpms","names/horizontal_correctors","names/vertical_correctors")):
                 nb=len(handle["names/bpms"]); nh=len(handle["names/horizontal_correctors"]); nv=len(handle["names/vertical_correctors"])
+                decode=lambda values:[item.decode() if isinstance(item,bytes) else str(item) for item in values]
+                bpm_names=decode(handle["names/bpms"][:]); h_names=decode(handle["names/horizontal_correctors"][:]); v_names=decode(handle["names/vertical_correctors"][:])
+                if len(set(bpm_names))!=nb or len(set(h_names))!=nh or len(set(v_names))!=nv: errors.append("ORM selected-name datasets contain duplicates")
+                if strict_orm:
+                    for field,stored in (("selected_bpm_names",bpm_names),("selected_horizontal_corrector_names",h_names),("selected_vertical_corrector_names",v_names)):
+                        if measurement_metadata.get(field)!=stored:errors.append(f"ORM {field} metadata does not match matrix ordering")
                 if matrix.shape!=(2*nb,nh+nv): errors.append("ORM dimensions do not match stored names")
                 for name,length in (("kicks/horizontal/requested",nh),("kicks/horizontal/actual",nh),("kicks/vertical/requested",nv),("kicks/vertical/actual",nv)):
                     if name in handle and (handle[name].shape!=(length,) or not np.isfinite(handle[name][:]).all()): errors.append(f"{name} has invalid length or values")
@@ -381,6 +395,30 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
                     valid_shape=plus.shape==minus.shape and plus.ndim in (2,3) and plus.shape[0]==nh+nv and plus.shape[-1]==2*nb
                     if not valid_shape: errors.append("raw ORM orbit dimensions are inconsistent")
                     elif not np.isfinite(plus[:]).all() or not np.isfinite(minus[:]).all(): errors.append("raw ORM orbits contain non-finite values")
+                    else:
+                        mean_plus=plus[:] if plus.ndim==2 else np.mean(plus[:],axis=1)
+                        mean_minus=minus[:] if minus.ndim==2 else np.mean(minus[:],axis=1)
+                        raw_columns=(mean_plus-mean_minus).T
+                        scaled=bool(handle.attrs.get("scaled",False)); expected=raw_columns
+                        if scaled:
+                            actual=np.concatenate((handle["kicks/horizontal/actual"][:],handle["kicks/vertical/actual"][:]))
+                            if np.any(~np.isfinite(actual)) or np.any(np.isclose(actual,0.0,rtol=0,atol=1e-18)):errors.append("normalized ORM has invalid actual readback separation")
+                            else:expected=raw_columns/actual[np.newaxis,:]
+                        if strict_orm and not np.allclose(matrix[:],expected,rtol=1e-12,atol=1e-15):errors.append("ORM matrix does not equal mean(positive)-mean(negative), normalized by actual readback separation when scaled")
+                        if strict_orm and str(handle.attrs.get("direction",""))=="bipolar":
+                            if str(handle["raw"].attrs.get("state_a",""))!="+kick" or str(handle["raw"].attrs.get("state_b",""))!="-kick":errors.append("invalid bipolar ORM state/sign convention")
+                        if str(handle["raw"].attrs.get("response_row_order",""))!="horizontal_bpms,vertical_bpms" or str(handle["raw"].attrs.get("corrector_order",""))!="horizontal_correctors,vertical_correctors":errors.append("raw ORM ordering does not match selected-name ordering")
+                state_required=("setpoints/original","setpoints/final","setpoints/restoration_status")
+                if strict_orm and all(name in handle for name in state_required):
+                    original=handle["setpoints/original"][:]; final=handle["setpoints/final"][:]; statuses=decode(handle["setpoints/restoration_status"][:]); tolerance=float(handle.attrs.get("restoration_tolerance_rad",1e-12))
+                    if len(original)!=nh+nv or len(final)!=nh+nv or len(statuses)!=nh+nv:errors.append("ORM restoration vectors do not match corrector ordering")
+                    else:
+                        if any(status!="restored" for status in statuses):errors.append("not all ORM correctors have successful restoration status")
+                        if not np.allclose(final,original,rtol=0,atol=tolerance):errors.append("final ORM readbacks do not match original setpoints within tolerance")
+                elif strict_orm:errors.append("missing ORM restoration/readback diagnostics")
+                if strict_orm and measurement_metadata.get("backend_key")=="pysc":
+                    for field in ("machine","profile","profile_key","lattice_file","lattice_provenance"):
+                        if not measurement_metadata.get(field):errors.append(f"missing ORM machine/profile provenance field {field}")
         if kind == "dispersion" and "measured_eta_x" in handle and "measured_eta_y" in handle:
             if handle["measured_eta_x"].shape != handle["measured_eta_y"].shape:
                 errors.append("measured_eta_x/y shapes differ")

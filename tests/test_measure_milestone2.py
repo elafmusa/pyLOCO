@@ -131,7 +131,7 @@ def test_responsive_measure_pages_do_not_overlap_or_elide(app, size, theme):
     window = MeasureMainWindow(devices=default_mock_devices(12))
     window.resize(*size); window.apply_theme(theme); window.show(); app.processEvents()
     tab_bar = window.tabs.tabBar()
-    for index, expected in enumerate(("Machine", "BPMs", "Measurement", "Review & Save")):
+    for index, expected in enumerate(("Machine", "Devices", "Measurement", "Review & Save")):
         actual = window.tabs.tabText(index).replace("&&", "&").removeprefix("✓ ")
         assert actual == expected
         required = tab_bar.fontMetrics().horizontalAdvance(window.tabs.tabText(index)) + 32
