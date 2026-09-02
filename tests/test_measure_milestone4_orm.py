@@ -53,6 +53,9 @@ def test_bipolar_orm_restores_and_verifies_k0_before_negative_kick():
     assert result.intermediate_restoration_status==("restored",)
     np.testing.assert_allclose(result.intermediate_restored_setpoints_rad,[original],rtol=0,atol=1e-15)
     np.testing.assert_allclose(result.final_setpoints_rad,[original],rtol=0,atol=1e-15)
+    assert np.isfinite(result.raw_reference_before_m).all()
+    assert np.isfinite(result.raw_reference_intermediate_m).all()
+    assert np.isfinite(result.raw_reference_final_m).all()
 
 def test_negative_kick_never_starts_when_intermediate_restore_fails():
     bpms,h,_,_,base=setup(2,1,0,2); writes=[]
@@ -112,6 +115,9 @@ def test_schema_session_and_main_importer(app,tmp_path):
         assert f["response_matrix"].shape==(8,5); assert f.attrs["response_matrix_unit"]=="m/rad"; assert f["raw/orbit_plus_m"].shape==(5,3,8); assert len(f["setpoints/restoration_status"])==5
         np.testing.assert_allclose(f["setpoints/intermediate_restored"][:],f["setpoints/original"][:],rtol=0,atol=1e-12)
         assert all(value.decode()=="restored" for value in f["setpoints/intermediate_restoration_status"][:])
+        assert f["raw/reference_before_m"].shape==f["raw/orbit_plus_m"].shape
+        assert f["raw/reference_intermediate_m"].shape==f["raw/orbit_plus_m"].shape
+        assert f["raw/reference_final_m"].shape==f["raw/orbit_plus_m"].shape
         metadata=json.loads(f["metadata/json"][()].decode() if isinstance(f["metadata/json"][()],bytes) else f["metadata/json"][()])
         assert metadata["machine_identity"]=="Mock / offline"
     window._show_result(result); transaction=window.rf_diagnostics.text()
@@ -120,8 +126,11 @@ def test_schema_session_and_main_importer(app,tmp_path):
     assert "orbit(+) − orbit(−)" in transaction
     assert window.orm_restoration_status.text()=="All correctors restored between kicks and finally: ✓ YES"
     assert "Intermediate restore K+ → K0" in transaction
+    assert "Final orbit return:" in transaction and "diagnostic-only" in transaction
     assert "Matrix shape: 8 × 5" in window.orm_measurement_summary.text()
     assert len(window.x_plot.figure.axes[0].lines)>=2  # X/Y and H/V boundaries
+    assert window.orm_view_mode.currentData()=="2d" and window.x_plot.figure.axes[0].images[0].get_cmap().name=="viridis"
+    window.orm_view_mode.setCurrentIndex(window.orm_view_mode.findData("3d")); app.processEvents(); assert window.x_plot.figure.axes[0].name=="3d"
     window._set_completed_result_view(True)
     assert window.live_plot.isHidden() and window.plan_group.isHidden()
     assert not window.preview_toggle.isHidden() and window.preview_toggle.text()=="Show acquisition preview"
@@ -133,6 +142,8 @@ def test_schema_session_and_main_importer(app,tmp_path):
 def test_orm_gui_context_preview_kicks_and_project_roundtrip(app,tmp_path):
     window=MeasureMainWindow(); window.measurement_type.setCurrentIndex(2); app.processEvents()
     assert not window.orm_config_group.isHidden() and not window.orm_corrector_group.isHidden(); assert window.start_button.text()=="Start ORM measurement"; assert window.kick_preview.rowCount()==12
+    assert window.results_tabs.tabText(0)=="Full ORM" and window.results_tabs.currentIndex()==0
+    assert [window.results_tabs.tabText(index) for index in range(5)]==["Full ORM","Direct H→X","Direct V→Y","Coupling V→X","Coupling H→Y"]
     window.corrector_selection_widgets["hcor"]["exclusion"].setText("1"); window._refresh_corrector_preview("hcor"); assert len(window.selected_hcorrectors)==5
     kicks=tmp_path/"kicks.npz"; np.savez(kicks,horizontal=np.arange(1,6)*10e-6,vertical=np.arange(1,7)*20e-6); window.orm_kick_mode.setCurrentIndex(1); window.orm_kick_file.setText(str(kicks)); window._update_kick_preview(); assert window.kick_preview.rowCount()==11
     window.orm_direction.setCurrentIndex(2); window.orm_scaled.setChecked(True); project=window._collect_project(); path=tmp_path/"orm.pyloco-measure.json"; save_measure_project(path,project); loaded=load_measure_project(path); assert loaded.orm_direction=="negative" and loaded.orm_scaled and loaded.excluded_hcor_positions=="1"
@@ -184,6 +195,7 @@ def test_strict_orm_validation_rejects_sign_normalization_restoration_and_order(
         "restoration_status":lambda f:f["setpoints/restoration_status"].__setitem__(0,"restore_failed"),
         "intermediate_restoration_status":lambda f:f["setpoints/intermediate_restoration_status"].__setitem__(0,"restore_failed"),
         "intermediate_readback":lambda f:f["setpoints/intermediate_restored"].__setitem__(0,1e-6),
+        "missing_restored_orbit":lambda f:f["raw/reference_final_m"].__setitem__((0,0,0),np.nan),
         "final_readback":lambda f:f["setpoints/final"].__setitem__(0,1e-6),
     }
     import shutil

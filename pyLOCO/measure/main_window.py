@@ -585,6 +585,7 @@ class MeasureMainWindow(QMainWindow):
         buttons=QHBoxLayout(); self.start_button=QPushButton("Start BPM-noise measurement"); self.start_button.setObjectName("measurePrimary"); self.start_button.clicked.connect(self.start_acquisition); self.repeat_button=QPushButton("Repeat measurement"); self.repeat_button.setObjectName("measurePrimary"); self.repeat_button.clicked.connect(self.repeat_measurement); self.repeat_button.setVisible(False); self.cancel_button=QPushButton("Cancel"); self.cancel_button.setEnabled(False); self.cancel_button.clicked.connect(self.cancel_acquisition); self.preview_toggle=QPushButton("Show acquisition preview"); self.preview_toggle.setCheckable(True); self.preview_toggle.setVisible(False); self.preview_toggle.toggled.connect(self._toggle_completed_preview); buttons.addWidget(self.start_button); buttons.addWidget(self.repeat_button); buttons.addWidget(self.cancel_button); buttons.addWidget(self.preview_toggle); buttons.addStretch(1); rl.addLayout(buttons); self.start_block_reason=QLabel(); self.start_block_reason.setWordWrap(True); self.start_block_reason.setStyleSheet("color:#F0A35E;font-weight:700"); rl.addWidget(self.start_block_reason); layout.addWidget(run_group); self.plan_group=plan_group; layout.addWidget(plan_group)
         self.log_group=QGroupBox("Acquisition Log"); self.log_group.setCheckable(True); self.log_group.setChecked(False); log_layout=QVBoxLayout(self.log_group); self.log_body=QWidget(); body_layout=QVBoxLayout(self.log_body); body_layout.setContentsMargins(0,0,0,0); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMinimumHeight(110); log_actions=QHBoxLayout(); clear_log=QPushButton("Clear"); clear_log.clicked.connect(self.log.clear); save_log=QPushButton("Save log…"); save_log.clicked.connect(self.save_log); log_actions.addWidget(clear_log); log_actions.addWidget(save_log); log_actions.addStretch(1); body_layout.addLayout(log_actions); body_layout.addWidget(self.log); log_layout.addWidget(self.log_body); self.log_group.toggled.connect(self.log_body.setVisible); self.log_body.setVisible(False); layout.addWidget(self.log_group)
         self.orm_column_row=QWidget(); ocr=QHBoxLayout(self.orm_column_row); ocr.setContentsMargins(0,0,0,0); ocr.addWidget(QLabel("Selected ORM column")); self.orm_column_selector=QComboBox(); self.orm_column_selector.currentIndexChanged.connect(self._update_selected_orm_column); ocr.addWidget(self.orm_column_selector,1); layout.addWidget(self.orm_column_row); self.orm_column_row.setVisible(False)
+        self.orm_view_row=QWidget(); ovr=QHBoxLayout(self.orm_view_row); ovr.setContentsMargins(0,0,0,0); ovr.addWidget(QLabel("ORM matrix plot")); self.orm_view_mode=QComboBox(); self.orm_view_mode.addItem("2D heatmap — FIT colors","2d"); self.orm_view_mode.addItem("3D surface — FIT colors","3d"); self.orm_view_mode.currentIndexChanged.connect(self._redraw_orm_result); ovr.addWidget(self.orm_view_mode); ovr.addStretch(1); layout.addWidget(self.orm_view_row); self.orm_view_row.setVisible(False)
         self.dispersion_display_row=QWidget(); ddr=QHBoxLayout(self.dispersion_display_row); ddr.setContentsMargins(0,0,0,0); ddr.addWidget(QLabel("Dispersion display")); self.dispersion_display=QComboBox(); self.dispersion_display.addItem("RF orbit difference (pyLOCO-compatible)","raw"); self.dispersion_display.addItem("Physical dispersion","physical"); self.dispersion_display.currentIndexChanged.connect(self._dispersion_display_changed); ddr.addWidget(self.dispersion_display,1); self.dispersion_display_reason=QLabel(); self.dispersion_display_reason.setWordWrap(True); ddr.addWidget(self.dispersion_display_reason,2); layout.addWidget(self.dispersion_display_row); self.dispersion_display_row.setVisible(False)
         self.results_tabs=QTabWidget(); self.results_tabs.setMinimumHeight(430); self.results_tabs.tabBar().setExpanding(False); self.results_tabs.tabBar().setElideMode(Qt.ElideNone)
         self.x_plot=PlotCanvas(minimum_height=310); self.y_plot=PlotCanvas(minimum_height=310)
@@ -867,12 +868,14 @@ class MeasureMainWindow(QMainWindow):
 
     def _configure_result_tabs(self,kind):
         self.orm_column_row.setVisible(kind=="orm")
+        self.orm_view_row.setVisible(kind=="orm")
         while self.results_tabs.count():self.results_tabs.removeTab(0)
         if kind=="orm":
-            entries=((self.x_plot,"Full ORM"),(self.y_plot,"Horizontal BPM / H corrector"),(self.mean_x_plot,"Horizontal BPM / V corrector"),(self.mean_y_plot,"Vertical BPM / H corrector"),(self.orm_vv_plot,"Vertical BPM / V corrector"),(self.orm_column_plot,"Selected ORM column"),(self.orm_kick_plot,"Kick diagnostics"))
+            entries=((self.x_plot,"Full ORM"),(self.y_plot,"Direct H→X"),(self.orm_vv_plot,"Direct V→Y"),(self.mean_x_plot,"Coupling V→X"),(self.mean_y_plot,"Coupling H→Y"),(self.orm_column_plot,"Selected ORM column"),(self.orm_kick_plot,"Kick diagnostics"))
         elif kind=="dispersion":entries=((self.x_plot,"Physical Dx [mm]"),(self.y_plot,"Physical Dy [mm]"),(self.raw_x_plot,"RF orbit difference Δx_RF [mm]"),(self.raw_y_plot,"RF orbit difference Δy_RF [mm]"),(self.mean_x_plot,"RF-state horizontal orbits"),(self.mean_y_plot,"RF-state vertical orbits"),(self.rf_shift_x_plot,"RF-induced horizontal shifts"),(self.rf_shift_y_plot,"RF-induced vertical shifts"))
         else:entries=((self.x_plot,"Horizontal BPM noise"),(self.y_plot,"Vertical BPM noise"),(self.mean_x_plot,"Mean horizontal orbit"),(self.mean_y_plot,"Mean vertical orbit"))
         for widget,label in entries:self.results_tabs.addTab(widget,label)
+        if kind=="orm":self.results_tabs.setCurrentIndex(0)
 
     def _update_measurement_help(self, *_):
         if not hasattr(self,"measurement_help_text"): return
@@ -1069,7 +1072,11 @@ class MeasureMainWindow(QMainWindow):
         if not hasattr(self,"plan_values"): return
         kind=self.measurement_type.currentData(); dispersion=kind=="dispersion"; orm=kind=="orm"; state_count=len(self._dispersion_state_specs()) if dispersion else 1
         per_state=max(0,self.readings.value()-1)*self.delay.value()+(self.settling_delay.value() if (dispersion or orm) else 0)
-        estimate=(len(self.selected_hcorrectors)+len(self.selected_vcorrectors))*(2*per_state+self.settling_delay.value()) if orm else state_count*per_state; self.duration.setText(f"approximately {estimate:.2f} s")
+        if orm:
+            orbit_states=5 if self.orm_direction.currentData()=="bipolar" else 4; writes=4 if self.orm_direction.currentData()=="bipolar" else 3
+            estimate=(len(self.selected_hcorrectors)+len(self.selected_vcorrectors))*(orbit_states*max(0,self.readings.value()-1)*self.delay.value()+writes*self.settling_delay.value())
+        else:estimate=state_count*per_state
+        self.duration.setText(f"approximately {estimate:.2f} s")
         output=self._resolved_output_directory()
         try:self._load_kick_arrays() if orm else None; kick_valid=True
         except Exception:kick_valid=False
@@ -1183,10 +1190,18 @@ class MeasureMainWindow(QMainWindow):
             self.reading_status.setText(f"Corrector {current} / {total} — original K0 restored and verified; negative kick may proceed")
             self.log.appendPlainText(f"{event.get('device')}: intermediate K0 restoration VERIFIED (readback error {error:+.9g} µrad).")
             return
+        if event.get("event")=="final_restored":
+            error=(float(event["readback"])-float(event["original"]))*1e6
+            self.reading_status.setText(f"Corrector {current} / {total} — final K0 restored; acquiring return orbit")
+            self.log.appendPlainText(f"{event.get('device')}: final K0 restoration VERIFIED (readback error {error:+.9g} µrad); acquiring diagnostic return orbit.")
+            return
         if event.get("event")=="orbit":
-            reading=int(event["reading"]); readings=int(event["readings"]); fraction=((current-1)+(0.5 if state in {"−kick","reference"} else 0)+(reading/readings)*.5)/total
+            reading=int(event["reading"]); readings=int(event["readings"]); direction=self.orm_direction.currentData()
+            if direction=="bipolar":phase,phase_count={"reference before kick":(0,5),"+kick":(1,5),"restored reference before −kick":(2,5),"−kick":(3,5),"final restored reference":(4,5)}.get(state,(0,5))
+            else:phase,phase_count={"reference before kick":(0,4),"+kick":(1,4),"−kick":(1,4),"reference":(2,4),"final restored reference":(3,4)}.get(state,(0,4))
+            fraction=((current-1)+(phase+reading/readings)/phase_count)/total
             self.reading_status.setText(f"Corrector {current} / {total} — {event.get('plane')} — {event.get('device')} — {state} — orbit {reading} / {readings}")
-            self.samples.setText(f"Orbit reading: {reading} / {readings}"); self._update_live_orbit(event["x"],event["y"])
+            self.samples.setText(f"Orbit reading: {reading} / {readings}"); self._update_live_orbit(event["x"],event["y"],title=f"{event.get('device')} — {state}")
         else:fraction=(current-1)/total; self.reading_status.setText(f"Corrector {current} / {total} — {event.get('plane','')} — {event.get('device','')} — {state}")
         self.progress.setValue(round(100*fraction)); self.progress.setFormat(f"Corrector {current} / {total}"); elapsed=float(event.get("elapsed",0)); self.elapsed.setText(f"Elapsed: {elapsed:.2f} s")
         if event.get("event")=="column":
@@ -1302,7 +1317,7 @@ class MeasureMainWindow(QMainWindow):
             profile_metadata={"machine":profile.machine,"profile_key":profile.key,"profile":profile.scenario,"profile_label":profile.label,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"lattice_provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
         metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"machine_identity":identity,**profile_metadata,"pysc_machine_profile":self.pysc_profile_combo.currentData() if descriptor.key=="pysc" else None,"readings_per_state":self.readings.value(),"delay_seconds":self.delay.value(),"elapsed_seconds":result.elapsed_seconds}
         if isinstance(result,ORMResult):
-            nh=len(result.horizontal_correctors); write_orm(measurement,response_matrix=result.response_matrix,bpm_names=[d.name for d in result.bpms],horizontal_corrector_names=[d.name for d in result.horizontal_correctors],vertical_corrector_names=[d.name for d in result.vertical_correctors],requested_kick_h_rad=result.requested_kicks_rad[:nh],requested_kick_v_rad=result.requested_kicks_rad[nh:],actual_kick_h_rad=result.effective_kicks_rad[:nh],actual_kick_v_rad=result.effective_kicks_rad[nh:],orbit_plus_m=result.raw_state_a_m,orbit_minus_m=result.raw_state_b_m,scaled=result.scaled,direction=result.direction,original_setpoints_rad=result.original_setpoints_rad,requested_state_a_rad=result.requested_state_a_rad,requested_state_b_rad=result.requested_state_b_rad,actual_state_a_rad=result.actual_state_a_rad,actual_state_b_rad=result.actual_state_b_rad,intermediate_restored_setpoints_rad=result.intermediate_restored_setpoints_rad,intermediate_restoration_status=result.intermediate_restoration_status,final_setpoints_rad=result.final_setpoints_rad,timestamps_plus_s=result.timestamps_state_a_s,timestamps_minus_s=result.timestamps_state_b_s,restoration_status=result.restoration_status,metadata={**metadata,"orm_validation_convention":"historical_petra_bipolar_v2","kick_convention":"total bipolar delta_K; K+=K0+delta_K/2; restore and verify K0; K-=K0-delta_K/2; restore and verify K0","subtraction_convention":"mean(positive)-mean(negative)","normalization_convention":"divide each column by actual K+ minus K- readback only when scaled","response_matrix_unit":"m/rad" if result.scaled else "m","row_order":"horizontal_bpms,vertical_bpms","column_order":"horizontal_correctors,vertical_correctors","selected_bpm_names":[d.name for d in result.bpms],"selected_horizontal_corrector_names":[d.name for d in result.horizontal_correctors],"selected_vertical_corrector_names":[d.name for d in result.vertical_correctors]})
+            nh=len(result.horizontal_correctors); write_orm(measurement,response_matrix=result.response_matrix,bpm_names=[d.name for d in result.bpms],horizontal_corrector_names=[d.name for d in result.horizontal_correctors],vertical_corrector_names=[d.name for d in result.vertical_correctors],requested_kick_h_rad=result.requested_kicks_rad[:nh],requested_kick_v_rad=result.requested_kicks_rad[nh:],actual_kick_h_rad=result.effective_kicks_rad[:nh],actual_kick_v_rad=result.effective_kicks_rad[nh:],orbit_plus_m=result.raw_state_a_m,orbit_minus_m=result.raw_state_b_m,reference_before_m=result.raw_reference_before_m,reference_intermediate_m=result.raw_reference_intermediate_m,reference_final_m=result.raw_reference_final_m,scaled=result.scaled,direction=result.direction,original_setpoints_rad=result.original_setpoints_rad,requested_state_a_rad=result.requested_state_a_rad,requested_state_b_rad=result.requested_state_b_rad,actual_state_a_rad=result.actual_state_a_rad,actual_state_b_rad=result.actual_state_b_rad,intermediate_restored_setpoints_rad=result.intermediate_restored_setpoints_rad,intermediate_restoration_status=result.intermediate_restoration_status,final_setpoints_rad=result.final_setpoints_rad,timestamps_plus_s=result.timestamps_state_a_s,timestamps_minus_s=result.timestamps_state_b_s,restoration_status=result.restoration_status,metadata={**metadata,"orm_validation_convention":"historical_petra_bipolar_v3","kick_convention":"total bipolar delta_K; K+=K0+delta_K/2; restore/verify K0 and acquire diagnostic reference; K-=K0-delta_K/2; restore/verify K0 and acquire diagnostic reference","restored_orbit_role":"reference_before, reference_intermediate and reference_final are diagnostic-only and excluded from ORM calculation","subtraction_convention":"mean(positive)-mean(negative)","normalization_convention":"divide each column by actual K+ minus K- readback only when scaled","response_matrix_unit":"m/rad" if result.scaled else "m","row_order":"horizontal_bpms,vertical_bpms","column_order":"horizontal_correctors,vertical_correctors","selected_bpm_names":[d.name for d in result.bpms],"selected_horizontal_corrector_names":[d.name for d in result.horizontal_correctors],"selected_vertical_corrector_names":[d.name for d in result.vertical_correctors]})
         elif is_dispersion:
             automatic=self.rf_control_mode.currentData()=="automatic"; states=result.states; metadata.update({"rf_control_mode":"automatic" if automatic else "manual","nominal_rf_hz":result.nominal_rf_hz,"nominal_rf_source":"backend_readback" if automatic else "manual","requested_rf_offset_hz":result.requested_offset_hz,"direction":result.direction,"canonical_measured_eta_definition":"mean_orbit_negative - mean_orbit_positive; historical PETRA III pyLOCO RF-response convention; reference_before and reference_after are excluded","canonical_measured_eta_unit":"m","rf_difference_sign_convention":"negative_minus_positive","rf_normalized_response_unit":"m/Hz","actual_rf_available":automatic,"restoration_status":result.restoration_status,"settling_delay_seconds":self.settling_delay.value(),"dispersion_measurement_states":"reference_before,positive,negative","rf_restoration_is_measurement_state":False,"verify_restored_orbit":any(state.label=="reference_after" for state in states),"reference_after_role":"post-restoration diagnostic only; excluded from physical dispersion and RF orbit difference"})
             state_rf={state.label:float(state.actual_rf_hz) for state in states}; restored=float(getattr(self,"_restored_rf_readback",np.nan)); metadata.update({"rf_original_hz":result.nominal_rf_hz,"rf_positive_hz":state_rf.get("positive",np.nan),"rf_negative_hz":state_rf.get("negative",np.nan),"rf_restored_hz":restored,"rf_restoration_difference_hz":restored-result.nominal_rf_hz if np.isfinite(restored) else np.nan})
@@ -1372,9 +1387,21 @@ class MeasureMainWindow(QMainWindow):
         self.restoration_label.clear()
 
     @staticmethod
-    def _heatmap(canvas,data,title,unit):
-        canvas.clear(); ax=canvas.figure.add_subplot(111); im=ax.imshow(np.asarray(data),aspect="auto",origin="lower",cmap="RdBu_r"); ax.set_title(title); ax.set_xlabel("Corrector selection position"); ax.set_ylabel("BPM selection position"); canvas.figure.colorbar(im,ax=ax,label=f"Response [{unit}]"); canvas.apply_theme()
+    def _fit_colormap():
+        app=QApplication.instance(); theme=app.property("pyLOCOThemePlot") if app is not None else None
+        return theme.get("colormap","viridis") if isinstance(theme,dict) else "viridis"
+
+    def _heatmap(self,canvas,data,title,unit):
+        values=np.asarray(data); canvas.clear(); surface=hasattr(self,"orm_view_mode") and self.orm_view_mode.currentData()=="3d"; ax=canvas.figure.add_subplot(111,projection="3d" if surface else None); cmap=self._fit_colormap()
+        if surface:
+            columns,rows=np.meshgrid(np.arange(values.shape[1]),np.arange(values.shape[0])); artist=ax.plot_surface(columns,rows,values,cmap=cmap,linewidth=0,antialiased=False,rcount=values.shape[0],ccount=values.shape[1]); ax.set_zlabel(f"Response [{unit}]")
+        else:artist=ax.imshow(values,aspect="auto",origin="lower",cmap=cmap)
+        ax.set_title(title); ax.set_xlabel("Corrector selection position"); ax.set_ylabel("BPM selection position"); canvas.figure.colorbar(artist,ax=ax,label=f"Response [{unit}]",shrink=.75); canvas.apply_theme()
         return ax
+
+    def _redraw_orm_result(self,*_):
+        result=getattr(self,"_displayed_orm_result",None)
+        if result is not None:self._show_orm_result(result)
 
     def _show_orm_progress(self,matrix,column):
         finite=np.where(np.isfinite(matrix),matrix,np.nan); self._heatmap(self.x_plot,finite,"Evolving ORM heatmap","m")
@@ -1383,8 +1410,9 @@ class MeasureMainWindow(QMainWindow):
     def _show_orm_result(self,result):
         matrix=result.response_matrix; nb=len(result.bpms); nh=len(result.horizontal_correctors); unit="m/rad" if result.scaled else "m"
         full_ax=self._heatmap(self.x_plot,matrix,"Full orbit response matrix",unit); self._heatmap(self.y_plot,matrix[:nb,:nh],"H corrector → X BPM",unit); self._heatmap(self.mean_x_plot,matrix[:nb,nh:],"V corrector → X BPM (cross-plane)",unit); self._heatmap(self.mean_y_plot,matrix[nb:,:nh],"H corrector → Y BPM (cross-plane)",unit); self._heatmap(self.orm_vv_plot,matrix[nb:,nh:],"V corrector → Y BPM",unit)
-        if nh and len(result.vertical_correctors):full_ax.axvline(nh-.5,color="white",linewidth=2,linestyle="--")
-        full_ax.axhline(nb-.5,color="white",linewidth=2,linestyle="--")
+        if self.orm_view_mode.currentData()=="2d":
+            if nh and len(result.vertical_correctors):full_ax.axvline(nh-.5,color="white",linewidth=2,linestyle="--")
+            full_ax.axhline(nb-.5,color="white",linewidth=2,linestyle="--")
         full_ax.set_xlabel(f"Corrector columns: H [0…{max(0,nh-1)}] | V [{nh}…{len(result.correctors)-1}]")
         full_ax.set_ylabel(f"BPM rows: X [0…{nb-1}] | Y [{nb}…{2*nb-1}]"); self.x_plot.apply_theme()
         self._displayed_orm_result=result; self.orm_column_selector.blockSignals(True); self.orm_column_selector.clear()
@@ -1395,13 +1423,21 @@ class MeasureMainWindow(QMainWindow):
 
     def _orm_transaction_text(self,result,index):
         device=result.correctors[index]; scale=1e6; error=(result.final_setpoints_rad[index]-result.original_setpoints_rad[index])*scale; intermediate=result.intermediate_restored_setpoints_rad[index]; intermediate_error=(intermediate-result.original_setpoints_rad[index])*scale
+        reference=np.mean(result.raw_reference_before_m[index],axis=0); final_return=(np.mean(result.raw_reference_final_m[index],axis=0)-reference)*scale; nb=len(result.bpms); return_x=final_return[:nb]; return_y=final_return[nb:]
+        if result.direction=="bipolar":
+            middle_return=(np.mean(result.raw_reference_intermediate_m[index],axis=0)-reference)*scale; middle_x=middle_return[:nb]; middle_y=middle_return[nb:]
+            middle_text=f"Intermediate orbit return: X RMS {np.sqrt(np.mean(middle_x**2)):.6g} µm / max {np.max(np.abs(middle_x)):.6g} µm; Y RMS {np.sqrt(np.mean(middle_y**2)):.6g} µm / max {np.max(np.abs(middle_y)):.6g} µm\n"
+        else:middle_text="Intermediate orbit return: not applicable for one-sided acquisition\n"
         return (f"Corrector transaction — {device.name} ({device.plane})\n"
                 f"Backend identifier: {device.identifier}\n"
                 f"Original K0: {result.original_setpoints_rad[index]*scale:+.9g} µrad; requested K+/K−: {result.requested_state_a_rad[index]*scale:+.9g} / {result.requested_state_b_rad[index]*scale:+.9g} µrad\n"
                 f"Readback K+: {result.actual_state_a_rad[index]*scale:+.9g} µrad\n"
                 f"Intermediate restore K+ → K0: {intermediate*scale:+.9g} µrad; error: {intermediate_error:+.9g} µrad — {result.intermediate_restoration_status[index]}\n"
+                f"{middle_text}"
                 f"Readback K−: {result.actual_state_b_rad[index]*scale:+.9g} µrad; actual K+−K− separation: {result.effective_kicks_rad[index]*scale:+.9g} µrad\n"
                 f"Final restore K− → K0: {result.final_setpoints_rad[index]*scale:+.9g} µrad; error: {error:+.9g} µrad — {result.restoration_status[index]}\n"
+                f"Final orbit return: X RMS {np.sqrt(np.mean(return_x**2)):.6g} µm / max {np.max(np.abs(return_x)):.6g} µm; Y RMS {np.sqrt(np.mean(return_y**2)):.6g} µm / max {np.max(np.abs(return_y)):.6g} µm\n"
+                f"Restored-reference orbits are diagnostic-only and excluded from the ORM calculation.\n"
                 f"Matrix convention: orbit(+) − orbit(−); rows X BPM then Y BPM; columns H then V; {'normalized by actual separation' if result.scaled else 'raw orbit difference' }.")
 
     def _update_selected_orm_column(self,*_):

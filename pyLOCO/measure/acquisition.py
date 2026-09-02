@@ -58,6 +58,9 @@ class ORMResult:
     final_setpoints_rad: np.ndarray
     raw_state_a_m: np.ndarray
     raw_state_b_m: np.ndarray
+    raw_reference_before_m: np.ndarray
+    raw_reference_intermediate_m: np.ndarray
+    raw_reference_final_m: np.ndarray
     timestamps_state_a_s: np.ndarray
     timestamps_state_b_s: np.ndarray
     restoration_status: tuple[str, ...]
@@ -307,7 +310,7 @@ class ORMAcquirer:
         if kicks.shape!=(len(correctors),) or not np.isfinite(kicks).all() or np.any(kicks<=0): raise ValueError("Requested kick arrays must contain one positive finite value per corrector")
         cancel=cancel_event or Event(); nrows=2*len(self.bpms); ncor=len(correctors)
         arrays={name:np.full(ncor,np.nan) for name in ("original","req_a","req_b","act_a","act_b","intermediate","final","effective")}
-        raw_a=np.full((ncor,readings,nrows),np.nan); raw_b=np.full_like(raw_a,np.nan); ts_a=np.full((ncor,readings),np.nan); ts_b=np.full_like(ts_a,np.nan)
+        raw_a=np.full((ncor,readings,nrows),np.nan); raw_b=np.full_like(raw_a,np.nan); raw_ref_before=np.full_like(raw_a,np.nan); raw_ref_intermediate=np.full_like(raw_a,np.nan); raw_ref_final=np.full_like(raw_a,np.nan); ts_a=np.full((ncor,readings),np.nan); ts_b=np.full_like(ts_a,np.nan)
         matrix=np.full((nrows,ncor),np.nan); intermediate_statuses=[]; statuses=[]; start=clock()
         for index,(corrector,dkick) in enumerate(zip(correctors,kicks)):
             original=float(self.adapter.read(corrector.readback_channel).value); arrays["original"][index]=original
@@ -316,6 +319,8 @@ class ORMAcquirer:
             else: target_a,target_b=original-dkick,original; label_a,label_b="−kick","reference"
             arrays["req_a"][index]=target_a; arrays["req_b"][index]=target_b; restoration="not_attempted"
             try:
+                if progress:progress({"event":"state","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"reference before kick","elapsed":clock()-start})
+                raw_ref_before[index],_=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":"reference before kick"})
                 for slot,target,label,raw,timestamps in (("a",target_a,label_a,raw_a,ts_a),("b",target_b,label_b,raw_b,ts_b)):
                     if cancel.is_set(): raise AcquisitionCancelled("ORM acquisition was cancelled")
                     if progress: progress({"event":"state","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":label,"elapsed":clock()-start})
@@ -332,6 +337,7 @@ class ORMAcquirer:
                             raise RuntimeError(f"Intermediate restoration verification failed: {arrays['intermediate'][index]!r} != {original!r}")
                         intermediate_statuses.append("restored")
                         if progress: progress({"event":"intermediate_restored","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"K0 restored and verified","readback":arrays["intermediate"][index],"original":original,"elapsed":clock()-start})
+                        raw_ref_intermediate[index],_=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":"restored reference before −kick"})
                 effective=arrays["act_a"][index]-arrays["act_b"][index]; arrays["effective"][index]=effective
                 column=np.mean(raw_a[index],axis=0)-np.mean(raw_b[index],axis=0)
                 matrix[:,index]=column/effective if scaled else column
@@ -345,8 +351,12 @@ class ORMAcquirer:
                 except Exception: restoration="restore_failed"
                 raise ORMAcquisitionError(f"ORM acquisition failed for {corrector.name}: {exc}",restoration_status=restoration) from exc
             else:
-                try:self.adapter.write(corrector.setpoint_channel,original); arrays["final"][index]=float(self.adapter.read(corrector.readback_channel).value); restoration="restored" if np.isclose(arrays["final"][index],original) else "verification_failed"
+                try:
+                    self.adapter.write(corrector.setpoint_channel,original); sleeper(settling_delay_seconds); arrays["final"][index]=float(self.adapter.read(corrector.readback_channel).value); restoration="restored" if np.isclose(arrays["final"][index],original,rtol=0,atol=1e-12) else "verification_failed"
+                    if restoration!="restored":raise RuntimeError(f"Final restoration verification failed: {arrays['final'][index]!r} != {original!r}")
+                    if progress:progress({"event":"final_restored","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"final K0 restored and verified","readback":arrays["final"][index],"original":original,"elapsed":clock()-start})
+                    raw_ref_final[index],_=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":"final restored reference"})
                 except Exception as exc: raise ORMAcquisitionError(f"Restoration failed for {corrector.name}: {exc}",restoration_status="restore_failed") from exc
                 statuses.append(restoration)
                 if direction!="bipolar":intermediate_statuses.append("not_applicable")
-        return ORMResult(self.bpms,self.horizontal_correctors,self.vertical_correctors,matrix,direction,bool(scaled),kicks,arrays["effective"],arrays["original"],arrays["req_a"],arrays["req_b"],arrays["act_a"],arrays["act_b"],arrays["intermediate"],tuple(intermediate_statuses),arrays["final"],raw_a,raw_b,ts_a,ts_b,tuple(statuses),clock()-start)
+        return ORMResult(self.bpms,self.horizontal_correctors,self.vertical_correctors,matrix,direction,bool(scaled),kicks,arrays["effective"],arrays["original"],arrays["req_a"],arrays["req_b"],arrays["act_a"],arrays["act_b"],arrays["intermediate"],tuple(intermediate_statuses),arrays["final"],raw_a,raw_b,raw_ref_before,raw_ref_intermediate,raw_ref_final,ts_a,ts_b,tuple(statuses),clock()-start)
