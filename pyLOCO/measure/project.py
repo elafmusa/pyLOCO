@@ -11,6 +11,18 @@ FILE_TYPE = "pyloco.measure_project"
 SCHEMA_VERSION = "1.0"
 
 
+def _default_measurement_selections() -> dict[str, dict[str, Any]]:
+    """Independent, ordered device selections for each Measure workflow."""
+    return {
+        kind: {
+            "bpm": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
+            "hcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
+            "vcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
+        }
+        for kind in ("bpm_noise", "dispersion", "orm")
+    }
+
+
 @dataclass
 class MeasureProject:
     measurement_type: str = "bpm_noise"
@@ -31,6 +43,7 @@ class MeasureProject:
     vcor_names_file: str = ""
     excluded_hcor_positions: str = ""
     excluded_vcor_positions: str = ""
+    measurement_selections: dict[str, dict[str, Any]] = field(default_factory=_default_measurement_selections)
     readings: int = 20
     delay_seconds: float = 0.1
     settling_delay_seconds: float = 0.0
@@ -61,6 +74,14 @@ class MeasureProject:
             raise ValueError("Unsupported pySC machine profile")
         if self.measurement_type not in {"bpm_noise", "dispersion", "orm"}:
             raise ValueError("Unsupported measurement type")
+        for kind in ("bpm_noise", "dispersion", "orm"):
+            selection = self.measurement_selections.get(kind)
+            if not isinstance(selection, dict):
+                raise ValueError(f"Missing device selection for {kind}")
+            for device_kind in ("bpm", "hcor", "vcor"):
+                settings = selection.get(device_kind)
+                if not isinstance(settings, dict) or settings.get("method") not in {"all", "names_file", "manual"}:
+                    raise ValueError(f"Invalid {device_kind} selection for {kind}")
         if self.adapter in {"PETRA / DOOCS","PETRA III DOOCS"} and self.measurement_type=="orm":
             raise ValueError("ORM acquisition is unavailable in PETRA read-only mode")
         if self.rf_control_mode not in {"manual","automatic"}:
@@ -94,6 +115,15 @@ def save_measure_project(path: str | Path, project: MeasureProject) -> Path:
 
 
 def load_measure_project(path: str | Path) -> MeasureProject:
-    project = MeasureProject(**read_json(path))
+    payload = read_json(path)
+    if "measurement_selections" not in payload:
+        selections=_default_measurement_selections(); kind=payload.get("measurement_type","bpm_noise")
+        selections[kind]={
+            "bpm":{"method":payload.get("bpm_selection_method","all"),"manual":payload.get("bpm_manual",""),"names_file":payload.get("bpm_names_file",""),"excluded_positions":payload.get("excluded_bpm_positions","")},
+            "hcor":{"method":payload.get("hcor_selection_method","all"),"manual":payload.get("hcor_manual",""),"names_file":payload.get("hcor_names_file",""),"excluded_positions":payload.get("excluded_hcor_positions","")},
+            "vcor":{"method":payload.get("vcor_selection_method","all"),"manual":payload.get("vcor_manual",""),"names_file":payload.get("vcor_names_file",""),"excluded_positions":payload.get("excluded_vcor_positions","")},
+        }
+        payload["measurement_selections"]=selections
+    project = MeasureProject(**payload)
     project.validate()
     return project
