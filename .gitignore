@@ -22,6 +22,7 @@ Examples/PETRAIII/output/
 
 # Local files
 measurements/
+correction-transactions/
 output/
 results/
 !pyLOCO/gui/results/

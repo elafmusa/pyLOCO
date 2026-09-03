@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QAbstractItemView
 
 
@@ -23,9 +22,8 @@ class GuiTheme:
     plot_colormap: str = "viridis"
 
 
-_FONT_STACK = '"Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif'
 _COMMON_QSS = f"""
-* {{ font-family: {_FONT_STACK}; font-size: 12pt; }}
+* {{ font-size: 12pt; }}
 QToolBar#mainToolbar {{ spacing: 10px; padding: 8px 14px; }}
 QMainWindow::separator {{ width: 14px; height: 14px; }}
 QMainWindow::separator:hover {{ background: #7E57C2; }}
@@ -177,8 +175,8 @@ def theme_for_key(key: str | None) -> GuiTheme:
 def apply_application_theme(app: QApplication, theme: GuiTheme) -> None:
     """Apply application-wide typography and visual theme settings."""
 
-    font = QFont("Segoe UI", 12)
-    app.setFont(font)
+    # Keep Qt's native platform font. Requesting optional or generic families
+    # makes Qt rebuild fallback aliases for every Suite window on macOS.
     app.setStyleSheet(theme.stylesheet)
     app.setProperty("pyLOCOTheme", theme.key)
     app.setProperty("pyLOCOThemePlot", {

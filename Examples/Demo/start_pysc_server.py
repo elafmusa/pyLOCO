@@ -201,6 +201,7 @@ def main(argv=None) -> int:
     parser.add_argument("--host", default=DEFAULT_HOST); parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--refresh-rate", type=float, default=1.0); parser.add_argument("--catalog", type=Path)
     parser.add_argument("--bpm-noise-x-um", type=float); parser.add_argument("--bpm-noise-y-um", type=float)
+    parser.add_argument("--diagnostics-port", type=int, help="Opt-in read-only live-lattice diagnostics for Correct")
     args = parser.parse_args(argv)
     if args.host != DEFAULT_HOST: parser.error("The installed pySC server binds to 127.0.0.1 only")
     profile, sc = build_profile_machine(args.profile)
@@ -223,6 +224,9 @@ def main(argv=None) -> int:
     print(f"RF system: {catalog['rf_system']}; frequency: {rf:.6f} Hz")
     print(f"Catalog: {path}"); print(f"Listening on {args.host}:{args.port} (Ctrl-C to stop)")
     install_server_compatibility_shim()
+    if args.diagnostics_port:
+        from pyLOCO.control_system.pysc_diagnostics import start_diagnostics
+        start_diagnostics(sc, profile, args.port, args.diagnostics_port)
     from pySC.control_system.server import start_server
     start_server(sc, port=args.port, refresh_rate=args.refresh_rate)
     return 0

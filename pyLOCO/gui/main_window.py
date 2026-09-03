@@ -931,6 +931,9 @@ class MainWindow(QMainWindow):
 
     def _project_page(self) -> QWidget:
         page = self._page("Project Dashboard")
+        correct_button = QPushButton("Open pyLOCO Correct")
+        correct_button.clicked.connect(self.open_correct_app)
+        page.layout().addWidget(correct_button)
         self.dashboard_logo_button = QToolButton()
         self.dashboard_logo_button.setObjectName("dashboardLogoButton")
         self.dashboard_logo_button.setCursor(Qt.PointingHandCursor)
@@ -1664,6 +1667,8 @@ class MainWindow(QMainWindow):
         )
         self.about_action = QAction("About pyLOCO GUI", self)
         self.about_action.triggered.connect(self._show_about_dialog)
+        self.open_correct_action = QAction("Open pyLOCO Correct", self)
+        self.open_correct_action.triggered.connect(self.open_correct_app)
 
     def _create_menu_bar(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
@@ -1682,6 +1687,7 @@ class MainWindow(QMainWindow):
         project_menu.addAction(self.run_loco_action)
         analysis_menu = self.menuBar().addMenu("&Analysis")
         analysis_menu.addAction(self.compare_orms_action)
+        self.menuBar().addMenu("pyLOCO &Suite").addAction(self.open_correct_action)
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self._project_explorer.toggleViewAction())
         view_menu.addAction(self.float_explorer_action)
@@ -2390,6 +2396,31 @@ class MainWindow(QMainWindow):
                     results_dir, runtime=completed.elapsed_seconds
                 )
         self._refresh_ui(f"Opened {filename}")
+
+    @Slot()
+    def open_correct_app(self):
+        results_dir=None; iteration=None
+        if getattr(self.results_workspace,"loader",None) is not None:
+            results_dir=Path(self.results_workspace.loader.result_dir)
+            iteration=self.results_workspace.loader.iteration
+        try:
+            from pyLOCO.correct.main_window import CorrectMainWindow
+            window=getattr(self,"_correct_window",None)
+            if window is None:
+                window=CorrectMainWindow()
+                window.setAttribute(Qt.WA_DeleteOnClose,True)
+                window.destroyed.connect(lambda *_:setattr(self,"_correct_window",None))
+                self._correct_window=window
+            window.show(); window.raise_(); window.activateWindow()
+            if results_dir is not None:
+                self.statusBar().showMessage("Opening Results in pyLOCO Correct…")
+                window.statusBar().showMessage("Loading pyLOCO Results…")
+                # Paint the companion window before parsing a completed run.
+                QTimer.singleShot(350,lambda w=window,p=str(results_dir),i=iteration:w._load(p,iteration=i))
+            else:self.statusBar().showMessage("pyLOCO Correct opened")
+            return True
+        except Exception as exc:
+            QMessageBox.warning(self,"pyLOCO Correct launch failed",str(exc)); return False
 
     def _snapshot_project_from_widgets(self) -> None:
         """Make the project model an exact snapshot of persistable GUI state."""

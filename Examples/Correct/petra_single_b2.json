@@ -1,0 +1,19 @@
+{
+  "description": "Deliberately small synthetic correction on the official lattice; NOT a fitted LOCO result.",
+  "profile": "petra3_realistic",
+  "lattice_sha256": "e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512",
+  "physical_delta": 0.000001,
+  "mapping": {
+    "fit_identity": {
+      "source": "Synthetic one-quadrupole validation, official p3_v24.mat",
+      "lattice_sha256": "e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512",
+      "name": "Q0K2_SWR_0",
+      "ordinal": 1
+    },
+    "ordinal": 1,
+    "common_name": "Q0K2_SWR_0",
+    "control": "Q0K2_7_1/B2",
+    "component": "B2",
+    "unit": "m^-2"
+  }
+}
