@@ -88,6 +88,10 @@ class MachineElementsConfig:
     vertical_corrector_ords: list[int] = field(default_factory=list)
     normal_quadrupole_ords: list[int] = field(default_factory=list)
     skew_quadrupole_ords: list[int] = field(default_factory=list)
+    quadrupole_tilt_ords: list[int] = field(default_factory=list)
+    normal_quadrupole_groups: list[list[int]] = field(default_factory=list)
+    skew_quadrupole_groups: list[list[int]] = field(default_factory=list)
+    quadrupole_tilt_groups: list[list[int]] = field(default_factory=list)
     cavity_ords: list[int] = field(default_factory=list)
 
 
@@ -617,6 +621,16 @@ class LocoConfiguration:
     def summary_lines(self) -> list[str]:
         self._sync_response_matrix_elements()
         fit_list = ", ".join(self.parameters.fit_list()) or "none"
+        element_summary = []
+        for label, enabled, ords, groups, individual in (
+            ("Normal quadrupoles", self.parameters.quads, self.machine_elements.normal_quadrupole_ords, self.machine_elements.normal_quadrupole_groups, self.parameters.individuals),
+            ("Skew quadrupoles", self.parameters.skew_quads, self.machine_elements.skew_quadrupole_ords, self.machine_elements.skew_quadrupole_groups, self.rejection.skew_individuals),
+            ("Quadrupole tilts", self.parameters.quads_tilt, self.machine_elements.quadrupole_tilt_ords, self.machine_elements.quadrupole_tilt_groups, self.rejection.tilt_individuals),
+        ):
+            count = len(ords) if individual else len(groups)
+            mode = "individual" if individual else "explicit family/group"
+            state = "fitted" if enabled else "not fitted"
+            element_summary.append(f"{label}: {state} by {mode} — {count} parameters / {len(ords)} physical magnets")
         return [
             f"Response matrix: {self.response_matrix.calculator}, dispersion={self.response_matrix.includeDispersion}, coupling={self.response_matrix.coupling_orm}, bidirectional={self.response_matrix.bidirectional}",
             f"Solver: {self.solver.algorithm.upper()}, iterations={self.solver.nIter}, LM inner={self.solver.nLMIter}, scaled={self.solver.scaled}",
@@ -625,6 +639,7 @@ class LocoConfiguration:
             f"Constraints: enabled={self.constraints.enable}, quad_sigma={self.constraints.quad_sigma:g}, skew_sigma={self.constraints.skew_sigma:g}",
             f"Initialization: {'resume from ' + self.resume.directory if self.resume.enabled else 'current model'}",
             f"Fit parameters: {fit_list}",
+            *element_summary,
         ]
 
     def to_example_mapping(self) -> dict[str, Any]:
@@ -692,6 +707,11 @@ class LocoConfiguration:
             entry["enable"] = all(block in selected for block in blocks)
             existing_groups[group] = entry
         data["fit_parameters"] = existing_groups
+        elements=dict(data.get("elements") or {})
+        if isinstance(elements.get("quadrupoles"),dict):
+            elements["quadrupoles"]=dict(elements["quadrupoles"])
+            elements["quadrupoles"]["mode"]="individual" if self.parameters.individuals else "family"
+        if elements:data["elements"]=elements
         data["constraints"] = self.constraints.to_yaml_mapping()
         data["resume"] = self.resume.to_mapping()
         rf = dict(data.get("rf") or {})
@@ -747,6 +767,11 @@ class LocoConfiguration:
                 response_matrix[key] = _parse_float(response_matrix[key], label)
 
         parameters = dict(data.get("parameters", {}))
+        rejection = dict(data.get("rejection", {}))
+        legacy_individuals = parameters.get("individuals", rejection.get("individuals", True))
+        parameters.setdefault("individuals", bool(legacy_individuals))
+        rejection.setdefault("skew_individuals", bool(legacy_individuals))
+        rejection.setdefault("tilt_individuals", bool(legacy_individuals))
         cmstep = dict(parameters.get("cmstep", {}))
         legacy_cmstep = {
             "CMstep_mode": "mode",
@@ -762,12 +787,20 @@ class LocoConfiguration:
                 cmstep[key] = _parse_float(cmstep[key], label)
         parameters["cmstep"] = CMStepConfig(**cmstep)
 
+        machine_data = dict(data.get("machine_elements", {}))
+        # Projects predating independent tilt selection used the normal
+        # quadrupole selection for tilts. Preserve that behavior on migration,
+        # while new projects store the selections independently.
+        if "quadrupole_tilt_ords" not in machine_data:
+            machine_data["quadrupole_tilt_ords"] = list(
+                machine_data.get("normal_quadrupole_ords", [])
+            )
         return cls(
-            machine_elements=MachineElementsConfig(**data.get("machine_elements", {})),
+            machine_elements=MachineElementsConfig(**machine_data),
             response_matrix=ResponseMatrixConfig(**response_matrix),
             solver=SolverConfig(**data.get("solver", {})),
             svd=SVDConfig(**data.get("svd", {})),
-            rejection=RejectionConfig(**data.get("rejection", {})),
+            rejection=RejectionConfig(**rejection),
             constraints=ConstraintConfigState(**_known_kwargs(ConstraintConfigState, data.get("constraints", {}))),
             parameters=ParameterSelectionConfig(**parameters),
             fixed_parameters=FixedParameterConfig(**data.get("fixed_parameters", {})),
@@ -810,6 +843,9 @@ class ProjectMetadata:
     loco_config: LocoConfiguration = field(default_factory=LocoConfiguration)
     recent_projects: list[str] = field(default_factory=list)
     completed_run: CompletedRunReference = field(default_factory=CompletedRunReference)
+    measurement_session: dict[str, Any] = field(default_factory=dict)
+    fit_recipe: dict[str, Any] = field(default_factory=dict)
+    fit_run_session: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_saved(self) -> bool:
@@ -839,6 +875,14 @@ class ProjectMetadata:
             messages.append("Dispersion data is required when dispersion fitting is enabled.")
         if not self.loco_config.parameters.fit_list():
             messages.append("At least one fitted parameter must be selected.")
+        elements=self.loco_config.machine_elements
+        for label,enabled,individual,groups in (
+            ("Normal quadrupole",self.loco_config.parameters.quads,self.loco_config.parameters.individuals,elements.normal_quadrupole_groups),
+            ("Skew quadrupole",self.loco_config.parameters.skew_quads,self.loco_config.rejection.skew_individuals,elements.skew_quadrupole_groups),
+            ("Quadrupole tilt",self.loco_config.parameters.quads_tilt,self.loco_config.rejection.tilt_individuals,elements.quadrupole_tilt_groups),
+        ):
+            if enabled and not individual and not groups:
+                messages.append(f"{label} family parameterization requires explicit family groups.")
         messages.extend(self.loco_config.resume.validation_messages())
         solver = self.loco_config.solver
         if solver.algorithm not in {"lm", "gn"}:
@@ -938,6 +982,9 @@ class ProjectMetadata:
         data["completed_run"]["results_dir"] = portable(
             data["completed_run"].get("results_dir", "")
         )
+        if data.get("measurement_session"):
+            data["measurement_session"]["manifest"] = portable(data["measurement_session"].get("manifest", ""))
+            data["measurement_session"]["measurement_files"] = {key:portable(value) for key,value in data["measurement_session"].get("measurement_files",{}).items()}
         return data
 
     @classmethod
@@ -958,6 +1005,9 @@ class ProjectMetadata:
             loco_config=LocoConfiguration.from_dict(data.get("loco_config", {})),
             recent_projects=list(data.get("recent_projects", [])),
             completed_run=CompletedRunReference(**_known_kwargs(CompletedRunReference, data.get("completed_run", {}))),
+            measurement_session=deepcopy(data.get("measurement_session", {})),
+            fit_recipe=deepcopy(data.get("fit_recipe", {})),
+            fit_run_session=deepcopy(data.get("fit_run_session", {})),
         )
         return project
 
@@ -1008,6 +1058,9 @@ class ProjectMetadata:
             )
         if project.completed_run.results_dir:
             project.completed_run.results_dir = resolve_project_path(project.completed_run.results_dir)
+        if project.measurement_session:
+            if project.measurement_session.get("manifest"):project.measurement_session["manifest"]=resolve_project_path(project.measurement_session["manifest"])
+            project.measurement_session["measurement_files"]={key:resolve_project_path(value) for key,value in project.measurement_session.get("measurement_files",{}).items()}
         project.path = str(source)
         project.base_directory = str(source.parent)
         project.modified = False
@@ -1066,6 +1119,9 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
         "rfStep": rf.get("step_hz", -3000.0),
         "skew_attr": str(loco.get("skew_attribute", "PolynomA")),
         "skew_attr_index": int(loco.get("skew_attribute_index", 1)),
+        "individuals": str(
+            ((data.get("elements") or {}).get("quadrupoles") or {}).get("mode", "individual")
+        ).lower() != "family",
     }
     constraint_source = data.get("constraints") or {}
     quad_constraint = constraint_source.get("quadrupoles") or {}
@@ -1272,6 +1328,18 @@ def resolve_example_machine_elements(path: str | Path, lattice) -> MachineElemen
 
     if element_specs:
         from pyLOCO.measured_machine.workflow import select_elements
+        quad_spec = element_specs["quadrupoles"]
+        tilt_spec = element_specs.get("quadrupole_tilts", quad_spec)
+        normal_ords = select_elements(lattice, quad_spec, base, "quadrupoles").tolist()
+        tilt_ords = select_elements(lattice, tilt_spec, base, "quadrupole_tilts").tolist()
+
+        def groups_for(spec, selected, label):
+            group_file = spec.get("family_groups_file")
+            if not group_file:
+                return []
+            groups = np.load((base / group_file).resolve(), allow_pickle=True).tolist()
+            return validate_element_groups(groups, selected, len(lattice), label)
+
         return MachineElementsConfig(
             bpm_ords=select_elements(lattice, element_specs["bpms"], base, "bpms").tolist(),
             horizontal_corrector_ords=select_elements(
@@ -1280,11 +1348,18 @@ def resolve_example_machine_elements(path: str | Path, lattice) -> MachineElemen
             vertical_corrector_ords=select_elements(
                 lattice, element_specs["vertical_correctors"], base,
                 "vertical_correctors").tolist(),
-            normal_quadrupole_ords=select_elements(
-                lattice, element_specs["quadrupoles"], base, "quadrupoles").tolist(),
+            normal_quadrupole_ords=normal_ords,
             skew_quadrupole_ords=select_elements(
                 lattice, element_specs.get("skew_quadrupoles", {"indices": [], "optional": True}),
                 base, "skew_quadrupoles").tolist(),
+            quadrupole_tilt_ords=tilt_ords,
+            normal_quadrupole_groups=groups_for(quad_spec, normal_ords, "normal quadrupole"),
+            skew_quadrupole_groups=groups_for(
+                element_specs.get("skew_quadrupoles", {}),
+                select_elements(lattice, element_specs.get("skew_quadrupoles", {"indices": [], "optional": True}), base, "skew_quadrupoles").tolist(),
+                "skew quadrupole",
+            ),
+            quadrupole_tilt_groups=groups_for(tilt_spec, tilt_ords, "quadrupole tilt"),
             cavity_ords=select_elements(
                 lattice, element_specs.get("cavities", {"element_type": "RFCavity", "optional": True}),
                 base, "cavities").tolist(),
@@ -1319,7 +1394,38 @@ def resolve_example_machine_elements(path: str | Path, lattice) -> MachineElemen
         vertical_corrector_ords=common_name_indices("vertical_corrector_names"),
         normal_quadrupole_ords=index_file("quadrupole_indices"),
         skew_quadrupole_ords=index_file("skew_indices"),
+        quadrupole_tilt_ords=index_file("quadrupole_indices"),
     )
+
+
+def validate_element_groups(groups, selected, lattice_size: int, label: str) -> list[list[int]]:
+    """Validate explicit fit groups without deriving membership from names."""
+    import numpy as np
+    selected_set = {int(value) for value in selected}
+    result: list[list[int]] = []
+    seen: set[int] = set()
+    if not isinstance(groups, list) or not groups:
+        raise ValueError(f"{label} family groups must be a non-empty list")
+    for number, raw_group in enumerate(groups):
+        group = [int(value) for value in np.atleast_1d(raw_group).tolist()]
+        if not group:
+            raise ValueError(f"{label} group {number} is empty")
+        if len(group) != len(set(group)):
+            raise ValueError(f"{label} group {number} contains duplicate members")
+        invalid = [value for value in group if value < 0 or value >= lattice_size]
+        if invalid:
+            raise ValueError(f"{label} group {number} contains out-of-range ordinal {invalid[0]}")
+        missing = [value for value in group if value not in selected_set]
+        if missing:
+            raise ValueError(f"{label} group {number} contains unselected ordinal {missing[0]}")
+        overlap = [value for value in group if value in seen]
+        if overlap:
+            raise ValueError(f"{label} ordinal {overlap[0]} occurs in more than one group")
+        seen.update(group); result.append(group)
+    omitted = sorted(selected_set - seen)
+    if omitted:
+        raise ValueError(f"{label} groups omit selected ordinal {omitted[0]}")
+    return result
 
 
 def resolve_element_name_file(lattice, path: str | Path, attribute: str = "auto") -> list[int]:

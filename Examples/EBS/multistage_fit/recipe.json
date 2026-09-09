@@ -1,0 +1,16 @@
+{
+  "schema": "pyloco-fit-recipe/v1",
+  "name": "Historical EBS C3 equivalent",
+  "machine_identity": "ESRF-EBS",
+  "reference_model_checksum": "",
+  "element_identities": {},
+  "data_requirements": {
+    "notes": "Bind authoritative EBS BPM/corrector ordering and conventions during preflight"
+  },
+  "stages": [
+    {"name": "Calibration", "start_from": "original_model", "saved_result": "", "configuration": {"LOCOOptions": {"fit_list": ["hbpm_gain", "vbpm_gain", "hcor_cal", "vcor_cal"], "nIter": 2, "remove_coupling_": true, "hor_dispersion_weight": 5, "ver_dispersion_weight": 5, "svd_selection_method": "user_input", "cut_": 100}, "RMConfig": {}, "MachineElements": {}, "FitInitConfig": {"fit_list": ["hbpm_gain", "vbpm_gain", "hcor_cal", "vcor_cal"]}, "ConstraintConfig": {}, "FixedParameters": {}, "Output": {}}},
+    {"name": "BPM coupling", "start_from": "previous_stage", "saved_result": "", "configuration": {"LOCOOptions": {"fit_list": ["hbpm_coupling", "vbpm_coupling"], "nIter": 2, "remove_coupling_": false, "hor_dispersion_weight": 10, "ver_dispersion_weight": 10, "svd_selection_method": "user_input", "cut_": 0}, "RMConfig": {}, "MachineElements": {}, "FitInitConfig": {"fit_list": ["hbpm_coupling", "vbpm_coupling"]}, "ConstraintConfig": {}, "FixedParameters": {}, "Output": {}}},
+    {"name": "Normal optics", "start_from": "previous_stage", "saved_result": "", "configuration": {"LOCOOptions": {"fit_list": ["quads"], "nIter": 2, "remove_coupling_": true, "hor_dispersion_weight": 5, "ver_dispersion_weight": 5, "svd_selection_method": "user_input", "cut_": 110}, "RMConfig": {}, "MachineElements": {}, "FitInitConfig": {"fit_list": ["quads"]}, "ConstraintConfig": {}, "FixedParameters": {}, "Output": {}}},
+    {"name": "Skew and coupling", "start_from": "previous_stage", "saved_result": "", "configuration": {"LOCOOptions": {"fit_list": ["skew_quads", "hbpm_coupling", "vbpm_coupling"], "nIter": 2, "remove_coupling_": false, "hor_dispersion_weight": 5, "ver_dispersion_weight": 5, "svd_selection_method": "user_input", "cut_": 50}, "RMConfig": {}, "MachineElements": {}, "FitInitConfig": {"fit_list": ["skew_quads", "hbpm_coupling", "vbpm_coupling"]}, "ConstraintConfig": {}, "FixedParameters": {}, "Output": {}}}
+  ]
+}

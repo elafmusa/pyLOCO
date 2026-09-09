@@ -165,6 +165,18 @@ QScrollBar::handle:hover { background: #9575CD; }
 THEMES = {theme.key: theme for theme in (LIGHT_THEME, DARK_THEME)}
 DEFAULT_THEME_KEY = DARK_THEME.key
 
+ACCENTS = {
+    "purple": ("Purple", "#7E57C2", "#9575CD", "#B39DDB", "#D7C6FF", "#5E3EA1", "#F0EAFB", "#4B2E83", "#6B46B1"),
+    "blue": ("Blue", "#2563A8", "#3B82C4", "#7CB5E8", "#C9E3FA", "#174F87", "#E5F2FC", "#123E6B", "#1E5790"),
+    "teal": ("Teal", "#087F83", "#0E9FA4", "#55C9CC", "#BDEBED", "#08666A", "#E0F5F5", "#075255", "#076D71"),
+    "graphite": ("Graphite", "#586174", "#707B90", "#9DA6B7", "#D8DCE4", "#444B5A", "#ECEEF2", "#343A46", "#48505F"),
+}
+DEFAULT_ACCENT_KEY = "purple"
+
+
+def accent_for_key(key: str | None) -> tuple[str, ...]:
+    return ACCENTS.get((key or "").lower(), ACCENTS[DEFAULT_ACCENT_KEY])
+
 
 def theme_for_key(key: str | None) -> GuiTheme:
     """Return a theme, falling back to the default for unknown saved values."""
@@ -172,13 +184,23 @@ def theme_for_key(key: str | None) -> GuiTheme:
     return THEMES.get((key or "").lower(), THEMES[DEFAULT_THEME_KEY])
 
 
-def apply_application_theme(app: QApplication, theme: GuiTheme) -> None:
+def apply_application_theme(app: QApplication, theme: GuiTheme, accent_key: str | None = None) -> None:
     """Apply application-wide typography and visual theme settings."""
 
     # Keep Qt's native platform font. Requesting optional or generic families
     # makes Qt rebuild fallback aliases for every Suite window on macOS.
-    app.setStyleSheet(theme.stylesheet)
+    key = (accent_key or app.property("pyLOCOAccent") or DEFAULT_ACCENT_KEY).lower()
+    accent = accent_for_key(key)
+    replacements = dict(zip(
+        ("#7E57C2", "#9575CD", "#B39DDB", "#D7C6FF", "#5E3EA1", "#F0EAFB", "#4B2E83", "#6B46B1"),
+        accent[1:],
+    ))
+    stylesheet = theme.stylesheet
+    for source, target in replacements.items():
+        stylesheet = stylesheet.replace(source, target)
+    app.setStyleSheet(stylesheet)
     app.setProperty("pyLOCOTheme", theme.key)
+    app.setProperty("pyLOCOAccent", key)
     app.setProperty("pyLOCOThemePlot", {
         "face": theme.plot_face,
         "axes": theme.plot_axes,
