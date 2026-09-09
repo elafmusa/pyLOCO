@@ -20,11 +20,12 @@ import re
 import copy
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .models.project import ProjectMetadata
+from .models.project import ProjectMetadata, validate_element_groups
 
 
 @dataclass(slots=True)
@@ -37,6 +38,7 @@ class LocoRunRequest:
     measurements: dict[str, str]
     backend_mapping: dict[str, Any]
     measurement_options: dict[str, dict[str, Any]] = field(default_factory=dict)
+    measurement_session: dict[str, Any] = field(default_factory=dict)
 
     @property
     def results_root(self) -> Path:
@@ -65,6 +67,7 @@ class LocoRunRequest:
                 for key, dataset in project.measurements.items()
             },
             measurement_options={key: dict(dataset.options) for key, dataset in project.measurements.items()},
+            measurement_session=copy.deepcopy(project.measurement_session),
             backend_mapping=backend_mapping,
         )
 
@@ -191,8 +194,12 @@ def run_loco_request(
             raise ValueError(f"Unable to resolve momentum compaction factor: {exc}") from exc
 
         _validate_indices(ring, indices, fit_cfg.fit_list or ())
+        _validate_physical_fit_selections(
+            ring, indices, request.backend_mapping.get("MachineElements", {}), options, fit_cfg
+        )
         constraint_cfg = _make_constraint_config(request.backend_mapping["ConstraintConfig"])
         options.setdefault("fit_list", fit_cfg.fit_list or ())
+        options["machine_element_groups"] = request.backend_mapping.get("MachineElements", {})
         # The GUI supplies its own Qt interactive-SVD dialog.  Matplotlib
         # windows must never be opened from this worker thread.
         _disable_worker_ui_options(options, log)
@@ -254,7 +261,8 @@ def run_loco_request(
                     "Interactive SVD selection requires a GUI selection callback."
                 )
             kwargs["svd_selection_callback"] = svd_selection_callback
-        if bool(options.get("save_jacobians", False)):
+        requested_svd_plot=bool(request.backend_mapping.get("LOCOOptions", {}).get("show_svd_plot", False))
+        if bool(options.get("save_jacobians", False) or requested_svd_plot):
             kwargs["jacobian_callback"] = lambda matrix, iteration: jacobian_capture.update(
                 matrix=matrix, iteration=int(iteration)
             )
@@ -300,6 +308,10 @@ def run_loco_request(
             ),
             calculator_trace=calculator_trace,
         )
+        if bool(request.backend_mapping.get("LOCOOptions", {}).get("show_svd_plot", False)):
+            spectrum_path = _append_svd_spectrum(results_dir, jacobian_capture)
+            if spectrum_path is not None and str(spectrum_path) not in output_files:
+                output_files.append(str(spectrum_path))
         optics_path = _save_optics_results(
             results_dir,
             reference_ring=reference_ring,
@@ -653,6 +665,7 @@ def _apply_machine_element_selections(indices: dict[str, Any], selections: dict[
     cavity_ords = list(selections.get("cavity_ords") or rm_cfg.cav_ords or [])
     quad_ords = list(selections.get("normal_quadrupole_ords") or [])
     skew_ords = list(selections.get("skew_quadrupole_ords") or [])
+    tilt_ords = list(selections.get("quadrupole_tilt_ords") or [])
     if bpm_ords:
         updated["used_bpms_ords"] = np.asarray(bpm_ords, dtype=int)
         updated["nHBPM"] = len(bpm_ords)
@@ -665,9 +678,10 @@ def _apply_machine_element_selections(indices: dict[str, Any], selections: dict[
         updated["CAVords"] = np.asarray(cavity_ords, dtype=int)
     if quad_ords:
         updated["quads_ords"] = np.asarray(quad_ords, dtype=int)
-        updated["quads_tilt_ind"] = np.asarray(quad_ords, dtype=int)
     if skew_ords:
         updated["skew_ords"] = np.asarray(skew_ords, dtype=int)
+    if tilt_ords:
+        updated["quads_tilt_ind"] = np.asarray(tilt_ords, dtype=int)
     return updated
 
 
@@ -695,6 +709,27 @@ def _validate_indices(ring, indices: dict[str, Any], fit_list) -> None:
         array = np.asarray(values, dtype=int)
         if np.any(array < 0) or np.any(array >= len(ring)):
             raise ValueError(f"Selected {label} ordinal is outside the lattice range 0..{len(ring)-1}.")
+
+
+def _validate_physical_fit_selections(ring, indices, selections, options, fit_cfg) -> None:
+    """Validate physical magnet classes and explicit group membership before fitting."""
+    classes = (
+        ("normal quadrupole", indices.get("quads_ords"), "normal_quadrupole_groups",
+         bool(getattr(fit_cfg, "individuals", True))),
+        ("skew quadrupole", indices.get("skew_ords"), "skew_quadrupole_groups",
+         bool(options.get("skew_individuals", True))),
+        ("quadrupole tilt", indices.get("quads_tilt_ind"), "quadrupole_tilt_groups",
+         bool(options.get("tilt_individuals", True))),
+    )
+    for label, raw_ordinals, group_key, individual in classes:
+        ordinals = [] if raw_ordinals is None else [int(value) for value in raw_ordinals]
+        for ordinal in ordinals:
+            if "quadrupole" not in type(ring[ordinal]).__name__.lower():
+                raise ValueError(
+                    f"Selected {label} ordinal {ordinal} is a {type(ring[ordinal]).__name__}, not a Quadrupole."
+                )
+        if not individual:
+            validate_element_groups(selections.get(group_key), ordinals, len(ring), label)
 
 
 def _selection_size(values) -> int:
@@ -745,16 +780,37 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
     if include_dispersion and not measured.get("dispersion_supplied", True):
         raise ValueError("Dispersion fitting was requested but no dispersion measurement file was supplied.")
     measured_for_fit = _assemble_measured_response(measured, include_dispersion)
+    selections = options.get("machine_element_groups", {})
+    quad_individuals = bool(getattr(fit_cfg, "individuals", True))
+    skew_individuals = bool(options.get("skew_individuals", True))
+    tilt_individuals = bool(options.get("tilt_individuals", True))
+    quads_for_fit = indices.get("quads_ords")
+    skew_for_fit = indices.get("skew_ords")
+    tilts_for_fit = indices.get("quads_tilt_ind")
+    if not quad_individuals:
+        quads_for_fit = selections.get("normal_quadrupole_groups")
+        if not quads_for_fit:
+            raise ValueError("Normal-quadrupole family parameterization requires explicit family groups.")
+    if not skew_individuals:
+        skew_for_fit = selections.get("skew_quadrupole_groups")
+        if not skew_for_fit:
+            raise ValueError("Skew-quadrupole family parameterization requires explicit family groups.")
+    if not tilt_individuals:
+        tilts_for_fit = selections.get("quadrupole_tilt_groups")
+        if not tilts_for_fit:
+            raise ValueError("Quadrupole-tilt family parameterization requires explicit family groups.")
+    fit_indices = dict(indices, quads_ords=quads_for_fit, skew_ords=skew_for_fit,
+                       quads_tilt_ind=tilts_for_fit)
     return dict(
-        algorithm=options.get("algorithm", "lm"), nIter=options.get("nIter", 1), **indices,
+        algorithm=options.get("algorithm", "lm"), nIter=options.get("nIter", 1), **fit_indices,
         orm_measured=measured_for_fit, weights=sigma_w, includeDispersion=include_dispersion,
         measured_eta_x=measured["eta_x"], measured_eta_y=measured["eta_y"],
         hor_dispersion_weight=options.get("hor_dispersion_weight", 1.0), ver_dispersion_weight=options.get("ver_dispersion_weight", 1.0),
         CMstep=[hstep, vstep], rfStep=rm_cfg.rfStep if rm_cfg.rfStep is not None else fixed_parameters.rfstep,
         Frequency=fixed_parameters.Frequency, fit_list=options.get("fit_list", ()),
-        quad_individuals=fit_cfg.individuals,
-        skew_individuals=options.get("skew_individuals", fit_cfg.individuals),
-        tilt_individuals=options.get("tilt_individuals", fit_cfg.individuals),
+        quad_individuals=quad_individuals,
+        skew_individuals=skew_individuals,
+        tilt_individuals=tilt_individuals,
         remove_coupling_=options.get("remove_coupling_", True), outlier_rejection=options.get("outlier_rejection", False),
         sigma_outlier=options.get("sigma_outlier", 10), apply_normalization=options.get("apply_normalization", False),
         normalization_mode=options.get("normalization_mode", "global"), svd_selection_method=options.get("svd_selection_method", "threshold"),
@@ -938,6 +994,17 @@ def _save_jacobian(results_dir, capture, blocks, request, indices):
     metadata_path = results_dir / "jacobian_metadata.json"
     metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     return [artifact, metadata_path]
+
+
+def _append_svd_spectrum(results_dir, capture):
+    """Persist the exact final-Jacobian spectrum requested by the FIT UI."""
+    if not capture or capture.get("matrix") is None:return None
+    import numpy as np
+    path=Path(results_dir)/"loco_results.npz"
+    with np.load(path,allow_pickle=True) as archive:data={key:archive[key] for key in archive.files}
+    data["singular_values"]=np.linalg.svd(np.asarray(capture["matrix"],float),compute_uv=False)
+    np.savez_compressed(path,**data)
+    return path
 
 
 def _iteration_diagnostics(
@@ -1205,6 +1272,7 @@ def _save_outputs(results_dir, fit_results, fit_dict, final_ring, orm_model, c_b
     files.append(str(metrics_csv))
     summary = results_dir / "summary.json"
     summary.write_text(json.dumps({
+        "completed_utc": datetime.now(timezone.utc).isoformat(),
         "initial_chi2": initial_chi2,
         "chi2_history": _jsonable(chi2_history),
         "blocks": _jsonable(blocks),

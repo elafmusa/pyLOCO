@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from datetime import datetime
 
 
 IMPORT_HINTS = {
@@ -56,3 +57,34 @@ def inspect_measurement_metadata(path: str | Path, role: str) -> dict[str, Any]:
         if bidirectional is not None:
             metadata["bidirectional"] = bool(bidirectional)
     return metadata
+
+
+def measurement_display_fields(path: str | Path, options: dict[str, Any] | None = None) -> dict[str, str]:
+    """Return authoritative acquisition time and identity for the FIT import table."""
+    source=Path(path); options=options or {}; timestamp=None; machine="—"
+    if not source.exists():
+        return {"date":"Not available","time":"Not available","machine_profile":str(options.get("machine_profile") or options.get("machine_identity") or "—"),"timestamp_source":"file unavailable","tooltip":f"Measurement file is not currently available\n{source}"}
+    if source.suffix.lower() in {".h5",".hdf5"}:
+        import h5py
+        with h5py.File(source,"r") as handle:
+            attrs=dict(handle.attrs)
+            embedded={}
+            if "metadata/json" in handle:
+                import json
+                raw=handle["metadata/json"][()]; embedded=json.loads(raw.decode() if isinstance(raw,bytes) else raw)
+            for key in ("acquisition_timestamp","acquisition_timestamp_utc","timestamp_utc","created_utc","timestamp"):
+                if key in attrs or key in embedded:timestamp=attrs.get(key,embedded.get(key)); break
+            machine_value=attrs.get("machine_profile") or attrs.get("machine_identity") or attrs.get("profile") or embedded.get("machine_identity") or embedded.get("machine_profile")
+            if machine_value is not None:machine=str(machine_value.decode() if isinstance(machine_value,bytes) else machine_value)
+    if machine=="—":machine=str(options.get("machine_profile") or options.get("machine_identity") or "—")
+    authority="HDF5 acquisition metadata"
+    try:
+        if isinstance(timestamp,bytes):timestamp=timestamp.decode()
+        moment=datetime.fromisoformat(str(timestamp).replace("Z","+00:00")).astimezone() if timestamp is not None else None
+    except (ValueError,TypeError):moment=None
+    if moment is None:
+        if not source.exists():
+            return {"date":"Not available","time":"Not available","machine_profile":machine,"timestamp_source":"file unavailable","tooltip":f"Measurement file is not currently available\n{source}"}
+        moment=datetime.fromtimestamp(source.stat().st_mtime); authority="file modification time (fallback)"
+    suffix=" *" if authority.startswith("file") else ""
+    return {"date":moment.strftime("%d %b %Y")+suffix,"time":moment.strftime("%H:%M:%S"),"machine_profile":machine,"timestamp_source":authority,"tooltip":f"Time source: {authority}\n{source}"}

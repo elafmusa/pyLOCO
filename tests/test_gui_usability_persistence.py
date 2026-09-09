@@ -130,7 +130,8 @@ def test_machine_component_rows_remain_aligned_and_scrollable(app, width, height
 
     rows = list(window.element_row_widgets.values())
     buttons = list(window.element_edit_buttons.values())
-    assert len(rows) == len(buttons) == 6
+    # Quadrupole tilts now have an independent physical-element selector.
+    assert len(rows) == len(buttons) == 7
     assert len({(button.width(), button.height()) for button in buttons}) == 1
     assert all(button.width() >= button.sizeHint().width() for button in buttons)
     for previous, current in zip(rows, rows[1:]):

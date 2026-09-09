@@ -59,6 +59,9 @@ class MeasureProject:
     orm_vertical_kick_rad: float = 100e-6
     orm_kick_file: str = ""
     orm_scaled: bool = False
+    reference_model_path: str = ""
+    reference_model_source: str = "automatic"
+    compare_with_reference_model: bool = True
     output_directory: str = "measurements"
     theme: str = "dark"
     metadata: dict[str, Any] = field(default_factory=dict)
