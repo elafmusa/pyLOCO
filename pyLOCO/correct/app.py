@@ -13,7 +13,9 @@ def build_application(argv: Sequence[str] | None = None) -> QApplication:
     app=QApplication.instance()
     if app is None:
         QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-        app=QApplication(list(sys.argv if argv is None else argv)); app.setApplicationName("pyLOCO Correct"); app.setOrganizationName("pyLOCO"); app.setWindowIcon(application_icon())
+        app=QApplication(list(sys.argv if argv is None else argv)); app.setApplicationName("pyLOCO Correct"); app.setApplicationDisplayName("pyLOCO Correct"); app.setOrganizationName("pyLOCO"); app.setWindowIcon(application_icon("correct"))
+    else:
+        app.setApplicationName("pyLOCO Correct"); app.setApplicationDisplayName("pyLOCO Correct"); app.setWindowIcon(application_icon("correct"))
     ensure_suite_appearance(app)
     return app
 

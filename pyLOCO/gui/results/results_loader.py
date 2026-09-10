@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import yaml
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -62,9 +63,75 @@ class ResultsLoader:
             self._cache[key] = value if isinstance(value, dict) else {}
         return self._cache[key]
 
+    def _yaml(self, path: Path) -> dict[str, Any]:
+        """Read a persisted YAML mapping without raising into the GUI."""
+        key = f"yaml:{path}"
+
+        if key not in self._cache:
+            try:
+                value = (
+                    yaml.safe_load(path.read_text(encoding="utf-8"))
+                    if path.exists()
+                    else {}
+                )
+            except (OSError, ValueError, TypeError, yaml.YAMLError):
+                value = {}
+
+            self._cache[key] = (
+                value if isinstance(value, dict) else {}
+            )
+
+        return self._cache[key]
+
     @property
     def summary(self) -> dict[str, Any]:
-        return self._json("summary.json")
+        """Return native GUI summary or legacy measured-machine summary."""
+
+        # Native GUI result format.
+        native = self._json("summary.json")
+        if native:
+            return native
+
+        # Family/measured-machine runs store their summary one directory
+        # below the run root.
+        legacy_path = self.result_dir / "results" / "run_summary.yaml"
+        legacy = self._yaml(legacy_path)
+
+        if not legacy:
+            # Also support a result directory that itself points at
+            # the inner results/ directory.
+            legacy = self._yaml(
+                self.result_dir / "run_summary.yaml"
+            )
+
+        if not legacy:
+            return {}
+
+        # Translate the persisted measured-machine summary into the
+        # stable keys consumed by the Results GUI.
+        translated = dict(legacy)
+
+        translated["initial_chi2"] = legacy.get("initial_chi2")
+        translated["chi2_history"] = legacy.get(
+            "chi2_history",
+            [],
+        )
+        translated["runtime_seconds"] = legacy.get(
+            "runtime_seconds"
+        )
+
+        metrics = legacy.get("metrics")
+        if isinstance(metrics, dict):
+            translated.setdefault(
+                "initial_orm_rms",
+                metrics.get("orm_rms_initial_m"),
+            )
+            translated.setdefault(
+                "fitted_orm_rms",
+                metrics.get("orm_rms_fitted_m"),
+            )
+
+        return translated
 
     @property
     def iteration_metadata(self) -> dict[str, Any]:
@@ -106,7 +173,200 @@ class ResultsLoader:
 
     @property
     def request(self) -> dict[str, Any]:
-        return self._json("run_request.json")
+        """Return native run request or reconstruct one for measured-machine runs."""
+
+        native = self._json("run_request.json")
+        if native:
+            return native
+
+        key = "legacy_run_request"
+        if key in self._cache:
+            return self._cache[key]
+
+        summary = self.summary
+        config_value = summary.get("configuration_file")
+
+        if not config_value:
+            self._cache[key] = {}
+            return self._cache[key]
+
+        config_path = Path(str(config_value)).expanduser()
+        if not config_path.is_absolute():
+            candidate = self.result_dir / config_path
+            config_path = candidate.resolve()
+
+        try:
+            config = yaml.safe_load(
+                config_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError, TypeError, yaml.YAMLError):
+            config = {}
+
+        if not isinstance(config, dict):
+            config = {}
+
+        config_dir = config_path.parent
+
+        def resolve(value):
+            if not value:
+                return None
+
+            candidate = Path(str(value)).expanduser()
+
+            if not candidate.is_absolute():
+                candidate = (config_dir / candidate).resolve()
+
+            return str(candidate)
+
+        data = config.get("data") or {}
+        lattice = config.get("lattice") or {}
+        elements = config.get("elements") or {}
+        rf = config.get("rf") or {}
+        loco = config.get("loco") or {}
+
+        measurements = {}
+
+        for role in ("orm", "dispersion", "bpm_noise"):
+            entry = data.get(role) or {}
+
+            if isinstance(entry, dict):
+                value = entry.get("file")
+            else:
+                value = entry
+
+            if value:
+                measurements[role] = resolve(value)
+
+        # Resolve machine element definitions using the same public helper
+        # used by the GUI configuration importer. This preserves the exact
+        # BPM/corrector/quadrupole ordering from the family configuration.
+        backend_mapping = {}
+
+        try:
+            import at
+            from pyLOCO.gui.models.project import (
+                resolve_example_machine_elements,
+            )
+
+            lattice_path = resolve(lattice.get("file"))
+
+            if lattice_path:
+                ring = at.load_lattice(lattice_path)
+                resolved = resolve_example_machine_elements(
+                    str(config_path),
+                    ring,
+                )
+
+                machine_elements = {}
+
+                for name in (
+                    "bpm_ords",
+                    "horizontal_corrector_ords",
+                    "vertical_corrector_ords",
+                    "normal_quadrupole_ords",
+                    "skew_quadrupole_ords",
+                ):
+                    value = getattr(resolved, name, None)
+
+                    if value is not None:
+                        try:
+                            machine_elements[name] = [
+                                int(x) for x in value
+                            ]
+                        except TypeError:
+                            pass
+
+                backend_mapping["MachineElements"] = machine_elements
+
+        except Exception:
+            lattice_path = resolve(lattice.get("file"))
+
+        # Compatibility aliases expected by ResultsLoader diagnostics.
+        machine_elements = backend_mapping.setdefault(
+            "MachineElements",
+            {},
+        )
+
+        # The resolved configuration object may use the GUI's internal
+        # horizontal/vertical corrector names. BPM ordinals are the
+        # critical mapping required by ORM/dispersion diagnostics.
+        backend_mapping["BadBPMPositions"] = list(
+            config.get("bad_bpm_positions") or []
+        )
+
+        backend_mapping["RMConfig"] = {
+            "bpm_ords": machine_elements.get("bpm_ords", []),
+            "rfStep": rf.get("step_hz"),
+            "calculator": loco.get("response_matrix_calculator")
+            or loco.get("calculator")
+            or "Linear",
+        }
+
+        backend_mapping["FixedParameters"] = {
+            "Frequency": rf.get("frequency_hz"),
+            "HarmNumber": rf.get("harmonic_number"),
+        }
+
+        backend_mapping["LOCOOptions"] = {
+            "algorithm": loco.get("algorithm"),
+            "nIter": loco.get("nIter"),
+            "Starting_Lambda": loco.get("Starting_Lambda"),
+            "includeDispersion": loco.get(
+                "include_dispersion",
+                bool((data.get("dispersion") or {}).get("enable", False))
+                if isinstance(data.get("dispersion"), dict)
+                else False,
+            ),
+            "hor_dispersion_weight": loco.get(
+                "horizontal_dispersion_weight"
+            ),
+            "ver_dispersion_weight": loco.get(
+                "vertical_dispersion_weight"
+            ),
+            "fit_list": list(summary.get("fit_list") or []),
+            "individuals": (
+                (elements.get("quadrupoles") or {}).get("mode")
+                != "family"
+            ),
+        }
+
+        measurement_options = {}
+
+        dispersion = data.get("dispersion") or {}
+
+        if isinstance(dispersion, dict):
+            measurement_options["dispersion"] = {
+                "datasets": {
+                    "horizontal": dispersion.get(
+                        "horizontal_dataset",
+                        "measured_eta_x",
+                    ),
+                    "vertical": dispersion.get(
+                        "vertical_dataset",
+                        "measured_eta_y",
+                    ),
+                },
+                "horizontal_scale": dispersion.get(
+                    "horizontal_scale",
+                    1.0,
+                ),
+                "vertical_scale": dispersion.get(
+                    "vertical_scale",
+                    1.0,
+                ),
+            }
+
+        self._cache[key] = {
+            "project_name": summary.get("machine")
+            or summary.get("run_name"),
+            "project_path": str(config_path),
+            "lattice_path": resolve(lattice.get("file")),
+            "measurements": measurements,
+            "measurement_options": measurement_options,
+            "backend_mapping": backend_mapping,
+        }
+
+        return self._cache[key]
 
     @property
     def options(self) -> dict[str, Any]:
@@ -343,8 +603,107 @@ class ResultsLoader:
             return self._cache["quadrupole_parameter_rows"]
         import numpy as np
 
-        block = next((item for item in self.parameter_blocks if item.key == "quads"), None)
+        block = next(
+            (item for item in self.parameter_blocks if item.key == "quads"),
+            None,
+        )
+
+        # Family-mode measured-machine runs predate the native GUI
+        # parameter-vector artifacts, but persist an explicit 193-family
+        # correction table. Use that table as the authoritative fallback.
         if block is None:
+            import csv
+
+            family_csv = (
+                self.result_dir
+                / "correction"
+                / "quadrupole_family_corrections.csv"
+            )
+
+            if family_csv.exists():
+                rows = []
+
+                try:
+                    with family_csv.open(
+                        "r",
+                        encoding="utf-8",
+                        newline="",
+                    ) as stream:
+                        reader = csv.DictReader(stream)
+
+                        for source in reader:
+                            initial = float(source["nominal_K"])
+                            fitted = float(source["fitted_K"])
+
+                            # Persisted measured-machine convention:
+                            # delta_K = K_initial - K_fitted.
+                            delta_apply = float(source["delta_K"])
+
+                            expected = initial - fitted
+                            tolerance = 1e-12 * max(
+                                1.0,
+                                abs(initial),
+                                abs(fitted),
+                                abs(delta_apply),
+                            )
+
+                            if abs(delta_apply - expected) > tolerance:
+                                raise ValueError(
+                                    "Family correction sign/convention "
+                                    "mismatch for family "
+                                    f"{source['family_index']}: "
+                                    f"saved={delta_apply:+.16g}, "
+                                    f"initial-fitted={expected:+.16g}"
+                                )
+
+                            relative = float(
+                                source["delta_K_over_K_percent"]
+                            )
+
+                            rows.append(
+                                {
+                                    "index": int(
+                                        source["family_index"]
+                                    ),
+                                    "name": source[
+                                        "representative_name"
+                                    ],
+                                    "lattice_ordinal": int(
+                                        source[
+                                            "representative_lattice_index"
+                                        ]
+                                    ),
+                                    "member_ordinals": [],
+                                    "initial": initial,
+                                    "fitted": fitted,
+                                    "delta_k": delta_apply,
+                                    "relative_percent": relative,
+                                    "unit": "m⁻²",
+                                    "mode": "family",
+                                    "sign_convention": (
+                                        "ΔK_apply = "
+                                        "K_model_initial − "
+                                        "K_model_fitted"
+                                    ),
+                                }
+                            )
+
+                except (
+                    OSError,
+                    ValueError,
+                    TypeError,
+                    KeyError,
+                ) as exc:
+                    self._unavailable[
+                        "quadrupole_parameter_rows"
+                    ] = str(exc)
+                    rows = []
+
+                self._cache[
+                    "quadrupole_parameter_rows"
+                ] = rows
+                return rows
+
             self._cache["quadrupole_parameter_rows"] = []
             return []
         values = np.asarray(block.values, dtype=float).ravel()
@@ -442,7 +801,22 @@ class ResultsLoader:
     def fitted_lattice_path(self) -> Path:
         if self.iteration is not None:
             return self.artifact_dir / "fitted_lattice.mat"
-        return self.result_dir / "final_lattice.mat"
+
+        native = self.result_dir / "final_lattice.mat"
+        if native.is_file():
+            return native
+
+        # Measured-machine / family-LOCO output.
+        family = self.result_dir / "results" / "ring_pyloco.mat"
+        if family.is_file():
+            return family
+
+        # Also support callers whose result_dir already points to results/.
+        family_inner = self.result_dir / "ring_pyloco.mat"
+        if family_inner.is_file():
+            return family_inner
+
+        return native
 
     @property
     def jacobian_available(self) -> bool:
@@ -611,11 +985,32 @@ class ResultsLoader:
         try:
             import at
             from pyLOCO.config import get_mcf
-            reference, fitted = at.load_lattice(reference_path), at.load_lattice(fitted_path)
+            reference = at.load_lattice(reference_path)
+            fitted = at.load_lattice(fitted_path)
+
+            # The PETRA III family-LOCO configuration is explicitly 4D
+            # (disable_6d: true). get_mcf() requires a 4D ring, so make
+            # the diagnostic respect the persisted run configuration.
+            if getattr(reference, "is_6d", False):
+                reference.disable_6d()
+
+            if getattr(fitted, "is_6d", False):
+                fitted.disable_6d()
+
             ords = np.asarray(bpm_ords, dtype=np.uint32)
-            initial_dispersion = np.asarray(reference.get_optics(refpts=ords)[2].dispersion, dtype=float)
-            fitted_dispersion = np.asarray(fitted.get_optics(refpts=ords)[2].dispersion, dtype=float)
-            alpha_c = float(np.asarray(get_mcf(reference)).ravel()[0])
+
+            initial_dispersion = np.asarray(
+                reference.get_optics(refpts=ords)[2].dispersion,
+                dtype=float,
+            )
+            fitted_dispersion = np.asarray(
+                fitted.get_optics(refpts=ords)[2].dispersion,
+                dtype=float,
+            )
+
+            alpha_c = float(
+                np.asarray(get_mcf(reference)).ravel()[0]
+            )
             conversion = -alpha_c * float(frequency) / float(rf_step)
             return {"x": {"measured": eta_x * conversion, "initial": initial_dispersion[:, 0], "fitted": fitted_dispersion[:, 0]},
                     "y": {"measured": eta_y * conversion, "initial": initial_dispersion[:, 2], "fitted": fitted_dispersion[:, 2]},
@@ -781,10 +1176,41 @@ class ResultsLoader:
     @property
     def fitted_orm(self):
         if "fitted_orm" not in self._cache:
+            import numpy as np
+
+            # Native GUI result format.
             value = self._npz_value("orm_model")
-            self._cache["fitted_orm"] = _as_matrix(value)
-            if self._cache["fitted_orm"] is None and "fitted_orm" not in self._unavailable:
-                self._unavailable["fitted_orm"] = "loco_results.npz does not contain a two-dimensional 'orm_model' array"
+            matrix = _as_matrix(value)
+
+            # Measured-machine / family-LOCO result format.
+            if matrix is None:
+                candidates = (
+                    self.result_dir / "results" / "orm_model_after.npy",
+                    self.result_dir / "orm_model_after.npy",
+                )
+
+                for candidate in candidates:
+                    if not candidate.is_file():
+                        continue
+
+                    try:
+                        matrix = _as_matrix(
+                            np.load(candidate, allow_pickle=False)
+                        )
+                    except (OSError, ValueError, TypeError):
+                        matrix = None
+
+                    if matrix is not None:
+                        break
+
+            self._cache["fitted_orm"] = matrix
+
+            if matrix is None:
+                self._unavailable["fitted_orm"] = (
+                    "No persisted fitted ORM matrix was found in either "
+                    "the native GUI or measured-machine result format."
+                )
+
         return self._cache["fitted_orm"]
 
     @property

@@ -90,11 +90,14 @@ def reference_model_for_pysc(profile_key: str) -> ReferenceModel:
 
 def comparison_metrics(measured, model) -> dict[str,float]:
     measured=np.asarray(measured,float); model=np.asarray(model,float); difference=measured-model
-    denom=float(np.linalg.norm(measured)*np.linalg.norm(model))
+    measured_norm=float(np.linalg.norm(measured)); model_norm=float(np.linalg.norm(model))
+    denom=measured_norm*model_norm
     return {"rms_measured":float(np.sqrt(np.mean(measured**2))),"rms_model":float(np.sqrt(np.mean(model**2))),
             "rms_difference":float(np.sqrt(np.mean(difference**2))),
-            "relative_norm_difference":float(np.linalg.norm(difference)/np.linalg.norm(model)) if np.linalg.norm(model) else float("nan"),
-            "cosine_similarity":float(np.vdot(measured,model).real/denom) if denom else float("nan")}
+            "max_abs_difference":float(np.max(np.abs(difference))) if difference.size else float("nan"),
+            "relative_norm_difference":float(np.linalg.norm(difference)/model_norm) if model_norm else float("nan"),
+            "cosine_similarity":float(np.vdot(measured,model).real/denom) if denom else float("nan"),
+            "fitted_gain":float(np.vdot(model,measured).real/(model_norm**2)) if model_norm else float("nan")}
 
 
 def resolve_device_ordinals(model: ReferenceModel, devices) -> tuple[int, ...]:
@@ -106,10 +109,22 @@ def resolve_device_ordinals(model: ReferenceModel, devices) -> tuple[int, ...]:
             if value: names.setdefault(str(value),[]).append(index)
     result=[]
     for device in devices:
-        identifier=str(getattr(device,"identifier",device)); root=identifier.rsplit("/",1)[0]
-        if identifier.isdigit() or root.isdigit(): ordinal=int(identifier if identifier.isdigit() else root)
+        identifier=str(getattr(device,"identifier",device))
+        candidates=[]
+        for value in (str(getattr(device,"name",identifier)),identifier):
+            for part in value.split("|"):
+                token=part.strip()
+                if token.startswith(("MAGNET:","BPM:")):token=token.split(":",1)[1]
+                if token.endswith((":X",":Y")):token=token[:-2]
+                candidates.extend((token,token.rsplit("/",1)[0]))
+        numeric=next((item for item in candidates if item.isdigit()),None)
+        if numeric is not None:ordinal=int(numeric)
         else:
-            matches=names.get(str(getattr(device,"name",root)),[]) or names.get(root,[])
+            matches=[]
+            for candidate in dict.fromkeys(candidates):
+                candidate_matches=names.get(candidate,[])
+                if len(candidate_matches)==1:
+                    matches=candidate_matches; break
             if len(matches)!=1: raise ValueError(f"Reference-model device mapping is not unique: {identifier}")
             ordinal=matches[0]
         result.append(ordinal)

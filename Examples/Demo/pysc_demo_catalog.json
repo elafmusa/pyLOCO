@@ -1,6 +1,9 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "backend": "pysc",
+  "profile": "ebs",
+  "profile_label": "EBS",
+  "scenario": "validated_demo",
   "machine": "ESRF-EBS pySC demo",
   "host": "127.0.0.1",
   "port": 13131,
@@ -8,7 +11,15 @@
   "orbit_unit": "m",
   "corrector_unit": "rad",
   "rf_frequency_unit": "Hz",
+  "provenance": {
+    "description": "Existing validated EBS SimulatedCommissioning state used by the Monday demo",
+    "state_is_modified": false,
+    "served_noise_override_is_runtime_only": true
+  },
   "metadata": {
+    "machine_profile": "ebs",
+    "machine_profile_label": "EBS",
+    "machine_scenario": "validated_demo",
     "configured_bpm_noise_sigma_x_m": 1.5e-06,
     "configured_bpm_noise_sigma_y_m": 1.5e-06,
     "corrector_control_unit": "rad",
@@ -19,7 +30,11 @@
     "eta_alpha_minus_inverse_gamma_squared": 8.62772442741851e-05,
     "eta_convention": "eta = alpha_c - 1/gamma^2 = -ring.get_slip_factor()",
     "momentum_relation": "delta_p_over_p = -(f - f0) / (eta * f0), eta = alpha_c - 1/gamma^2, first-order",
-    "corrector_control_convention": "B1L/A1L are integrated normalized dipole strengths K0L, numerically interpreted as steering kick in radians; EBS B1L control sign is inverted by configuration"
+    "corrector_control_convention": "B1L/A1L are integrated normalized dipole strengths; profile configuration owns sign conventions",
+    "random_seed": null,
+    "sigma_truncate": null,
+    "requested_error_distribution": null,
+    "realized_error_statistics": {}
   },
   "bpms": [
     "10",

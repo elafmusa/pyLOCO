@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QPushButton,
     QSizePolicy, QTabWidget, QVBoxLayout, QWidget,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt,Signal
 
 from .log_view import LogView
 from .orm_view import OrmView
@@ -22,6 +22,7 @@ from .run_summary_view import RunSummaryView
 
 
 class ResultsWorkspace(QWidget):
+    open_correct_requested=Signal()
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.loader = None
@@ -91,6 +92,7 @@ class ResultsWorkspace(QWidget):
         selector_row.addWidget(QLabel("View fitted state:"))
         selector_row.addWidget(self.iteration_selector)
         selector_row.addWidget(self.iteration_notice, 1)
+        self.open_correct_button=QPushButton("Open in pyLOCO Correct…"); self.open_correct_button.setEnabled(False); self.open_correct_button.clicked.connect(self.open_correct_requested.emit); selector_row.addWidget(self.open_correct_button)
         layout = QVBoxLayout(self); layout.setContentsMargins(16, 14, 16, 16)
         layout.addWidget(title); layout.addLayout(monitor_row); layout.addWidget(self.compact_monitor)
         layout.addLayout(selector_row); layout.addWidget(self.tabs, 1)
@@ -199,6 +201,7 @@ class ResultsWorkspace(QWidget):
         )
         self._select_iteration(self.iteration_selector.currentIndex())
         self.loader = self.loader or self.base_loader
+        self.open_correct_button.setEnabled(True)
         log_path = path / "backend.log"
         if log_path.exists():
             try: self.log.set_log(log_path.read_text(encoding="utf-8"))

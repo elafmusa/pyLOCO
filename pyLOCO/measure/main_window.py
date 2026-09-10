@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import re
+from html import escape
 from datetime import datetime
 from pathlib import Path
+from importlib.util import find_spec
 from threading import Event
 from time import monotonic, sleep
 from typing import Sequence
@@ -26,7 +28,7 @@ from pyLOCO.data_schema import (
     MeasurementSession, SessionFile, load_session, save_session,
     validate_measurement_file, write_bpm_noise, write_dispersion, write_orm,
 )
-from pyLOCO.gui.branding import DISPLAY_ASSET, set_asset
+from pyLOCO.gui.branding import DISPLAY_ASSET, application_icon, set_asset
 from pyLOCO.gui.project_info import (
     PROJECT_ACKNOWLEDGEMENTS, PROJECT_CONTRIBUTORS, PROJECT_DOCUMENTATION,
     PROJECT_ISSUES, PROJECT_LICENSE, PROJECT_PAPER_TITLE, PROJECT_PAPER_URL,
@@ -50,7 +52,7 @@ from pyLOCO.reference_model import comparison_metrics, load_reference_model, mod
 TEAL_QSS = """
 QToolBar#mainToolbar { spacing: 5px; padding: 6px 8px; }
 QToolBar#mainToolbar QPushButton { font-size: 10pt; min-height: 27px; padding: 4px 8px; }
-QLabel#measureBrand { color: #12BFC4; font-size: 21pt; font-weight: 850; padding: 1px 6px 1px 2px; }
+QLabel#measureBrand { color: #12BFC4; font-size: 25pt; font-weight: 850; padding: 1px 9px 1px 2px; }
 QLabel#connectionStatus { background: #123B42; color: #67E8E8; border: 1px solid #20BFC4;
  border-radius: 10px; padding: 7px 14px; font-size: 12pt; font-weight: 900; }
 QLabel#machineIdentity { color:#CFFAFE; padding:3px 9px; font-size:9.5pt; font-weight:750; }
@@ -65,6 +67,9 @@ QLabel#measurementConvention { font-family: monospace; font-weight: 650; }
 QLabel#planValue { font-weight: 650; }
 QLabel#runState { font-size: 14pt; font-weight: 750; color: #12BFC4; }
 QLabel#runMetric { font-size: 10.5pt; }
+QLabel#summaryCard { background:rgba(32,38,63,0.35); border:1px solid rgba(92,105,145,0.75); border-radius:8px; padding:14px; font-size:11pt; }
+QLabel#statLine { background:rgba(45,53,86,0.28); border-radius:5px; padding:8px 10px; font-size:10.5pt; }
+QLabel#referenceModelCard { background:rgba(32,38,63,0.35); border:1px solid rgba(92,105,145,0.75); border-radius:8px; padding:14px; font-size:10.5pt; }
 QPushButton#measurePrimary { background: #0F9FA6; border-color: #31D5D8; color: white; }
 QPushButton#measurePrimary:hover { background: #0C858B; }
 QTabBar::tab:selected { border-color: #18B8BE; }
@@ -240,7 +245,7 @@ class MeasureMainWindow(QMainWindow):
     def __init__(self, *, devices: Sequence[BpmDevice] | None = None, adapter=None,
                  horizontal_correctors=None, vertical_correctors=None) -> None:
         super().__init__()
-        self.setWindowTitle("pyLOCO Measure")
+        self.setWindowTitle("pyLOCO Measure"); self.setWindowIcon(application_icon("measure"))
         self.resize(1200, 800); self.setMinimumSize(900, 650)
         if devices is None and adapter is not None and hasattr(adapter, "list_devices"):
             devices = tuple(BpmDevice(**item) for item in adapter.list_devices("bpm"))
@@ -289,9 +294,9 @@ class MeasureMainWindow(QMainWindow):
         self.logo_button=ClickableLogoLabel(); set_asset(self.logo_button,QSize(107,44),DISPLAY_ASSET,crop_transparency=False); self.logo_button.clicked.connect(self._show_about_dialog); logo_layout.addWidget(self.logo_button); toolbar.addWidget(logo_container)
 
         root=QWidget(); layout=QVBoxLayout(root); layout.setContentsMargins(20,16,20,20)
-        self.heading=QLabel("BPM Noise Measurement"); self.heading.setObjectName("pageTitle"); layout.addWidget(self.heading)
-        self.subtitle=QLabel("Offline measurement planning and deterministic Mock acquisition — no machine writes are available."); layout.addWidget(self.subtitle)
-        self.tabs=QTabWidget(); self.tabs.currentChanged.connect(lambda _: self.refresh_plan()); layout.addWidget(self.tabs,1)
+        self.heading=QLabel("Machine setup"); self.heading.setObjectName("pageTitle"); layout.addWidget(self.heading)
+        self.subtitle=QLabel("Offline planning with deterministic Mock data — no machine writes."); self.subtitle.setVisible(False)
+        self.tabs=QTabWidget(); self.tabs.currentChanged.connect(self._workspace_changed); layout.addWidget(self.tabs,1)
         self.tabs.addTab(self._machine_page(),"Machine")
         self.tabs.addTab(self._bpms_page(),"Devices")
         configuration=self._measurement_page(); acquisition=self._review_page()
@@ -301,17 +306,30 @@ class MeasureMainWindow(QMainWindow):
         # Scroll areas otherwise advertise their content's wide size hint and make
         # one pane appear impossible to shrink.  The scroll contents still lay out
         # normally; only the splitter is allowed to negotiate compact pane widths.
+        # Keep both panes useful while dragging: the configuration side must
+        # retain enough width for wrapped help/form text, and the result side
+        # must retain enough width for plot controls and axes labels.
+        configuration.setMinimumWidth(300)
+        acquisition.setMinimumWidth(360)
         for pane in (configuration,acquisition):
-            pane.setMinimumWidth(180); pane.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
+            pane.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Expanding)
         measurement.addWidget(configuration); measurement.addWidget(acquisition)
         measurement.setStretchFactor(0,2); measurement.setStretchFactor(1,3); measurement.setSizes([440,760])
         self.tabs.addTab(measurement,"Measurement")
-        saved=QWidget(); saved_layout=QVBoxLayout(saved); saved_layout.setContentsMargins(28,28,28,28); saved_title=QLabel("Saved measurement files"); saved_title.setObjectName("pageTitle"); self.review_machine_identity=QLabel(); self.review_machine_identity.setObjectName("planValue"); saved_note=QLabel("Acquisition, live plots, final plots and saving are now kept together on the Measurement tab. The saved filename is highlighted there after completion."); saved_note.setWordWrap(True); saved_layout.addWidget(saved_title); saved_layout.addWidget(self.review_machine_identity); saved_layout.addWidget(saved_note); saved_layout.addStretch()
+        saved=QWidget(); saved_layout=QVBoxLayout(saved); saved_layout.setContentsMargins(28,28,28,28)
+        saved_title=QLabel("Completed measurement"); saved_title.setObjectName("pageTitle"); saved_layout.addWidget(saved_title)
+        self.review_machine_identity=QLabel(); self.review_machine_identity.setObjectName("planValue"); self.review_machine_identity.setWordWrap(True); saved_layout.addWidget(self.review_machine_identity)
+        review_group=QGroupBox("Review"); review_layout=QVBoxLayout(review_group)
+        self.review_status=QLabel("No completed measurement yet."); self.review_status.setObjectName("runState"); self.review_status.setWordWrap(True)
+        self.review_details=QLabel("Complete a measurement to review its saved data and validation status."); self.review_details.setObjectName("summaryCard"); self.review_details.setWordWrap(True); self.review_details.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.review_paths=QLabel("Measurement file: —\nSession manifest: —"); self.review_paths.setWordWrap(True); self.review_paths.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        review_layout.addWidget(self.review_status); review_layout.addWidget(self.review_details); review_layout.addWidget(self.review_paths); saved_layout.addWidget(review_group)
+        review_actions=QHBoxLayout(); self.review_validate_button=QPushButton("Validate for pyLOCO"); self.review_validate_button.setEnabled(False); self.review_validate_button.clicked.connect(self.validate_saved); self.review_open_button=QPushButton("Open session in pyLOCO Fit"); self.review_open_button.setEnabled(False); self.review_open_button.clicked.connect(self.explain_open); back_button=QPushButton("Back to results"); back_button.clicked.connect(lambda:self.tabs.setCurrentIndex(2)); review_actions.addWidget(self.review_validate_button); review_actions.addWidget(self.review_open_button); review_actions.addWidget(back_button); review_actions.addStretch(1); saved_layout.addLayout(review_actions); saved_layout.addStretch()
         self.tabs.addTab(saved,"Review && Save")
         self.tabs.tabBar().setExpanding(False)
         self.tabs.tabBar().setElideMode(Qt.ElideNone)
         self.tabs.tabBar().setUsesScrollButtons(True)
-        self.setCentralWidget(root); self.statusBar().showMessage("Mock adapter ready — read-only acquisition"); self._update_workflow_tabs()
+        self.setCentralWidget(root); self.statusBar().showMessage("Mock ready — read only"); self._update_workflow_tabs()
 
     def _scroll_page(self, content):
         # The scroll viewport, not the content's preferred height, should
@@ -355,7 +373,7 @@ class MeasureMainWindow(QMainWindow):
         for index in range(min(2,self.tabs.count())):self.tabs.setTabEnabled(index,not running)
         self.start_button.setEnabled(not running)
         self.cancel_button.setEnabled(running)
-        self.cancel_button.setText("Cancel acquisition" if running else "Cancel")
+        self.cancel_button.setText("Cancel measurement" if running else "Cancel")
         self.repeat_button.setEnabled(not running)
         if running:self.statusBar().showMessage(f"ACQUIRING • {self.status_badge.text()}")
 
@@ -400,12 +418,13 @@ class MeasureMainWindow(QMainWindow):
         self.pysc_profile_combo.currentIndexChanged.connect(self._pysc_profile_changed)
         for widget in self.pysc_profile_row: widget.setVisible(False)
         layout.addWidget(self.machine_group)
-        reference_group=QGroupBox("Reference model — MODEL, never live readback"); reference_layout=QFormLayout(reference_group); self._configure_form(reference_layout)
+        reference_group=QGroupBox("Optional reference model — requires Accelerator Toolbox (AT)"); reference_layout=QFormLayout(reference_group); self._configure_form(reference_layout)
         self.reference_model_path=QLineEdit(); self.reference_model_path.setPlaceholderText("Automatic from pySC profile, or select an authoritative nominal .mat for LIVE")
         reference_row=QWidget(); rr=QHBoxLayout(reference_row); rr.setContentsMargins(0,0,0,0); rr.addWidget(self.reference_model_path,1); choose=QPushButton("Choose .mat…"); choose.clicked.connect(self._choose_reference_model); rr.addWidget(choose)
-        self.reference_model_summary=QLabel("No reference model loaded."); self.reference_model_summary.setWordWrap(True)
+        self.reference_model_summary=QLabel("No reference model loaded."); self.reference_model_summary.setObjectName("referenceModelCard"); self.reference_model_summary.setWordWrap(True); self.reference_model_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.reference_model_requirement=QLabel("AT is installed — reference-model calculations are available." if find_spec("at") is not None else "AT is not installed — reference-model calculations and physical dispersion are unavailable."); self.reference_model_requirement.setWordWrap(True)
         self.compare_reference=QCheckBox("Compare measurements with reference model (diagnostic only)"); self.compare_reference.setChecked(True)
-        reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MODEL quantities",self.reference_model_summary); reference_layout.addRow("",self.compare_reference)
+        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("",self.compare_reference)
         layout.addWidget(reference_group); return self._scroll_page(content)
 
     def _choose_reference_model(self):
@@ -423,14 +442,27 @@ class MeasureMainWindow(QMainWindow):
         harmonic=str(model.harmonic_number) if model.harmonic_number is not None else "Not available"
         rf=f"{model.nominal_rf_hz/1e6:.9f} MHz" if model.nominal_rf_hz is not None else "Not available"
         residual=f"{model.rf_harmonic_residual_hz:.6g} Hz" if model.rf_harmonic_residual_hz is not None else "Not available"
+        rows=(
+            ("Fractional tunes Qx / Qy",f"{model.tune[0]:.6f} / {model.tune[1]:.6f}","AT linear optics"),
+            ("Chromaticity ξx / ξy",f"{model.chromaticity[0]:.6f} / {model.chromaticity[1]:.6f}","AT linear optics"),
+            ("Beam energy",f"{model.energy_ev/1e9:.6g} GeV","Reference lattice"),
+            ("Circumference",f"{model.circumference_m:.6f} m","AT lattice geometry"),
+            ("Revolution frequency f<sub>rev</sub>",f"{model.revolution_frequency_hz:.6f} Hz","c / circumference"),
+            ("Harmonic number h",harmonic,model.harmonic_number_source),
+            ("Model RF frequency",rf,model.rf_source),
+            ("RF consistency: f<sub>RF</sub> − h·f<sub>rev</sub>",residual,"AT/model consistency check"),
+            ("Momentum compaction α<sub>c</sub>",f"{model.momentum_compaction:.9g}","AT ring.get_mcf()"),
+            ("Relativistic term 1/γ²",f"{model.inverse_gamma_squared:.9g}","AT lattice energy/slip factor"),
+            ("Slip factor η = α<sub>c</sub> − 1/γ²",f"{model.slip_factor:.9g}","AT ring.get_slip_factor() convention"),
+        )
+        body="".join(f"<tr><td><b>{name}</b></td><td>{value}</td><td>{source}</td></tr>" for name,value,source in rows)
+        selection=("Selected automatically by the pySC profile manifest" if str(model.source).startswith("pySC profile manifest") else escape(str(model.source)))
         self.reference_model_summary.setText(
-            f"Reference model Qx/Qy (fractional): {model.tune[0]:.6f} / {model.tune[1]:.6f}\n"
-            f"Model chromaticity ξx/ξy: {model.chromaticity[0]:.6f} / {model.chromaticity[1]:.6f}\n"
-            f"Beam energy: {model.energy_ev/1e9:.6g} GeV    Circumference: {model.circumference_m:.6f} m\n"
-            f"Revolution frequency f_rev: {model.revolution_frequency_hz:.6f} Hz    Harmonic number h: {harmonic} ({model.harmonic_number_source})\n"
-            f"Model RF: {rf} ({model.rf_source})    f_RF − h·f_rev: {residual}\n"
-            f"Momentum compaction αc: {model.momentum_compaction:.9g}    1/γ²: {model.inverse_gamma_squared:.9g}\n"
-            f"Slip factor η = αc − 1/γ²: {model.slip_factor:.9g}\nSource: {model.source} — {model.path.name}")
+            f"<h3 style='color:#12BFC4;margin:0 0 8px 0'>Reference-lattice quantities</h3>"
+            f"<div><b>Calculation source:</b> Accelerator Toolbox, using the loaded 4D reference lattice.</div>"
+            f"<div><b>Lattice:</b> {escape(model.path.name)} &nbsp; <b>SHA-256:</b> {escape(model.checksum_sha256[:12])}…</div>"
+            f"<div><b>File selection:</b> {selection}</div><br>"
+            f"<table cellspacing='0' cellpadding='4' width='100%'><tr><th align='left'>Quantity</th><th align='left'>Value</th><th align='left'>Source</th></tr>{body}</table>")
 
     def _load_profile_reference_model(self):
         self._model_orm_cache=None
@@ -492,14 +524,14 @@ class MeasureMainWindow(QMainWindow):
                 session=InterfaceRegistry(interface_loaders={},pysc_profile=profile_key).create("pysc")
             except Exception as exc:
                 self.devices=(); self.horizontal_correctors=(); self.vertical_correctors=(); self.selected_devices=(); self.selected_hcorrectors=(); self.selected_vcorrectors=()
-                self.status_badge.setText("DEMO • pySC SERVER"); self._set_connection_state(False,"DISCONNECTED"); self.subtitle.setText(f"pySC Server {profile_label} simulation selected — connect to start acquisition."); self.machine_info["adapter"].setText(f"pySC Server — {profile_label} simulation"); self.machine_info["connection"].setText(f"Unavailable: {exc}"); self.machine_info["access"].setText("DEMO — acquisition blocked while unavailable"); self.machine_info["bpm_orbit"].setText("unavailable"); self.machine_info["corrector_readback"].setText("unavailable"); self.machine_info["calibration"].setText("backend managed"); self.machine_info["rf_readback"].setText("unavailable");
+                self.status_badge.setText("DEMO • pySC SERVER"); self._set_connection_state(False,"DISCONNECTED"); self.subtitle.setText(f"pySC Server {profile_label} simulation selected — connect to measure."); self.machine_info["adapter"].setText(f"pySC Server — {profile_label} simulation"); self.machine_info["connection"].setText(f"Unavailable: {exc}"); self.machine_info["access"].setText("DEMO — connect before measuring"); self.machine_info["bpm_orbit"].setText("unavailable"); self.machine_info["corrector_readback"].setText("unavailable"); self.machine_info["calibration"].setText("backend managed"); self.machine_info["rf_readback"].setText("unavailable");
                 if hasattr(self,"start_button"):self.start_button.setEnabled(False)
                 return
             self.adapter=session.adapter; self.devices=tuple(BpmDevice(**item) for item in self.adapter.list_devices("bpm")); self.horizontal_correctors=tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("hcor")); self.vertical_correctors=tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("vcor"))
             self.status_badge.setText(session.badge); self._set_connection_state(False,"DISCONNECTED"); self.subtitle.setText(f"DEMO MODE — pySC Server {profile_label} simulation. Temporary measurement writes are restoration-protected."); self.machine_info["adapter"].setText(f"pySC Server — {profile_label} simulation"); self.machine_info["connection"].setText("Configured — use Test connection"); self.machine_info["access"].setText("DEMO — temporary writes are restoration-protected"); self.machine_info["bpm_orbit"].setText("not tested"); self.machine_info["corrector_readback"].setText("not tested"); self.machine_info["calibration"].setText("backend managed"); self.machine_info["rf_readback"].setText("not tested")
         else:
             self.devices=default_mock_devices(); self.horizontal_correctors,self.vertical_correctors=default_mock_correctors(); self.adapter=build_mock_adapter(self.devices,horizontal_correctors=self.horizontal_correctors,vertical_correctors=self.vertical_correctors)
-            self.status_badge.setText("MOCK • READ ONLY"); self._set_connection_state(True,"OFFLINE READY"); self.subtitle.setText("Offline measurement planning and deterministic Mock acquisition — no machine writes are available."); self.machine_info["adapter"].setText("Mock — deterministic offline data source"); self.machine_info["connection"].setText("Offline simulation"); self.machine_info["access"].setText("Read only — no real machine writes"); self.machine_info["bpm_orbit"].setText(f"available — {len(self.devices)} mock BPM devices"); self.machine_info["corrector_readback"].setText("simulated diagnostics available"); self.machine_info["calibration"].setText("not applicable in Mock mode"); self.machine_info["rf_readback"].setText("simulated internally")
+            self.status_badge.setText("MOCK • READ ONLY"); self._set_connection_state(True,"OFFLINE READY"); self.subtitle.setText("Offline planning with deterministic Mock data — no machine writes."); self.machine_info["adapter"].setText("Mock — deterministic offline data source"); self.machine_info["connection"].setText("Offline simulation"); self.machine_info["access"].setText("Read only — no real machine writes"); self.machine_info["bpm_orbit"].setText(f"available — {len(self.devices)} mock BPM devices"); self.machine_info["corrector_readback"].setText("simulated diagnostics available"); self.machine_info["calibration"].setText("not applicable in Mock mode"); self.machine_info["rf_readback"].setText("simulated internally")
         self.selected_devices=self.devices; self.selected_hcorrectors=self.horizontal_correctors; self.selected_vcorrectors=self.vertical_correctors
         for key,devices in (("hcor",self.horizontal_correctors),("vcor",self.vertical_correctors)):
             if hasattr(self,"corrector_selection_widgets"):self.corrector_selection_widgets[key]["devices"]=devices; self._refresh_corrector_preview(key,read_diagnostics=False)
@@ -508,12 +540,12 @@ class MeasureMainWindow(QMainWindow):
             if petra and self.measurement_type.currentData()=="orm":self.measurement_type.setCurrentIndex(self.measurement_type.findData("bpm_noise"))
             automatic=self.rf_control_mode.model().item(self.rf_control_mode.findData("automatic")); automatic.setEnabled(AdapterCapability.RF_WRITE in self.adapter.capabilities)
             if pysc: self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("automatic"))
-            if pysc and (self.measurement_label.text().startswith("Mock") or " pySC " in self.measurement_label.text()):
-                prefix=f"{profile_label} pySC"; labels={"bpm_noise":f"{prefix} BPM noise","dispersion":f"{prefix} dispersion","orm":f"{prefix} small ORM"}; self.measurement_label.setText(labels[self.measurement_type.currentData()])
-            elif key=="mock" and " pySC " in self.measurement_label.text():
-                labels={"bpm_noise":"Mock BPM noise","dispersion":"Mock manual-RF dispersion","orm":"Mock orbit response matrix"}; self.measurement_label.setText(labels[self.measurement_type.currentData()])
+            current_label=self.measurement_label.text()
+            if current_label.startswith(("Mock", "pyLOCO")) or " pySC " in current_label:
+                context=profile_label if pysc else "PETRA III LIVE" if petra else "Mock"
+                labels={"bpm_noise":f"pyLOCO BPM noise — {context}","dispersion":f"pyLOCO dispersion — {context}","orm":f"pyLOCO ORM — {context}"}; self.measurement_label.setText(labels[self.measurement_type.currentData()])
         self._reset_selection_states_for_inventory(); self._update_machine_identity()
-        self.refresh_preview(); self.statusBar().showMessage("PETRA adapter selected — no connection attempted" if petra else "pySC Server configured — test connection before acquisition" if pysc else "Mock adapter ready — read-only acquisition"); self._sync_rf_presentation()
+        self.refresh_preview(); self.statusBar().showMessage("PETRA adapter selected — not connected" if petra else "pySC Server ready — test connection" if pysc else "Mock ready — read only"); self._sync_rf_presentation()
 
     def _machine_identity(self):
         key=self.adapter_combo.currentData() if hasattr(self,"adapter_combo") else "mock"
@@ -555,42 +587,42 @@ class MeasureMainWindow(QMainWindow):
             half=self.rf_step.value()/2
             self.rf_states_explanation.setText(f"Applied states: f₀ + {half:g} Hz / f₀ − {half:g} Hz\nTotal separation: Δ = {self.rf_step.value():g} Hz" if bipolar else "One-sided RF offset")
         self._configure_physical_dispersion_option()
-        self.refresh_plan()
+        if hasattr(self,"plan_values"):self.refresh_plan()
 
     def _test_connection(self):
         if self.adapter_combo.currentData()=="pysc":
             try:self._adapter_changed(); result=self.adapter.test_connection()
             except Exception as exc:self._set_connection_state(False,"DISCONNECTED"); QMessageBox.warning(self,"pySC Server unavailable",str(exc)); return
-            profile=self.pysc_profile_combo.currentText(); self._set_connection_state(True,"CONNECTED"); self.machine_info["connection"].setText(f"Connected — {profile} demo-server reads succeeded"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(str(result["corrector_readback"])); self.machine_info["rf_readback"].setText(f"available — {result['rf_readback']:.6f} Hz"); self.nominal_rf.setText(f"{result['rf_readback']:.12f}"); self._load_profile_reference_model(); self.statusBar().showMessage(f"CONNECTED • {self.status_badge.text()} • {profile} • {result['bpms']} BPMs"); QMessageBox.information(self,"pySC Server",f"Connected to {profile} DEMO profile; {result['bpms']} BPMs available."); return
+            profile=self.pysc_profile_combo.currentText(); self._set_connection_state(True,"CONNECTED"); self.machine_info["connection"].setText(f"Connected — {profile}"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(str(result["corrector_readback"])); self.machine_info["rf_readback"].setText(f"available — {result['rf_readback']:.6f} Hz"); self.nominal_rf.setText(f"{result['rf_readback']:.12f}"); self._load_profile_reference_model(); self.statusBar().showMessage(f"CONNECTED • {profile} • {result['bpms']} BPMs"); return
         if not isinstance(self.adapter,PETRAReadOnlyAdapter):
-            QMessageBox.information(self,"Mock connection","Deterministic Mock adapter is ready. No external system is contacted."); return
+            self.statusBar().showMessage("Mock ready — no external connection"); return
         self.test_connection_button.setEnabled(False); self.machine_info["connection"].setText("Testing safe reads…"); QApplication.processEvents()
         try:result=self.adapter.test_connection()
         except Exception as exc:
             self.machine_info["connection"].setText("Unavailable"); self.machine_info["bpm_orbit"].setText("unavailable"); self.machine_info["corrector_readback"].setText("unavailable"); QMessageBox.warning(self,"PETRA connection unavailable",str(exc))
         else:
-            self.machine_info["connection"].setText("Connected — safe reads succeeded"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(result["corrector_readback"]); self.machine_info["calibration"].setText(result["calibration"]); self.machine_info["rf_readback"].setText(result["rf_readback"]); QMessageBox.information(self,"PETRA read-only connection",f"Read {result['bpms']} horizontal and vertical BPM values.\nCorrector readback: {result['corrector_readback']}\nCalibration: {result['calibration']}\nRF readback: {result['rf_readback']}\n\nNo writes were issued.")
+            self.machine_info["connection"].setText("Connected — read only"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(result["corrector_readback"]); self.machine_info["calibration"].setText(result["calibration"]); self.machine_info["rf_readback"].setText(result["rf_readback"]); self.statusBar().showMessage(f"CONNECTED • PETRA read only • {result['bpms']} BPMs")
         finally:self.test_connection_button.setEnabled(True)
 
     def _measurement_page(self):
         content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(22,22,22,22); layout.setAlignment(Qt.AlignTop)
         self.measurement_machine_identity=QLabel(); self.measurement_machine_identity.setObjectName("planValue"); self.measurement_machine_identity.setWordWrap(True); layout.addWidget(self.measurement_machine_identity)
-        type_group=QGroupBox("Measurement type"); type_form=QFormLayout(type_group); self._configure_form(type_form); self.measurement_type=QComboBox(); self.measurement_type.addItem("BPM Noise","bpm_noise"); self.measurement_type.addItem("Dispersion","dispersion"); self.measurement_type.addItem("ORM","orm"); self.measurement_type.currentIndexChanged.connect(self._measurement_type_changed); type_form.addRow("Measurement",self.measurement_type); self.orm_unavailable_label=QLabel("ORM acquisition requires write-enabled control-system access. PETRA remains hard read-only in this milestone."); self.orm_unavailable_label.setWordWrap(True); type_form.addRow("",self.orm_unavailable_label); self.orm_unavailable_label.setVisible(False); layout.addWidget(type_group)
+        type_group=QGroupBox("Measurement type"); type_form=QFormLayout(type_group); self._configure_form(type_form); self.measurement_type=QComboBox(); self.measurement_type.addItem("BPM Noise","bpm_noise"); self.measurement_type.addItem("Dispersion","dispersion"); self.measurement_type.addItem("ORM","orm"); self.measurement_type.currentIndexChanged.connect(self._measurement_type_changed); type_form.addRow("Measurement",self.measurement_type); self.orm_unavailable_label=QLabel("ORM needs write access. PETRA is read only."); self.orm_unavailable_label.setWordWrap(True); type_form.addRow("",self.orm_unavailable_label); self.orm_unavailable_label.setVisible(False); layout.addWidget(type_group)
         self.measurement_help_group=QGroupBox("ⓘ About this measurement")
         self.measurement_help_group.setCheckable(True); self.measurement_help_group.setChecked(False)
         help_layout=QVBoxLayout(self.measurement_help_group); self.measurement_help_body=QWidget(); help_body_layout=QVBoxLayout(self.measurement_help_body); help_body_layout.setContentsMargins(2,4,2,4)
         self.measurement_help_title=QLabel(); self.measurement_help_title.setObjectName("measurementHelpTitle")
-        self.measurement_help_text=QLabel(); self.measurement_help_text.setWordWrap(True); self.measurement_help_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.measurement_help_text=QLabel(); self.measurement_help_text.setWordWrap(True); self.measurement_help_text.setMinimumWidth(0); self.measurement_help_text.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred); self.measurement_help_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.measurement_help_convention=QLabel(); self.measurement_help_convention.setObjectName("measurementConvention"); self.measurement_help_convention.setWordWrap(True); self.measurement_help_convention.setTextInteractionFlags(Qt.TextSelectableByMouse)
         help_body_layout.addWidget(self.measurement_help_title); help_body_layout.addWidget(self.measurement_help_text); help_body_layout.addWidget(self.measurement_help_convention)
         help_layout.addWidget(self.measurement_help_body); self.measurement_help_group.toggled.connect(self.measurement_help_body.setVisible); self.measurement_help_body.setVisible(False); layout.addWidget(self.measurement_help_group)
         group=QGroupBox("Measurement configuration"); group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); form=QFormLayout(group); self._configure_form(form)
         self.readings=NoWheelSpinBox(); self.readings.setRange(2,100000); self.readings.setValue(20)
         self.delay=NoWheelDoubleSpinBox(); self.delay.setRange(0,3600); self.delay.setDecimals(3); self.delay.setSingleStep(.1); self.delay.setSuffix(" s"); self.delay.setValue(.1)
-        self.measurement_name=QLineEdit("bpm-noise"); self.measurement_label=QLineEdit("Mock BPM noise"); self.comments=QPlainTextEdit(); self.comments.setMaximumHeight(90)
+        self.measurement_name=QLineEdit("pyloco-bpm-noise"); self.measurement_label=QLineEdit("pyLOCO BPM noise — Mock"); self.comments=QPlainTextEdit(); self.comments.setMaximumHeight(90)
         self.output_directory=QLineEdit("measurements"); out=QWidget(); ol=QHBoxLayout(out); ol.setContentsMargins(0,0,0,0); ol.addWidget(self.output_directory,1); choose=QPushButton("Choose…"); choose.clicked.connect(self.choose_output); ol.addWidget(choose)
         self.duration=QLabel();
-        for label,widget in (("Number of orbit readings",self.readings),("Delay between readings",self.delay),("Estimated acquisition duration",self.duration),("Measurement name",self.measurement_name),("Measurement label",self.measurement_label),("Notes",self.comments),("Output/session directory",out)): form.addRow(label,widget)
+        for label,widget in (("Number of orbit readings",self.readings),("Delay between readings",self.delay),("Estimated duration",self.duration),("Measurement name",self.measurement_name),("Measurement label",self.measurement_label),("Notes",self.comments),("Output/session directory",out)): form.addRow(label,widget)
         self.readings.valueChanged.connect(self.refresh_plan); self.delay.valueChanged.connect(self.refresh_plan)
         for widget in (self.measurement_name,self.measurement_label,self.output_directory): widget.textChanged.connect(self.refresh_plan)
         layout.addWidget(group)
@@ -605,7 +637,7 @@ class MeasureMainWindow(QMainWindow):
         self.verify_restored_orbit.setToolTip("After exact RF restoration, acquire a read-only reference orbit for comparison. This orbit is never used in the dispersion calculation.")
         self.rf_safety=QLabel("READ ONLY — pyLOCO Measure will guide RF changes but will never write RF."); self.rf_safety.setWordWrap(True)
         self.rf_states_explanation=QLabel("Applied states: f₀ + 100 Hz / f₀ − 100 Hz\nTotal separation: Δ = 200 Hz"); self.rf_states_explanation.setWordWrap(True)
-        for label,widget in (("RF control mode",self.rf_control_mode),("Nominal RF frequency",nominal_widget),("Total RF separation Δ",self.rf_step),("Applied RF states",self.rf_states_explanation),("Measurement direction",self.dispersion_direction),("Settling delay before acquisition",self.settling_delay),("Restoration diagnostic",self.verify_restored_orbit),("",self.rf_safety)): dispersion_form.addRow(label,widget)
+        for label,widget in (("RF control mode",self.rf_control_mode),("Nominal RF frequency",nominal_widget),("Total RF separation Δ",self.rf_step),("Applied RF states",self.rf_states_explanation),("Measurement direction",self.dispersion_direction),("Settling delay",self.settling_delay),("Restoration check",self.verify_restored_orbit),("",self.rf_safety)): dispersion_form.addRow(label,widget)
         self.rf_step_label=dispersion_form.labelForField(self.rf_step)
         for widget in (self.nominal_rf,self.rf_step,self.dispersion_direction,self.settling_delay):
             signal=widget.textChanged if isinstance(widget,QLineEdit) else widget.currentIndexChanged if isinstance(widget,QComboBox) else widget.valueChanged
@@ -632,7 +664,9 @@ class MeasureMainWindow(QMainWindow):
 
     def _review_page(self):
         content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(22,22,22,22); layout.setAlignment(Qt.AlignTop)
-        plan_group=QGroupBox("Measurement plan"); plan_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); plan=QGridLayout(plan_group); plan.setHorizontalSpacing(18); plan.setVerticalSpacing(9); self.plan_values={}; self.dispersion_plan_widgets=[]; self.orm_plan_widgets=[]; self.settling_plan_widgets=[]
+        plan_group=QGroupBox("Show measurement plan"); plan_group.setCheckable(True); plan_group.setChecked(False); plan_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        plan_outer=QVBoxLayout(plan_group); self.plan_body=QWidget(); plan=QGridLayout(self.plan_body); plan.setContentsMargins(2,4,2,4); plan.setHorizontalSpacing(18); plan.setVerticalSpacing(9); plan_outer.addWidget(self.plan_body); plan_group.toggled.connect(self.plan_body.setVisible); self.plan_body.setVisible(False)
+        self.plan_values={}; self.dispersion_plan_widgets=[]; self.orm_plan_widgets=[]; self.settling_plan_widgets=[]
         plan_pairs=(("Measurement","BPMs"),("H correctors","V correctors"),("Total correctors","Kick source"),("H kick","V kick"),("Scaled ORM","ORM direction"),("RF mode","Nominal RF"),("RF step ±Δf","Bipolar separation"),("Negative RF","Positive RF"),("Direction","RF states"),("Readings","Delay"),("Settling delay","Est. duration"),("Adapter","Output"))
         for row,(left,right) in enumerate(plan_pairs):
             for pair,label in enumerate((left,right)):
@@ -641,12 +675,12 @@ class MeasureMainWindow(QMainWindow):
                 if label in {"H correctors","V correctors","Total correctors","Kick source","H kick","V kick","Scaled ORM","ORM direction"}: self.orm_plan_widgets.extend((name,value))
                 if label=="Settling delay":self.settling_plan_widgets.extend((name,value))
         self.plan_output=self.plan_values["output"]
-        run_group=QGroupBox("Acquisition status"); self.run_group=run_group; rl=QVBoxLayout(run_group); self.step_instruction=QLabel(); self.step_instruction.setWordWrap(True); self.step_instruction.setObjectName("planValue"); self.step_instruction.setMaximumHeight(52); self.step_instruction.setToolTip("Full measurement sequence is available in the Measurement plan."); rl.addWidget(self.step_instruction); self.reading_status=QLabel("Ready"); self.reading_status.setObjectName("runState"); self.progress=QProgressBar(); self.progress.setMinimumHeight(34); self.progress.setFormat("Ready — 0 / 0"); rl.addWidget(self.reading_status); rl.addWidget(self.progress)
+        run_group=QGroupBox("Measurement status"); self.run_group=run_group; rl=QVBoxLayout(run_group); self.step_instruction=QLabel(); self.step_instruction.setWordWrap(True); self.step_instruction.setObjectName("planValue"); self.step_instruction.setMaximumHeight(52); self.step_instruction.setToolTip("Full measurement sequence is available in the Measurement plan."); rl.addWidget(self.step_instruction); self.reading_status=QLabel("Ready"); self.reading_status.setObjectName("runState"); self.progress=QProgressBar(); self.progress.setMinimumHeight(34); self.progress.setFormat("Ready — 0 / 0"); rl.addWidget(self.reading_status); rl.addWidget(self.progress)
         status_row=QHBoxLayout(); self.elapsed=QLabel("Elapsed: 0.00 s"); self.remaining=QLabel("Remaining: —"); self.samples=QLabel("Samples: 0 / 0")
         for metric in (self.elapsed,self.remaining,self.samples): metric.setObjectName("runMetric"); status_row.addWidget(metric)
         status_row.addStretch(1); rl.addLayout(status_row)
         self.live_plot=PlotCanvas(show_toolbar=False,minimum_height=230); self.live_plot.save_button.setVisible(False); rl.addWidget(self.live_plot)
-        buttons=QHBoxLayout(); self.start_button=QPushButton("Start BPM-noise measurement"); self.start_button.setObjectName("measurePrimary"); self.start_button.clicked.connect(self.start_acquisition); self.repeat_button=QPushButton("Repeat measurement"); self.repeat_button.setObjectName("measurePrimary"); self.repeat_button.clicked.connect(self.repeat_measurement); self.repeat_button.setVisible(False); self.cancel_button=QPushButton("Cancel"); self.cancel_button.setEnabled(False); self.cancel_button.clicked.connect(self.cancel_acquisition); self.preview_toggle=QPushButton("Show acquisition preview"); self.preview_toggle.setCheckable(True); self.preview_toggle.setVisible(False); self.preview_toggle.toggled.connect(self._toggle_completed_preview); buttons.addWidget(self.start_button); buttons.addWidget(self.repeat_button); buttons.addWidget(self.cancel_button); buttons.addWidget(self.preview_toggle); buttons.addStretch(1); rl.addLayout(buttons); self.start_block_reason=QLabel(); self.start_block_reason.setWordWrap(True); self.start_block_reason.setStyleSheet("color:#F0A35E;font-weight:700"); rl.addWidget(self.start_block_reason); layout.addWidget(run_group); self.plan_group=plan_group; layout.addWidget(plan_group)
+        buttons=QHBoxLayout(); self.start_button=QPushButton("Start BPM-noise measurement"); self.start_button.setObjectName("measurePrimary"); self.start_button.clicked.connect(self.start_acquisition); self.repeat_button=QPushButton("Repeat measurement"); self.repeat_button.setObjectName("measurePrimary"); self.repeat_button.clicked.connect(self.repeat_measurement); self.repeat_button.setVisible(False); self.cancel_button=QPushButton("Cancel"); self.cancel_button.setEnabled(False); self.cancel_button.clicked.connect(self.cancel_acquisition); self.preview_toggle=QPushButton("Show live preview"); self.preview_toggle.setCheckable(True); self.preview_toggle.setVisible(False); self.preview_toggle.toggled.connect(self._toggle_completed_preview); buttons.addWidget(self.start_button); buttons.addWidget(self.repeat_button); buttons.addWidget(self.cancel_button); buttons.addWidget(self.preview_toggle); buttons.addStretch(1); rl.addLayout(buttons); self.start_block_reason=QLabel(); self.start_block_reason.setWordWrap(True); self.start_block_reason.setStyleSheet("color:#F0A35E;font-weight:700"); rl.addWidget(self.start_block_reason); self.plan_group=plan_group; layout.addWidget(plan_group); layout.addWidget(run_group)
         # Compact actions shown after a measurement completes.
         self.completed_actions = QWidget()
         completed_actions_layout = QHBoxLayout(self.completed_actions)
@@ -661,10 +695,10 @@ class MeasureMainWindow(QMainWindow):
         self.completed_actions.setVisible(False)
         layout.addWidget(self.completed_actions)
 
-        self.log_group=QGroupBox("Acquisition Log"); self.log_group.setCheckable(True); self.log_group.setChecked(False); log_layout=QVBoxLayout(self.log_group); self.log_body=QWidget(); body_layout=QVBoxLayout(self.log_body); body_layout.setContentsMargins(0,0,0,0); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMinimumHeight(110); log_actions=QHBoxLayout(); clear_log=QPushButton("Clear"); clear_log.clicked.connect(self.log.clear); save_log=QPushButton("Save log…"); save_log.clicked.connect(self.save_log); log_actions.addWidget(clear_log); log_actions.addWidget(save_log); log_actions.addStretch(1); body_layout.addLayout(log_actions); body_layout.addWidget(self.log); log_layout.addWidget(self.log_body); self.log_group.toggled.connect(self.log_body.setVisible); self.log_body.setVisible(False); layout.addWidget(self.log_group)
+        self.log_group=QGroupBox("Measurement log"); self.log_group.setCheckable(True); self.log_group.setChecked(False); log_layout=QVBoxLayout(self.log_group); self.log_body=QWidget(); body_layout=QVBoxLayout(self.log_body); body_layout.setContentsMargins(0,0,0,0); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMinimumHeight(110); log_actions=QHBoxLayout(); clear_log=QPushButton("Clear"); clear_log.clicked.connect(self.log.clear); save_log=QPushButton("Save log…"); save_log.clicked.connect(self.save_log); log_actions.addWidget(clear_log); log_actions.addWidget(save_log); log_actions.addStretch(1); body_layout.addLayout(log_actions); body_layout.addWidget(self.log); log_layout.addWidget(self.log_body); self.log_group.toggled.connect(self.log_body.setVisible); self.log_body.setVisible(False); layout.addWidget(self.log_group)
         self.orm_column_row=QWidget(); ocr=QHBoxLayout(self.orm_column_row); ocr.setContentsMargins(0,0,0,0); ocr.addWidget(QLabel("Selected ORM column")); self.orm_column_selector=QComboBox(); self.orm_column_selector.currentIndexChanged.connect(self._update_selected_orm_column); ocr.addWidget(self.orm_column_selector,1); layout.addWidget(self.orm_column_row); self.orm_column_row.setVisible(False)
         self.orm_view_row=QWidget(); ovr=QHBoxLayout(self.orm_view_row); ovr.setContentsMargins(0,0,0,0); ovr.addWidget(QLabel("ORM matrix plot")); self.orm_view_mode=QComboBox(); self.orm_view_mode.addItem("2D heatmap — FIT colors","2d"); self.orm_view_mode.addItem("3D surface — FIT colors","3d"); self.orm_view_mode.currentIndexChanged.connect(self._redraw_orm_result); ovr.addWidget(self.orm_view_mode); ovr.addStretch(1); layout.addWidget(self.orm_view_row); self.orm_view_row.setVisible(False)
-        self.dispersion_display_row=QWidget(); ddr=QHBoxLayout(self.dispersion_display_row); ddr.setContentsMargins(0,0,0,0); ddr.addWidget(QLabel("Dispersion display")); self.dispersion_display=QComboBox(); self.dispersion_display.addItem("RF orbit difference (pyLOCO-compatible)","raw"); self.dispersion_display.addItem("Physical dispersion","physical"); self.dispersion_display.currentIndexChanged.connect(self._dispersion_display_changed); ddr.addWidget(self.dispersion_display,1); self.dispersion_display_reason=QLabel(); self.dispersion_display_reason.setWordWrap(True); ddr.addWidget(self.dispersion_display_reason,2); layout.addWidget(self.dispersion_display_row); self.dispersion_display_row.setVisible(False)
+        self.dispersion_display_row=QWidget(); ddr=QHBoxLayout(self.dispersion_display_row); ddr.setContentsMargins(0,0,0,0); self.dispersion_display_label=QLabel("Showing: RF orbit difference"); self.dispersion_display_label.setStyleSheet("font-weight:750"); ddr.addWidget(self.dispersion_display_label); self.dispersion_display=QComboBox(); self.dispersion_display.addItem("RF orbit difference (pyLOCO-compatible)","raw"); self.dispersion_display.addItem("Physical dispersion (optional — requires AT)","physical"); self.dispersion_display.currentIndexChanged.connect(self._dispersion_display_changed); ddr.addWidget(self.dispersion_display,1); self.dispersion_display_reason=QLabel(); self.dispersion_display_reason.setWordWrap(True); ddr.addWidget(self.dispersion_display_reason,2); layout.addWidget(self.dispersion_display_row); self.dispersion_display_row.setVisible(False)
         self.results_tabs=QTabWidget()
         # Keep completed measurement plots within the laptop viewport.
         # PlotCanvas itself uses an Expanding vertical size policy, so a
@@ -681,7 +715,9 @@ class MeasureMainWindow(QMainWindow):
         result_tab_bar = self.results_tabs.tabBar()
         result_tab_bar.setExpanding(False)
         result_tab_bar.setUsesScrollButtons(True)
-        result_tab_bar.setElideMode(Qt.ElideRight)
+        # Preserve complete scientific titles.  When all tabs do not fit, Qt's
+        # tab-bar scroll buttons expose the remaining full-width titles.
+        result_tab_bar.setElideMode(Qt.ElideNone)
         self.x_plot=PlotCanvas(minimum_height=260); self.y_plot=PlotCanvas(minimum_height=260)
         self.raw_x_plot=PlotCanvas(minimum_height=260); self.raw_y_plot=PlotCanvas(minimum_height=260)
         self.mean_x_plot=PlotCanvas(minimum_height=260); self.mean_y_plot=PlotCanvas(minimum_height=260)
@@ -689,12 +725,13 @@ class MeasureMainWindow(QMainWindow):
         self.orm_vv_plot=PlotCanvas(minimum_height=260); self.orm_column_plot=PlotCanvas(minimum_height=260); self.orm_kick_plot=PlotCanvas(minimum_height=260)
         self.orm_model_plot=PlotCanvas(minimum_height=260); self.orm_difference_plot=PlotCanvas(minimum_height=260)
         self.results_tabs.addTab(self.x_plot,"Horizontal BPM noise"); self.results_tabs.addTab(self.y_plot,"Vertical BPM noise"); self.results_tabs.addTab(self.mean_x_plot,"Mean horizontal orbit"); self.results_tabs.addTab(self.mean_y_plot,"Mean vertical orbit"); layout.addWidget(self.results_tabs)
-        self.stats_group=QGroupBox("Statistics"); stats_layout=QVBoxLayout(self.stats_group); self.orm_measurement_summary=QLabel(); self.orm_measurement_summary.setWordWrap(True); self.orm_restoration_status=QLabel(); self.orm_restoration_status.setObjectName("runState"); self.orm_restoration_status.setWordWrap(True); self.summary_x=QLabel("Horizontal: no completed measurement."); self.summary_y=QLabel("Vertical: no completed measurement."); self.rf_diagnostics=QLabel(); self.restoration_label=QLabel(); self.summary_x.setWordWrap(True); self.summary_y.setWordWrap(True); self.rf_diagnostics.setWordWrap(True); self.restoration_label.setWordWrap(True); stats_layout.addWidget(self.orm_measurement_summary); stats_layout.addWidget(self.orm_restoration_status); stats_layout.addWidget(self.summary_x); stats_layout.addWidget(self.summary_y); stats_layout.addWidget(self.rf_diagnostics); stats_layout.addWidget(self.restoration_label); layout.addWidget(self.stats_group)
+        self.stats_group=QGroupBox("Statistics"); stats_layout=QVBoxLayout(self.stats_group); self.orm_measurement_summary=QLabel(); self.orm_measurement_summary.setObjectName("summaryCard"); self.orm_measurement_summary.setWordWrap(True); self.orm_measurement_summary.setTextInteractionFlags(Qt.TextSelectableByMouse); self.orm_restoration_status=QLabel(); self.orm_restoration_status.setObjectName("runState"); self.orm_restoration_status.setWordWrap(True); self.summary_x=QLabel("Horizontal: no completed measurement."); self.summary_y=QLabel("Vertical: no completed measurement."); self.rf_diagnostics=QLabel(); self.restoration_label=QLabel(); self.summary_x.setObjectName("statLine"); self.summary_y.setObjectName("statLine"); self.rf_diagnostics.setObjectName("summaryCard"); self.restoration_label.setObjectName("statLine"); self.summary_x.setWordWrap(True); self.summary_y.setWordWrap(True); self.rf_diagnostics.setWordWrap(True); self.restoration_label.setWordWrap(True); stats_layout.addWidget(self.orm_measurement_summary); stats_layout.addWidget(self.orm_restoration_status); stats_layout.addWidget(self.summary_x); stats_layout.addWidget(self.summary_y); stats_layout.addWidget(self.rf_diagnostics); stats_layout.addWidget(self.restoration_label); layout.addWidget(self.stats_group)
         self.dispersion_summary=QWidget(); dispersion_summary_layout=QVBoxLayout(self.dispersion_summary); dispersion_summary_layout.setContentsMargins(0,0,0,0)
         rf_response_group=QGroupBox("1. RF orbit difference — pyLOCO-compatible"); rf_response_layout=QVBoxLayout(rf_response_group); self.rf_response_formula=QLabel("Δx_RF = mean[x(f−)] − mean[x(f+)]\nΔy_RF = mean[y(f−)] − mean[y(f+)]"); self.rf_response_formula.setWordWrap(True); self.rf_response_note=QLabel("Stored in metres; displayed in mm; this is the RF-response column supplied to pyLOCO."); self.rf_response_note.setWordWrap(True); self.rf_response_stats=QLabel(); self.rf_response_stats.setWordWrap(True); rf_response_layout.addWidget(self.rf_response_formula); rf_response_layout.addWidget(self.rf_response_note); rf_response_layout.addWidget(self.rf_response_stats); dispersion_summary_layout.addWidget(rf_response_group)
         physical_group=QGroupBox("2. Physical dispersion"); physical_layout=QVBoxLayout(physical_group); self.physical_formula=QLabel("η = αc − 1/γ²\nδ(f) ≈ −(f−f₀)/(η f₀)\nΔδ = δ− − δ+\nDₓ = Δx_RF / Δδ\nDᵧ = Δy_RF / Δδ"); self.physical_formula.setWordWrap(True); self.physical_stats=QLabel(); self.physical_stats.setWordWrap(True); physical_layout.addWidget(self.physical_formula); physical_layout.addWidget(self.physical_stats)
         self.calculation_details_group=QGroupBox("Show calculation details"); self.calculation_details_group.setCheckable(True); self.calculation_details_group.setChecked(False); calculation_layout=QVBoxLayout(self.calculation_details_group); self.calculation_details_body=QLabel(); self.calculation_details_body.setWordWrap(True); self.calculation_details_body.setTextInteractionFlags(Qt.TextSelectableByMouse); calculation_layout.addWidget(self.calculation_details_body); self.calculation_details_group.toggled.connect(self.calculation_details_body.setVisible); self.calculation_details_body.setVisible(False); physical_layout.addWidget(self.calculation_details_group); dispersion_summary_layout.addWidget(physical_group)
         restoration_group=QGroupBox("3. Restoration verification"); restoration_layout=QVBoxLayout(restoration_group); self.restoration_status=QLabel("RF restoration: —"); self.restoration_status.setObjectName("runState"); self.restoration_status.setWordWrap(True); self.restoration_values=QLabel(); self.restoration_values.setWordWrap(True); self.restoration_diagnostic=QLabel(); self.restoration_diagnostic.setWordWrap(True); restoration_layout.addWidget(self.restoration_status); restoration_layout.addWidget(self.restoration_values); restoration_layout.addWidget(self.restoration_diagnostic); dispersion_summary_layout.addWidget(restoration_group)
+        comparison_group=QGroupBox("4. Measured vs reference model"); comparison_layout=QVBoxLayout(comparison_group); self.dispersion_model_comparison=QLabel("Comparison not requested."); self.dispersion_model_comparison.setObjectName("summaryCard"); self.dispersion_model_comparison.setWordWrap(True); self.dispersion_model_comparison.setTextInteractionFlags(Qt.TextSelectableByMouse); comparison_layout.addWidget(self.dispersion_model_comparison); dispersion_summary_layout.addWidget(comparison_group)
         self.dispersion_summary.setVisible(False); layout.insertWidget(layout.indexOf(self.stats_group),self.dispersion_summary)
         save_group=QGroupBox("Saved files"); sl=QVBoxLayout(save_group); self.paths=QLabel("Measurement file: —\nSession manifest: —"); self.paths.setTextInteractionFlags(Qt.TextSelectableByMouse); actions=QHBoxLayout(); self.validate_button=QPushButton("Validate for pyLOCO"); self.validate_button.setEnabled(False); self.validate_button.clicked.connect(self.validate_saved); self.open_button=QPushButton("Open session in pyLOCO"); self.open_button.setEnabled(False); self.open_button.clicked.connect(self.explain_open); actions.addWidget(self.validate_button); actions.addWidget(self.open_button); actions.addStretch(1); sl.addWidget(self.paths); sl.addLayout(actions); layout.addWidget(save_group)
         self._reset_live_plot()
@@ -705,7 +742,7 @@ class MeasureMainWindow(QMainWindow):
 
     def _toggle_completed_preview(self, visible):
         self.live_plot.setVisible(bool(visible))
-        self.preview_toggle.setText("Hide acquisition preview" if visible else "Show acquisition preview")
+        self.preview_toggle.setText("Hide live preview" if visible else "Show live preview")
 
     def _set_completed_result_view(self, completed):
         """Prioritize scientific result plots once acquisition has completed."""
@@ -724,7 +761,7 @@ class MeasureMainWindow(QMainWindow):
         self.preview_toggle.blockSignals(True)
         self.preview_toggle.setChecked(False)
         self.preview_toggle.blockSignals(False)
-        self.preview_toggle.setText("Show acquisition preview")
+        self.preview_toggle.setText("Show live preview")
         self.preview_toggle.setVisible(False)
 
         self.live_plot.setVisible(not completed)
@@ -877,6 +914,16 @@ class MeasureMainWindow(QMainWindow):
         self._filter_corrector_table(key)
         source={"all":"adapter discovery","names_file":"names file","manual":"manual selection"}[data["method"].currentData()]; table.setToolTip((table.toolTip()+"\n" if table.toolTip() else "")+f"Source: {source}; {len(selected)} retained")
         data["count"].setText(f"{len(selected)} / {len(data['devices'])}")
+        # Correctors are ORM inputs even when prepared before ORM is selected.
+        # Store them directly in the ORM-specific state so changing measurement
+        # type cannot replace the user's prepared selection with old defaults.
+        if not self._loading_selection_state:
+            self._selection_states["orm"][key]={
+                "method":data["method"].currentData(),
+                "manual":data["manual"].text(),
+                "names_file":data["file"].text(),
+                "excluded_positions":data["exclusion"].text(),
+            }
         if hasattr(self,"kick_preview"):self._update_kick_preview()
         self.refresh_plan()
 
@@ -1042,7 +1089,47 @@ class MeasureMainWindow(QMainWindow):
         if hasattr(self, "open_button"):
             self.open_button.setEnabled(False)
 
+        self._refresh_review_page()
         self._update_workflow_tabs()
+
+    def _workspace_changed(self,index):
+        if not hasattr(self,"heading"):return
+        index=int(index)
+        if index==0:title="Machine setup"
+        elif index==1:title="Device selection"
+        elif index==3:title="Review & Save"
+        else:
+            kind=self.measurement_type.currentData() if hasattr(self,"measurement_type") else "bpm_noise"
+            title={"dispersion":"Dispersion measurement","orm":"Orbit response matrix measurement"}.get(kind,"BPM noise measurement")
+        self.heading.setText(title)
+        self.setWindowTitle("pyLOCO Measure" if index<2 else f"pyLOCO Measure — {title.replace(' measurement','').title()}")
+        if index==3:self._refresh_review_page()
+        if hasattr(self,"plan_values"):self.refresh_plan()
+
+    def _refresh_review_page(self):
+        if not hasattr(self,"review_status"):return
+        ready=self.result is not None and self.saved_measurement_path is not None and self.saved_session_path is not None
+        self.review_validate_button.setEnabled(ready); self.review_open_button.setEnabled(ready)
+        if not ready:
+            self.review_status.setText("No completed measurement yet.")
+            self.review_details.setText("Complete a measurement to review its saved data and validation status.")
+            self.review_paths.setText("Measurement file: —\nSession manifest: —")
+            return
+        kind="ORM" if isinstance(self.result,ORMResult) else "Dispersion" if isinstance(self.result,DispersionResult) else "BPM noise"
+        restoration="Not applicable"
+        if isinstance(self.result,DispersionResult):restoration=self.result.restoration_status.replace("_"," ").title()
+        elif isinstance(self.result,ORMResult):
+            statuses=tuple(self.result.restoration_status)
+            restoration="All correctors restored" if statuses and all(status in {"restored","confirmed_by_operator"} for status in statuses) else "Check restoration status"
+        try:
+            session=load_session(self.saved_session_path,validate_files=False)
+            roles={entry.role for entry in session.files}; available=", ".join(label for role,label in (("bpm_noise","BPM noise"),("dispersion","Dispersion"),("orm","ORM")) if role in roles)
+            completeness="Complete for FIT" if session.is_complete_for_loco else "Missing for FIT: "+", ".join(session.missing_roles)
+        except Exception as exc:
+            available="Unavailable"; completeness=f"Session could not be read: {exc}"
+        self.review_status.setText(f"✓ {kind} saved and schema-validated")
+        self.review_details.setText(f"<b>Measurement</b> &nbsp; {kind}<br><b>Restoration</b> &nbsp; {restoration}<br><b>Session contains</b> &nbsp; {available}<br><b>FIT readiness</b> &nbsp; {completeness}")
+        self.review_paths.setText(f"Measurement file: {self.saved_measurement_path}\nSession manifest: {self.saved_session_path}")
 
     def _measurement_type_changed(self, *_):
         if not hasattr(self,"measurement_type"): return
@@ -1057,8 +1144,7 @@ class MeasureMainWindow(QMainWindow):
         if hasattr(self,"orm_corrector_group"): self.orm_corrector_group.setEnabled(bool(self.devices))
         if hasattr(self,"bpm_exclusions"): self.bpm_exclusions.setVisible(orm); self.bpm_exclusions_label.setVisible(orm)
         self._update_measurement_help()
-        title={"dispersion":"Dispersion Measurement","orm":"Orbit Response Matrix Measurement"}.get(kind,"BPM Noise Measurement")
-        self.heading.setText(title); self.setWindowTitle("pyLOCO Measure — "+({"dispersion":"Dispersion","orm":"ORM"}.get(kind,"BPM Noise")))
+        self._workspace_changed(self.tabs.currentIndex())
         for widget in getattr(self,"dispersion_plan_widgets",[]): widget.setVisible(dispersion)
         if hasattr(self,"results_tabs"):
             self._configure_result_tabs(kind)
@@ -1073,24 +1159,33 @@ class MeasureMainWindow(QMainWindow):
             self.validate_button.setEnabled(False); self.open_button.setEnabled(False)
         if hasattr(self,"live_plot"): self._reset_live_plot()
         if hasattr(self,"plan_values"): self.refresh_plan()
-        backend=self.adapter_combo.currentData() if hasattr(self,"adapter_combo") else "mock"; prefix=f"{self.pysc_profile_combo.currentText()} pySC" if backend=="pysc" else "Mock"
-        if dispersion and self.measurement_name.text() in {"bpm-noise","mock-dispersion","pysc-dispersion"}:
-            self.measurement_name.setText("pysc-dispersion" if backend=="pysc" else "mock-dispersion"); self.measurement_label.setText(f"{prefix} dispersion" if backend=="pysc" else "Mock manual-RF dispersion")
-        elif not dispersion and not orm and self.measurement_name.text() in {"mock-dispersion","pysc-dispersion","mock-orm","pysc-small-orm"}:
-            self.measurement_name.setText("bpm-noise"); self.measurement_label.setText(f"{prefix} BPM noise")
-        if orm and self.measurement_name.text() in {"bpm-noise","mock-dispersion","pysc-dispersion"}:
-            self.measurement_name.setText("pysc-small-orm" if backend=="pysc" else "mock-orm"); self.measurement_label.setText("EBS pySC small ORM" if backend=="pysc" else "Mock orbit response matrix")
+        backend=self.adapter_combo.currentData() if hasattr(self,"adapter_combo") else "mock"
+        context=self.pysc_profile_combo.currentText() if backend=="pysc" else "PETRA III LIVE" if backend=="petra" else "Mock"
+        default_names={"bpm-noise","mock-dispersion","pysc-dispersion","mock-orm","pysc-small-orm","pyloco-bpm-noise","pyloco-dispersion","pyloco-orm"}
+        if self.measurement_name.text() in default_names:
+            kind="orm" if orm else "dispersion" if dispersion else "bpm_noise"
+            names={"bpm_noise":"pyloco-bpm-noise","dispersion":"pyloco-dispersion","orm":"pyloco-orm"}
+            labels={"bpm_noise":f"pyLOCO BPM noise — {context}","dispersion":f"pyLOCO dispersion — {context}","orm":f"pyLOCO ORM — {context}"}
+            self.measurement_name.setText(names[kind]); self.measurement_label.setText(labels[kind])
         self._update_kick_preview()
 
     def _configure_physical_dispersion_option(self):
-        if not hasattr(self,"dispersion_display"):return
+        if not hasattr(self,"dispersion_display") or self.measurement_type.currentData()!="dispersion":return
         item=self.dispersion_display.model().item(self.dispersion_display.findData("physical"))
         lattice_metadata=self._dispersion_lattice_metadata()
-        available=lattice_metadata is not None and self.dispersion_direction.currentData()=="bipolar"
+        at_available=find_spec("at") is not None
+        available=at_available and self.reference_model is not None and lattice_metadata is not None and self.dispersion_direction.currentData()=="bipolar"
         item.setEnabled(available)
-        reason="the selected backend provides no verified lattice slip factor" if lattice_metadata is None else "positive and negative RF states are required"
+        reason="Accelerator Toolbox (AT) is not installed" if not at_available else "load a reference lattice with AT" if self.reference_model is None else "the reference lattice provides no verified slip factor" if lattice_metadata is None else "positive and negative RF states are required"
         item.setToolTip("" if available else f"Unavailable: {reason}.")
-        self.dispersion_display_reason.setText("Lattice η available — physical dispersion uses recorded f+/f− readbacks." if available else f"Physical dispersion unavailable: {reason}.")
+        self.dispersion_display_reason.setText("Optional AT calculation using the reference-lattice slip factor and recorded f+/f− readbacks." if available else f"Physical dispersion unavailable: {reason}.")
+        raw=self.dispersion_display.currentData()=="raw"
+        self.dispersion_display_label.setText("Showing: RF orbit difference" if raw else "Showing: physical dispersion")
+        self.dispersion_display_reason.setVisible(not raw)
+        if hasattr(self,"results_tabs"):
+            for canvas in (self.x_plot,self.y_plot):
+                index=self.results_tabs.indexOf(canvas)
+                if index>=0:self.results_tabs.setTabEnabled(index,available)
         if not available and self.dispersion_display.currentData()=="physical":self.dispersion_display.setCurrentIndex(0)
 
     def _dispersion_lattice_metadata(self):
@@ -1114,8 +1209,11 @@ class MeasureMainWindow(QMainWindow):
 
     def _dispersion_display_changed(self,*_):
         if not hasattr(self,"results_tabs") or self.measurement_type.currentData()!="dispersion":return
+        raw=self.dispersion_display.currentData()=="raw"
+        self.dispersion_display_label.setText("Showing: RF orbit difference" if raw else "Showing: physical dispersion")
+        self.dispersion_display_reason.setVisible(not raw)
         if isinstance(self.result,DispersionResult):self._show_dispersion_result(self.result)
-        target=self.raw_x_plot if self.dispersion_display.currentData()=="raw" else self.x_plot
+        target=self.raw_x_plot if raw else self.x_plot
         index=self.results_tabs.indexOf(target)
         if index>=0:self.results_tabs.setCurrentIndex(index)
 
@@ -1189,34 +1287,37 @@ class MeasureMainWindow(QMainWindow):
         while self.results_tabs.count():self.results_tabs.removeTab(0)
         if kind=="orm":
             entries=((self.x_plot,"Full ORM"),(self.y_plot,"Direct H→X"),(self.orm_vv_plot,"Direct V→Y"),(self.mean_x_plot,"Coupling V→X"),(self.mean_y_plot,"Coupling H→Y"),(self.orm_model_plot,"Model ORM"),(self.orm_difference_plot,"Measured − Model"),(self.orm_column_plot,"Selected ORM column"),(self.orm_kick_plot,"Kick diagnostics"))
-        elif kind=="dispersion":entries=((self.x_plot,"Physical Dx [mm]"),(self.y_plot,"Physical Dy [mm]"),(self.raw_x_plot,"RF orbit difference Δx_RF [mm]"),(self.raw_y_plot,"RF orbit difference Δy_RF [mm]"),(self.mean_x_plot,"RF-state horizontal orbits"),(self.mean_y_plot,"RF-state vertical orbits"),(self.rf_shift_x_plot,"RF-induced horizontal shifts"),(self.rf_shift_y_plot,"RF-induced vertical shifts"))
+        elif kind=="dispersion":entries=((self.raw_x_plot,"RF orbit difference Δx_RF [mm]"),(self.raw_y_plot,"RF orbit difference Δy_RF [mm]"),(self.rf_shift_x_plot,"RF-induced horizontal shifts"),(self.rf_shift_y_plot,"RF-induced vertical shifts"),(self.x_plot,"Physical Dx [mm] — optional AT"),(self.y_plot,"Physical Dy [mm] — optional AT"))
         else:entries=((self.x_plot,"Horizontal BPM noise"),(self.y_plot,"Vertical BPM noise"),(self.mean_x_plot,"Mean horizontal orbit"),(self.mean_y_plot,"Mean vertical orbit"))
-        for widget,label in entries:self.results_tabs.addTab(widget,label)
-        if kind=="orm":self.results_tabs.setCurrentIndex(0)
+        for widget,label in entries:
+            index=self.results_tabs.addTab(widget,label)
+            self.results_tabs.setTabToolTip(index,label)
+        if kind in {"orm","dispersion"}:self.results_tabs.setCurrentIndex(0)
 
     def _update_measurement_help(self, *_):
         if not hasattr(self,"measurement_help_text"): return
         if self.measurement_type.currentData()=="bpm_noise":
             self.measurement_help_title.setText("BPM Noise")
             self.measurement_help_text.setText(
-                "Repeated orbit readings acquired under stable machine conditions are used to estimate "
-                "the mean orbit and BPM-to-BPM measurement repeatability/noise in the horizontal and "
-                "vertical planes.\n\nThe resulting uncertainties can be used as measurement weights in "
-                "pyLOCO.\n\nThis measurement is read-only and does not require changing machine setpoints."
+                "Measure records many orbit readings without changing the machine. This measurement is read-only.\n\n"
+                "For every BPM:\n"
+                "• σx = standard deviation of its horizontal readings\n"
+                "• σy = standard deviation of its vertical readings\n\n"
+                "The mean orbit is shown separately. The standard deviations can be used as measurement weights in pyLOCO."
             )
             self.measurement_help_convention.clear(); self.measurement_help_convention.setVisible(False)
             return
         if self.measurement_type.currentData()=="orm":
             self.measurement_help_title.setText("Orbit Response Matrix (ORM)")
-            self.measurement_help_text.setText("Correctors are perturbed one at a time while repeated horizontal and vertical BPM orbits are acquired. The canonical matrix rows are horizontal BPMs followed by vertical BPMs; columns are horizontal correctors followed by vertical correctors. Mock mode performs only deterministic in-memory simulated writes and always attempts restoration.")
+            self.measurement_help_text.setText("Measure changes one corrector at a time and records the resulting X/Y orbit change. The original corrector value is restored and checked between states and after each column.\n\nMatrix order: X BPM rows, then Y BPM rows; H corrector columns, then V corrector columns.")
             direction=self.orm_direction.currentData() if hasattr(self,"orm_direction") else "bipolar"
             convention={"bipolar":"K+ = K0 + ΔK/2; K− = K0 − ΔK/2\nORM column = orbit(+) − orbit(−)","positive":"K+ = K0 + ΔK\nORM column = orbit(+) − reference","negative":"K− = K0 − ΔK\nORM column = orbit(−) − reference"}.get(direction,"")
             self.measurement_help_convention.setText("Current convention:\n"+convention); self.measurement_help_convention.setVisible(True); return
         self.measurement_help_title.setText("Dispersion / RF response")
         self.measurement_help_text.setText(
-            "Orbit measurements at different RF frequencies determine the beam-orbit response to an "
-            "RF-frequency change.\n\npyLOCO Measure preserves the raw RF-state orbit measurements and "
-            "produces the canonical horizontal and vertical RF-response columns used directly by pyLOCO."
+            "Measure records the orbit at reference, positive and negative RF frequencies, then restores and checks the original RF.\n\n"
+            "The raw RF-state orbit measurements produce the signed RF orbit difference used directly by pyLOCO. "
+            "Physical dispersion is an optional conversion that requires an AT reference lattice."
         )
         convention={
             "bipolar":"RF orbit difference (pyLOCO-compatible) = mean(−Δf) − mean(+Δf)\ncanonical signed RF step = f− − f+ = −2Δf\nphysical dispersion = RF orbit difference / (δ− − δ+)",
@@ -1282,11 +1383,11 @@ class MeasureMainWindow(QMainWindow):
         centered(f"Installed pyLOCO version {PYLOCO_VERSION}  •  Measurement schema {MEASUREMENT_SCHEMA_VERSION}")
         centered(f"Measure application version: bundled with pyLOCO {PYLOCO_VERSION}")
         layout.addSpacing(8)
-        centered("pyLOCO Measure is the measurement-acquisition companion to pyLOCO. It provides structured acquisition of the machine measurements required for LOCO analysis, including BPM noise, dispersion/RF response and orbit-response matrices.")
+        centered("pyLOCO Measure records the machine data needed for LOCO analysis: BPM noise, RF response and orbit-response matrices.")
         layout.addSpacing(8)
         centered("pyLOCO\nStorage Ring Optics Correction",object_name="aboutTitle")
         centered("pyLOCO fits measured accelerator response data to an accelerator model to diagnose and correct optics errors.\n\npyLOCO Measure produces measurement files and sessions that can be consumed directly by pyLOCO.")
-        centered("pyLOCO Suite workflow: Measure acquisition → pyLOCO Fit and optics analysis → Correct review and machine-application workflow.")
+        centered("pyLOCO Suite workflow: Measure → Fit and analyze → Review and correct.")
         layout.addSpacing(8)
         centered(f"Contributors: {PROJECT_CONTRIBUTORS}")
         centered(f"With thanks to: {PROJECT_ACKNOWLEDGEMENTS}")
@@ -1454,13 +1555,13 @@ class MeasureMainWindow(QMainWindow):
         if self.measurement_type.currentData()=="orm": return self._start_orm()
         if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="automatic": return self._start_automatic_dispersion()
         if self.measurement_type.currentData()=="dispersion": return self._start_dispersion_step()
-        self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat(f"Starting — 0 / {self.readings.value()}"); self.reading_status.setText("Starting…"); self.elapsed.setText("Elapsed: 0.00 s"); self.remaining.setText(f"Remaining: ~{max(0,self.readings.value()-1)*self.delay.value():.2f} s"); self.samples.setText(f"Samples: 0 / {self.readings.value()}"); self._reset_live_plot(); self.log.clear(); self.log.appendPlainText(f"Starting BPM-noise acquisition through {self.status_badge.text()}…")
+        self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat(f"Starting — 0 / {self.readings.value()}"); self.reading_status.setText("Starting…"); self.elapsed.setText("Elapsed: 0.00 s"); self.remaining.setText(f"Remaining: ~{max(0,self.readings.value()-1)*self.delay.value():.2f} s"); self.samples.setText(f"Samples: 0 / {self.readings.value()}"); self._reset_live_plot(); self.log.clear(); self.log.appendPlainText(f"Starting BPM-noise measurement through {self.status_badge.text()}…")
         self.thread=QThread(self); self.worker=AcquisitionWorker(BpmNoiseAcquirer(self.adapter,self.selected_devices),self.readings.value(),self.delay.value(),self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_progress); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed): signal.connect(self._finish_thread)
         self._set_acquisition_running(True); self.thread.start()
 
     def _start_orm(self):
-        if isinstance(self.adapter,PETRAReadOnlyAdapter):QMessageBox.warning(self,"ORM unavailable","ORM acquisition requires write-enabled control-system access. PETRA is hard read-only."); return
+        if isinstance(self.adapter,PETRAReadOnlyAdapter):QMessageBox.warning(self,"ORM unavailable","ORM needs write access. PETRA is read only."); return
         self._refresh_corrector_preview("hcor"); self._refresh_corrector_preview("vcor")
         try:kick_h,kick_v=self._load_kick_arrays(); acquirer=ORMAcquirer(self.adapter,self.selected_devices,self.selected_hcorrectors,self.selected_vcorrectors)
         except Exception as exc:QMessageBox.warning(self,"Cannot start ORM",str(exc)); return
@@ -1585,16 +1686,16 @@ class MeasureMainWindow(QMainWindow):
     @Slot(object)
     def _on_completed(self,result):
         if isinstance(result,ORMResult):
-            self.result=result; total=len(result.correctors); self.reading_status.setText("Completed — all correctors restored"); self.progress.setValue(100); self.progress.setFormat(f"Completed — {total} / {total} correctors"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Correctors: {total} / {total}"); self.log.appendPlainText("ORM acquisition completed; saving canonical matrix and raw diagnostics…")
+            self.result=result; total=len(result.correctors); self.reading_status.setText("Done — all correctors restored"); self.progress.setValue(100); self.progress.setFormat(f"Done — {total} / {total} correctors"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Correctors: {total} / {total}"); self.log.appendPlainText("ORM complete. Saving…")
             try:self._save_result(result)
             except Exception as exc:self.log.appendPlainText(f"Saving failed: {exc}"); QMessageBox.critical(self,"Save failed",str(exc)); return
             self._show_result(result); self._update_diagnostics_visibility(); self._set_completed_result_view(True); self.start_button.setVisible(False); self.repeat_button.setVisible(True); self.validate_button.setEnabled(True); self.open_button.setEnabled(True); self.log.appendPlainText("ORM saved and validated for pyLOCO."); self._update_workflow_tabs(); return
         if isinstance(result,DispersionResult):
-            self.result=result; self._restored_rf_readback=float(self.adapter.get_rf_frequency()); total=sum(state.orbits_x_m.shape[0] for state in result.states); self.reading_status.setText("Completed — original RF restored"); self.progress.setValue(100); self.progress.setFormat("Completed — RF restored"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Samples: {total} / {total}"); self.log.appendPlainText("Automatic RF acquisition completed and restoration verified. Saving…")
+            self.result=result; self._restored_rf_readback=float(self.adapter.get_rf_frequency()); total=sum(state.orbits_x_m.shape[0] for state in result.states); self.reading_status.setText("Done — RF restored"); self.progress.setValue(100); self.progress.setFormat("Done — RF restored"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Samples: {total} / {total}"); self.log.appendPlainText("RF measurement complete. Saving…")
             try:self._save_result(result)
             except Exception as exc:self.log.appendPlainText(f"Saving failed: {exc}"); QMessageBox.critical(self,"Save failed",str(exc)); return
             self.dispersion_display.setCurrentIndex(self.dispersion_display.findData("raw")); self._show_result(result); self._update_diagnostics_visibility(); self._set_completed_result_view(True); self.start_button.setVisible(False); self.repeat_button.setVisible(True); self.validate_button.setEnabled(True); self.open_button.setEnabled(True); self._update_workflow_tabs(); return
-        self.result=result; total=result.orbits_x_m.shape[0]; self.reading_status.setText("Completed"); self.progress.setValue(100); self.progress.setFormat(f"Completed — {total} / {total}"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Samples: {total} / {total}"); self.log.appendPlainText("Acquisition completed. Saving canonical measurement and session…")
+        self.result=result; total=result.orbits_x_m.shape[0]; self.reading_status.setText("Done"); self.progress.setValue(100); self.progress.setFormat(f"Done — {total} / {total}"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Samples: {total} / {total}"); self.log.appendPlainText("Measurement complete. Saving…")
         try: self._save_result(result)
         except Exception as exc: self.log.appendPlainText(f"Saving failed: {exc}"); QMessageBox.critical(self,"Save failed",str(exc)); return
         self._show_result(result); self._update_diagnostics_visibility(); self._set_completed_result_view(True); self.start_button.setVisible(False); self.repeat_button.setVisible(True); self.validate_button.setEnabled(True); self.open_button.setEnabled(True); self.log.appendPlainText("Saved and validated for pyLOCO."); self._update_workflow_tabs()
@@ -1645,7 +1746,7 @@ class MeasureMainWindow(QMainWindow):
         if thread: thread.quit(); thread.wait(3000); thread.deleteLater()
         self.thread=None; self.worker=None; self._set_acquisition_running(False); self.refresh_plan()
 
-    def cancel_acquisition(self): self.cancel_event.set(); self.log.appendPlainText("Cancellation requested…")
+    def cancel_acquisition(self): self.cancel_event.set(); self.log.appendPlainText("Stopping…")
     def _on_cancelled(self,message): self.progress.setValue(0); self.progress.setFormat("Cancelled"); self.reading_status.setText("Cancelled — no measurement saved"); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message); self._update_workflow_tabs()
     def _on_failed(self,message): self.progress.setValue(0); self.progress.setFormat("Failed"); self.reading_status.setText("Failed — no measurement saved"); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message); QMessageBox.critical(self,"Measurement failed",message); self._update_workflow_tabs()
 
@@ -1656,7 +1757,7 @@ class MeasureMainWindow(QMainWindow):
         self.live_plot.clear(); axis=self.live_plot.figure.add_subplot(111); axis.plot(np.asarray(x)*1e6,"o-",label="X",color="#12BFC4",markersize=3); axis.plot(np.asarray(y)*1e6,"s-",label="Y",color="#F59E42",markersize=3); axis.set_title(title); axis.set_xlabel("BPM selection position"); axis.set_ylabel("Orbit [µm]"); axis.grid(True,alpha=.25); axis.legend(ncol=2); self.live_plot.apply_theme()
 
     def save_log(self):
-        filename=QFileDialog.getSaveFileName(self,"Save acquisition log","pyloco-measure.log","Log files (*.log *.txt)")[0]
+        filename=QFileDialog.getSaveFileName(self,"Save measurement log","pyloco-measure.log","Log files (*.log *.txt)")[0]
         if filename: Path(filename).write_text(self.log.toPlainText()+"\n",encoding="utf-8")
 
     def _save_result(self,result):
@@ -1717,7 +1818,7 @@ class MeasureMainWindow(QMainWindow):
         # From this point onward this window owns the new manifest, so
         # Dispersion/ORM may accumulate alongside the first measurement.
         self._fresh_measurement_session = False
-        self.saved_measurement_path=measurement; self.saved_session_path=manifest; self.paths.setText(f"SAVED ✓\nMeasurement file: {measurement}\nSession manifest: {manifest}"); self.paths.setToolTip(str(measurement)); self.paths.setObjectName("savedPath"); self.paths.style().unpolish(self.paths); self.paths.style().polish(self.paths); self.statusBar().showMessage(f"Saved: {measurement}")
+        self.saved_measurement_path=measurement; self.saved_session_path=manifest; self.paths.setText(f"SAVED ✓\nMeasurement file: {measurement}\nSession manifest: {manifest}"); self.paths.setToolTip(str(measurement)); self.paths.setObjectName("savedPath"); self.paths.style().unpolish(self.paths); self.paths.style().polish(self.paths); self._refresh_review_page(); self.statusBar().showMessage(f"Saved: {measurement}")
 
     def _stats(self,values):
         return {"Mean":np.mean(values),"RMS":np.sqrt(np.mean(values**2)),"Min":np.min(values),"Max":np.max(values)}
@@ -1829,15 +1930,42 @@ class MeasureMainWindow(QMainWindow):
         for index,device in enumerate(result.correctors):self.orm_column_selector.addItem(f"{index}: {device.name} ({device.plane})",index)
         self.orm_column_selector.setCurrentIndex(len(result.correctors)-1); self.orm_column_selector.blockSignals(False); self._update_selected_orm_column()
         self.orm_kick_plot.clear(); ax=self.orm_kick_plot.figure.add_subplot(111); pos=np.arange(len(result.correctors)); ax.plot(pos,result.requested_kicks_rad*1e6,"o-",label="Requested |ΔK|"); ax.plot(pos,np.abs(result.effective_kicks_rad)*1e6,"s--",label="Actual |ΔK|"); ax.set_title("Requested versus actual corrector kicks"); ax.set_ylabel("Kick [µrad]"); ax.legend(); ax.grid(True,alpha=.25); self.orm_kick_plot.apply_theme()
-        values=np.asarray(matrix); self.summary_x.setText(f"ORM: min {np.min(values):.6g}, max {np.max(values):.6g}, mean {np.mean(values):.6g}, RMS {np.sqrt(np.mean(values**2)):.6g} {unit}"); errors=(result.effective_kicks_rad-np.where(result.direction=="negative",-result.requested_kicks_rad,result.requested_kicks_rad))*1e6; self.summary_y.setText(f"Kick error: min {np.min(errors):.6g}, max {np.max(errors):.6g}, RMS {np.sqrt(np.mean(errors**2)):.6g} µrad"); intermediate_ok=result.direction!="bipolar" or (all(status=="restored" for status in result.intermediate_restoration_status) and np.allclose(result.intermediate_restored_setpoints_rad,result.original_setpoints_rad,rtol=0,atol=1e-12)); restored=intermediate_ok and all(status=="restored" for status in result.restoration_status) and np.allclose(result.final_setpoints_rad,result.original_setpoints_rad,rtol=0,atol=1e-12); self.orm_restoration_status.setText("All correctors restored between kicks and finally: ✓ YES" if restored else "All correctors restored between kicks and finally: ✗ NO"); kicks=result.requested_kicks_rad*1e6; kick_text=f"{kicks[0]:g} µrad" if np.allclose(kicks,kicks[0]) else f"{np.min(kicks):g}–{np.max(kicks):g} µrad"; identity,_=self._machine_identity(); readings=result.raw_state_a_m.shape[1] if result.raw_state_a_m.ndim==3 else 1; self.orm_measurement_summary.setText(f"Machine/profile: {identity.replace(chr(10),' — ')}\nBPMs used: {nb} | H correctors used: {nh} | V correctors used: {len(result.vertical_correctors)}\nTotal bipolar kick: {kick_text} | Readings/state: {readings}\nMatrix shape: {matrix.shape[0]} × {matrix.shape[1]} | Matrix unit: {unit}"); self.restoration_label.setText("Intermediate / final restoration: "+", ".join(f"{device.name}={middle}/{final}" for device,middle,final in zip(result.correctors,result.intermediate_restoration_status,result.restoration_status)))
+        values=np.asarray(matrix); display_scale,display_unit=(1e3,"mm") if unit=="m" else (1.0,unit); shown=values*display_scale
+        self.summary_x.setText(f"<b>Measured ORM</b> &nbsp; Mean {np.mean(shown):.5g} &nbsp; RMS {np.sqrt(np.mean(shown**2)):.5g} &nbsp; Min {np.min(shown):.5g} &nbsp; Max {np.max(shown):.5g} {display_unit}")
+        errors=(result.effective_kicks_rad-np.where(result.direction=="negative",-result.requested_kicks_rad,result.requested_kicks_rad))*1e6; self.summary_y.setText(f"<b>Kick error</b> &nbsp; RMS {np.sqrt(np.mean(errors**2)):.5g} &nbsp; Min {np.min(errors):.5g} &nbsp; Max {np.max(errors):.5g} µrad")
+        intermediate_ok=result.direction!="bipolar" or (all(status=="restored" for status in result.intermediate_restoration_status) and np.allclose(result.intermediate_restored_setpoints_rad,result.original_setpoints_rad,rtol=0,atol=1e-12)); restored=intermediate_ok and all(status=="restored" for status in result.restoration_status) and np.allclose(result.final_setpoints_rad,result.original_setpoints_rad,rtol=0,atol=1e-12); self.orm_restoration_status.setText("✓ ALL CORRECTORS RESTORED" if restored else "✗ CORRECTOR RESTORATION FAILED"); kicks=result.requested_kicks_rad*1e6; kick_text=f"{kicks[0]:g} µrad" if np.allclose(kicks,kicks[0]) else f"{np.min(kicks):g}–{np.max(kicks):g} µrad"; identity,_=self._machine_identity(); readings=result.raw_state_a_m.shape[1] if result.raw_state_a_m.ndim==3 else 1
+        summary_html=(f"<h3 style='color:#12BFC4;margin:0 0 8px 0'>Measurement summary</h3>"
+                      f"<table cellspacing='0' cellpadding='4' width='100%'>"
+                      f"<tr><td><b>Machine/profile</b></td><td colspan='3'>{escape(identity.replace(chr(10),' — '))}</td></tr>"
+                      f"<tr><td>BPMs used: {nb}</td><td>H correctors used: {nh}</td><td>V correctors used: {len(result.vertical_correctors)}</td></tr>"
+                      f"<tr><td>Total bipolar kick: {kick_text}</td><td>Readings/state: {readings}</td><td>Matrix shape: {matrix.shape[0]} × {matrix.shape[1]}</td><td>Matrix unit: {unit}</td></tr></table>")
+        self.orm_measurement_summary.setText(summary_html); self.restoration_label.setText("<b>Restore checks</b><br>"+" &nbsp; • &nbsp; ".join(f"{escape(device.name)}: {middle} / {final}" for device,middle,final in zip(result.correctors,result.intermediate_restoration_status,result.restoration_status)))
         if self.compare_reference.isChecked() and self.reference_model is not None:
             try:
                 model_matrix=getattr(self,"_model_orm_cache",None)
                 if model_matrix is None:model_matrix=model_orm(self.reference_model,result.bpms,result.horizontal_correctors,result.vertical_correctors,result.effective_kicks_rad[:nh],result.effective_kicks_rad[nh:],scaled=result.scaled)
                 difference=matrix-model_matrix; self._heatmap(self.orm_model_plot,model_matrix,"MODEL ORM — reference lattice",unit); self._heatmap(self.orm_difference_plot,difference,"Measured − MODEL ORM",unit)
-                metrics=comparison_metrics(matrix,model_matrix)
-                self.orm_measurement_summary.setText(self.orm_measurement_summary.text()+f"\nReference-model comparison: RMS measured {metrics['rms_measured']:.5g}, RMS model {metrics['rms_model']:.5g}, RMS difference {metrics['rms_difference']:.5g} {unit}; relative norm {metrics['relative_norm_difference']:.3%}; cosine {metrics['cosine_similarity']:.6f}")
-            except Exception as exc:self.orm_measurement_summary.setText(self.orm_measurement_summary.text()+f"\nReference-model comparison unavailable: {exc}")
+                def comparison_row(label, measured_values, model_values):
+                    metrics=comparison_metrics(measured_values,model_values)
+                    def value(key):return f"{metrics[key]*display_scale:.5g}"
+                    return (f"<tr><td><b>{label}</b></td><td>{value('rms_measured')}</td><td>{value('rms_model')}</td>"
+                            f"<td>{value('rms_difference')}</td><td>{value('max_abs_difference')}</td></tr>")
+                comparisons=(
+                    comparison_row("Full ORM",matrix,model_matrix),
+                    comparison_row("Direct H→X",matrix[:nb,:nh],model_matrix[:nb,:nh]),
+                    comparison_row("Direct V→Y",matrix[nb:,nh:],model_matrix[nb:,nh:]),
+                    comparison_row("Coupling V→X",matrix[:nb,nh:],model_matrix[:nb,nh:]),
+                    comparison_row("Coupling H→Y",matrix[nb:,:nh],model_matrix[nb:,:nh]),
+                )
+                comparison_html=(f"<br><h3 style='color:#12BFC4;margin:8px 0'>Measured vs reference model</h3>"
+                                 f"<div style='margin-bottom:6px'>RMS and maximum values are shown in <b>{display_unit}</b>.</div>"
+                                 f"<table cellspacing='0' cellpadding='4' width='100%'><tr><th align='left'>ORM block</th><th>Measured RMS</th><th>Model RMS</th><th>Difference RMS</th><th>Max |difference|</th></tr>{''.join(comparisons)}</table>")
+                self.orm_measurement_summary.setText(summary_html+comparison_html)
+            except Exception as exc:
+                message=f"Reference-model comparison unavailable: {exc}"
+                self.orm_measurement_summary.setText(self.orm_measurement_summary.text()+f"\n{message}")
+                for canvas,title in ((self.orm_model_plot,"MODEL ORM"),(self.orm_difference_plot,"Measured − MODEL ORM")):
+                    canvas.clear(); axis=canvas.figure.add_subplot(111); axis.set_title(title); axis.text(.5,.5,message,ha="center",va="center",wrap=True,transform=axis.transAxes); axis.set_axis_off(); canvas.apply_theme()
 
     def _orm_transaction_text(self,result,index):
         device=result.correctors[index]; scale=1e6; error=(result.final_setpoints_rad[index]-result.original_setpoints_rad[index])*scale; intermediate=result.intermediate_restored_setpoints_rad[index]; intermediate_error=(intermediate-result.original_setpoints_rad[index])*scale
@@ -1845,7 +1973,7 @@ class MeasureMainWindow(QMainWindow):
         if result.direction=="bipolar":
             middle_return=(np.mean(result.raw_reference_intermediate_m[index],axis=0)-reference)*scale; middle_x=middle_return[:nb]; middle_y=middle_return[nb:]
             middle_text=f"Intermediate orbit return: X RMS {np.sqrt(np.mean(middle_x**2)):.6g} µm / max {np.max(np.abs(middle_x)):.6g} µm; Y RMS {np.sqrt(np.mean(middle_y**2)):.6g} µm / max {np.max(np.abs(middle_y)):.6g} µm\n"
-        else:middle_text="Intermediate orbit return: not applicable for one-sided acquisition\n"
+        else:middle_text="Intermediate orbit return: not applicable for a one-sided measurement\n"
         return (f"Corrector transaction — {device.name} ({device.plane})\n"
                 f"Backend identifier: {device.identifier}\n"
                 f"Original K0: {result.original_setpoints_rad[index]*scale:+.9g} µrad; requested K+/K−: {result.requested_state_a_rad[index]*scale:+.9g} / {result.requested_state_b_rad[index]*scale:+.9g} µrad\n"
@@ -1885,15 +2013,35 @@ class MeasureMainWindow(QMainWindow):
         for canvas,values,title,scale,unit,color in plot_sets:
             canvas.clear(); ax=canvas.figure.add_subplot(111); ax.plot(np.asarray(values)*scale,"o-",color=color,markersize=4); ax.set_title(f"{title} [{unit}]"); ax.set_ylabel(f"{'Physical dispersion' if title.startswith('Physical') else 'RF orbit difference'} [{unit}]"); ax.set_xlabel("BPM selection position"); ax.grid(True,alpha=.25); canvas.apply_theme()
         model_comparison=""
+        model_comparison_html="<b>Not calculated.</b><br>Enable <i>Compare measurements with reference model</i> before or after the measurement."
         if physical_x is not None and self.compare_reference.isChecked() and self.reference_model is not None:
             try:
                 model_x,model_y=model_dispersion(self.reference_model,result.devices)
                 for canvas,measured,model_values,plane in ((self.x_plot,physical_x,model_x,"X"),(self.y_plot,physical_y,model_y,"Y")):
                     ax=canvas.figure.axes[0]; ax.plot(model_values*1e3,"--",linewidth=1.5,label=f"MODEL D{plane.lower()} — reference lattice"); ax.plot((measured-model_values)*1e3,":",linewidth=1.2,label="Measured − MODEL"); ax.legend(); canvas.apply_theme()
                 mx=comparison_metrics(physical_x,model_x); my=comparison_metrics(physical_y,model_y)
-                model_comparison=(f"\nReference-model comparison — X: RMS difference {mx['rms_difference']*1e3:.4g} mm, relative norm {mx['relative_norm_difference']:.3%}, cosine {mx['cosine_similarity']:.6f}; "
-                                  f"Y: RMS difference {my['rms_difference']*1e3:.4g} mm, relative norm {my['relative_norm_difference']:.3%}, cosine {my['cosine_similarity']:.6f}. Source: {self.reference_model.source}")
-            except Exception as exc:model_comparison=f"\nReference-model comparison unavailable: {exc}"
+                model_comparison=(f"\nReference-model comparison\n"
+                                  f"X: RMS measured/model/difference {mx['rms_measured']*1e3:.4g} / {mx['rms_model']*1e3:.4g} / {mx['rms_difference']*1e3:.4g} mm; max |difference| {mx['max_abs_difference']*1e3:.4g} mm\n"
+                                  f"Y: RMS measured/model/difference {my['rms_measured']*1e3:.4g} / {my['rms_model']*1e3:.4g} / {my['rms_difference']*1e3:.4g} mm; max |difference| {my['max_abs_difference']*1e3:.4g} mm\n"
+                                  f"Source: {self.reference_model.source}")
+                rows=[]
+                for plane,metrics in (("Dₓ",mx),("Dᵧ",my)):
+                    rows.append(
+                        f"<tr><td><b>{plane}</b></td><td>{metrics['rms_measured']*1e3:.4g}</td>"
+                        f"<td>{metrics['rms_model']*1e3:.4g}</td><td>{metrics['rms_difference']*1e3:.4g}</td>"
+                        f"<td>{metrics['max_abs_difference']*1e3:.4g}</td></tr>"
+                    )
+                model_comparison_html=(
+                    "<table cellspacing='8'><tr><th>Plane</th><th>Measured RMS [mm]</th><th>Model RMS [mm]</th>"
+                    "<th>Difference RMS [mm]</th><th>Max |difference| [mm]</th></tr>"+"".join(rows)+"</table>"
+                    f"<small>Reference lattice: {self.reference_model.source}</small>"
+                )
+            except Exception as exc:
+                model_comparison=f"\nReference-model comparison unavailable: {exc}"
+                model_comparison_html=f"<b>Unavailable.</b><br>{exc}"
+        elif self.compare_reference.isChecked():
+            model_comparison_html="<b>Unavailable.</b><br>Physical dispersion and a loaded AT reference lattice are required."
+        self.dispersion_model_comparison.setText(model_comparison_html)
         for canvas,plane,title in ((self.mean_x_plot,"x","Raw and mean horizontal orbit by RF state"),(self.mean_y_plot,"y","Raw and mean vertical orbit by RF state")):
             canvas.clear(); ax=canvas.figure.add_subplot(111)
             colors=("#64748B","#F59E42","#11B7C1","#D946EF")

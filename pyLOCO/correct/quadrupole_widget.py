@@ -13,6 +13,7 @@ from .multi_quadrupole_transaction import MultiQuadrupoleTransaction
 class QuadrupoleWidget(QWidget):
     def __init__(self, owner):
         super().__init__(); self.owner = owner; self.transaction = None; self.request = None
+        self.fit_bundle = None
         layout = QVBoxLayout(self)
         self.identity = QLabel('Select pySC Server and an explicit machine/profile — no default machine')
         self.identity.setWordWrap(True); layout.addWidget(self.identity)
@@ -27,9 +28,11 @@ class QuadrupoleWidget(QWidget):
         self.connect_button = QPushButton('Connect / discover B2 controls')
         self.inventory = QComboBox(); form.addRow('Verified B2 inventory', self.inventory)
         self.load_button = QPushButton('Load mapped correction…')
+        self.load_fit_button = QPushButton('Load real FIT bundle… (preview only, 10%)')
         self.preview_button = QPushButton('Preview — zero writes')
         actions = QHBoxLayout(); layout.addLayout(actions)
         for button in (self.connect_button,self.load_button,self.preview_button): actions.addWidget(button)
+        layout.addWidget(self.load_fit_button)
         self.table = QTableWidget(0, 2); self.table.setHorizontalHeaderLabels(['Quantity', 'Value'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers); layout.addWidget(self.table, 1)
@@ -42,6 +45,7 @@ class QuadrupoleWidget(QWidget):
         self.apply_button.setEnabled(False); self.restore_button.setEnabled(False)
         self.connect_button.clicked.connect(lambda: self.run(self.connect_profile))
         self.load_button.clicked.connect(self.load_request)
+        self.load_fit_button.clicked.connect(self.load_fit_request)
         self.preview_button.clicked.connect(lambda: self.run(self.preview))
         self.apply_button.clicked.connect(self.apply)
         self.restore_button.clicked.connect(lambda: self.run(self.restore))
@@ -71,7 +75,7 @@ class QuadrupoleWidget(QWidget):
         finally:
             pending = bool(self.pending())
             self.restore_button.setEnabled(pending)
-            for widget in (self.profile, self.port, self.connect_button, self.load_button, self.preview_button, self.inventory, self.recover_button, self.owner.backend_combo):
+            for widget in (self.profile, self.port, self.connect_button, self.load_button, self.load_fit_button, self.preview_button, self.inventory, self.recover_button, self.owner.backend_combo):
                 widget.setEnabled(not pending)
 
     def connect_profile(self):
@@ -89,16 +93,66 @@ class QuadrupoleWidget(QWidget):
         self.owner.profile_badge.setText(text); self.owner._set_connection(True, 'CONNECTED')
         self.owner.registry.pysc_profile = self.profile.currentData()
         self.transaction = QuadrupoleTransaction(connection, Path.cwd() / 'correction-transactions')
+        self.owner._read_current_pysc_k(strict=False)
 
     def load_request(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Load explicit B2 request', '', 'JSON (*.json)')
         if path:
             def load():
+                self.fit_bundle = None
                 self.request = json.loads(Path(path).read_text()); self.apply_button.setEnabled(False)
                 self.status.setText(f'Loaded {path}. No machine writes. Preview required.')
             self.run(load)
 
+    def load_fit_request(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Load audited real FIT bundle', '', 'FIT provenance bundle (*.json)')
+        if path:
+            self.run(lambda: self.load_fit_path(path))
+
+    def load_fit_path(self, path):
+        if self.pending():
+            raise ValueError('Restore the pending transaction first')
+        self.apply_button.setEnabled(False)
+        self.request = None
+        self.fit_bundle = None
+        from .fit_preview import load_fit_bundle
+        profile_key = self.profile.currentData()
+        if profile_key not in ('petra3_realistic', 'ebs'):
+            raise ValueError('Connect explicitly to PETRA III / realistic_errors or EBS / validated_demo first')
+        self.fit_bundle = load_fit_bundle(path, profile_key=profile_key)
+        self.status.setText('Real FIT loaded — zero writes. Normal B2 only; fixed global fraction 10%. Preview required. Apply disabled.')
+
+    def show_fit_preview(self, record):
+        headers = ['B2 control', 'Current physical K', 'FIT initial K', 'FIT fitted K',
+                   'Full ΔK (initial − fitted)', '10% physical ΔK', 'Simulation factor',
+                   'Required control Δ', 'Proposed control', 'Expected physical K']
+        self.table.setColumnCount(len(headers)); self.table.setHorizontalHeaderLabels(headers)
+        self.table.setRowCount(len(record['items'])); self.table.setMinimumHeight(250); self.table.setMaximumHeight(600)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        for i, item in enumerate(record['items']):
+            p, o = item['parameter'], item['original']
+            values = [o['control'], o['physical'], p['initial'], p['fitted'], p['full_delta'],
+                      item['applied_delta'], o['factor'], item['control_delta'], item['proposed'], item['expected_physical']]
+            for j, value in enumerate(values):
+                cell = QTableWidgetItem(f'{value:.12g}' if isinstance(value, float) else str(value))
+                cell.setToolTip(f"{p['common_name']} | {p['family']}\nFIT source index {p['source_ordinal']} → official index {o['ordinal']}\nAll K/control values in m^-2; factor dimensionless")
+                self.table.setItem(i, j, cell)
+        self.summary.setText(f"FIT parameters: {record['mapped']} — uniquely mapped: {record['mapped']} — unmapped: 0 — ambiguous: 0\n"
+                             f"Individual magnets; no family expansion. Full ΔK RMS {record['rms_delta']:.6g}, max |ΔK| {record['max_delta']:.6g} m⁻². Global fraction: 10%.")
+        self.status.setText('FIT PREVIEW ONLY — Apply disabled. All K/control values: m⁻². Calibration: pySC simulation, NOT hardware.\n'
+                            'Historical fit, not a fit of the current error realization; improvement is not established.\n'
+                            'Source: ' + record['source']['sources']['fitted'])
+        self.apply_button.setEnabled(False)
+        self.restore_button.setEnabled(False)
+
     def preview(self):
+        if self.fit_bundle is not None:
+            if not self.transaction or self.profile.currentData() not in ('petra3_realistic', 'ebs') or self.owner.backend_combo.currentData() != 'pysc':
+                raise ValueError('Connect explicitly to PETRA III / realistic_errors or EBS / validated_demo first')
+            from .fit_preview import preview_fit
+            self.fit_record = preview_fit(self.fit_bundle, self.transaction.connection)
+            self.show_fit_preview(self.fit_record)
+            return
         if not self.transaction or not self.request:
             raise ValueError('Connect and load an explicit correction first')
         cls = MultiQuadrupoleTransaction if 'items' in self.request else QuadrupoleTransaction
@@ -149,9 +203,12 @@ class QuadrupoleWidget(QWidget):
         self.status.setText(r['status'].upper() + '\n' + r['calibration_source'] + '\nSource: ' + r['mapping']['fit_identity']['source'] + '\nJournal: ' + str(getattr(self.transaction, 'path', 'created before Apply')))
 
     def apply(self):
+        if self.fit_bundle is not None:
+            self.status.setText('Real FIT is preview-only: Apply is disabled for this milestone.')
+            return
         count = len(self.transaction.record.get('items', [1])) if self.transaction and self.transaction.record else 0
         if QMessageBox.question(self, 'Confirm simulation quadrupoles',
-                                f'Apply the {count} previewed physical ΔK values to PETRA III / realistic_errors?\nNo PETRA hardware writes.',
+                                f'Apply the {count} previewed physical ΔK values to the selected pySC simulation?\nNo hardware writes.',
                                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         self.run(lambda: self.show_record(self.transaction.apply(confirmed=True)))

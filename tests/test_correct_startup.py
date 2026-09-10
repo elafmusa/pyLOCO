@@ -41,27 +41,18 @@ def test_empty_correct_inherits_without_restyling_or_backend_initialization(key,
 
 
 @pytest.mark.parametrize("key", ["dark", "light"])
-def test_actual_fit_handler_theme_toggle_and_reopen(key, settings, monkeypatch):
+def test_actual_fit_handler_launches_distinct_correct_app_with_persisted_theme(key, settings, monkeypatch):
     from pyLOCO.gui import main_window as fit
     monkeypatch.setattr(fit, "QSettings", lambda: settings)
     settings.setValue("appearance/theme", key)
+    calls=[]
+    monkeypatch.setattr(fit,"launch_suite_application",lambda application,*args:(calls.append((application,args)) or (True,"process 4")))
     app = QApplication.instance() or build_application(["suite-theme-test"])
     owner = fit.MainWindow(); owner.show(); app.processEvents()
-    original = app.styleSheet()
     assert owner.open_correct_app()
-    correct = owner._correct_window
-    assert correct.theme_key == key and app.styleSheet() == original
-    correct.toggle_theme(); app.processEvents()
-    changed = "light" if key == "dark" else "dark"
-    assert owner.current_theme.key == correct.theme_key == changed
-    assert settings.value("appearance/theme") == changed
-    correct.close(); QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
-    assert owner.open_correct_app()
-    assert owner._correct_window.theme_key == changed
-    # Suite-originated changes also refresh Correct's own theme button/state.
-    owner._apply_theme_selection(key); app.processEvents()
-    assert owner._correct_window.theme_key == key
-    owner._correct_window.close(); owner.close(); owner.deleteLater()
+    assert calls==[("correct",())]
+    assert settings.value("appearance/theme") == key
+    owner.close(); owner.deleteLater()
     QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 

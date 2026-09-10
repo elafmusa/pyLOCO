@@ -1,0 +1,12 @@
+{
+  "schema": "pyloco-fit-b2-preview-v1",
+  "parameter_mode": "individual",
+  "unit": "m^-2",
+  "description": "Historical 16-iteration real FIT result; not a fit of the active realistic_errors realization. Normal K only. Preview only.",
+  "sources": {
+    "initial": {"path": "/Users/musa/Desktop/LOCO_test_2023/p3_v24.mat", "sha256": "e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512"},
+    "fitted": {"path": "/Users/musa/Desktop/LOCO_test_2023/ring_pyLOCO_Noerr_16iter.mat", "sha256": "e6dcc476dd0c7cfade67f8cf72df554b8326c6652c3394830724c72a2beb29cf"},
+    "ordinals": {"path": "/Users/musa/Desktop/LOCO_test_2023/quad_ind_2024.npy", "sha256": "a402b2b56d26abc7776c4ea383ccdac0262b1772a219944f1a264d5dcf84a278"},
+    "provenance": {"path": "/Users/musa/Desktop/LOCO_test_2023/example_2026_Noerr.ipynb", "sha256": "af19eca6a2fb2f81611d5508188c575087ed7fbc7c159f328c5fd5bc5a315bbd"}
+  }
+}

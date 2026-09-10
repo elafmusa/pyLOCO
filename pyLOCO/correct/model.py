@@ -167,8 +167,198 @@ class CorrectionReview:
 def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
     loader=ResultsLoader(path,iteration=iteration); result=[]; correction=loader.quadrupole_corrections; provenance={"source_results_directory":str(loader.result_dir),"source_iteration":iteration,"source_state":"Final" if iteration is None else f"Iteration {iteration}","fit_timestamp":loader.summary.get("completed_utc",loader.summary.get("timestamp")),"measurement_session":loader.request.get("measurement_session",{})}
     if correction is not None:
-        for i,(name,ordinal,initial,fitted,recommended) in enumerate(zip(correction["names"],correction["ordinals"],correction["initial"],correction["fitted"],correction["delta_k_apply"])):
-            result.append(CorrectItem(i,"normal_quadrupole",str(name),int(ordinal),"m⁻²",float(initial),float(fitted),float(fitted-initial),float(recommended),str(correction["sign_convention"]),metadata=dict(provenance)))
+        # ResultsLoader can expose the expanded physical-quadrupole
+        # correction directly. For family-mode runs, enrich those rows
+        # with the persisted family_index from the expanded CSV so the
+        # 193 fitted families remain traceable after expansion to the
+        # physical machine magnets.
+        family_by_ordinal = {}
+
+        expanded_csv = (
+            loader.result_dir
+            / "correction"
+            / "quadrupole_corrections_expanded.csv"
+        )
+
+        if expanded_csv.exists():
+            import csv
+
+            with expanded_csv.open(
+                "r",
+                encoding="utf-8",
+                newline="",
+            ) as stream:
+                for row in csv.DictReader(stream):
+                    ordinal_text = (
+                        row.get("lattice_index")
+                        or row.get("lattice_ordinal")
+                        or row.get("ordinal")
+                    )
+                    family_text = row.get("family_index")
+
+                    if (
+                        ordinal_text not in (None, "")
+                        and family_text not in (None, "")
+                    ):
+                        family_by_ordinal[int(ordinal_text)] = str(
+                            family_text
+                        )
+
+        for i,(name,ordinal,initial,fitted,recommended) in enumerate(
+            zip(
+                correction["names"],
+                correction["ordinals"],
+                correction["initial"],
+                correction["fitted"],
+                correction["delta_k_apply"],
+            )
+        ):
+            ordinal = int(ordinal)
+            family = family_by_ordinal.get(ordinal)
+
+            metadata = dict(provenance)
+
+            if family is not None:
+                metadata.update(
+                    {
+                        "family_mode_expanded": True,
+                        "family_index": family,
+                        "diagnostic_source":
+                            "Expanded family-mode pyLOCO correction",
+                    }
+                )
+
+            result.append(
+                CorrectItem(
+                    i,
+                    "normal_quadrupole",
+                    str(name),
+                    ordinal,
+                    "m⁻²",
+                    float(initial),
+                    float(fitted),
+                    float(fitted-initial),
+                    float(recommended),
+                    str(correction["sign_convention"]),
+                    family=family,
+                    metadata=metadata,
+                )
+            )
+    # Family-mode LOCO writes an explicit expanded physical-magnet
+    # correction table. ResultsLoader may not expose that table through
+    # quadrupole_corrections, so use it as a deterministic fallback.
+    #
+    # IMPORTANT: Correct operates on physical machine controls. Therefore
+    # load the expanded table (one row per physical quadrupole), not the
+    # 193-family summary table.
+    if correction is None:
+        import csv
+
+        expanded_csv = (
+            loader.result_dir
+            / "correction"
+            / "quadrupole_corrections_expanded.csv"
+        )
+
+        if expanded_csv.exists():
+            with expanded_csv.open(
+                "r",
+                encoding="utf-8",
+                newline="",
+            ) as stream:
+                rows = list(csv.DictReader(stream))
+
+            for i, row in enumerate(rows):
+                ordinal_text = (
+                    row.get("lattice_index")
+                    or row.get("lattice_ordinal")
+                    or row.get("ordinal")
+                    or row.get("index")
+                )
+                name = (
+                    row.get("name")
+                    or row.get("element_name")
+                    or row.get("common_name")
+                    or row.get("representative_name")
+                    or f"Quadrupole {i}"
+                )
+                family = (
+                    row.get("family")
+                    or row.get("family_name")
+                    or row.get("family_index")
+                )
+
+                initial_text = (
+                    row.get("nominal_K")
+                    or row.get("initial_K")
+                    or row.get("initial")
+                )
+                fitted_text = (
+                    row.get("fitted_K")
+                    or row.get("fitted")
+                )
+                recommended_text = (
+                    row.get("delta_K")
+                    or row.get("delta_k_apply")
+                    or row.get("recommended_machine_delta")
+                )
+
+                if (
+                    ordinal_text is None
+                    or initial_text is None
+                    or fitted_text is None
+                    or recommended_text is None
+                ):
+                    raise ValueError(
+                        "Family correction table is missing required "
+                        "ordinal / initial / fitted / delta_K columns"
+                    )
+
+                initial = float(initial_text)
+                fitted = float(fitted_text)
+                recommended = float(recommended_text)
+
+                # Saved convention:
+                # recommended machine ΔK = K_initial - K_fitted.
+                expected = initial - fitted
+                tolerance = 1e-12 * max(
+                    1.0,
+                    abs(initial),
+                    abs(fitted),
+                    abs(recommended),
+                )
+
+                if abs(recommended - expected) > tolerance:
+                    raise ValueError(
+                        f"Family correction sign/convention mismatch "
+                        f"for {name}: saved ΔK={recommended:+.16g}, "
+                        f"initial-fitted={expected:+.16g}"
+                    )
+
+                result.append(
+                    CorrectItem(
+                        i,
+                        "normal_quadrupole",
+                        str(name),
+                        int(ordinal_text),
+                        "m⁻²",
+                        initial,
+                        fitted,
+                        fitted - initial,
+                        recommended,
+                        "Recommended machine ΔK = initial model value − fitted model value",
+                        family=None if family is None else str(family),
+                        metadata={
+                            **provenance,
+                            "family_mode_expanded": True,
+                            "family_index": row.get("family_index"),
+                            "diagnostic_source": (
+                                "Expanded family-mode pyLOCO correction table"
+                            ),
+                        },
+                    )
+                )
+
     offset=len(result); type_map={"skew_quads":"skew_quadrupole","quads_tilt":"quadrupole_tilt"}
     for block in loader.parameter_blocks:
         if block.key not in type_map: continue

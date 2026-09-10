@@ -129,7 +129,10 @@ def test_optics_results_are_plane_separated_and_use_saved_arrays(app, tmp_path):
         for plots in collection.values():
             for plot in plots.values():
                 assert plot.save_button.isEnabled()
-                assert plot.minimumHeight() >= 420
+                # Optics plots remain visible in a laptop-height Results
+                # viewport and expand naturally when more space is present.
+                assert plot.minimumHeight() >= 120
+                assert plot.canvas.height() > 0
     view.close()
 
 

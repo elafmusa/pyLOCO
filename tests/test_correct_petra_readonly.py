@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication,QGroupBox
 
 from pyLOCO.control_system.petra import CALIBRATION_BASE,MAGNET_BASE,PETRAReadOnlyAdapter,READ_ONLY_ERROR
 from pyLOCO.correct.model import CorrectItem,CorrectionReview
@@ -75,6 +75,11 @@ def test_hard_write_guard_and_no_unverified_current_to_strength():
     with pytest.raises(NotImplementedError,match="No verified PETRA CURRENT2STRENGTH"):item.current_to_strength("PQ1",20)
 
 
-def test_gui_petra_read_is_explicit_and_uses_injected_readonly_adapter(monkeypatch):
-    app=QApplication.instance() or build_application(["correct-petra-test"]); item,fake,_=adapter(); monkeypatch.setattr("pyLOCO.correct.main_window.PETRAReadOnlyAdapter",lambda:item); monkeypatch.setattr("pyLOCO.correct.main_window.QMessageBox.critical",lambda *args:None); monkeypatch.setattr("pyLOCO.correct.main_window.QMessageBox.warning",lambda *args:None)
-    window=CorrectMainWindow(); window._load(Path("Examples/Correct/mock_corrections.json").resolve()); assert not fake.calls; window.read_petra_state(); app.processEvents(); assert window.badge.text()=="LIVE • PETRA III DOOCS"; assert window.machine_snapshot is not None; assert window.save_snapshot_button.isEnabled(); assert not any(call[0]=="write" for call in fake.calls); window.close()
+def test_gui_omits_legacy_petra_snapshot_and_warning_upload_sections():
+    app=QApplication.instance() or build_application(["correct-petra-test"])
+    window=CorrectMainWindow(); window.tabs.setCurrentIndex(1); app.processEvents()
+    assert window.findChild(QGroupBox,"mappingWarningsSection") is None
+    assert window.findChild(QGroupBox,"offlineDiagnosticsSection") is None
+    assert window.findChild(QGroupBox,"petraReadOnlySection") is None
+    assert "mapping" in window.mapping_button.text().lower()
+    window.close()

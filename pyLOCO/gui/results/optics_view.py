@@ -22,6 +22,20 @@ def _finish_table(table):
     table.setFixedHeight(min(190, table.verticalHeader().length() + table.horizontalHeader().height() + 6))
 
 
+def _render_saved_plot(plot, path):
+    """Render a factual plot saved by an older run when arrays are unavailable."""
+    if not path.is_file():
+        return False
+    import matplotlib.image as mpimg
+
+    axis = plot.figure.add_subplot(111)
+    axis.imshow(mpimg.imread(path))
+    axis.set_axis_off()
+    plot.apply_theme()
+    plot.canvas.draw_idle()
+    return True
+
+
 class OpticsView(QWidget):
     """Large independent views for βx, βy, ηx and ηy."""
 
@@ -48,8 +62,11 @@ class OpticsView(QWidget):
         message = QLabel(f"No β{plane} results loaded."); message.setWordWrap(True); message.setTextInteractionFlags(Qt.TextSelectableByMouse)
         table = _table(["State", "Min [%]", "Max [%]", "Mean [%]", "RMS [%]", "Max |error| [%]"])
         plot_tabs = QTabWidget(); plots = {
-            "curves": PlotCanvas(show_toolbar=True, minimum_height=420),
-            "beating": PlotCanvas(show_toolbar=True, minimum_height=420),
+            # Keep the chart visible in the shorter Results viewport used by
+            # laptop displays.  The plot still expands to consume all spare
+            # space, but no longer forces its lower half below the viewport.
+            "curves": PlotCanvas(show_toolbar=True, minimum_height=120),
+            "beating": PlotCanvas(show_toolbar=True, minimum_height=120),
         }
         plot_tabs.addTab(plots["curves"], f"β{plane} curves"); plot_tabs.addTab(plots["beating"], f"β{plane} beating")
         layout.addWidget(message); layout.addWidget(table); layout.addWidget(plot_tabs, 1)
@@ -63,7 +80,7 @@ class OpticsView(QWidget):
         plot_tabs = QTabWidget(); plots = {}
         for key, label in (("comparison", "Comparison"), ("measured", "Measured"), ("initial", "Initial model"), ("fitted", "Fitted model"),
                            ("initial_residual", "Initial residual"), ("fitted_residual", "Fitted residual"), ("residuals", "Residual comparison")):
-            plots[key] = PlotCanvas(show_toolbar=True, minimum_height=420); plot_tabs.addTab(plots[key], label)
+            plots[key] = PlotCanvas(show_toolbar=True, minimum_height=120); plot_tabs.addTab(plots[key], label)
         layout.addWidget(message); layout.addWidget(table); layout.addWidget(plot_tabs, 1)
         return page, message, table, plots
 
@@ -77,7 +94,13 @@ class OpticsView(QWidget):
         for plot in plots.values(): plot.clear()
         table.setRowCount(0)
         if not data:
-            message.setText(f"β{plane} is not available for this run. The required reference/initial/fitted Twiss arrays were not persisted.")
+            saved = loader.result_dir / "legacy_saved_plots" / "beta_beating.png"
+            shown = any(_render_saved_plot(plot, saved) for plot in plots.values())
+            message.setText(
+                f"This historical run did not persist numerical β{plane} arrays. "
+                + ("The original saved beta-beating figure from the completed fit is shown below."
+                   if shown else "The required reference/initial/fitted Twiss arrays were not persisted.")
+            )
             table.hide()
             return
         table.show(); reference_kind = data.get("reference_kind", "run_input_lattice")
@@ -114,7 +137,13 @@ class OpticsView(QWidget):
         table.setRowCount(0)
         if not data or plane not in data:
             objective = "included in" if loader.dispersion_included else "not included in"
-            message.setText(f"η{plane} was {objective} the LOCO objective. {loader.dispersion_unavailable_reason or 'Dispersion arrays are not available for this run.'}")
+            saved = loader.result_dir / "legacy_saved_plots" / "dispersion_fit.png"
+            shown = any(_render_saved_plot(plot, saved) for plot in plots.values())
+            message.setText(
+                f"η{plane} was {objective} the LOCO objective. "
+                + ("The original saved dispersion figure from the completed fit is shown below."
+                   if shown else (loader.dispersion_unavailable_reason or "Dispersion arrays are not available for this run."))
+            )
             table.hide()
             return
         table.show(); message.setText(("Dispersion was included in the LOCO objective. " if loader.dispersion_included else "Dispersion was not included in the LOCO objective; this is an independent post-fit diagnostic. ") + "Displayed dispersion and model − measurement residuals use mm.")

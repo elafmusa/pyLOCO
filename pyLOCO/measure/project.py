@@ -26,8 +26,8 @@ def _default_measurement_selections() -> dict[str, dict[str, Any]]:
 @dataclass
 class MeasureProject:
     measurement_type: str = "bpm_noise"
-    measurement_name: str = "bpm-noise"
-    measurement_label: str = "Mock BPM noise"
+    measurement_name: str = "pyloco-bpm-noise"
+    measurement_label: str = "pyLOCO BPM noise"
     operator_comments: str = ""
     adapter: str = "Mock"
     pysc_profile: str = "ebs"

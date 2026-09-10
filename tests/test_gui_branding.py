@@ -43,6 +43,15 @@ def test_application_icon_can_be_created_at_standard_sizes(app, size):
     assert not icon.pixmap(size, size).isNull()
 
 
+def test_companion_app_icons_are_visually_distinct(app):
+    fit=application_icon().pixmap(64,64).toImage()
+    measure=application_icon("measure").pixmap(64,64).toImage()
+    correct=application_icon("correct").pixmap(64,64).toImage()
+    assert measure != fit
+    assert correct != fit
+    assert measure != correct
+
+
 @pytest.mark.parametrize("theme", ["light", "dark"])
 def test_main_window_initializes_in_each_theme(app, theme):
     window = MainWindow()
@@ -102,12 +111,12 @@ def test_dashboard_logo_opens_the_same_scientific_information(app, monkeypatch):
     window.dashboard_logo_button.click()
     assert opened == [True]
     assert window.dashboard_logo_button.cursor().shape() == Qt.PointingHandCursor
-    assert window.dashboard_logo_button.size() == QSize(338, 228)
+    assert window.dashboard_logo_button.size() == QSize(278, 188)
     logo = window.dashboard_logo_button.findChild(QLabel)
     assert logo is not None
-    assert logo.size() == QSize(330, 220)
+    assert logo.size() == QSize(270, 180)
     assert logo.pixmap() is not None
-    assert logo.pixmap().size() == QSize(330, 220)
+    assert logo.pixmap().size() == QSize(270, 180)
     window.close()
 
 

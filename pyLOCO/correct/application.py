@@ -29,7 +29,7 @@ class CorrectionApplicationService:
         return tuple(result)
 
     def apply(self, changes, *, confirmed: bool):
-        if not confirmed: raise PermissionError("Apply requires explicit operator confirmation")
+        if not confirmed: raise PermissionError("Apply requires explicit user confirmation")
         self.adapter.require(AdapterCapability.WRITE)
         completed = []
         for change in changes:

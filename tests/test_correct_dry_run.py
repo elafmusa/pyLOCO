@@ -9,7 +9,9 @@ import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
-from PySide6.QtWidgets import QApplication,QGroupBox,QPushButton,QScrollArea
+from PySide6.QtCore import QPoint,Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication,QGroupBox,QLabel,QMessageBox,QPushButton,QScrollArea
 
 from pyLOCO.correct.app import build_application
 from pyLOCO.correct.main_window import CorrectMainWindow
@@ -132,14 +134,71 @@ def test_correct_package_contains_no_backend_specific_control_system_calls():
 
 def test_machine_mapping_page_uses_separate_natural_height_sections_at_1000x700():
     app=QApplication.instance() or build_application(["correct-mapping-layout"]); window=CorrectMainWindow(); window.resize(1000,700); window.show(); window.tabs.setCurrentIndex(1); app.processEvents()
-    sections=[window.findChild(QGroupBox,name) for name in ("machineMappingSection","mappingWarningsSection","offlineDiagnosticsSection","petraReadOnlySection","mappingHelpSection")]
-    assert all(section is not None and section.height()>=55 for section in sections)
-    assert sections[0].height()>=220 and sections[3].height()>=160
-    assert all(sections[index].geometry().bottom() < sections[index+1].geometry().top() for index in range(len(sections)-1))
+    mapping=window.findChild(QGroupBox,"machineMappingSection")
+    assert mapping is not None and mapping.height()>=220
+    assert window.findChild(QGroupBox,"mappingWarningsSection") is None
+    assert window.findChild(QGroupBox,"offlineDiagnosticsSection") is None
+    assert window.findChild(QGroupBox,"petraReadOnlySection") is None
+    assert window.findChild(QGroupBox,"mappingHelpSection") is None
+    assert window.mapping_note.parent() is mapping and window.mapping_note.isVisible()
     assert isinstance(window.tabs.currentWidget(),QScrollArea)
     assert window.mapping_source_notice.isVisible() and not window.mapping_button.isEnabled()
-    assert window.read_petra_button.text()=="Read PETRA State" and not window.read_petra_button.isEnabled()
     window._load(Path("Examples/Correct/mock_corrections.json").resolve()); window.tabs.setCurrentIndex(1); app.processEvents()
-    assert not window.mapping_source_notice.isVisible() and window.mapping_button.isEnabled() and window.read_petra_button.isEnabled()
-    assert window.petra_access_status.text().startswith("READ ONLY")
+    assert not window.mapping_source_notice.isVisible() and window.mapping_button.isEnabled()
+    window.tabs.setCurrentIndex(2); app.processEvents()
+    assert window.findChild(QGroupBox,"correctionConventionSection") is not None
+    connection=window.findChild(QGroupBox,"correctionPySCConnectionSection")
+    assert connection is not None
+    assert window.tabs.widget(1).isAncestorOf(connection)
+    assert not window.tabs.widget(2).isAncestorOf(connection)
+    assert "B2 simulation" not in [window.tabs.tabText(index) for index in range(window.tabs.count())]
+    assert window.quadrupole_workspace.connect_button.text()=="Connect / verify"
+    convention_text=" ".join(label.text() for label in window.plan_conventions_body.findChildren(QLabel))
+    for term in ("Raw fitted ΔK","Recommended machine ΔK","Global fraction","Individual fraction","Final ΔK","ΔK/K [%]"):
+        assert term in convention_text
+    window.close()
+
+
+def test_correction_plan_reads_current_physical_k_from_verified_pysc_snapshot():
+    app=QApplication.instance() or build_application(["correct-current-k"]); window=CorrectMainWindow()
+    state=CorrectionReview([item(control_name="Q0K2_7_1/B2",metadata={"mapping_status":"mapped"})],"fit")
+    window.review=state
+    window.backend_combo.setCurrentIndex(window.backend_combo.findData("pysc"))
+    window.quadrupole_workspace.profile.setCurrentIndex(window.quadrupole_workspace.profile.findData("petra3_realistic"))
+    writes=[]
+    snapshot={"identity":{"profile":"petra3_realistic","machine":"PETRA III","scenario":"realistic_errors"},"quadrupoles":[{"control":"Q0K2_7_1/B2","component":"B2","unit":"m^-2","physical":.241,"current":.24,"factor":1.01,"offset":-.0014}]}
+    window.quadrupole_workspace.transaction=SimpleNamespace(connection=SimpleNamespace(snapshot=lambda:snapshot),writes=writes,record=None)
+    assert window._read_current_pysc_k(strict=True)==1
+    assert state.items[0].machine_value==pytest.approx(.241)
+    assert state.items[0].target_value==pytest.approx(.251)
+    assert state.items[0].metadata["current_control_setpoint"]==pytest.approx(.24)
+    assert not writes
+    window.close()
+
+
+def test_selecting_machine_profile_selects_pysc_backend_without_header_roundtrip():
+    app=QApplication.instance() or build_application(["correct-profile-selection"]); window=CorrectMainWindow()
+    assert window.backend_combo.currentData()=="mock"
+    profile=window.quadrupole_workspace.profile
+    profile.setCurrentIndex(profile.findData("petra3_realistic")); app.processEvents()
+    assert window.backend_combo.currentData()=="pysc"
+    assert profile.currentData()=="petra3_realistic"
+    window.close()
+
+
+def test_review_is_compact():
+    app=QApplication.instance() or build_application(["correct-repeat-safety"]); window=CorrectMainWindow()
+    assert window.review_metrics_group.title()==""
+    assert not hasattr(window,"comparison")
+    window.close()
+
+
+def test_correction_plan_background_clears_highlight_and_last_columns_are_reachable():
+    app=QApplication.instance() or build_application(["correct-table-navigation"]); window=CorrectMainWindow(); window._load(Path("Examples/Correct/mock_corrections.json").resolve()); window.tabs.setCurrentIndex(2); window.show(); app.processEvents()
+    window.table.selectRow(0); assert window.table.selectionModel().hasSelection()
+    QTest.mouseClick(window.plan_page,Qt.LeftButton,pos=QPoint(2,2)); app.processEvents()
+    assert not window.table.selectionModel().hasSelection()
+    bar=window.table.horizontalScrollBar(); assert bar.maximum()>bar.minimum()
+    window.show_last_columns_button.click(); assert bar.value()==bar.maximum()
+    assert window.table.columnWidth(len(window.COLUMNS)-1)>=200
     window.close()

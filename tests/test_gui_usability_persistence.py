@@ -22,7 +22,7 @@ from pyLOCO.gui.backend import (
 from pyLOCO.gui.machine_detection import detect_machine_elements
 from pyLOCO.gui.measurement_metadata import inspect_measurement_metadata
 from pyLOCO.gui.models.project import CompletedRunReference, ImportedDataset, LocoConfiguration, ProjectMetadata
-from pyLOCO.gui.main_window import ElementSelectionDialog, ExclusionSelectionDialog, MainWindow, ScientificDoubleSpinBox
+from pyLOCO.gui.main_window import ElementSelectionDialog, ExclusionSelectionDialog, MainWindow, ScientificDoubleSpinBox, ScrollSafeSpinBox
 from pyLOCO.gui.results.parameters_view import ParametersView
 from pyLOCO.gui.results.plot_canvas import PlotCanvas
 from pyLOCO.gui.results.results_loader import ResultsLoader
@@ -112,11 +112,12 @@ def test_rf_cavity_detection_uses_at_definition():
 
 def test_selection_mode_only_enables_relevant_controls(app):
     window = MainWindow(); dialog = ElementSelectionDialog(window, "bpm_ords", [])
-    dialog.auto_radio.setChecked(True)
-    assert not dialog.type_edit.isEnabled() and not dialog.manual_edit.isEnabled()
+    assert not hasattr(dialog,"auto_radio")
+    assert dialog.manual_edit.isVisibleTo(dialog)
+    assert not dialog.type_edit.isVisibleTo(dialog) and not dialog.pattern_edit.isVisibleTo(dialog)
     dialog.name_file_radio.setChecked(True)
-    assert dialog.name_file_edit.isEnabled() and dialog.name_attribute.isEnabled()
-    assert not dialog.file_edit.isEnabled() and not dialog.pattern_edit.isEnabled()
+    assert dialog.name_file_edit.isVisibleTo(dialog) and dialog.name_attribute.isVisibleTo(dialog)
+    assert not dialog.file_edit.isVisibleTo(dialog) and not dialog.pattern_edit.isVisibleTo(dialog)
     window.close()
 
 
@@ -149,12 +150,13 @@ def test_machine_component_rows_remain_aligned_and_scrollable(app, width, height
     window.close()
 
 
-def test_spinbox_wheel_requires_focus(app):
+def test_spinbox_wheel_never_changes_values_while_scrolling(app):
     class Event:
         ignored = False
         def ignore(self): self.ignored = True
-    spin = ScientificDoubleSpinBox(); event = Event(); spin.clearFocus(); spin.wheelEvent(event)
-    assert event.ignored
+    for spin in (ScientificDoubleSpinBox(),ScrollSafeSpinBox()):
+        event = Event(); spin.setFocus(); spin.wheelEvent(event)
+        assert event.ignored
 
 
 def test_dispersion_weights_are_contextual_preserved_and_routed(app):
@@ -532,6 +534,9 @@ def test_plot_parameter_and_summary_exports(app, tmp_path, monkeypatch):
     monkeypatch.setattr("pyLOCO.gui.results.parameters_view.QFileDialog.getSaveFileName", lambda *a, **k: (str(exported), ""))
     parameters._export("json"); assert json.loads(exported.read_text())[0]["block"] == "hbpm_gain"
     summary = RunSummaryView(); summary.set_loader(loader); summary_path = tmp_path / "summary.json"
+    rendered=summary.text.toPlainText()
+    assert "Run overview" in rendered and "Measurement inputs" in rendered and "Fit results" in rendered
+    assert not rendered.lstrip().startswith("{")
     monkeypatch.setattr("pyLOCO.gui.results.run_summary_view.QFileDialog.getSaveFileName", lambda *a, **k: (str(summary_path), ""))
     summary._export("json"); assert json.loads(summary_path.read_text())["final_chi2"] == 2.0
 

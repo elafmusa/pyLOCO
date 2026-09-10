@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication
 from pyLOCO.gui.measurement_metadata import measurement_display_fields
 from pyLOCO.gui.themes import apply_application_theme, theme_for_key
 from pyLOCO.gui.appearance import select_suite_accent, suite_appearance_settings
-from pyLOCO.measure.reference_model import comparison_metrics, model_dispersion, model_orm, reference_model_for_pysc, store_reference_model_arrays
+from pyLOCO.measure.reference_model import comparison_metrics, model_dispersion, model_orm, reference_model_for_pysc, resolve_device_ordinals, store_reference_model_arrays
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -64,11 +64,28 @@ def test_reference_profiles_and_selected_device_ordering():
     assert np.all(np.isfinite(model.chromaticity))
 
 
+def test_petra_pysc_control_channels_resolve_to_reference_lattice():
+    from types import SimpleNamespace as D
+    model=reference_model_for_pysc("petra3_realistic")
+    bpm=D(name="BPM_SWR_13",identifier="BPM:BPM_SWR_13:X | BPM:BPM_SWR_13:Y")
+    hcor=D(name="PCH_SWR_9/B1L",identifier="MAGNET:PCH_SWR_9/B1L | MAGNET:PCH_SWR_9/B1L")
+    vcor=D(name="PCV_SWL_1/A1L",identifier="MAGNET:PCV_SWL_1/A1L | MAGNET:PCV_SWL_1/A1L")
+    assert resolve_device_ordinals(model,[bpm]) == (9,)
+    assert resolve_device_ordinals(model,[hcor]) == (5,)
+    assert resolve_device_ordinals(model,[vcor]) == (3687,)
+    matrix=model_orm(model,[bpm],[hcor],[vcor],[100e-6],[100e-6],scaled=True)
+    assert matrix.shape == (2,2)
+    assert np.all(np.isfinite(matrix))
+
+
 def test_comparison_does_not_mutate_measured_data():
     measured=np.arange(12,dtype=float).reshape(4,3); before=measured.copy()
     metrics=comparison_metrics(measured,measured*1.01)
     assert np.array_equal(measured,before)
     assert metrics["cosine_similarity"]==pytest.approx(1.0)
+    # Gain multiplying the model that best reproduces the measurement.
+    assert metrics["fitted_gain"]==pytest.approx(1/1.01)
+    assert metrics["max_abs_difference"]==pytest.approx(np.max(np.abs(measured-measured*1.01)))
 
 
 def test_model_arrays_are_separate_and_units_match(tmp_path):

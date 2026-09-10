@@ -4,11 +4,6 @@ Scope: empty application startup and suite shell only. Correction calculations,
 mapping/calibration rules, backend writes and safety gates are unchanged. FIT
 and Measure application source files were not edited.
 
-Checkpoint packaging note: the isolated commit includes only the Correct launch
-button/menu and companion-window handler in the suite shell. Unrelated local
-FIT/session-import/dashboard changes are excluded. No FIT calculations or
-Measure sources are changed. Shared native-font/theme handling is included.
-
 ## Measurement method
 
 `Examples/Correct/profile_startup.py` times fresh processes with `perf_counter`.

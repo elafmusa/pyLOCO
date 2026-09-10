@@ -5,6 +5,20 @@ import os
 from pathlib import Path
 from urllib.request import urlopen
 
+SUPPORTED_SIMULATION_PROFILES = frozenset(("petra3_realistic", "ebs"))
+
+
+def require_supported_simulation_profile(identity, expected_profile=None):
+    profile = identity.get("profile")
+    if profile not in SUPPORTED_SIMULATION_PROFILES:
+        raise ValueError(
+            "Only PETRA III / realistic_errors and EBS / validated_demo "
+            "pySC simulations are enabled"
+        )
+    if expected_profile is not None and profile != expected_profile:
+        raise ValueError("Selected profile does not match the running pySC server")
+    return profile
+
 
 def close(a, b):
     return math.isclose(a, b, rel_tol=1e-10, abs_tol=1e-12)
@@ -34,8 +48,7 @@ class QuadrupoleTransaction:
             raise RuntimeError('Restore the pending transaction before another preview')
         snapshot = self.connection.snapshot()
         identity = snapshot['identity']
-        if identity['profile'] != 'petra3_realistic':
-            raise ValueError('Only PETRA III / realistic_errors is enabled')
+        require_supported_simulation_profile(identity, request.get('profile'))
         mapping = request['mapping']
         if request['profile'] != identity['profile'] or request['lattice_sha256'] != identity['lattice_sha256']:
             raise ValueError('Correction/profile lattice identity mismatch')
