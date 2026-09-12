@@ -3,6 +3,8 @@ import json
 import math
 import os
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import urlencode
 from urllib.request import urlopen
 
 SUPPORTED_SIMULATION_PROFILES = frozenset(("petra3_realistic", "ebs"))
@@ -28,9 +30,18 @@ class SimulationConnection:
     def __init__(self, diagnostics_port=13132):
         self.url = f'http://127.0.0.1:{int(diagnostics_port)}/snapshot'
 
-    def snapshot(self):
-        with urlopen(self.url, timeout=5) as response:
-            return json.load(response)
+    def snapshot(self, control=None):
+        url = self.url if control is None else f"{self.url}?{urlencode({'control': control})}"
+        try:
+            with urlopen(url, timeout=5) as response:
+                return json.load(response)
+        except HTTPError as exc:
+            # Compatibility with an already-running older diagnostics server.
+            # It remains safe, but the full snapshot is slower until restart.
+            if control is None or exc.code != 404:
+                raise
+            with urlopen(self.url, timeout=5) as response:
+                return json.load(response)
 
     def interface(self, identity):
         from pyLOCO.control_system.pysc_server import pySCServerOrbitInterface

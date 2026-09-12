@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QSize, Qt, Signal, QUrl, QEvent
+from PySide6.QtCore import QObject, QSettings, QSize, Qt, Signal, Slot, QThread, QUrl, QEvent
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (QAbstractItemView,QApplication,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFileDialog,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QMainWindow,QMessageBox,QPlainTextEdit,QPushButton,QScrollArea,QSizePolicy,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
 
@@ -47,10 +47,52 @@ class NoWheelDoubleSpinBox(QDoubleSpinBox):
         if not self.hasFocus(): event.ignore(); return
         super().wheelEvent(event)
 
+class CorrectionSourceLoader(QObject):
+    """Load a correction source without blocking the Qt event loop."""
+    loaded = Signal(object, str)
+    failed = Signal(str)
+
+    def __init__(self, path, iteration=None):
+        super().__init__()
+        self.path = str(path)
+        self.iteration = iteration
+
+    @Slot()
+    def run(self):
+        try:
+            review = load_review(self.path, iteration=self.iteration)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.loaded.emit(review, self.path)
+
+class CorrectionApplyWorker(QObject):
+    """Run the verified simulation transaction without freezing the GUI."""
+    completed = Signal(object)
+    failed = Signal(str)
+    progress = Signal(int, int, str, str)
+
+    def __init__(self, transaction):
+        super().__init__()
+        self.transaction = transaction
+
+    @Slot()
+    def run(self):
+        try:
+            record = self.transaction.apply(
+                confirmed=True,
+                progress=lambda current,total,control,state:
+                    self.progress.emit(current,total,control,state),
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.completed.emit(record)
+
 class CorrectMainWindow(QMainWindow):
     COLUMNS=("Apply?","Index","Lattice ordinal","Element/family name","Control / power-supply name","Mapping status","Type","Initial K","Fitted K","Current machine K","Raw fitted ΔK","Recommended machine ΔK","ΔK/K [%]","Global scale","Individual scale","Final ΔK","Target K","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason")
     def __init__(self, *, registry=None):
-        super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
+        super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
         screen=self.screen()
         if screen is not None:self.resize(min(1500,screen.availableGeometry().width()),min(900,screen.availableGeometry().height()))
 
@@ -195,12 +237,58 @@ class CorrectMainWindow(QMainWindow):
         self.plot_tabs.setCurrentIndex(index)
 
     def _load(self,path,iteration=None):
-        try:self.review=load_review(path,iteration=iteration)
+        try:review=load_review(path,iteration=iteration)
         except Exception as exc: QMessageBox.critical(self,"Cannot load correction source",str(exc)); return
+        self._accept_loaded_review(review,path)
+
+    def _accept_loaded_review(self,review,path):
+        self.review=review
         source=Path(path).resolve(); self.machine_snapshot=None; self.badge.setText(self.registry.descriptor(self.backend_combo.currentData()).badge)
         for item in self.review.items:item.metadata.setdefault("mapping_status","mapped" if item.control_name else "unmapped")
         self.correction_changes=(); self.apply_button.setEnabled(False); self.apply_status.setText("Correction loaded — preview machine changes")
-        provenance=self.review.items[0].metadata if self.review.items else {}; session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False); self.mapping_file_status.setText("—"); self._refresh_mapping_status(); self._sync_fraction(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2)
+        provenance=self.review.items[0].metadata if self.review.items else {}; session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False); self.mapping_file_status.setText("—"); self._refresh_mapping_status(); self._sync_fraction(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2); self.statusBar().showMessage(f"Loaded {len(self.review.items)} correction item(s)",5000)
+
+    def load_source_responsively(self,path,iteration=None):
+        if self._source_load_thread is not None:
+            self.statusBar().showMessage("A correction source is already loading.",3000)
+            return
+        self.statusBar().showMessage(f"Loading correction source… {path}")
+        thread=QThread(self); worker=CorrectionSourceLoader(path,iteration); worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.loaded.connect(self._source_loaded)
+        worker.failed.connect(self._source_load_failed)
+        worker.loaded.connect(thread.quit); worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater); thread.finished.connect(self._source_load_finished); thread.finished.connect(thread.deleteLater)
+        self._source_load_thread=thread; self._source_load_worker=worker; thread.start()
+
+    @Slot(object,str)
+    def _source_loaded(self,review,path):
+        self._accept_loaded_review(review,path)
+
+    @Slot(str)
+    def _source_load_failed(self,message):
+        self.statusBar().showMessage("Correction source could not be loaded.",5000)
+        QMessageBox.critical(self,"Cannot load correction source",message)
+
+    @Slot()
+    def _source_load_finished(self):
+        self._source_load_thread=None; self._source_load_worker=None
+
+    def _browse_start(self,key):
+        settings=QSettings("pyLOCO","pyLOCO Correct")
+        remembered=Path(str(settings.value(f"browse/{key}",""))).expanduser()
+        if remembered.is_dir():return str(remembered)
+        if self.review:
+            source=Path(self.review.source_result).expanduser()
+            candidate=source if source.is_dir() else source.parent
+            if candidate.is_dir():return str(candidate)
+        measurements=Path.cwd()/"measurements"
+        return str(measurements if measurements.is_dir() else Path.cwd())
+
+    @staticmethod
+    def _remember_browse(key,path):
+        selected=Path(path).expanduser(); folder=selected if selected.is_dir() else selected.parent
+        QSettings("pyLOCO","pyLOCO Correct").setValue(f"browse/{key}",str(folder))
 
     @staticmethod
     def _source_kind(path):
@@ -215,11 +303,12 @@ class CorrectMainWindow(QMainWindow):
         return f"{len(self.review.items)} total — {counts['normal_quadrupole']} normal, {counts['skew_quadrupole']} skew, {counts['quadrupole_tilt']} tilt"
 
     def open_results(self):
-        path=QFileDialog.getExistingDirectory(self,"Open current pyLOCO Results directory")
-        if path:self._load(path)
+        options=QFileDialog.ShowDirsOnly|QFileDialog.DontUseNativeDialog
+        path=QFileDialog.getExistingDirectory(self,"Open current pyLOCO Results directory",self._browse_start("results"),options)
+        if path:self._remember_browse("results",path); self.load_source_responsively(path)
     def open_file(self):
-        path=QFileDialog.getOpenFileName(self,"Open correction plan or legacy JSON","","Correction files (*.json *.yaml *.yml)")[0]
-        if path:self._load(path)
+        path=QFileDialog.getOpenFileName(self,"Open correction plan or legacy JSON",self._browse_start("plans"),"Correction files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
+        if path:self._remember_browse("plans",path); self.load_source_responsively(path)
 
     def _backend_changed(self,*_):
         key=self.backend_combo.currentData(); descriptor=self.registry.descriptor(key); self.badge.setText(descriptor.badge); self.backend_session=None; self.correction_changes=(); self.apply_button.setEnabled(False)
@@ -742,8 +831,26 @@ class CorrectMainWindow(QMainWindow):
         if answer != QMessageBox.Yes:
             return
 
+        self.apply_button.setEnabled(False)
+        self.preview_apply_button.setEnabled(False)
+        self.restore_button.setEnabled(False)
+        self.undo_button.setEnabled(False)
+        self.apply_status.setText("Applying verified correction…")
+        thread=QThread(self); worker=CorrectionApplyWorker(transaction); worker.moveToThread(thread)
+        thread.started.connect(worker.run); worker.progress.connect(self._apply_progress)
+        worker.completed.connect(self._apply_completed); worker.failed.connect(self._apply_failed)
+        worker.completed.connect(thread.quit); worker.failed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater); thread.finished.connect(self._apply_finished); thread.finished.connect(thread.deleteLater)
+        self._apply_thread=thread; self._apply_worker=worker; thread.start()
+
+    @Slot(int,int,str,str)
+    def _apply_progress(self,current,total,control,state):
+        self.apply_status.setText(f"Applying {current} / {total} — {control} — {state}")
+        self.statusBar().showMessage(f"Correction progress: {current} / {total}")
+
+    @Slot(object)
+    def _apply_completed(self,record):
         try:
-            record = transaction.apply(confirmed=True)
 
             readbacks = {
                 item["control"]: item.get(
@@ -797,15 +904,18 @@ class CorrectMainWindow(QMainWindow):
             self.statusBar().showMessage(f"Applied and verified • {len(record['items'])} B2 controls • DEMO only")
 
         except Exception as exc:
-            self.apply_button.setEnabled(False)
-            self.preview_apply_button.setText("Preview machine changes")
-            self.preview_apply_button.setEnabled(True)
+            self._apply_failed(str(exc))
 
-            QMessageBox.critical(
-                self,
-                "Full-FIT simulation application failed",
-                str(exc),
-            )
+    @Slot(str)
+    def _apply_failed(self,message):
+        self.apply_button.setEnabled(False)
+        self.preview_apply_button.setText("Preview machine changes")
+        self.preview_apply_button.setEnabled(True)
+        QMessageBox.critical(self,"Full-FIT simulation application failed",message)
+
+    @Slot()
+    def _apply_finished(self):
+        self._apply_thread=None; self._apply_worker=None
 
     def undo_last_machine_changes(self):
         transaction = getattr(self, "fullfit_transaction", None)
@@ -962,8 +1072,9 @@ class CorrectMainWindow(QMainWindow):
         self.mapped_status.setText(str(mapped)); self.unmapped_status.setText(str(statuses["unmapped"])); self.ambiguous_status.setText(f"{statuses['ambiguous']} ambiguous; {statuses['duplicate']} duplicate")
 
     def load_petra_mapping(self):
-        path=QFileDialog.getOpenFileName(self,"Load explicit magnet mapping","","Mapping files (*.json *.yaml *.yml)")[0]
+        path=QFileDialog.getOpenFileName(self,"Load explicit magnet mapping",self._browse_start("mapping"),"Mapping files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
         if not path or not self.review:return
+        self._remember_browse("mapping",path)
         try:counts=apply_explicit_mapping(self.review,load_mapping(path))
         except Exception as exc:QMessageBox.critical(self,"Cannot load PETRA mapping",str(exc)); return
         self.mapping_path=str(Path(path).resolve()); self.mapping_file_status.setText(Path(path).name); self.mapping_file_status.setToolTip(self.mapping_path); self._refresh_mapping_status(); self._read_current_pysc_k(strict=False); self.statusBar().showMessage(f"Mapping loaded: {counts['mapped']} mapped, {counts['unmapped']} unmapped, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate."); self.refresh_all()

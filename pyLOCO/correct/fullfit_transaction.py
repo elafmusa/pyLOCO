@@ -52,8 +52,12 @@ class FullFitB2Transaction:
 
         os.replace(tmp, self.path)
 
-    def _snapshot_rows(self):
-        snapshot = self.connection.snapshot()
+    def _snapshot_rows(self, control=None):
+        try:
+            snapshot = self.connection.snapshot(control=control)
+        except TypeError:
+            # Test doubles and older connection objects expose only snapshot().
+            snapshot = self.connection.snapshot()
         identity = snapshot["identity"]
 
         require_supported_simulation_profile(identity)
@@ -320,7 +324,7 @@ class FullFitB2Transaction:
 
         return snapshot, rows
 
-    def apply(self, *, confirmed=False):
+    def apply(self, *, confirmed=False, progress=None):
         if not confirmed:
             raise PermissionError(
                 "Explicit confirmation is required"
@@ -338,6 +342,10 @@ class FullFitB2Transaction:
         self._verify_fresh()
 
         self.record["status"] = "write_pending"
+        # The durable pre-write journal deliberately marks every item as
+        # restorable. Recovery can therefore restore the exact original state
+        # even if the process stops between per-item progress checkpoints.
+        self.record["restore_required"] = True
 
         for item in self.record["items"]:
             item["attempted"] = False
@@ -351,11 +359,12 @@ class FullFitB2Transaction:
         )
 
         try:
-            for item in self.record["items"]:
+            total = len(self.record["items"])
+            for index, item in enumerate(self.record["items"], start=1):
                 # Reverify ONLY this not-yet-written item immediately
                 # before its SET. Previously applied items are expected
                 # to differ from their frozen original values.
-                snapshot, rows = self._snapshot_rows()
+                snapshot, rows = self._snapshot_rows(item["control"])
 
                 if snapshot["identity"] != self.record["identity"]:
                     raise RuntimeError("pySC server identity changed")
@@ -369,7 +378,8 @@ class FullFitB2Transaction:
                 self._verify_calibration(live, item)
 
                 item["attempted"] = True
-                self._persist()
+                if progress:
+                    progress(index, total, item["control"], "writing")
 
                 interface.set(
                     item["control"],
@@ -378,7 +388,7 @@ class FullFitB2Transaction:
 
                 item["set_completed"] = True
 
-                after_snapshot, after_rows = self._snapshot_rows()
+                after_snapshot, after_rows = self._snapshot_rows(item["control"])
                 after = after_rows[item["control"]]
 
                 control = float(after["current"])
@@ -408,7 +418,8 @@ class FullFitB2Transaction:
                     )
 
                 item["verified"] = True
-                self._persist()
+                if progress:
+                    progress(index, total, item["control"], "verified")
 
             # Final whole-machine verification.
             _, rows = self._snapshot_rows()
@@ -582,7 +593,7 @@ class FullFitB2Transaction:
                         float(item["restore_control"]),
                     )
 
-                _, rows = self._snapshot_rows()
+                _, rows = self._snapshot_rows(item["control"])
                 row = rows[item["control"]]
 
                 if float(row["current"]) != float(
@@ -612,11 +623,6 @@ class FullFitB2Transaction:
                 errors.append(
                     f"{item['control']}: {exc}"
                 )
-
-            try:
-                self._persist()
-            except Exception as exc:
-                errors.append(f"Journal: {exc}")
 
         self.record["status"] = (
             "restore_failed" if errors else "restored"

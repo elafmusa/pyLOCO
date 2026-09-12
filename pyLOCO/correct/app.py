@@ -24,7 +24,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app=build_application(["pyloco-correct"]); window=CorrectMainWindow(); window.show(); window.raise_(); window.activateWindow()
     if source:
         window.statusBar().showMessage(f"Loading pyLOCO Results: {source}")
-        QTimer.singleShot(0,lambda:window._load(source,iteration=args.iteration))
+        QTimer.singleShot(0,lambda:window.load_source_responsively(source,iteration=args.iteration))
     return app.exec()
 
 if __name__=="__main__": raise SystemExit(main())

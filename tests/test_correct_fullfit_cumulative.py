@@ -23,8 +23,10 @@ class FakeConnection:
         self.current = 1.0
         self.factor = 2.0
         self.offset = 0.1
+        self.snapshot_requests = []
 
-    def snapshot(self):
+    def snapshot(self, control=None):
+        self.snapshot_requests.append(control)
         return {
             "identity": dict(self.identity),
             "quadrupoles": [{
@@ -160,3 +162,35 @@ def test_unapplied_next_preview_can_restore_prior_cumulative_state(tmp_path):
     transaction.restore()
     assert connection.current == 1.0
     assert transaction.record["status"] == "restored"
+
+
+def test_apply_uses_targeted_readback_and_only_durable_transaction_boundaries(tmp_path):
+    source = tmp_path / "source.mat"
+    source.write_text(source.name)
+    connection = FakeConnection(_sha(source))
+    transaction = FullFitB2Transaction(connection, tmp_path / "journals")
+    transaction.load_preview_manifest(_manifest(tmp_path, connection, 1, 1.0, 1.0))
+
+    connection.snapshot_requests.clear()
+    persist_count = 0
+    original_persist = transaction._persist
+
+    def counted_persist():
+        nonlocal persist_count
+        persist_count += 1
+        original_persist()
+
+    transaction._persist = counted_persist
+    progress = []
+    transaction.apply(
+        confirmed=True,
+        progress=lambda *event: progress.append(event),
+    )
+
+    control = "Q0K2_7_1/B2"
+    assert connection.snapshot_requests == [None, control, control, None]
+    assert persist_count == 2
+    assert progress == [
+        (1, 1, control, "writing"),
+        (1, 1, control, "verified"),
+    ]
