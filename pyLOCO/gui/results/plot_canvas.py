@@ -24,9 +24,11 @@ class PlotCanvas(QWidget):
         self.canvas.setMinimumSize(0, 0)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        actions = QHBoxLayout()
         if show_toolbar:
-            layout.addWidget(self.toolbar)
-        actions = QHBoxLayout(); actions.addStretch(1)
+            actions.addWidget(self.toolbar, 1)
+        else:
+            actions.addStretch(1)
         self.save_button = QPushButton("Save plot…")
         self.save_button.setToolTip("Export this plot as PNG, PDF, or SVG")
         self.save_button.clicked.connect(self.save_plot); actions.addWidget(self.save_button)

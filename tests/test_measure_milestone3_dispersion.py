@@ -110,12 +110,14 @@ def test_dispersion_save_schema_session_and_importer_compatibility(app,tmp_path)
     window.close()
 
 
-def test_dispersion_session_update_preserves_bpm_noise_entry(app,tmp_path):
+def test_new_measure_window_does_not_merge_an_unrelated_stale_session(app,tmp_path):
     _,result=_mock_result(); existing=tmp_path/"noise.h5"; write_bpm_noise(existing,noise_x_m=np.ones(4)*1e-8,noise_y_m=np.ones(4)*2e-8,bpm_names=[d.name for d in result.devices],raw_orbits_x_m=np.zeros((2,4)),raw_orbits_y_m=np.zeros((2,4)))
     manifest=tmp_path/"measurement-session.pyloco-session.json"
     save_session(manifest,MeasurementSession("session",(SessionFile("bpm_noise",existing.name),)),validate_files=False)
     window=MeasureMainWindow(devices=result.devices,adapter=build_mock_adapter(result.devices,readings=8)); window.measurement_type.setCurrentIndex(1); window.nominal_rf.setText("500000000"); window.readings.setValue(8); window.output_directory.setText(str(tmp_path)); window._save_result(result)
-    assert {entry.role for entry in load_session(manifest,validate_files=False).files}=={"bpm_noise","dispersion"}
+    # A new Measure window is a new logical session. A manifest left in the
+    # chosen directory must not silently import measurements from an earlier run.
+    assert {entry.role for entry in load_session(manifest,validate_files=False).files}=={"dispersion"}
     window.close()
 
 
@@ -126,7 +128,8 @@ def test_dispersion_gui_is_manual_read_only_and_context_sensitive(app):
     assert window.restoration_label.text()==""
     window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion")); assert not window.dispersion_config_group.isHidden()
     assert window.stats_group.title()=="Statistics and RF diagnostics"
-    assert window.stats_group.isHidden() and not window.dispersion_summary.isHidden()
+    # Final statistics and summaries stay hidden until an acquisition result exists.
+    assert window.stats_group.isHidden() and window.dispersion_summary.isHidden()
     assert not window.rf_control_mode.model().item(1).isEnabled(); assert "never write RF" in window.rf_safety.text()
     assert not window.start_button.isEnabled(); window.nominal_rf.setText("500000000"); window.refresh_plan(); assert window.start_button.isEnabled()
     assert window.plan_values["measurement"].text()=="Dispersion"; assert window.plan_values["rf_states"].text()=="reference, positive, negative"
@@ -174,14 +177,17 @@ def test_dispersion_results_expose_physical_raw_rf_state_and_shift_views(app):
     window._restored_rf_readback=result.nominal_rf_hz
     window.result=result; window._show_dispersion_result(result)
     assert [window.results_tabs.tabText(i) for i in range(window.results_tabs.count())]==[
-        "Physical Dx [mm]","Physical Dy [mm]","RF orbit difference Δx_RF [mm]","RF orbit difference Δy_RF [mm]",
-        "RF-state horizontal orbits","RF-state vertical orbits","RF-induced horizontal shifts","RF-induced vertical shifts",
+        "RF orbit difference Δx_RF [mm]","RF orbit difference Δy_RF [mm]",
+        "RF-induced horizontal shifts","RF-induced vertical shifts",
+        "Physical Dx [mm] — optional AT","Physical Dy [mm] — optional AT",
     ]
     window.dispersion_display.setCurrentIndex(window.dispersion_display.findData("physical"))
     assert window.results_tabs.currentWidget() is window.x_plot
+    assert window.dispersion_display_label.text()=="Showing: physical dispersion"
     assert "mm" in window.summary_x.text() and "Mean" in window.summary_x.text()
     window.dispersion_display.setCurrentIndex(window.dispersion_display.findData("raw"))
     assert window.results_tabs.currentWidget() is window.raw_x_plot
+    assert window.dispersion_display_label.text()=="Showing: RF orbit difference"
     assert "mm" in window.summary_x.text() and "RF orbit difference" in window.summary_x.text()
     assert "mean[x(f−)] − mean[x(f+)]" in window.rf_response_formula.text()
     assert "Stored in metres; displayed in mm" in window.rf_response_note.text()
@@ -250,9 +256,9 @@ def test_automatic_dispersion_live_preview_names_each_rf_state(app):
 def test_measurement_splitter_can_shrink_either_pane_and_survives_type_switch(app):
     window=MeasureMainWindow(devices=default_mock_devices(2)); window.resize(1200,800); window.show(); app.processEvents()
     window.measurement_splitter.setSizes([190,900]); app.processEvents(); left_small=window.measurement_splitter.sizes()
-    assert left_small[0] <= 220
+    assert 300 <= left_small[0] <= 330
     window.measurement_splitter.setSizes([900,190]); app.processEvents(); right_small=window.measurement_splitter.sizes()
-    assert right_small[1] <= 220
+    assert 300 <= right_small[1] <= 390
     window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion")); app.processEvents()
     assert window.measurement_splitter.sizes()==right_small
     window.close()

@@ -1,8 +1,9 @@
-# EBS multi-stage FIT
+# ESRF-EBS Case C with the current FIT interface
 
-This maintained example documents the continuation workflow in the historical
-`example_skew_coupling_C3.ipynb` from the read-only
-`pyLOCO_old_backup/Examples_backup/EBS/EBS_MDT_26Jan_2026` tree.
+This directory reproduces the continuation workflow in the historical
+`example_skew_coupling_C3.ipynb` using the maintained FIT backend and GUI.
+The preserved measurement files and lattice are copied here because Case C is
+not the same dataset or lattice as the newer pySC commissioning example.
 
 ## Historical C3 sequence
 
@@ -26,12 +27,11 @@ all supplied. The Jacobian was recomputed for every stage. Measurements and BPM
 noise weights stayed fixed; the enabled parameters, coupling treatment,
 dispersion weights, and SVD cut changed.
 
-## Maintained equivalent
+## Open in the GUI
 
-`recipe.json` describes the same four-stage strategy using the current backend
-mapping. It intentionally contains no measurement path. Bind it in FIT to a
-current EBS lattice and measurement session, run compatibility preflight, then
-execute the stages in order.
+Launch `pyloco-gui`, choose **Open**, and select
+`EBS_case_C_multistage.pyloco.json`. The project contains the full four-stage
+recipe. Use **Preview full workflow** to inspect it before running.
 
 Every completed stage writes a continuation checkpoint containing:
 
@@ -45,7 +45,38 @@ The FIT run/session manifest binds the recipe, current measurements, reference
 lattice checksum and stage checkpoint directories. Reloading the session uses
 exactly these persisted artifacts; it does not depend on hidden Python state.
 
-The recipe is a strategy template. Before using it with another EBS measurement,
-populate the authoritative element selections/groups and identity requirements
-for that lattice, then pass compatibility preflight. Ordinals must never be
-transferred to a different lattice without stable-name verification.
+The project retains 317 BPMs after removing selected-list positions 27, 231 and
+286, 32 horizontal plus 32 vertical correctors, 252 individual normal
+quadrupoles, and 288 individual `PolynomA[1]` skew components hosted by EBS
+sextupoles. These are the exact selections in the historical notebook.
+
+To reuse the strategy with another measurement, replace its ORM, dispersion,
+and BPM-noise files. Keep the lattice and device ordering unchanged unless the
+new files carry an independently verified ordering.
+
+`recipe.json` is the reusable strategy-only file. It deliberately contains no
+measurement paths; the GUI project binds it to the preserved Case C inputs.
+
+## Standalone run
+
+From the repository root:
+
+```bash
+python Examples/EBS/multistage_fit/run_case_c_multistage.py --preflight-only
+python Examples/EBS/multistage_fit/run_case_c_multistage.py
+```
+
+Replacement measurements can be supplied without editing the recipe:
+
+```bash
+python Examples/EBS/multistage_fit/run_case_c_multistage.py \
+  --orm /path/to/orm.h5 \
+  --dispersion /path/to/dispersion.h5 \
+  --bpm-noise /path/to/bpm_noise.h5 \
+  --output /path/to/results \
+  --session /path/to/fit-session.json
+```
+
+The replacement files must preserve the Case C shapes, units, normalization,
+row/column ordering and RF convention. The loader validates dimensions, while
+scientific provenance and ordering must still be verified for new data.

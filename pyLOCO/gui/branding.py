@@ -6,7 +6,7 @@ from importlib.resources import files
 import logging
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, QPixmap, QRegion
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, QPen, QPixmap, QRegion
 from PySide6.QtWidgets import QLabel
 
 
@@ -40,10 +40,32 @@ def load_pixmap(name: str = ICON_ASSET) -> QPixmap:
     return pixmap
 
 
-def application_icon() -> QIcon:
-    """Return the simplified storage-ring application icon."""
+def application_icon(application: str = "fit") -> QIcon:
+    """Return a suite icon, with a clear accent for each companion app.
 
-    return QIcon(load_pixmap())
+    FIT intentionally retains the established icon. Measure and Correct use
+    the same artwork with a restrained colored frame and letter badge so the
+    three running applications are distinguishable in the macOS Dock.
+    """
+
+    source=load_pixmap()
+    key=str(application).strip().lower()
+    if source.isNull() or key in {"", "fit", "gui"}:
+        return QIcon(source)
+    variants={"measure":("#12BFC4","M"),"correct":("#E88B22","C")}
+    color,label=variants.get(key,("#64748B",""))
+    pixmap=QPixmap(source)
+    painter=QPainter(pixmap); painter.setRenderHint(QPainter.Antialiasing)
+    width=max(8,round(min(pixmap.width(),pixmap.height())*.025))
+    painter.setPen(QPen(QColor(color),width)); inset=width//2+2
+    painter.drawRoundedRect(pixmap.rect().adjusted(inset,inset,-inset,-inset),round(pixmap.width()*.12),round(pixmap.height()*.12))
+    if label:
+        diameter=round(min(pixmap.width(),pixmap.height())*.24); margin=round(diameter*.18)
+        x=pixmap.width()-diameter-margin; y=pixmap.height()-diameter-margin
+        painter.setPen(Qt.NoPen); painter.setBrush(QColor(color)); painter.drawEllipse(x,y,diameter,diameter)
+        painter.setPen(QColor("white")); painter.setFont(QFont("Helvetica Neue",round(diameter*.48),QFont.Bold)); painter.drawText(x,y,diameter,diameter,Qt.AlignCenter,label)
+    painter.end()
+    return QIcon(pixmap)
 
 
 def wordmark_colors(theme_key: str = "light") -> tuple[str, str]:

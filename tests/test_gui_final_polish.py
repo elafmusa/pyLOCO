@@ -5,7 +5,9 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QAbstractItemView, QApplication, QDialog, QFileDialog, QMessageBox, QWidget
 
 import pyLOCO.gui.main_window as main_window_module
 from pyLOCO.gui.main_window import ElementSelectionDialog, MainWindow
@@ -46,6 +48,207 @@ def test_corrector_steps_are_one_context_sensitive_section(app, tmp_path, monkey
     assert window.rm_dkick_h.isHidden()
     assert window.rm_dkick_v.isHidden()
     window.project.modified = False
+    window.close()
+
+
+def test_new_project_returns_to_dashboard_without_legacy_individuals(app):
+    window = MainWindow()
+    window.project.mode = "Advanced"
+    window._apply_mode_visibility()
+    window._workspace.setCurrentWidget(window.results_page)
+    window.project.modified = False
+
+    window.new_project()
+    app.processEvents()
+
+    assert window._workspace.currentIndex() == 0
+    assert window._workspace.tabText(0) == "Project"
+    assert window.loco_individuals.isHidden()
+    assert window.fit_workflow_table.rowCount() == 1
+    window.project.modified = False
+    window.close()
+
+
+def test_fit_workflow_row_selection_loads_each_stage_configuration(app):
+    window = MainWindow()
+    assert window.fit_workflow_table.selectionBehavior() == QAbstractItemView.SelectRows
+    assert window.fit_workflow_table.selectionMode() == QAbstractItemView.SingleSelection
+
+    window.parameter_checks["hbpm_gain"].setChecked(True)
+    window.parameter_checks["quads"].setChecked(False)
+    window._store_active_fit_stage()
+    window._duplicate_fit_stage()
+
+    window.parameter_checks["hbpm_gain"].setChecked(False)
+    window.parameter_checks["quads"].setChecked(True)
+    window._store_active_fit_stage()
+
+    window.fit_workflow_table.selectRow(0)
+    app.processEvents()
+    assert window.parameter_checks["hbpm_gain"].isChecked()
+    assert not window.parameter_checks["quads"].isChecked()
+    assert "Editing stage 1" in window.fit_stage_editor_label.text()
+
+    window.fit_workflow_table.selectRow(1)
+    app.processEvents()
+    assert not window.parameter_checks["hbpm_gain"].isChecked()
+    assert window.parameter_checks["quads"].isChecked()
+    assert "Editing stage 2" in window.fit_stage_editor_label.text()
+    window.project.modified = False
+    window.close()
+
+
+def test_backend_only_fit_recipe_stages_are_editable_in_gui(app):
+    window = MainWindow()
+    window.parameter_checks["hbpm_gain"].setChecked(True)
+    window.parameter_checks["quads"].setChecked(False)
+    window._store_active_fit_stage()
+    window._duplicate_fit_stage()
+    window.parameter_checks["hbpm_gain"].setChecked(False)
+    window.parameter_checks["quads"].setChecked(True)
+    window._store_active_fit_stage()
+
+    for stage in window.fit_recipe.stages:
+        stage.configuration.pop("gui_config", None)
+    window._active_fit_stage = -1
+    window.fit_workflow_table.clearSelection()
+    window._refresh_fit_workflow_table(0)
+    app.processEvents()
+    assert window.parameter_checks["hbpm_gain"].isChecked()
+    assert not window.parameter_checks["quads"].isChecked()
+
+    window.fit_workflow_table.selectRow(1)
+    app.processEvents()
+    assert not window.parameter_checks["hbpm_gain"].isChecked()
+    assert window.parameter_checks["quads"].isChecked()
+    window.project.modified = False
+    window.close()
+
+
+def test_run_monitor_is_visible_when_run_preparation_fails(app, monkeypatch):
+    messages = []
+    monkeypatch.setattr(ProjectMetadata, "validation_messages", lambda _self: [])
+    monkeypatch.setattr(
+        main_window_module.LocoRunRequest,
+        "from_project",
+        lambda _project: (_ for _ in ()).throw(RuntimeError("preflight setup failed")),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "critical",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    window = MainWindow()
+
+    window.run_loco()
+    app.processEvents()
+
+    assert window.results_workspace.run_status_label.text() == "Run preparation failed"
+    assert window.results_workspace.run_iteration_label.text() == "Not started"
+    assert "preflight setup failed" in window.results_workspace.log.text.toPlainText()
+    assert messages and messages[0][0] == "Cannot start LOCO"
+    assert window._run_thread is None
+    window.project.modified = False
+    window.close()
+
+
+def test_run_switches_to_results_before_stage_snapshot(app, monkeypatch):
+    window = MainWindow()
+    observed = []
+
+    def fail_snapshot():
+        observed.append(
+            (
+                window._workspace.currentWidget() is window.results_page,
+                window.results_workspace.run_status_label.text(),
+            )
+        )
+        raise RuntimeError("snapshot failed")
+
+    monkeypatch.setattr(window, "_store_active_fit_stage", fail_snapshot)
+    monkeypatch.setattr(QMessageBox, "critical", lambda *_args, **_kwargs: None)
+
+    window.run_loco()
+    app.processEvents()
+
+    assert observed == [(True, "Preparing inputs and checking the FIT workflow…")]
+    assert window.results_workspace.run_status_label.text() == "Run preparation failed"
+    window.project.modified = False
+    window.close()
+
+
+def test_advanced_element_previews_reuse_one_lattice_load(app, monkeypatch):
+    window = MainWindow()
+    window.project.mode = "Advanced"
+    window.project.lattice.path = "/tmp/reference.mat"
+    window._element_preview_signature = None
+    calls = []
+    monkeypatch.setattr(
+        window,
+        "_load_current_lattice",
+        lambda: (calls.append(True) or []),
+    )
+
+    window._refresh_element_selection_ui()
+    window._refresh_element_selection_ui()
+
+    assert len(calls) == 1
+    window.project.modified = False
+    window.close()
+
+
+def test_open_project_works_in_windowed_mode_with_qt_dialog(app, monkeypatch):
+    calls = []
+
+    def choose_project(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "", ""
+
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", choose_project)
+    window = MainWindow()
+    window.resize(900, 650)
+    window.show()
+    app.processEvents()
+
+    assert window.dashboard_open_project_button.isEnabled()
+    QTest.mouseClick(window.dashboard_open_project_button, Qt.LeftButton)
+    app.processEvents()
+
+    assert len(calls) == 1
+    assert calls[0][1]["options"] == QFileDialog.Option.DontUseNativeDialog
+    window.open_project_action.trigger()
+    assert len(calls) == 2
+    window.project.modified = False
+    window.close()
+
+
+def test_open_project_does_not_prompt_for_unchanged_focused_dashboard_fields(app, monkeypatch):
+    calls = []
+    prompts = []
+    monkeypatch.setattr(
+        QFileDialog,
+        "getOpenFileName",
+        lambda *args, **kwargs: (calls.append((args, kwargs)) or ("", "")),
+    )
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda *args, **kwargs: (prompts.append((args, kwargs)) or QMessageBox.Cancel),
+    )
+    window = MainWindow()
+    window.resize(1000, 700)
+    window.show()
+    window.project.modified = False
+    window.dashboard_description.setFocus()
+    app.processEvents()
+
+    QTest.mouseClick(window.dashboard_open_project_button, Qt.LeftButton)
+    app.processEvents()
+
+    assert not prompts
+    assert len(calls) == 1
+    assert calls[0][1]["options"] == QFileDialog.Option.DontUseNativeDialog
+    assert not window.project.modified
     window.close()
 
 

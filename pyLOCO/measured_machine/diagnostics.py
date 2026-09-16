@@ -36,33 +36,122 @@ def final_fit_state(fit_dict: dict[Any, Any]) -> dict[str, Any]:
 def extract_corrections(data: dict[str, Any], fit: dict[str, Any]) -> dict[str, np.ndarray]:
     """Extract machine corrections; correction = initial strength - fitted strength."""
     state = final_fit_state(fit["fit_dict"])
-    groups = [([int(group)] if np.isscalar(group) else [int(i) for i in group]) for group in data["quad_indices"]]
-    fitted_family_k = np.asarray(state.get("quads", []), dtype=float).ravel()
-    if "quads" not in fit["fit_list"]:
+
+    # ------------------------------------------------------------
+    # Normal quadrupole corrections
+    # ------------------------------------------------------------
+
+    if "quads" in fit["fit_list"]:
+
+        groups = [
+            [int(group)] if np.isscalar(group)
+            else [int(i) for i in group]
+            for group in data["quad_indices"]
+        ]
+
+        fitted_family_k = np.asarray(
+            state.get("quads", []),
+            dtype=float
+        ).ravel()
+
+        if fitted_family_k.size != len(groups):
+            raise ValueError(
+                f"Fitted quadrupole block has {fitted_family_k.size} values; "
+                f"expected {len(groups)}"
+            )
+
+        nominal_family_k = np.asarray(
+            [_normal_k(data["ring"][group[0]]) for group in groups],
+            dtype=float,
+        )
+
+        delta_q_families = nominal_family_k - fitted_family_k
+
+        expanded_indices = np.asarray(
+            [index for group in groups for index in group],
+            dtype=int,
+        )
+
+        expanded_families = np.asarray(
+            [
+                family
+                for family, group in enumerate(groups)
+                for _ in group
+            ],
+            dtype=int,
+        )
+
+        expanded_nominal = np.asarray(
+            [_normal_k(data["ring"][index]) for index in expanded_indices],
+            dtype=float,
+        )
+
+        expanded_fitted = np.asarray(
+            [_normal_k(fit["ring"][index]) for index in expanded_indices],
+            dtype=float,
+        )
+
+        delta_q_expanded = expanded_nominal - expanded_fitted
+
+    else:
+
+        # Quadrupoles were not fitted in this run.
         groups = []
-    if "quads" in fit["fit_list"] and fitted_family_k.size != len(groups):
-        raise ValueError(f"Fitted quadrupole block has {fitted_family_k.size} values; expected {len(groups)}")
-    nominal_family_k = np.asarray([_normal_k(data["ring"][group[0]]) for group in groups])
-    delta_q_families = nominal_family_k - fitted_family_k
 
-    expanded_indices = np.asarray([index for group in groups for index in group], dtype=int)
-    expanded_families = np.asarray([family for family, group in enumerate(groups) for _ in group], dtype=int)
-    expanded_nominal = np.asarray([_normal_k(data["ring"][index]) for index in expanded_indices])
-    expanded_fitted = np.asarray([_normal_k(fit["ring"][index]) for index in expanded_indices])
-    delta_q_expanded = expanded_nominal - expanded_fitted
+        fitted_family_k = np.asarray([], dtype=float)
+        nominal_family_k = np.asarray([], dtype=float)
+        delta_q_families = np.asarray([], dtype=float)
 
-    fitted_skew = np.asarray(state.get("skew_quads", []), dtype=float).ravel()
-    skew_indices = np.asarray(data["skew_indices"], dtype=int)
-    if "skew_quads" in fit["fit_list"] and fitted_skew.size != len(skew_indices):
-        raise ValueError(f"Fitted skew block has {fitted_skew.size} values; expected {len(skew_indices)}")
-    skew_attribute = str(data["cfg"]["loco"].get(
-        "skew_correction_reference_attribute",
-        data["cfg"]["loco"].get("skew_attribute", "PolynomB"),
-    ))
-    if fitted_skew.size == 0:
+        expanded_indices = np.asarray([], dtype=int)
+        expanded_families = np.asarray([], dtype=int)
+
+        expanded_nominal = np.asarray([], dtype=float)
+        expanded_fitted = np.asarray([], dtype=float)
+        delta_q_expanded = np.asarray([], dtype=float)
+
+    # ------------------------------------------------------------
+    # Skew-quadrupole corrections
+    # ------------------------------------------------------------
+
+    if "skew_quads" in fit["fit_list"]:
+
+        skew_indices = np.asarray(data["skew_indices"], dtype=int)
+
+        fitted_skew = np.asarray(
+            state.get("skew_quads", []),
+            dtype=float,
+        ).ravel()
+
+        if fitted_skew.size != len(skew_indices):
+            raise ValueError(
+                f"Fitted skew block has {fitted_skew.size} values; "
+                f"expected {len(skew_indices)}"
+            )
+
+        skew_attribute = str(
+            data["cfg"]["loco"].get(
+                "skew_correction_reference_attribute",
+                data["cfg"]["loco"].get("skew_attribute", "PolynomB"),
+            )
+        )
+
+        nominal_skew = np.asarray(
+            [
+                _skew_k(data["ring"][index], skew_attribute)
+                for index in skew_indices
+            ],
+            dtype=float,
+        )
+
+        delta_skew = nominal_skew - fitted_skew
+
+    else:
+
+        # Skew quadrupoles were not fitted in this run.
         skew_indices = np.asarray([], dtype=int)
-    nominal_skew = np.asarray([_skew_k(data["ring"][index], skew_attribute) for index in skew_indices])
-    delta_skew = nominal_skew - fitted_skew if fitted_skew.size else np.asarray([])
+        fitted_skew = np.asarray([], dtype=float)
+        nominal_skew = np.asarray([], dtype=float)
+        delta_skew = np.asarray([], dtype=float)
 
     return {
         "family_indices": np.arange(len(groups)), "representative_indices": np.asarray([g[0] for g in groups]),

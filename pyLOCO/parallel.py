@@ -32,6 +32,11 @@ def available_worker_count(*, requested=None, task_count=None, environ=None):
     if match and int(match.group(1)) > 0:
         limits.append(int(match.group(1)))
 
+    application_value = str(env.get("PYLOCO_MAX_WORKERS", "")).strip()
+    application_match = re.match(r"^(\d+)$", application_value)
+    if application_match and int(application_match.group(1)) > 0:
+        limits.append(int(application_match.group(1)))
+
     for value in (requested, task_count):
         if value is not None:
             value = int(value)

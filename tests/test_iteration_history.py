@@ -135,3 +135,52 @@ def test_results_workspace_selector_switches_all_views(tmp_path, monkeypatch):
     assert workspace.loader.iteration == 0
     assert workspace.overview.loader is workspace.loader
     workspace.close()
+
+
+def test_results_workspace_switches_workflow_stages_and_their_iterations(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "at", types.SimpleNamespace(
+        save_lattice=lambda ring, path: Path(path).write_text(str(ring.scale))))
+    request = _request(tmp_path)
+    stage_dirs = []
+    for stage_number, iteration_count in enumerate((2, 3), start=1):
+        stage_dir = tmp_path / f"stage-{stage_number}"
+        stage_dir.mkdir()
+        for number in range(iteration_count):
+            record = _record(number, [stage_number, number], 1.0 + number / 10)
+            _save_iteration_snapshot(
+                stage_dir, record,
+                diagnostics={"iteration": number, "chi2_after": 10.0 / (number + 1)},
+                reference_ring=_Ring(1.0), measured={"dispersion_supplied": False},
+                include_dispersion=False, bpm_ords=[0, 1], rf_step=1.0,
+                rf_frequency=1.0, momentum_compaction=1.0, request=request)
+        _write_iteration_manifest(stage_dir, run_status="completed")
+        (stage_dir / "run_request.json").write_text(json.dumps({"backend_mapping": request.backend_mapping}))
+        (stage_dir / "summary.json").write_text(json.dumps({"initial_chi2": 10.0, "chi2_history": [5.0]}))
+        for name in ("ring_pyloco.mat", "fit_dict.pkl", "fit_results.npy", "blocks.pkl"):
+            (stage_dir / name).touch()
+        stage_dirs.append(stage_dir)
+
+    from pyLOCO.gui.fit_workflow import FitRunSession, StageCheckpoint
+    checkpoints = [
+        StageCheckpoint(index, name, str(path), "ring_pyloco.mat", "fit_dict.pkl",
+                        "fit_results.npy", {}, {}, "blocks.pkl", "summary.json")
+        for index, (name, path) in enumerate(zip(("Calibration", "Normal optics"), stage_dirs))
+    ]
+    session_path = FitRunSession({}, "ring.mat", "checksum", {}, {}, checkpoints).save(
+        tmp_path / "fit-run-session.json")
+
+    from pyLOCO.gui.results.results_workspace import ResultsWorkspace
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    workspace = ResultsWorkspace()
+    workspace.load_workflow_session(session_path)
+    assert workspace.stage_selector.count() == 2
+    assert workspace.stage_selector.currentText() == "Stage 2 — Normal optics"
+    assert workspace.iteration_selector.count() == 3
+    assert workspace.iteration_selector.currentText() == "Iteration 2 / Final"
+    workspace.stage_selector.setCurrentIndex(0)
+    assert workspace.iteration_selector.count() == 2
+    assert workspace.iteration_selector.currentText() == "Iteration 1 / Final"
+    workspace.iteration_selector.setCurrentIndex(0)
+    assert workspace.loader.iteration == 0
+    workspace.close()

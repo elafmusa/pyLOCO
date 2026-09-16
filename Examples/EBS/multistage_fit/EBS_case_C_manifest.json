@@ -1,0 +1,44 @@
+{
+  "case": "Historical ESRF-EBS Case C",
+  "source_notebook": "example_skew_coupling_C3.ipynb",
+  "project": "EBS_case_C_multistage.pyloco.json",
+  "recipe": "recipe.json",
+  "runner": "run_case_c_multistage.py",
+  "lattice": {
+    "path": "data/betamodel.mat",
+    "sha256": "97cbdcd75cecc2a2c7062ba774546247c570c7902a5710c1ab7b911200496d8b",
+    "elements": 4432
+  },
+  "measurements": {
+    "orm": {
+      "path": "data/ORM_for_pyLOCO_20260126_221131.h5",
+      "sha256": "c086b7cea36d90322be67aad77f28e7244310d0d5228a340a117b1237954c322",
+      "size_bytes": 322442
+    },
+    "dispersion": {
+      "path": "data/measured_dispersion_loco_20260126_221103.h5",
+      "sha256": "9536c784ca71808706c8c6bd9c7072112ccfe90a190c898da5817b25bd486b38",
+      "size_bytes": 7168
+    },
+    "bpm_noise": {
+      "path": "data/measured_BPM_noise_loco_20260126_212023.h5",
+      "sha256": "fc7a5ced1ddf87a2b9cd59a7ff787619011bfb9987925d0216b4f6e39767e6ce",
+      "size_bytes": 14336
+    }
+  },
+  "selection_counts": {
+    "bpm_before_exclusion": 320,
+    "bpm_after_exclusion": 317,
+    "h_correctors": 32,
+    "v_correctors": 32,
+    "normal_quadrupoles": 252,
+    "skew_components": 288
+  },
+  "bad_bpm_positions": [
+    27,
+    231,
+    286
+  ],
+  "stages": 4,
+  "outer_iterations_per_stage": 2
+}

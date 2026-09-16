@@ -35,6 +35,10 @@ def test_application_launches_offline_without_doocs(app):
     assert window.status_badge.text() == "MOCK • READ ONLY"
     assert AdapterCapability.WRITE not in window.adapter.capabilities
     assert window.tabs.count() == 4
+    assert window.plan_group.isCheckable() and not window.plan_group.isChecked()
+    assert window.plan_body.isHidden()
+    window.plan_group.setChecked(True)
+    assert not window.plan_body.isHidden()
     assert "pydoocs" not in sys.modules and "doocs4py" not in sys.modules
     window.close()
 
@@ -88,6 +92,7 @@ def test_saved_measurement_session_and_existing_importer(app, tmp_path):
     window.project_path = tmp_path / "measure.pyloco-measure.json"
     window.output_directory.setText("session")
     window.measurement_name.setText("test-noise")
+    window.result = result
     window._save_result(result)
     assert validate_measurement_file(window.saved_measurement_path)["kind"] == "bpm_noise"
     session = load_session(window.saved_session_path)
@@ -99,6 +104,11 @@ def test_saved_measurement_session_and_existing_importer(app, tmp_path):
     with h5py.File(orm, "w") as handle: handle["response_matrix"] = np.zeros((4, 2))
     loaded = _load_measurements({"orm": str(orm), "bpm_noise": str(window.saved_measurement_path)})
     np.testing.assert_allclose(loaded["noise_x"], result.noise_x_m)
+    window.tabs.setCurrentIndex(3); app.processEvents()
+    assert window.review_status.text() == "✓ BPM noise saved and schema-validated"
+    assert "Missing for FIT: orm, dispersion" in window.review_details.text()
+    assert str(window.saved_measurement_path) in window.review_paths.text()
+    assert window.review_validate_button.isEnabled() and window.review_open_button.isEnabled()
     window.close()
 
 
@@ -152,7 +162,9 @@ def test_responsive_measure_pages_do_not_overlap_or_elide(app, size, theme):
     window.tabs.setCurrentIndex(2); app.processEvents()
     assert window.measurement_name.height() >= 30
     window.tabs.setCurrentIndex(3); app.processEvents()
-    assert window.results_tabs.height() >= 410
+    # The result area is intentionally compact (and reached through the one
+    # outer workspace scroll area) so controls remain usable at 1000x700.
+    assert window.results_tabs.height() >= 320
     window.close()
 
 

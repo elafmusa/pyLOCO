@@ -1,0 +1,12 @@
+{
+  "description": "Portable offline pyLOCO Correct demonstration — all currents and calibrations are explicit Mock values.",
+  "global_scale": 0.1,
+  "corrections": [
+    {"correction_type":"normal_quadrupole","name":"QF-MOCK-01","control_name":"MOCK-PS-QF01","lattice_ordinal":12,"unit":"m^-2","initial_k":0.82,"fitted_k":0.80,"raw_fitted_delta":-0.02,"recommended_machine_delta":0.02,"sign_convention":"recommended = initial model K - fitted model K","current_ampere":24.0,"ampere_per_unit":80.0,"min_current_ampere":-100.0,"max_current_ampere":100.0},
+    {"correction_type":"normal_quadrupole","name":"QD-MOCK-02","control_name":"MOCK-PS-QD02","lattice_ordinal":26,"unit":"m^-2","initial_k":-0.64,"fitted_k":-0.60,"raw_fitted_delta":0.04,"recommended_machine_delta":-0.04,"sign_convention":"recommended = initial model K - fitted model K","current_ampere":-32.0,"ampere_per_unit":90.0,"min_current_ampere":-35.0,"max_current_ampere":35.0,"calibration_difference_percent":25.0},
+    {"correction_type":"normal_quadrupole","name":"QF-MOCK-03","control_name":"MOCK-PS-QF03","lattice_ordinal":40,"unit":"m^-2","initial_k":0.5,"fitted_k":0.49,"raw_fitted_delta":-0.01,"recommended_machine_delta":0.01,"sign_convention":"recommended = initial model K - fitted model K","current_ampere":18.0,"ampere_per_unit":85.0,"min_current_ampere":-100.0,"max_current_ampere":100.0,"individual_scale":0.5},
+    {"correction_type":"skew_quadrupole","name":"SQ-MOCK-01","control_name":"MOCK-PS-SQ01","lattice_ordinal":55,"unit":"m^-2","initial_k":0.0,"fitted_k":0.0012,"raw_fitted_delta":0.0012,"recommended_machine_delta":-0.0012,"sign_convention":"recommended = initial model K - fitted model K","current_ampere":1.0,"ampere_per_unit":120.0,"min_current_ampere":-10.0,"max_current_ampere":10.0},
+    {"correction_type":"quadrupole_tilt","name":"QF-MOCK-04","control_name":"MOCK-PS-TILT04","lattice_ordinal":72,"unit":"rad","initial_k":0.0,"fitted_k":0.0004,"raw_fitted_delta":0.0004,"recommended_machine_delta":-0.0004,"sign_convention":"recommended tilt = initial model tilt - fitted model tilt","sign_difference":true},
+    {"correction_type":"normal_quadrupole","name":"QD-MOCK-EXCLUDED","control_name":"MOCK-PS-QD05","lattice_ordinal":88,"unit":"m^-2","initial_k":-0.7,"fitted_k":-0.68,"raw_fitted_delta":0.02,"recommended_machine_delta":-0.02,"sign_convention":"recommended = initial model K - fitted model K","included":false,"exclusion_reason":"Portable example exclusion"}
+  ]
+}

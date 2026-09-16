@@ -54,7 +54,7 @@ def test_continuous_and_saved_resume_use_identical_stage2_checkpoint(tmp_path):
     lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"ring")
     base = SimpleNamespace(project_name="test", lattice_path=str(lattice),
                            measurements={"orm": "orm.h5"}, measurement_session={"id": "same"},
-                           backend_mapping={})
+                           backend_mapping={"Output": {"directory": str(tmp_path / "results")}})
     recipe = FitRecipe(stages=[FitStage("one", mapping("quads"), "original_model"),
                                FitStage("two", mapping("skew_quads"), "previous_stage")])
     calls = []
@@ -64,6 +64,7 @@ def test_continuous_and_saved_resume_use_identical_stage2_checkpoint(tmp_path):
         for name in ("ring_pyloco.mat", "fit_dict.pkl", "fit_results.npy", "blocks.pkl", "summary.json"):
             (root / name).write_bytes(b"checkpoint")
         calls.append(request.backend_mapping.get("Resume", {}).copy())
+        assert request.backend_mapping["Output"]["directory"] == str(tmp_path / "results")
         return SimpleNamespace(results_dir=str(root))
 
     session = execute_workflow(base, recipe, session_path=tmp_path / "session.json", runner=runner)
@@ -81,3 +82,56 @@ def test_continuous_and_saved_resume_use_identical_stage2_checkpoint(tmp_path):
     execute_workflow(base, recipe, session_path=tmp_path / "resumed.json", runner=runner,
                      resume_session=reloaded)
     assert calls[2]["directory"] == calls[1]["directory"]
+
+
+def test_multistage_progress_reports_overall_and_current_stage(tmp_path):
+    lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"ring")
+    base = SimpleNamespace(project_name="test", lattice_path=str(lattice),
+                           measurements={"orm": "orm.h5"}, measurement_session={},
+                           backend_mapping={"Output": {"directory": str(tmp_path / "results")}})
+    recipe = FitRecipe(stages=[FitStage("first", mapping("quads"), "original_model"),
+                               FitStage("second", mapping("skew_quads"), "previous_stage")])
+    events = []
+    calls = []
+
+    def runner(request, progress_callback=None, **_):
+        root = tmp_path / f"progress-run-{len(calls)}"; root.mkdir()
+        for name in ("ring_pyloco.mat", "fit_dict.pkl", "fit_results.npy", "blocks.pkl", "summary.json"):
+            (root / name).write_bytes(b"checkpoint")
+        progress_callback({"workflow_fraction": .5, "iteration": 1, "total_iterations": 2,
+                           "message": "Halfway through this stage."})
+        calls.append(request)
+        return SimpleNamespace(results_dir=str(root))
+
+    execute_workflow(base, recipe, session_path=tmp_path / "progress-session.json",
+                     runner=runner, progress_callback=events.append)
+
+    halfway = [event for event in events if event.get("message") == "Halfway through this stage."]
+    assert [(event["workflow_stage"], event["stage_fraction"], event["workflow_fraction"])
+            for event in halfway] == [(1, .5, .25), (2, .5, .75)]
+
+
+def test_multistage_results_record_the_original_workflow_reference(tmp_path, monkeypatch):
+    lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"ring")
+    base = SimpleNamespace(project_name="test", lattice_path=str(lattice),
+                           measurements={}, measurement_session={},
+                           backend_mapping={"Output": {"directory": str(tmp_path / "results")}})
+    recipe = FitRecipe(stages=[FitStage("first", mapping("quads"), "original_model"),
+                               FitStage("second", mapping("skew_quads"), "previous_stage")])
+    observed = []
+    rebased = []
+
+    def runner(request, **_):
+        root = tmp_path / f"reference-run-{len(observed)}"; root.mkdir()
+        for name in ("ring_pyloco.mat", "fit_dict.pkl", "fit_results.npy", "blocks.pkl", "summary.json"):
+            (root / name).write_bytes(b"checkpoint")
+        observed.append(request.backend_mapping["Workflow"])
+        return SimpleNamespace(results_dir=str(root))
+
+    monkeypatch.setattr("pyLOCO.gui.fit_workflow._rebase_workflow_optics",
+                        lambda result_dir, reference: rebased.append((result_dir, reference)) or True)
+    execute_workflow(base, recipe, session_path=tmp_path / "session.json", runner=runner)
+
+    assert [item["stage"] for item in observed] == [1, 2]
+    assert all(item["reference_lattice"] == str(lattice) for item in observed)
+    assert [reference for _, reference in rebased] == [str(lattice), str(lattice)]

@@ -8,6 +8,9 @@ an offline application shell only; it does not execute LOCO fits.
 from __future__ import annotations
 
 import sys
+import argparse
+import os
+from pathlib import Path
 from collections.abc import Sequence
 
 from PySide6.QtWidgets import QApplication
@@ -16,7 +19,7 @@ from .branding import application_icon
 from .main_window import MainWindow
 
 
-APPLICATION_NAME = "pyLOCO GUI"
+APPLICATION_NAME = "pyLOCO Fit"
 ORGANIZATION_NAME = "pyLOCO"
 
 
@@ -36,6 +39,7 @@ def build_application(argv: Sequence[str] | None = None) -> QApplication:
 
     app = QApplication(list(sys.argv if argv is None else argv))
     app.setApplicationName(APPLICATION_NAME)
+    app.setApplicationDisplayName(APPLICATION_NAME)
     app.setOrganizationName(ORGANIZATION_NAME)
     icon = application_icon()
     if not icon.isNull():
@@ -45,9 +49,17 @@ def build_application(argv: Sequence[str] | None = None) -> QApplication:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the pyLOCO GUI shell."""
-
-    app = build_application(argv)
+    # Numerical Jacobians may otherwise occupy every visible CPU and starve
+    # the Qt event loop on desktop machines.  This GUI-only default leaves
+    # capacity for repainting, cancellation, and progress delivery.  Users and
+    # schedulers can still provide an explicit lower or higher limit.
+    visible_cpus = os.cpu_count() or 1
+    os.environ.setdefault("PYLOCO_MAX_WORKERS", "1")
+    values=list(sys.argv[1:] if argv is None else argv); parser=argparse.ArgumentParser(prog="pyloco-gui"); parser.add_argument("project",nargs="?"); parser.add_argument("--measurement-session"); args=parser.parse_args(values)
+    app = build_application(["pyloco-gui"])
     window = MainWindow()
+    if args.project:window.open_project(Path(args.project))
+    if args.measurement_session:window.open_measurement_session(Path(args.measurement_session))
     window.show()
     return app.exec()
 

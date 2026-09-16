@@ -60,7 +60,9 @@ def test_remove_coupling_with_dispersion_retains_both_eta_planes_petra_iv_size()
     assert expected.size == 2 * 786 * 10 + 2 * 786
     assert expected.max() < arrays[0].size
     # The final nHBPM+nVBPM entries are eta_x followed by eta_y.
-    np.testing.assert_array_equal(filtered[0][-1572:], arrays[0][-1572:])
+    np.testing.assert_array_equal(
+        filtered[0][-1572:], arrays[0][-1572:]
+    )
     np.testing.assert_array_equal(filtered[1], arrays[1][expected])
     np.testing.assert_array_equal(filtered[2], arrays[2][expected])
     np.testing.assert_array_equal(filtered[3], arrays[3][expected, :])
@@ -121,6 +123,7 @@ def test_legacy_appended_response_and_gui_order_match_canonical_interface():
         include_dispersion=True,
     )
     np.testing.assert_array_equal(core_response, gui_response)
+    # Already-appended legacy callers remain accepted if their eta agrees.
     np.testing.assert_array_equal(
         _canonicalize_measured_response(
             gui_response, measured["eta_x"], measured["eta_y"],

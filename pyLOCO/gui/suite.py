@@ -67,7 +67,11 @@ def inspect_measurement_session(path: str|Path) -> SessionImport:
 def launch_suite_application(application: str, *arguments: str) -> tuple[bool,str]:
     modules={"fit":"pyLOCO.gui.app","measure":"pyLOCO.measure.app","correct":"pyLOCO.correct.app"}
     if application not in modules:raise ValueError(f"Unknown pyLOCO Suite application: {application}")
-    previous=_DETACHED_SUITE_PIDS.get(application)
+    # A handoff carries new state (for example the selected FIT result). A
+    # previously opened standalone window cannot receive new argv, so launch
+    # a fresh destination when arguments are supplied instead of silently
+    # focusing/reusing stale state.
+    previous=_DETACHED_SUITE_PIDS.get(application) if not arguments else None
     if previous is not None:
         try:os.kill(previous,0)
         except ProcessLookupError:_DETACHED_SUITE_PIDS.pop(application,None)

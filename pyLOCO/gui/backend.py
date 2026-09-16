@@ -151,8 +151,10 @@ def run_loco_request(
         import at
         from pyLOCO.pyloco import pyloco, remove_bad_bpms, save_fit_dict
 
-        ring = at.load_lattice(request.lattice_path)
+        ring = _prepare_loco_lattice(at.load_lattice(request.lattice_path))
         log(f"Loaded lattice: {request.lattice_path}")
+        if not bool(getattr(ring, "is_6d", False)):
+            log("Prepared 4D lattice for LOCO optics and orbit calculations.")
         measured = _load_measurements(request.measurements, request.measurement_options)
         log("Loaded measurement files.")
         indices = _derive_indices(ring, measured)
@@ -185,7 +187,7 @@ def run_loco_request(
         mcf_cfg = request.backend_mapping.get("MomentumCompaction", {"source": "automatic"})
         try:
             import numpy as np
-            mcf_value = np.asarray(config_module.get_mcf(ring), dtype=float)
+            mcf_value = np.asarray(_resolve_momentum_compaction(config_module, ring), dtype=float)
             if mcf_value.size != 1 or not np.isfinite(mcf_value).all():
                 raise ValueError("momentum compaction factor must be a finite scalar")
             log(f"Momentum compaction source: {mcf_cfg.get('source', 'automatic')}")
@@ -262,9 +264,13 @@ def run_loco_request(
                 )
             kwargs["svd_selection_callback"] = svd_selection_callback
         requested_svd_plot=bool(request.backend_mapping.get("LOCOOptions", {}).get("show_svd_plot", False))
-        if bool(options.get("save_jacobians", False) or requested_svd_plot):
-            kwargs["jacobian_callback"] = lambda matrix, iteration: jacobian_capture.update(
-                matrix=matrix, iteration=int(iteration)
+        retain_full_jacobian = bool(options.get("save_jacobians", False))
+        if bool(retain_full_jacobian or requested_svd_plot):
+            kwargs["jacobian_callback"] = lambda matrix, iteration: _capture_jacobian_diagnostics(
+                jacobian_capture,
+                matrix,
+                iteration=int(iteration),
+                retain_matrix=retain_full_jacobian,
             )
         kwargs["output_dir"] = str(results_dir)
         (results_dir / "run_request.json").write_text(
@@ -422,6 +428,44 @@ def _make_gui_config(mapping: dict[str, Any]):
     }
     config_module.loco_options = config_module.LOCOOptions(**legacy_options)
     return config_module
+
+
+def _resolve_momentum_compaction(config_module, ring):
+    """Evaluate momentum compaction on the 4D lattice required by AT.
+
+    LOCO projects may legitimately load a 6D lattice containing active RF
+    cavities.  Accelerator Toolbox ``get_mcf`` requires a 4D lattice, so use a
+    temporary copy for this model-derived scalar.  The lattice passed to the
+    fit is deliberately left untouched.
+    """
+
+    model = ring
+    if bool(getattr(ring, "is_6d", False)):
+        try:
+            model = ring.disable_6d(copy=True)
+        except TypeError:
+            model = copy.deepcopy(ring)
+            model.disable_6d()
+    return config_module.get_mcf(model)
+
+
+def _prepare_loco_lattice(ring):
+    """Return the 4D working lattice required by the LOCO calculation path.
+
+    A MATLAB lattice may load with active cavities and 6D pass methods.  The
+    established pyLOCO examples, including historical EBS Case C, explicitly
+    disable 6D before computing optics, closed orbits and response matrices.
+    Work on a copy so loading/running a project never mutates its source model.
+    """
+
+    if not bool(getattr(ring, "is_6d", False)):
+        return ring
+    try:
+        prepared = ring.disable_6d(copy=True)
+    except TypeError:
+        prepared = copy.deepcopy(ring)
+        prepared.disable_6d()
+    return prepared
 
 
 def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -715,18 +759,33 @@ def _validate_physical_fit_selections(ring, indices, selections, options, fit_cf
     """Validate physical magnet classes and explicit group membership before fitting."""
     classes = (
         ("normal quadrupole", indices.get("quads_ords"), "normal_quadrupole_groups",
-         bool(getattr(fit_cfg, "individuals", True))),
+         bool(getattr(fit_cfg, "individuals", True)),
+         str(getattr(fit_cfg, "quads_attr", "PolynomB")),
+         getattr(fit_cfg, "quads_attr_index", 1)),
         ("skew quadrupole", indices.get("skew_ords"), "skew_quadrupole_groups",
-         bool(options.get("skew_individuals", True))),
+         bool(options.get("skew_individuals", True)),
+         str(getattr(fit_cfg, "skew_attr", "PolynomA")),
+         getattr(fit_cfg, "skew_attr_index", 1)),
         ("quadrupole tilt", indices.get("quads_tilt_ind"), "quadrupole_tilt_groups",
-         bool(options.get("tilt_individuals", True))),
+         bool(options.get("tilt_individuals", True)), None, None),
     )
-    for label, raw_ordinals, group_key, individual in classes:
+    for label, raw_ordinals, group_key, individual, attribute, component in classes:
         ordinals = [] if raw_ordinals is None else [int(value) for value in raw_ordinals]
         for ordinal in ordinals:
-            if "quadrupole" not in type(ring[ordinal]).__name__.lower():
+            element = ring[ordinal]
+            if label == "quadrupole tilt":
+                valid = "quadrupole" in type(element).__name__.lower()
+                expected = "a Quadrupole"
+            else:
+                values = getattr(element, attribute, None)
+                try:
+                    valid = values is not None and component is not None and len(values) > int(component)
+                except TypeError:
+                    valid = False
+                expected = f"an element with {attribute}[{component}]"
+            if not valid:
                 raise ValueError(
-                    f"Selected {label} ordinal {ordinal} is a {type(ring[ordinal]).__name__}, not a Quadrupole."
+                    f"Selected {label} ordinal {ordinal} is a {type(element).__name__}, not {expected}."
                 )
         if not individual:
             validate_element_groups(selections.get(group_key), ordinals, len(ring), label)
@@ -996,13 +1055,39 @@ def _save_jacobian(results_dir, capture, blocks, request, indices):
     return [artifact, metadata_path]
 
 
+def _capture_jacobian_diagnostics(capture, matrix, *, iteration, retain_matrix):
+    """Keep only the Jacobian data required by the selected output option.
+
+    A full EBS Jacobian can occupy hundreds of megabytes.  The SVD plot needs
+    only its spectrum, so retain the much smaller Gram matrix unless the user
+    explicitly requested the complete Jacobian artifact.
+    """
+    import numpy as np
+
+    values = np.asarray(matrix, dtype=float)
+    capture.clear()
+    capture["iteration"] = int(iteration)
+    if retain_matrix:
+        # Saving is deferred until the completed run, so preserve an
+        # independent snapshot only for this explicit output request.
+        capture["matrix"] = values.copy()
+    else:
+        capture["gram"] = values.T @ values
+
+
 def _append_svd_spectrum(results_dir, capture):
     """Persist the exact final-Jacobian spectrum requested by the FIT UI."""
-    if not capture or capture.get("matrix") is None:return None
+    if not capture:return None
     import numpy as np
+    if capture.get("matrix") is not None:
+        singular_values=np.linalg.svd(np.asarray(capture["matrix"],float),compute_uv=False)
+    elif capture.get("gram") is not None:
+        eigenvalues=np.linalg.eigvalsh(np.asarray(capture["gram"],float))
+        singular_values=np.sqrt(np.clip(eigenvalues,0.0,None))[::-1]
+    else:return None
     path=Path(results_dir)/"loco_results.npz"
     with np.load(path,allow_pickle=True) as archive:data={key:archive[key] for key in archive.files}
-    data["singular_values"]=np.linalg.svd(np.asarray(capture["matrix"],float),compute_uv=False)
+    data["singular_values"]=singular_values
     np.savez_compressed(path,**data)
     return path
 
@@ -1218,20 +1303,26 @@ def _save_optics_results(
         if reference_dispersion.shape[0] != len(ords) or fitted_dispersion.shape[0] != len(ords):
             raise ValueError("lattice dispersion and BPM mapping lengths differ")
         conversion = -float(momentum_compaction) * float(rf_frequency) / float(rf_step)
+        if conversion == 0:
+            raise ValueError("dispersion conversion factor is zero")
         arrays.update({
             "dispersion_diagnostic_available": np.asarray(True),
-            "dispersion_measurement_convention": np.asarray("rf_orbit_difference_converted_by_-alpha_c_f_rf_over_delta_f"),
+            "dispersion_measurement_convention": np.asarray("rf_orbit_difference_for_saved_rf_step"),
+            "dispersion_display_quantity": np.asarray("rf_orbit_response"),
             "dispersion_rf_step_hz": np.asarray(float(rf_step)),
             "dispersion_rf_frequency_hz": np.asarray(float(rf_frequency)),
             "dispersion_momentum_compaction": np.asarray(float(momentum_compaction)),
             "dispersion_bpm_ords": ords,
             "dispersion_s": np.asarray(reference_ring.get_s_pos(ords), dtype=float),
-            "dispersion_x_measured": np.asarray(eta_x, dtype=float) * conversion,
-            "dispersion_y_measured": np.asarray(eta_y, dtype=float) * conversion,
-            "dispersion_x_initial": reference_dispersion[:, 0],
-            "dispersion_y_initial": reference_dispersion[:, 2],
-            "dispersion_x_fitted": fitted_dispersion[:, 0],
-            "dispersion_y_fitted": fitted_dispersion[:, 2],
+            # The measured arrays and historical Case-C plots are RF-induced
+            # orbit differences for the saved frequency step. Convert the
+            # lattice's physical dispersion into that same observable.
+            "dispersion_x_measured": np.asarray(eta_x, dtype=float),
+            "dispersion_y_measured": np.asarray(eta_y, dtype=float),
+            "dispersion_x_initial": reference_dispersion[:, 0] / conversion,
+            "dispersion_y_initial": reference_dispersion[:, 2] / conversion,
+            "dispersion_x_fitted": fitted_dispersion[:, 0] / conversion,
+            "dispersion_y_fitted": fitted_dispersion[:, 2] / conversion,
         })
     except Exception as exc:
         arrays["dispersion_unavailable_reason"] = np.asarray(str(exc))

@@ -118,9 +118,9 @@ def build_constraints(
         )
 
     quad_weights = _weights(
-        q,
-        n_quad,
-        "quadrupole family",
+    q,
+    n_quad,
+    "quadrupole family",
     )
 
     quad_mask = _mask(

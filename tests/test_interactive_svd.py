@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog
 
 from pyLOCO.gui.main_window import SVDSelectionDialog
-from pyLOCO.gui.backend import _append_svd_spectrum
+from pyLOCO.gui.backend import _append_svd_spectrum, _capture_jacobian_diagnostics
 from pyLOCO.pyloco import _svd_select_indices, solve_step_gn
 
 
@@ -83,5 +83,21 @@ def test_requested_svd_plot_persists_exact_final_jacobian_spectrum(tmp_path):
     np.savez_compressed(path,fit_results=np.zeros((1,2)))
     matrix=np.diag([4.0,2.0,1.0])
     assert _append_svd_spectrum(tmp_path,{"matrix":matrix})==path
+    with np.load(path,allow_pickle=True) as result:
+        np.testing.assert_allclose(result["singular_values"],[4.0,2.0,1.0])
+
+
+def test_svd_plot_capture_does_not_retain_full_jacobian(tmp_path):
+    path=tmp_path/"loco_results.npz"
+    np.savez_compressed(path,fit_results=np.zeros((1,2)))
+    matrix=np.diag([4.0,2.0,1.0])
+    capture={}
+    _capture_jacobian_diagnostics(
+        capture,matrix,iteration=2,retain_matrix=False
+    )
+    assert "matrix" not in capture
+    np.testing.assert_allclose(capture["gram"],matrix.T@matrix)
+    assert capture["iteration"]==2
+    assert _append_svd_spectrum(tmp_path,capture)==path
     with np.load(path,allow_pickle=True) as result:
         np.testing.assert_allclose(result["singular_values"],[4.0,2.0,1.0])

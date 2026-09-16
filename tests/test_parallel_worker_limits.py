@@ -33,3 +33,14 @@ def test_invalid_slurm_value_falls_back_to_visible_cpus(monkeypatch):
         task_count=20,
         environ={"SLURM_CPUS_PER_TASK": "unknown"},
     ) == 12
+
+
+def test_worker_count_respects_desktop_application_limit(monkeypatch):
+    monkeypatch.setattr(parallel.multiprocessing, "cpu_count", lambda: 12)
+    monkeypatch.setattr(
+        parallel.os, "sched_getaffinity", lambda _pid: set(range(12)), raising=False
+    )
+    assert parallel.available_worker_count(
+        task_count=398,
+        environ={"PYLOCO_MAX_WORKERS": "4"},
+    ) == 4

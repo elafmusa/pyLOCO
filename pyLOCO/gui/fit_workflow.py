@@ -136,6 +136,61 @@ def file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _rebase_workflow_optics(results_dir: str | Path, workflow_lattice: str | Path) -> bool:
+    """Make stage optics relative to the lattice that started the workflow.
+
+    The single-stage backend correctly uses the resumed checkpoint as its
+    local reference.  For a multi-stage FIT, however, the final scientific
+    result must be compared with the original workflow input, as in the
+    historical LOCO notebooks.
+    """
+    import at
+    import numpy as np
+
+    root = Path(results_dir)
+    optics_path = root / "optics_results.npz"
+    fitted_path = root / "final_lattice.mat"
+    if not fitted_path.is_file():
+        fitted_path = root / "ring_pyloco.mat"
+    if not optics_path.is_file() or not fitted_path.is_file():
+        return False
+
+    with np.load(optics_path, allow_pickle=False) as archive:
+        arrays = {key: np.array(archive[key]) for key in archive.files}
+    reference = at.load_lattice(str(workflow_lattice))
+    fitted = at.load_lattice(str(fitted_path))
+    reference.disable_6d(); fitted.disable_6d()
+    if len(reference) != len(fitted):
+        raise ValueError("Workflow input and fitted lattices have different element counts.")
+    refpts = np.arange(len(reference), dtype=np.uint32)
+    beta_ref = np.asarray(reference.get_optics(refpts=refpts)[2].beta, dtype=float)
+    beta_fit = np.asarray(fitted.get_optics(refpts=refpts)[2].beta, dtype=float)
+    arrays.update({
+        "reference_kind": np.asarray("workflow_input_lattice"),
+        "s": np.asarray(reference.get_s_pos(refpts), dtype=float),
+        "beta_x_reference": beta_ref[:, 0], "beta_y_reference": beta_ref[:, 1],
+        "beta_x_fitted": beta_fit[:, 0], "beta_y_fitted": beta_fit[:, 1],
+        "beta_beating_x": np.divide(beta_fit[:, 0] - beta_ref[:, 0], beta_ref[:, 0],
+                                     out=np.full(len(reference), np.nan), where=beta_ref[:, 0] != 0),
+        "beta_beating_y": np.divide(beta_fit[:, 1] - beta_ref[:, 1], beta_ref[:, 1],
+                                     out=np.full(len(reference), np.nan), where=beta_ref[:, 1] != 0),
+    })
+    bpm_ords = arrays.get("dispersion_bpm_ords")
+    if bpm_ords is not None:
+        bpm_ords = np.asarray(bpm_ords, dtype=np.uint32)
+        dispersion = np.asarray(reference.get_optics(refpts=bpm_ords)[2].dispersion, dtype=float)
+        conversion = (
+            -float(arrays["dispersion_momentum_compaction"])
+            * float(arrays["dispersion_rf_frequency_hz"])
+            / float(arrays["dispersion_rf_step_hz"])
+        )
+        arrays["dispersion_s"] = np.asarray(reference.get_s_pos(bpm_ords), dtype=float)
+        arrays["dispersion_x_initial"] = dispersion[:, 0] / conversion
+        arrays["dispersion_y_initial"] = dispersion[:, 2] / conversion
+    np.savez_compressed(optics_path, **arrays)
+    return True
+
+
 def preflight_recipe(recipe: FitRecipe, *, lattice_path: str, measurement_identity: dict[str, Any],
                      lattice_element_names: list[str] | None = None) -> dict[str, Any]:
     """Validate identity/order and explicitly report any stable-name remapping."""
@@ -180,13 +235,18 @@ def execute_workflow(base_request, recipe: FitRecipe, *, session_path: str | Pat
     session_target = Path(session_path).expanduser().resolve()
     previous: StageCheckpoint | None = session.checkpoints[-1] if session.checkpoints else None
     resume_after_stage = max(resume_after_stage, len(session.checkpoints) - 1)
+    stage_count = len(recipe.stages)
     for index, stage in enumerate(recipe.stages):
         if index <= resume_after_stage:
             continue
         request = copy.deepcopy(base_request)
+        base_output = copy.deepcopy(request.backend_mapping.get("Output", {}))
         request.backend_mapping = copy.deepcopy(
             stage.configuration.get("backend_mapping", stage.configuration)
         )
+        stage_output = request.backend_mapping.setdefault("Output", {})
+        if not stage_output.get("directory"):
+            stage_output["directory"] = base_output.get("directory")
         request.project_name = f"{base_request.project_name} — {stage.name}"
         resume_dir = stage.saved_result if stage.start_from == "saved_result" else (
             previous.results_dir if stage.start_from == "previous_stage" and previous else ""
@@ -196,10 +256,32 @@ def execute_workflow(base_request, recipe: FitRecipe, *, session_path: str | Pat
             "ring_file": "ring_pyloco.mat", "fit_dict_file": "fit_dict.pkl",
             "fit_results_file": "fit_results.npy",
         }
-        if progress_callback:
-            progress_callback({"workflow_stage": index + 1, "workflow_stages": len(recipe.stages),
-                               "stage_name": stage.name})
-        result = runner(request, log_callback=log_callback, progress_callback=progress_callback)
+        request.backend_mapping["Workflow"] = {
+            "stage": index + 1, "stages": stage_count,
+            "reference_lattice": base_request.lattice_path,
+        }
+        def stage_progress(event, *, _index=index, _stage=stage):
+            if progress_callback is None:
+                return
+            detailed = copy.deepcopy(event or {})
+            stage_fraction = min(1.0, max(0.0, float(detailed.get("workflow_fraction", 0.0))))
+            detailed.update({
+                "workflow_stage": _index + 1,
+                "workflow_stages": stage_count,
+                "stage_name": _stage.name,
+                "stage_fraction": stage_fraction,
+                "workflow_fraction": (_index + stage_fraction) / stage_count,
+            })
+            progress_callback(detailed)
+
+        stage_progress({"phase": "stage_start", "message": f"Starting {stage.name}.",
+                        "workflow_fraction": 0.0})
+        result = runner(request, log_callback=log_callback, progress_callback=stage_progress)
+        try:
+            _rebase_workflow_optics(result.results_dir, base_request.lattice_path)
+        except Exception as exc:
+            if log_callback is not None:
+                log_callback(f"Warning: could not rebase workflow optics to the original lattice: {exc}")
         checkpoint = StageCheckpoint(index, stage.name, result.results_dir, "ring_pyloco.mat",
                                      "fit_dict.pkl", "fit_results.npy",
                                      copy.deepcopy(stage.configuration), identity)

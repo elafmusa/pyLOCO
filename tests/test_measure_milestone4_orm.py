@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from pyLOCO.control_system import MockAdapter
@@ -124,7 +125,7 @@ def test_schema_session_and_main_importer(app,tmp_path):
     assert "Original K0:" in transaction and "requested K+/K−:" in transaction
     assert "Readback K+:" in transaction and "Final restore K− → K0:" in transaction
     assert "orbit(+) − orbit(−)" in transaction
-    assert window.orm_restoration_status.text()=="All correctors restored between kicks and finally: ✓ YES"
+    assert window.orm_restoration_status.text()=="✓ ALL CORRECTORS RESTORED"
     assert "Intermediate restore K+ → K0" in transaction
     assert "Final orbit return:" in transaction and "diagnostic-only" in transaction
     assert "Matrix shape: 8 × 5" in window.orm_measurement_summary.text()
@@ -133,17 +134,23 @@ def test_schema_session_and_main_importer(app,tmp_path):
     window.orm_view_mode.setCurrentIndex(window.orm_view_mode.findData("3d")); app.processEvents(); assert window.x_plot.figure.axes[0].name=="3d"
     window._set_completed_result_view(True)
     assert window.live_plot.isHidden() and window.plan_group.isHidden()
-    assert not window.preview_toggle.isHidden() and window.preview_toggle.text()=="Show acquisition preview"
+    # The compact completed view no longer exposes a second nested preview
+    # toggle; acquisition preview remains in the outer scrollable workspace.
+    assert window.preview_toggle.isHidden()
     window.preview_toggle.click(); app.processEvents()
-    assert not window.live_plot.isHidden() and window.preview_toggle.text()=="Hide acquisition preview"
+    assert not window.live_plot.isHidden() and window.preview_toggle.text()=="Hide live preview"
     loaded=_load_measurements({"orm":str(window.saved_measurement_path)}); np.testing.assert_allclose(loaded["orm"],result.response_matrix)
-    session=load_session(manifest,validate_files=False); assert {entry.role for entry in session.files}=={"orm","bpm_noise","dispersion"}; assert session.missing_roles==(); window.close()
+    # A newly opened Measure window owns a fresh logical session and must not
+    # merge an unrelated manifest merely because the output directory matches.
+    session=load_session(manifest,validate_files=False); assert {entry.role for entry in session.files}=={"orm"}; assert set(session.missing_roles)=={"bpm_noise","dispersion"}; window.close()
 
 def test_orm_gui_context_preview_kicks_and_project_roundtrip(app,tmp_path):
     window=MeasureMainWindow(); window.measurement_type.setCurrentIndex(2); app.processEvents()
     assert not window.orm_config_group.isHidden() and not window.orm_corrector_group.isHidden(); assert window.start_button.text()=="Start ORM measurement"; assert window.kick_preview.rowCount()==12
     assert window.results_tabs.tabText(0)=="Full ORM" and window.results_tabs.currentIndex()==0
     assert [window.results_tabs.tabText(index) for index in range(5)]==["Full ORM","Direct H→X","Direct V→Y","Coupling V→X","Coupling H→Y"]
+    assert window.results_tabs.tabBar().elideMode()==Qt.ElideNone
+    assert window.results_tabs.tabToolTip(6)=="Measured − Model"
     window.corrector_selection_widgets["hcor"]["exclusion"].setText("1"); window._refresh_corrector_preview("hcor"); assert len(window.selected_hcorrectors)==5
     kicks=tmp_path/"kicks.npz"; np.savez(kicks,horizontal=np.arange(1,6)*10e-6,vertical=np.arange(1,7)*20e-6); window.orm_kick_mode.setCurrentIndex(1); window.orm_kick_file.setText(str(kicks)); window._update_kick_preview(); assert window.kick_preview.rowCount()==11
     window.orm_direction.setCurrentIndex(2); window.orm_scaled.setChecked(True); project=window._collect_project(); path=tmp_path/"orm.pyloco-measure.json"; save_measure_project(path,project); loaded=load_measure_project(path); assert loaded.orm_direction=="negative" and loaded.orm_scaled and loaded.excluded_hcor_positions=="1"
@@ -172,6 +179,18 @@ def test_measurement_specific_device_selections_and_project_roundtrip(app,tmp_pa
     clone.measurement_type.setCurrentIndex(clone.measurement_type.findData("dispersion")); app.processEvents(); assert len(clone.selected_devices)==30
     clone.measurement_type.setCurrentIndex(clone.measurement_type.findData("bpm_noise")); app.processEvents(); assert len(clone.selected_devices)==20
     window.close(); clone.close()
+
+def test_correctors_chosen_before_orm_are_retained_for_orm(app):
+    bpms,h,v,_,adapter=setup(nbpms=30,nh=8,nv=7)
+    window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v)
+    assert window.measurement_type.currentData()=="bpm_noise"
+    window._select_device_subset("hcor","uniform",5); window._select_device_subset("vcor","uniform",5)
+    expected_h=tuple(device.name for device in window.selected_hcorrectors)
+    expected_v=tuple(device.name for device in window.selected_vcorrectors)
+    window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm")); app.processEvents()
+    assert tuple(device.name for device in window.selected_hcorrectors)==expected_h
+    assert tuple(device.name for device in window.selected_vcorrectors)==expected_v
+    window.close()
 
 def test_generic_selection_helpers_preserve_backend_order(app):
     bpms,h,v,_,adapter=setup(nbpms=21,nh=9,nv=8)

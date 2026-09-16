@@ -13,6 +13,8 @@ import multiprocessing
 import time
 from itertools import repeat
 
+from .parallel import available_worker_count
+
 __author__='Simone Maria Liuzzo, Andrea Franchi'
 
 def analytic_orm_variation_with_skew_quadrupole(
@@ -25,6 +27,7 @@ def analytic_orm_variation_with_skew_quadrupole(
         thick_steerer=True,
         opt_all_location=None,
         use_mp=False,
+        workers=None,
         cancel_callback=None,
         implementation="vectorized",
         progress_callback=None,
@@ -69,8 +72,9 @@ def analytic_orm_variation_with_skew_quadrupole(
     # loop quadrupoles
     if use_mp:
 
-        n_cpu = multiprocessing.cpu_count()
-        n_processes = min(n_cpu, len(ind_skews))
+        n_processes = available_worker_count(
+            requested=workers, task_count=len(ind_skews)
+        )
         skew_chunks = [
             chunk.tolist()
             for chunk in np.array_split(np.asarray(ind_skews, dtype=int), n_processes)

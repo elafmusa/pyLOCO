@@ -17,8 +17,9 @@ def build_application(argv: Sequence[str] | None = None) -> QApplication:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(list(sys.argv if argv is None else argv))
     app.setApplicationName("pyLOCO Measure")
+    app.setApplicationDisplayName("pyLOCO Measure")
     app.setOrganizationName("pyLOCO")
-    app.setWindowIcon(application_icon())
+    app.setWindowIcon(application_icon("measure"))
     return app
 
 

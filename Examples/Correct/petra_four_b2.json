@@ -1,0 +1,72 @@
+{
+  "purpose": "synthetic_validation",
+  "description": "Four small mixed-sign physical corrections, NOT a real FIT result",
+  "profile": "petra3_realistic",
+  "lattice_sha256": "e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512",
+  "items": [
+    {
+      "physical_delta": 0.000001,
+      "mapping": {
+        "control": "Q0K2_7_1/B2",
+        "common_name": "Q0K2_SWR_0",
+        "ordinal": 1,
+        "component": "B2",
+        "unit": "m^-2",
+        "fit_identity": {
+          "source": "Synthetic four-B2 validation on official p3_v24.mat",
+          "name": "Q0K2_SWR_0",
+          "ordinal": 1,
+          "lattice_sha256": "e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512"
+        }
+      }
+    },
+    {
+      "physical_delta": -0.0000015,
+      "mapping": {
+        "control": "QF_95_105/B2",
+        "common_name": "QF_NL_148",
+        "ordinal": 870,
+        "component": "B2",
+        "unit": "m^-2",
+        "fit_identity": {
+          "source": "Synthetic four-B2 validation on official p3_v24.mat",
+          "name": "QF_NL_148",
+          "ordinal": 870,
+          "lattice_sha256": "e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512"
+        }
+      }
+    },
+    {
+      "physical_delta": 8e-7,
+      "mapping": {
+        "control": "QB4_NOR_89_288_209/B2",
+        "common_name": "QB4_NOR_89",
+        "ordinal": 1805,
+        "component": "B2",
+        "unit": "m^-2",
+        "fit_identity": {
+          "source": "Synthetic four-B2 validation on official p3_v24.mat",
+          "name": "QB4_NOR_89",
+          "ordinal": 1805,
+          "lattice_sha256": "e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512"
+        }
+      }
+    },
+    {
+      "physical_delta": -0.0000012,
+      "mapping": {
+        "control": "QF_105_313/B2",
+        "common_name": "QF_OR_148",
+        "ordinal": 2821,
+        "component": "B2",
+        "unit": "m^-2",
+        "fit_identity": {
+          "source": "Synthetic four-B2 validation on official p3_v24.mat",
+          "name": "QF_OR_148",
+          "ordinal": 2821,
+          "lattice_sha256": "e1dbab6e5a293adf73c8987c9bdc96f860adb6fb8becbad2d8e3b6f2a7952512"
+        }
+      }
+    }
+  ]
+}

@@ -90,6 +90,7 @@ QHeaderView::section { background: #3C415C; color: #F5F5F5; border: 0; border-ri
 QGroupBox, QWidget#placeholderPageCard, QWidget#dashboardCard { background: #34374E; border: 1px solid #4B506B; color: #F5F5F5; }
 QGroupBox::title, QLabel#dashboardCardTitle { color: #D7C6FF; }
 QLabel { color: #F5F5F5; }
+QLabel#fitReferenceModelCard { background: #2B2D42; border: 1px solid #7E57C2; border-radius: 10px; color: #F5F5F5; }
 QLabel#statusPill { background: #3C415C; border: 1px solid #7E57C2; border-radius: 11px; color: #EFE7FF; font-weight: 700; padding: 5px 12px; }
 QLabel#placeholderDescription, QLabel#dashboardCardText { color: #D0D4E0; }
 QLabel#validationOk { color: #6EE7B7; font-weight: 700; }
@@ -142,6 +143,7 @@ QHeaderView::section { background: #F3F4F8; color: #222436; border: 0; border-ri
 QGroupBox, QWidget#placeholderPageCard, QWidget#dashboardCard { background: #F7F8FB; border: 1px solid #D8DCE8; color: #222436; }
 QGroupBox::title, QLabel#dashboardCardTitle { color: #5E3EA1; }
 QLabel { color: #222436; }
+QLabel#fitReferenceModelCard { background: #FFFFFF; border: 1px solid #B39DDB; border-radius: 10px; color: #222436; }
 QLabel#statusPill { background: #F0EAFB; border: 1px solid #B39DDB; border-radius: 11px; color: #4B2E83; font-weight: 700; padding: 5px 12px; }
 QLabel#placeholderDescription, QLabel#dashboardCardText { color: #5F687A; }
 QLabel#validationOk { color: #047857; font-weight: 700; }

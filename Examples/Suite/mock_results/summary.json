@@ -1,0 +1,9 @@
+{
+  "completed_utc": "2026-08-29T12:05:00+00:00",
+  "initial_chi2": 1.0,
+  "chi2_history": [
+    0.25
+  ],
+  "blocks": {},
+  "runtime_seconds": 0.1
+}

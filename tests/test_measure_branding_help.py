@@ -48,7 +48,7 @@ def test_about_dialog_reuses_canonical_project_information(app):
     window = MeasureMainWindow(devices=default_mock_devices(2))
     dialog = window._build_about_dialog()
     text = _dialog_text(dialog)
-    assert "measurement-acquisition companion to pyLOCO" in text
+    assert "records the machine data needed for LOCO analysis" in text
     assert "fits measured accelerator response data" in text
     assert "consumed directly by pyLOCO" in text
     assert f"Installed pyLOCO version {__version__}" in text

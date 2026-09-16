@@ -693,15 +693,26 @@ def compute_jacobian(
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    analytical_formula_use_mp=None,
+    analytical_formula_workers=None,
+    analytical_dispersion_use_mp=None,
+    analytical_dispersion_workers=None,
     analytical_implementation="vectorized",
     analytical_dispersion_calculator=None,
+    analytical_dispersion_worker="legacy_full_orm",
+    analytical_dispersion_difference="central",
     analytical_thick_skew=True,
     analytical_skew_thick_steerers=False,
     analytical_skew_verbose=False,
     analytical_skew_use_mp=False,
+    skew_analytical_formula_use_mp=None,
+    skew_analytical_formula_workers=None,
+    skew_analytical_dispersion_use_mp=None,
+    skew_analytical_dispersion_workers=None,
     skew_analytical_implementation="vectorized",
     skew_analytical_dispersion_calculator=None,
     skew_analytical_dispersion_worker="legacy_full_orm",
+    skew_analytical_dispersion_difference="central",
     response_matrix_calculator="Linear",
     calculator_trace_callback=None,
     cancel_callback=None,
@@ -738,6 +749,43 @@ def compute_jacobian(
     skew_analytical_dispersion_worker = _normalize_skew_dispersion_worker(
         skew_analytical_dispersion_worker
     )
+    analytical_dispersion_worker = _normalize_skew_dispersion_worker(
+        analytical_dispersion_worker
+    )
+    analytical_dispersion_difference = _normalize_dispersion_difference(
+        analytical_dispersion_difference
+    )
+    skew_analytical_dispersion_difference = _normalize_dispersion_difference(
+        skew_analytical_dispersion_difference
+    )
+    normal_formula_mp = analytical_use_mp if analytical_formula_use_mp is None else bool(analytical_formula_use_mp)
+    normal_dispersion_mp = analytical_use_mp if analytical_dispersion_use_mp is None else bool(analytical_dispersion_use_mp)
+    skew_formula_mp = analytical_skew_use_mp if skew_analytical_formula_use_mp is None else bool(skew_analytical_formula_use_mp)
+    skew_dispersion_mp = analytical_skew_use_mp if skew_analytical_dispersion_use_mp is None else bool(skew_analytical_dispersion_use_mp)
+    normal_dispersion_diagnostics = []
+    skew_dispersion_diagnostics = []
+    normal_timing_events = []
+    skew_timing_events = []
+
+    def emit_dispersion_diagnostics(storage, callback, event):
+        storage.append(dict(event))
+        if callback is not None:
+            callback(event)
+
+    def emit_timing(storage, callback, event):
+        storage.append(dict(event))
+        if callback is not None:
+            callback(event)
+
+    emit_normal_timing = lambda event: emit_timing(
+        normal_timing_events, analytical_timing_callback, event
+    )
+    emit_skew_timing = lambda event: emit_timing(
+        skew_timing_events, skew_analytical_timing_callback, event
+    )
+
+    def latest_timing(events, key, default=0):
+        return next((event[key] for event in reversed(events) if key in event), default)
 
     nCOR = nHorCOR + nVerCOR
     C_inv = np.linalg.inv(C)
@@ -846,6 +894,7 @@ def compute_jacobian(
                     orm_calculator=orm_calculator,
                     cancel_callback=cancel_callback,
                     iteration=iteration,
+                    progress_callback=analytical_progress_callback,
                 )
 
 
@@ -928,11 +977,12 @@ def compute_jacobian(
                     analytical_thick_quadrupole=analytical_thick_quadrupole,
                     analytical_thick_steerers=analytical_thick_steerers,
                     analytical_verbose=analytical_verbose,
-                    analytical_use_mp=analytical_use_mp,
+                    analytical_use_mp=normal_formula_mp,
+                    analytical_workers=analytical_formula_workers,
                     analytical_implementation=analytical_implementation,
                     cancel_callback=cancel_callback,
                     progress_callback=analytical_progress_callback,
-                    timing_callback=analytical_timing_callback,
+                    timing_callback=emit_normal_timing,
                     reserve_dispersion_column=includeDispersion,
                 )
 
@@ -997,16 +1047,24 @@ def compute_jacobian(
                         fit_cfg=fit_cfg,
                         orm_calculator=analytical_dispersion_calculator,
                         cancel_callback=cancel_callback,
-                        use_mp=analytical_use_mp,
+                        use_mp=normal_dispersion_mp,
+                        workers=analytical_dispersion_workers,
                         progress_callback=analytical_progress_callback,
+                        mp_worker_mode=analytical_dispersion_worker,
+                        diagnostics_callback=lambda event: emit_dispersion_diagnostics(
+                            normal_dispersion_diagnostics,
+                            emit_normal_timing, event,
+                        ),
+                        difference=analytical_dispersion_difference,
                     )
-                    if analytical_timing_callback is not None:
-                        analytical_timing_callback({
+                    emit_normal_timing({
                             "dispersion_derivative_seconds": (
                                 time.perf_counter() - dispersion_started
                             ),
                             "dispersion_output_bytes": int(J_eta.nbytes),
-                            "dispersion_multiprocessing": bool(analytical_use_mp),
+                            "dispersion_multiprocessing": bool(normal_dispersion_mp),
+                            "analytical_dispersion_worker": analytical_dispersion_worker,
+                            "analytical_dispersion_difference": analytical_dispersion_difference,
                             "analytical_dispersion_calculator": (
                                 analytical_dispersion_calculator
                             ),
@@ -1017,10 +1075,10 @@ def compute_jacobian(
                                 dispersion_reference_reused
                             ),
                             "dispersion_worker_count": (
-                                available_worker_count(task_count=len(quads_ind))
-                                if analytical_use_mp else 1
+                                available_worker_count(requested=analytical_dispersion_workers, task_count=len(quads_ind))
+                                if normal_dispersion_mp else 1
                             ),
-                        })
+                    })
 
 
                     # ----------------------------------------------------
@@ -1183,6 +1241,27 @@ def compute_jacobian(
                 "analytical_thick_steerers": analytical_thick_steerers,
                 "analytical_verbose": analytical_verbose,
                 "analytical_use_mp": analytical_use_mp,
+                "analytical_formula_use_mp": normal_formula_mp,
+                "analytical_formula_worker_count": (
+                    available_worker_count(requested=analytical_formula_workers, task_count=len(quads_ind))
+                    if normal_formula_mp else 1
+                ),
+                "analytical_dispersion_use_mp": normal_dispersion_mp,
+                "analytical_dispersion_worker_count": (
+                    available_worker_count(requested=analytical_dispersion_workers, task_count=len(quads_ind))
+                    if normal_dispersion_mp else 1
+                ),
+                "analytical_dispersion_worker": analytical_dispersion_worker,
+                "analytical_dispersion_difference": analytical_dispersion_difference,
+                "analytical_formula_seconds": float(latest_timing(normal_timing_events, "derivative_seconds", 0.0)),
+                "analytical_dispersion_seconds": float(latest_timing(normal_timing_events, "dispersion_derivative_seconds", 0.0)),
+                "analytical_optics_seconds": float(latest_timing(normal_timing_events, "optics_preparation_seconds", 0.0)),
+                "analytical_assembly_seconds": float(latest_timing(normal_timing_events, "assembly_and_calibration_seconds", 0.0)),
+                "analytical_dispersion_reference_backend": analytical_dispersion_calculator,
+                "analytical_dispersion_reference_seconds": float(latest_timing(normal_timing_events, "dispersion_reference_seconds", 0.0)),
+                "analytical_dispersion_reference_reused": bool(latest_timing(normal_timing_events, "dispersion_reference_reused", False)),
+                "analytical_result_bytes": int(J_quad.nbytes),
+                "analytical_dispersion_worker_payload_bytes": int(latest_timing(normal_timing_events, "dispersion_worker_payload_bytes", 0)),
                 "analytical_worker_count": (
                     available_worker_count(task_count=len(quads_ind))
                     if analytical_use_mp else 1
@@ -1196,10 +1275,18 @@ def compute_jacobian(
                     else "not_applicable"
                 ),
             })
+                if delta is not None:
+                    f.create_dataset("finite_difference_steps", data=np.asarray(delta))
+                normal_adaptive = next((
+                    event.get("adaptive_step_evaluation_counts", [])
+                    for event in reversed(normal_dispersion_diagnostics)
+                    if "adaptive_step_evaluation_counts" in event
+                ), [])
+                f.attrs["adaptive_step_evaluation_counts"] = json.dumps(normal_adaptive)
 
             print(f"[Jacobian] Saved normal-quadrupole Jacobian to {J_path}")
-            if analytical_timing_callback is not None and method == "analytical":
-                analytical_timing_callback({
+            if method == "analytical":
+                emit_normal_timing({
                     "hdf5_save_seconds": time.perf_counter() - save_started,
                     "hdf5_path": str(J_path),
                     "hdf5_bytes": int(J_path.stat().st_size),
@@ -1259,6 +1346,7 @@ def compute_jacobian(
                     orm_calculator=response_matrix_calculator,
                     cancel_callback=cancel_callback,
                     iteration=iteration,
+                    progress_callback=analytical_progress_callback,
                 )
             elif skew_method == "analytical":
                 C_model_orm = C_model[:, :-1] if includeDispersion else C_model
@@ -1274,11 +1362,12 @@ def compute_jacobian(
                     analytical_thick_skew=analytical_thick_skew,
                     analytical_thick_steerers=analytical_skew_thick_steerers,
                     analytical_verbose=analytical_skew_verbose,
-                    analytical_use_mp=analytical_skew_use_mp,
+                    analytical_use_mp=skew_formula_mp,
+                    analytical_workers=skew_analytical_formula_workers,
                     skew_analytical_implementation=skew_analytical_implementation,
                     cancel_callback=cancel_callback,
                     progress_callback=analytical_progress_callback,
-                    timing_callback=skew_analytical_timing_callback,
+                    timing_callback=emit_skew_timing,
                     reserve_dispersion_column=includeDispersion,
                 )
                 if includeDispersion:
@@ -1325,10 +1414,16 @@ def compute_jacobian(
                         auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
                         orm_calculator=skew_analytical_dispersion_calculator,
                         cancel_callback=cancel_callback,
-                        use_mp=analytical_skew_use_mp,
+                        use_mp=skew_dispersion_mp,
+                        workers=skew_analytical_dispersion_workers,
                         progress_callback=analytical_progress_callback,
                         block="skew_quads",
                         mp_worker_mode=skew_analytical_dispersion_worker,
+                        diagnostics_callback=lambda event: emit_dispersion_diagnostics(
+                            skew_dispersion_diagnostics,
+                            emit_skew_timing, event,
+                        ),
+                        difference=skew_analytical_dispersion_difference,
                     )
                     dispersion_assembly_started = time.perf_counter()
                     if J_skew.shape[2] == nHorCOR + nVerCOR + 1:
@@ -1337,16 +1432,16 @@ def compute_jacobian(
                         J_skew = np.concatenate(
                             (J_skew, J_eta[:, :, np.newaxis]), axis=2
                         )
-                    if skew_analytical_timing_callback is not None:
-                        skew_analytical_timing_callback({
+                    emit_skew_timing({
                             "skew_analytical_implementation": skew_analytical_implementation,
                             "numerical_dispersion_seconds": time.perf_counter() - dispersion_started,
                             "dispersion_assembly_seconds": time.perf_counter() - dispersion_assembly_started,
                             "skew_analytical_dispersion_calculator": skew_analytical_dispersion_calculator,
                             "skew_analytical_dispersion_worker": skew_analytical_dispersion_worker,
+                            "skew_analytical_dispersion_difference": skew_analytical_dispersion_difference,
                             "dispersion_reference_seconds": skew_dispersion_reference_seconds,
                             "dispersion_reference_reused": skew_dispersion_reference_reused,
-                        })
+                    })
                     del J_eta
                     print("[Analytical skew Jacobian] Added numerical dispersion derivative")
             else:
@@ -1362,6 +1457,10 @@ def compute_jacobian(
                 with h5py.File(J_path_skew, "w") as f:
                     f.create_dataset("J_skew", data=J_skew)
                     f.create_dataset("C_model", data=C_model)
+                    if delta_skew is not None:
+                        f.create_dataset(
+                            "finite_difference_steps", data=np.asarray(delta_skew)
+                        )
 
                     if isinstance(dkick, (list, tuple)):
                         f.create_dataset(
@@ -1388,6 +1487,16 @@ def compute_jacobian(
                     f.attrs["analytical_thick_skew"] = analytical_thick_skew
                     f.attrs["analytical_thick_steerers"] = analytical_skew_thick_steerers
                     f.attrs["analytical_use_mp"] = analytical_skew_use_mp
+                    f.attrs["skew_analytical_formula_use_mp"] = skew_formula_mp
+                    f.attrs["skew_analytical_formula_worker_count"] = (
+                        available_worker_count(requested=skew_analytical_formula_workers, task_count=len(skew_ind))
+                        if skew_formula_mp else 1
+                    )
+                    f.attrs["skew_analytical_dispersion_use_mp"] = skew_dispersion_mp
+                    f.attrs["skew_analytical_dispersion_worker_count"] = (
+                        available_worker_count(requested=skew_analytical_dispersion_workers, task_count=len(skew_ind))
+                        if skew_dispersion_mp else 1
+                    )
                     f.attrs["skew_analytical_implementation"] = (
                         skew_analytical_implementation
                         if skew_method == "analytical" else "not_applicable"
@@ -1400,6 +1509,16 @@ def compute_jacobian(
                         skew_analytical_dispersion_worker
                         if skew_method == "analytical" and includeDispersion else "not_applicable"
                     )
+                    f.attrs["skew_analytical_dispersion_difference"] = skew_analytical_dispersion_difference
+                    f.attrs["skew_analytical_formula_seconds"] = float(latest_timing(skew_timing_events, "derivative_seconds", 0.0))
+                    f.attrs["skew_analytical_dispersion_seconds"] = float(latest_timing(skew_timing_events, "numerical_dispersion_seconds", 0.0))
+                    f.attrs["skew_analytical_optics_seconds"] = float(latest_timing(skew_timing_events, "optics_preparation_seconds", 0.0))
+                    f.attrs["skew_analytical_assembly_seconds"] = float(latest_timing(skew_timing_events, "assembly_and_calibration_seconds", 0.0))
+                    f.attrs["skew_analytical_dispersion_reference_backend"] = skew_analytical_dispersion_calculator
+                    f.attrs["skew_analytical_dispersion_reference_seconds"] = float(latest_timing(skew_timing_events, "dispersion_reference_seconds", 0.0))
+                    f.attrs["skew_analytical_dispersion_reference_reused"] = bool(latest_timing(skew_timing_events, "dispersion_reference_reused", False))
+                    f.attrs["skew_analytical_result_bytes"] = int(J_skew.nbytes)
+                    f.attrs["skew_analytical_dispersion_worker_payload_bytes"] = int(latest_timing(skew_timing_events, "dispersion_worker_payload_bytes", 0))
                     f.attrs["HCMCoupling"] = json.dumps(
                         np.asarray(HCMCoupling).tolist()
                     )
@@ -1408,9 +1527,14 @@ def compute_jacobian(
                     )
                     f.attrs["date"] = time.ctime()
                     f.attrs["computation_seconds"] = skew_elapsed
-                if (skew_analytical_timing_callback is not None
-                        and skew_method == "analytical"):
-                    skew_analytical_timing_callback({
+                    skew_adaptive = next((
+                        event.get("adaptive_step_evaluation_counts", [])
+                        for event in reversed(skew_dispersion_diagnostics)
+                        if "adaptive_step_evaluation_counts" in event
+                    ), [])
+                    f.attrs["adaptive_step_evaluation_counts"] = json.dumps(skew_adaptive)
+                if skew_method == "analytical":
+                    emit_skew_timing({
                         "skew_analytical_implementation": skew_analytical_implementation,
                         "hdf5_save_seconds": time.perf_counter() - skew_save_started,
                         "hdf5_path": str(J_path_skew),
@@ -1653,6 +1777,7 @@ def calculate_quads_jacobian(
         fit_cfg=None, output_dir="output",
         log_filename="quad_jacobian_logs.txt", processes=None, includeDispersion=False,
         orm_calculator="Linear", cancel_callback=None, iteration=None,
+        progress_callback=None,
 ):
     from pathlib import Path
 
@@ -1705,19 +1830,33 @@ def calculate_quads_jacobian(
             task_count=len(quad_args),
         )
         print(
-            f"[Numerical Jacobian] multiprocessing workers: {worker_count} "
+            f"[Numerical Jacobian] background worker processes: {worker_count} "
             f"for {len(quad_args)} parameters"
         )
+        # Always calculate numerical lattice perturbations outside the GUI
+        # process, even when the desktop safety limit is one worker.  Running
+        # the one-worker case directly in the QThread can monopolize Python's
+        # GIL during AT calls and prevent Qt from painting or delivering the
+        # progress signals.  Individual async jobs also provide a reliable
+        # progress checkpoint after every fitted parameter.
         with ctx.Pool(
                 processes=worker_count,
                 initializer=worker_initializer,
                 initargs=worker_initargs,
                 maxtasksperchild=64,
         ) as pool:
-            pending = pool.starmap_async(generating_quads_response_matrices, quad_args, chunksize=1)
-            results = _wait_for_pool_result(
-                pending, pool, cancel_callback, "numerical quadrupole Jacobian calculation"
-            )
+            pending_jobs = [
+                pool.apply_async(generating_quads_response_matrices, args=args)
+                for args in quad_args
+            ]
+            results = []
+            for position, pending in enumerate(pending_jobs, 1):
+                results.append(_wait_for_pool_result(
+                    pending, pool, cancel_callback,
+                    "numerical quadrupole Jacobian calculation",
+                ))
+                if progress_callback is not None:
+                    progress_callback(block, position, len(pending_jobs))
 
         if results:
             J_blocks, deltas, logs_lists = zip(*results)
@@ -1783,10 +1922,16 @@ def calculate_quads_dispersion_jacobian(
     orm_calculator="Linear",
     cancel_callback=None,
     use_mp=False,
+    workers=None,
     progress_callback=None,
     block="quads",
     mp_worker_mode="legacy_full_orm",
+    difference="central",
+    worker_transport="per_task",
+    worker_chunksize=1,
+    reuse_adaptive_plus_rf=False,
     report=True,
+    diagnostics_callback=None,
 ):
     """
     Calculate only the dispersion-column derivative with respect
@@ -1884,6 +2029,9 @@ def calculate_quads_dispersion_jacobian(
     """
 
     mp_worker_mode = _normalize_skew_dispersion_worker(mp_worker_mode)
+    difference = _normalize_dispersion_difference(difference)
+    if difference == "forward" and use_mp and mp_worker_mode != "rf_only":
+        raise ValueError("Forward analytical dispersion requires mp_worker_mode='rf_only'")
     if use_mp and mp_worker_mode == "rf_only":
         result = _calculate_dispersion_jacobian_rf_only_mp(
             ring=ring, C_model=C_model, dkick=dkick,
@@ -1893,8 +2041,37 @@ def calculate_quads_dispersion_jacobian(
             rf_step=rf_step, CAVords=CAVords,
             auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
             orm_calculator=orm_calculator, cancel_callback=cancel_callback,
-            block=block,
+            block=block, workers=workers, difference=difference,
+            worker_transport=worker_transport,
+            worker_chunksize=worker_chunksize,
+            reuse_adaptive_plus_rf=reuse_adaptive_plus_rf,
         )
+        if diagnostics_callback is not None:
+            worker_diagnostics = getattr(
+                _calculate_dispersion_jacobian_rf_only_mp,
+                "last_diagnostics", {},
+            )
+            diagnostics_callback({
+                "dispersion_worker_type": "rf_only",
+                "dispersion_worker_count": available_worker_count(requested=workers, task_count=len(quads_ind)),
+                "dispersion_worker_payload_bytes": int(result[0].nbytes + result[1].nbytes),
+                "selected_finite_difference_steps": result[1].tolist(),
+                "adaptive_step_evaluation_counts": worker_diagnostics.get(
+                    "adaptive_step_evaluation_counts", []
+                ),
+                "adaptive_step_selection_seconds": worker_diagnostics.get("adaptive_step_selection_seconds", []),
+                "final_plus_rf_seconds": worker_diagnostics.get("final_plus_rf_seconds", []),
+                "final_minus_rf_seconds": worker_diagnostics.get("final_minus_rf_seconds", []),
+                "worker_task_seconds": worker_diagnostics.get("worker_task_seconds", []),
+                "task_preparation_seconds": worker_diagnostics.get("task_preparation_seconds", 0.0),
+                "worker_startup_submission_seconds": worker_diagnostics.get("worker_startup_submission_seconds", 0.0),
+                "worker_wait_and_result_transfer_seconds": worker_diagnostics.get("worker_wait_and_result_transfer_seconds", 0.0),
+                "parent_aggregation_seconds": worker_diagnostics.get("parent_aggregation_seconds", 0.0),
+                "rf_only_mp_total_seconds": worker_diagnostics.get("rf_only_mp_total_seconds", 0.0),
+                "dispersion_difference": difference,
+                "dispersion_worker_transport": worker_transport,
+                "dispersion_worker_chunksize": worker_diagnostics.get("worker_chunksize", worker_chunksize),
+            })
         if progress_callback is not None:
             progress_callback("dispersion", len(quads_ind), len(quads_ind))
         return result
@@ -1910,8 +2087,17 @@ def calculate_quads_dispersion_jacobian(
             output_dir="output",
             log_filename="quad_dispersion_jacobian_logs.txt",
             includeDispersion=True, orm_calculator=orm_calculator,
-            cancel_callback=cancel_callback,
+            cancel_callback=cancel_callback, processes=workers,
         )
+        if diagnostics_callback is not None:
+            retained = full_jacobian[:, :, -1]
+            diagnostics_callback({
+                "dispersion_worker_type": "legacy_full_orm",
+                "dispersion_worker_count": available_worker_count(requested=workers, task_count=len(quads_ind)),
+                "dispersion_worker_payload_bytes": int(full_jacobian.nbytes + delta_vec.nbytes),
+                "dispersion_retained_bytes": int(retained.nbytes + delta_vec.nbytes),
+                "selected_finite_difference_steps": delta_vec.tolist(),
+            })
         if progress_callback is not None:
             progress_callback("dispersion", len(quads_ind), len(quads_ind))
         return full_jacobian[:, :, -1], delta_vec
@@ -1999,6 +2185,11 @@ def calculate_quads_dispersion_jacobian(
     )
 
     delta_used = []
+    adaptive_attempt_counts = []
+    adaptive_seconds = []
+    plus_rf_seconds = []
+    minus_rf_seconds = []
+    worker_task_started = time.perf_counter()
 
     # Same step-selection targets as the existing numerical
     # quadrupole Jacobian.
@@ -2193,6 +2384,7 @@ def calculate_quads_dispersion_jacobian(
 
             adaptive_step_attempt = 0
             last_rms_delta = None
+            adaptive_started = time.perf_counter()
             while True:
                 adaptive_step_attempt += 1
                 if adaptive_step_attempt > MAX_ADAPTIVE_STEP_ITERATIONS:
@@ -2253,7 +2445,7 @@ def calculate_quads_dispersion_jacobian(
                 # This reproduces the existing numerical worker.
                 # ------------------------------------------------
 
-                difference = (
+                orm_difference = (
                     C_plus_step_test[:, :-1]
                     -
                     C_model[:, :-1]
@@ -2264,12 +2456,12 @@ def calculate_quads_dispersion_jacobian(
                 RMSDelta = float(
                     np.sqrt(
                         np.sum(
-                            difference**2
+                            orm_difference**2
                         )
                         /
                         max(
                             1,
-                            difference.size,
+                            orm_difference.size,
                         )
                     )
                 )
@@ -2327,6 +2519,7 @@ def calculate_quads_dispersion_jacobian(
 
                 else:
                     break
+            adaptive_seconds.append(time.perf_counter() - adaptive_started)
 
             # ====================================================
             # 7. Final scalar finite-difference step
@@ -2362,17 +2555,23 @@ def calculate_quads_dispersion_jacobian(
                 config=fit_cfg,
             )
 
-            eta_plus = C @ calculate_rf_response(
-                ring,
-                bpm_indexes,
-                CAVords,
-                rf_step,
-                calculator=orm_calculator,
-                bidirectional=cfg.bidirectional,
-                frequency=cfg.Frequency,
-                harm_number=cfg.HarmNumber,
-                rf_attr=cfg.RFAttr,
-            )
+            if reuse_adaptive_plus_rf:
+                eta_plus = C_plus_step_test[:, -1].copy()
+                plus_rf_seconds.append(0.0)
+            else:
+                plus_rf_started = time.perf_counter()
+                eta_plus = C @ calculate_rf_response(
+                    ring,
+                    bpm_indexes,
+                    CAVords,
+                    rf_step,
+                    calculator=orm_calculator,
+                    bidirectional=cfg.bidirectional,
+                    frequency=cfg.Frequency,
+                    harm_number=cfg.HarmNumber,
+                    rf_attr=cfg.RFAttr,
+                )
+                plus_rf_seconds.append(time.perf_counter() - plus_rf_started)
 
             # ====================================================
             # 9. Restore nominal before negative perturbation
@@ -2393,32 +2592,28 @@ def calculate_quads_dispersion_jacobian(
             # eta_minus = eta(K - dK)
             # ====================================================
 
-            minus_values = (
-                nominal_values
-                -
-                delta_local
-            )
-
-            set_correction(
-                ring,
-                minus_values,
-                correction_indices,
-                individuals=individuals,
-                block=block,
-                config=fit_cfg,
-            )
-
-            eta_minus = C @ calculate_rf_response(
-                ring,
-                bpm_indexes,
-                CAVords,
-                rf_step,
-                calculator=orm_calculator,
-                bidirectional=cfg.bidirectional,
-                frequency=cfg.Frequency,
-                harm_number=cfg.HarmNumber,
-                rf_attr=cfg.RFAttr,
-            )
+            if difference == "central":
+                minus_values = nominal_values - delta_local
+                set_correction(
+                    ring, minus_values, correction_indices,
+                    individuals=individuals, block=block, config=fit_cfg,
+                )
+                minus_rf_started = time.perf_counter()
+                eta_minus = C @ calculate_rf_response(
+                    ring, bpm_indexes, CAVords, rf_step,
+                    calculator=orm_calculator,
+                    bidirectional=cfg.bidirectional,
+                    frequency=cfg.Frequency,
+                    harm_number=cfg.HarmNumber,
+                    rf_attr=cfg.RFAttr,
+                )
+                minus_rf_seconds.append(time.perf_counter() - minus_rf_started)
+                numerator = eta_plus - eta_minus
+                denominator = 2.0 * step
+            else:
+                minus_rf_seconds.append(0.0)
+                numerator = eta_plus - C_model[:, -1]
+                denominator = step
 
             # ====================================================
             # 11. CENTRAL FINITE DIFFERENCE
@@ -2428,19 +2623,12 @@ def calculate_quads_dispersion_jacobian(
             #                 2 dK
             # ====================================================
 
-            J_eta[p, :] = (
-                eta_plus
-                -
-                eta_minus
-            ) / (
-                2.0
-                *
-                step
-            )
+            J_eta[p, :] = numerator / denominator
 
             delta_used.append(
                 step
             )
+            adaptive_attempt_counts.append(adaptive_step_attempt)
             if progress_callback is not None:
                 stride = max(1, len(quads_ind) // 20)
                 if (p + 1) % stride == 0 or p + 1 == len(quads_ind):
@@ -2469,6 +2657,20 @@ def calculate_quads_dispersion_jacobian(
         delta_used,
         dtype=float,
     )
+    if diagnostics_callback is not None:
+        diagnostics_callback({
+            "dispersion_worker_type": "serial_rf_only",
+            "dispersion_worker_count": 1,
+            "adaptive_step_evaluation_counts": adaptive_attempt_counts,
+            "selected_finite_difference_steps": delta_vec.tolist(),
+            "dispersion_worker_payload_bytes": int(J_eta.nbytes + delta_vec.nbytes),
+            "adaptive_step_selection_seconds": adaptive_seconds,
+            "final_plus_rf_seconds": plus_rf_seconds,
+            "final_minus_rf_seconds": minus_rf_seconds,
+            "worker_task_seconds": time.perf_counter() - worker_task_started,
+            "dispersion_difference": difference,
+            "reused_adaptive_plus_rf": bool(reuse_adaptive_plus_rf),
+        })
 
     if report:
         print(
@@ -2501,7 +2703,10 @@ def _dispersion_parameter_step(dk, parameter, parameter_count):
 def _dispersion_rf_only_worker(
         quad_parameter, parameter_step, ring, dkick, used_cor_ind,
         bpm_indexes, individuals, HCMCoupling, VCMCoupling, rf_step,
-        CAVords, auto_correct_delta, fit_cfg, orm_calculator, block):
+        CAVords, auto_correct_delta, fit_cfg, orm_calculator, block,
+        difference="central", return_diagnostics=False,
+        reuse_adaptive_plus_rf=False):
+    diagnostics = []
     values, steps = calculate_quads_dispersion_jacobian(
         ring=ring, C_model=G_CMODEL, dkick=dkick,
         used_cor_ind=used_cor_ind, bpm_indexes=bpm_indexes,
@@ -2510,15 +2715,62 @@ def _dispersion_rf_only_worker(
         VCMCoupling=VCMCoupling, rf_step=rf_step, CAVords=CAVords,
         auto_correct_delta=auto_correct_delta, fit_cfg=fit_cfg,
         orm_calculator=orm_calculator, use_mp=False, block=block,
-        report=False,
+        report=False, diagnostics_callback=diagnostics.append,
+        difference=difference,
+        reuse_adaptive_plus_rf=reuse_adaptive_plus_rf,
     )
-    return values[0], float(steps[0])
+    attempts = next((event.get("adaptive_step_evaluation_counts", [None])[0]
+                     for event in diagnostics
+                     if event.get("adaptive_step_evaluation_counts")), None)
+    detail = next((event for event in reversed(diagnostics)
+                   if "worker_task_seconds" in event), {})
+    result = (values[0], float(steps[0]))
+    return result + (detail,) if return_diagnostics else result
+
+
+G_DISPERSION_WORKER_STATE = None
+
+
+def _init_dispersion_worker_direct(C, C_model, state):
+    global G_DISPERSION_WORKER_STATE
+    _init_direct(C, C_model)
+    G_DISPERSION_WORKER_STATE = state
+
+
+def _init_dispersion_worker_shared(
+        shm_name_C, shape_C, dtype_C, shm_name_Cm, shape_Cm, dtype_Cm,
+        state):
+    global G_DISPERSION_WORKER_STATE
+    _init_shared(
+        shm_name_C, shape_C, dtype_C,
+        shm_name_Cm, shape_Cm, dtype_Cm,
+    )
+    G_DISPERSION_WORKER_STATE = state
+
+
+def _dispersion_rf_only_stateful_worker(
+        quad_parameter, parameter_step, difference, reuse_adaptive_plus_rf):
+    state = G_DISPERSION_WORKER_STATE
+    if state is None:
+        raise RuntimeError("RF-only dispersion worker state was not initialized")
+    return _dispersion_rf_only_worker(
+        quad_parameter, parameter_step,
+        state["ring"], state["dkick"], state["used_cor_ind"],
+        state["bpm_indexes"], state["individuals"],
+        state["HCMCoupling"], state["VCMCoupling"], state["rf_step"],
+        state["CAVords"], state["auto_correct_delta"], state["fit_cfg"],
+        state["orm_calculator"], state["block"], difference, True,
+        reuse_adaptive_plus_rf,
+    )
 
 
 def _calculate_dispersion_jacobian_rf_only_mp(
         *, ring, C_model, dkick, used_cor_ind, bpm_indexes, quads_ind,
         dk, C, individuals, HCMCoupling, VCMCoupling, rf_step, CAVords,
-        auto_correct_delta, fit_cfg, orm_calculator, cancel_callback, block):
+        auto_correct_delta, fit_cfg, orm_calculator, cancel_callback, block,
+        workers=None, difference="central", worker_transport="per_task",
+        worker_chunksize=1, reuse_adaptive_plus_rf=False):
+    total_started = time.perf_counter()
     shm_C = shm_Cm = None
     try:
         try:
@@ -2542,37 +2794,93 @@ def _calculate_dispersion_jacobian_rf_only_mp(
             initializer = _init_direct
             initargs = (np.asarray(C), np.asarray(C_model))
 
+        task_preparation_started = time.perf_counter()
+        worker_transport = str(worker_transport).strip().lower()
+        if worker_transport not in {"per_task", "initializer"}:
+            raise ValueError("worker_transport must be 'per_task' or 'initializer'")
+        worker_chunksize = int(worker_chunksize)
+        if worker_chunksize < 1:
+            raise ValueError("worker_chunksize must be positive")
         tasks = [(
             parameter,
             _dispersion_parameter_step(dk, position, len(quads_ind)),
             ring, dkick, used_cor_ind, bpm_indexes, individuals,
             HCMCoupling, VCMCoupling, rf_step, CAVords,
-            auto_correct_delta, fit_cfg, orm_calculator, block,
+            auto_correct_delta, fit_cfg, orm_calculator, block, difference, True,
+            reuse_adaptive_plus_rf,
         ) for position, parameter in enumerate(quads_ind)]
-        worker_count = available_worker_count(task_count=len(tasks))
+        worker_function = _dispersion_rf_only_worker
+        if worker_transport == "initializer":
+            state = {
+                "ring": ring, "dkick": dkick,
+                "used_cor_ind": used_cor_ind, "bpm_indexes": bpm_indexes,
+                "individuals": individuals, "HCMCoupling": HCMCoupling,
+                "VCMCoupling": VCMCoupling, "rf_step": rf_step,
+                "CAVords": CAVords, "auto_correct_delta": auto_correct_delta,
+                "fit_cfg": fit_cfg, "orm_calculator": orm_calculator,
+                "block": block,
+            }
+            if initializer is _init_shared:
+                initializer = _init_dispersion_worker_shared
+            else:
+                initializer = _init_dispersion_worker_direct
+            initargs = initargs + (state,)
+            tasks = [(
+                parameter,
+                _dispersion_parameter_step(dk, position, len(quads_ind)),
+                difference,
+                reuse_adaptive_plus_rf,
+            ) for position, parameter in enumerate(quads_ind)]
+            worker_function = _dispersion_rf_only_stateful_worker
+        task_preparation_seconds = time.perf_counter() - task_preparation_started
+        worker_count = available_worker_count(
+            requested=workers, task_count=len(tasks)
+        )
         print(
             f"[Dispersion Jacobian RF-only] multiprocessing workers: "
             f"{worker_count} for {len(tasks)} parameters"
         )
         ctx = mp.get_context("spawn")
+        startup_started = time.perf_counter()
         with ctx.Pool(
                 processes=worker_count, initializer=initializer,
                 initargs=initargs, maxtasksperchild=64) as pool:
             pending = pool.starmap_async(
-                _dispersion_rf_only_worker, tasks, chunksize=1
+                worker_function, tasks, chunksize=worker_chunksize
             )
+            startup_submission_seconds = time.perf_counter() - startup_started
+            wait_started = time.perf_counter()
             results = _wait_for_pool_result(
                 pending, pool, cancel_callback,
                 "RF-column-only dispersion Jacobian calculation",
             )
+            wait_result_seconds = time.perf_counter() - wait_started
         if not results:
             return np.empty((0, C.shape[0])), np.empty((0,))
-        columns, steps = zip(*results)
+        columns, steps, details = zip(*results)
+        aggregation_started = time.perf_counter()
         output = np.stack(columns, axis=0)
         _require_finite_evaluation(
             output, evaluation="assembled_rf_only_dispersion_jacobian",
             calculator=orm_calculator, block=block,
         )
+        parent_aggregation_seconds = time.perf_counter() - aggregation_started
+        _calculate_dispersion_jacobian_rf_only_mp.last_diagnostics = {
+            "adaptive_step_evaluation_counts": [d.get("adaptive_step_evaluation_counts", [None])[0] for d in details],
+            "adaptive_step_selection_seconds": [d.get("adaptive_step_selection_seconds", [0.0])[0] for d in details],
+            "final_plus_rf_seconds": [d.get("final_plus_rf_seconds", [0.0])[0] for d in details],
+            "final_minus_rf_seconds": [d.get("final_minus_rf_seconds", [0.0])[0] for d in details],
+            "worker_task_seconds": [d.get("worker_task_seconds", 0.0) for d in details],
+            "selected_finite_difference_steps": list(steps),
+            "task_preparation_seconds": task_preparation_seconds,
+            "worker_startup_submission_seconds": startup_submission_seconds,
+            "worker_wait_and_result_transfer_seconds": wait_result_seconds,
+            "parent_aggregation_seconds": parent_aggregation_seconds,
+            "rf_only_mp_total_seconds": time.perf_counter() - total_started,
+            "worker_transport": worker_transport,
+            "worker_chunksize": worker_chunksize,
+            "reused_adaptive_plus_rf": bool(reuse_adaptive_plus_rf),
+        }
         return output, np.asarray(steps, dtype=float)
     finally:
         for shm in (shm_C, shm_Cm):
@@ -2596,6 +2904,7 @@ def calculate_quads_jacobian_analytical(
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    analytical_workers=None,
     analytical_implementation="vectorized",
     cancel_callback=None,
     progress_callback=None,
@@ -2735,6 +3044,7 @@ def calculate_quads_jacobian_analytical(
         verbose=analytical_verbose,
         opt_all_location=opt_all_location,
         use_mp=analytical_use_mp,
+        workers=analytical_workers,
         implementation=analytical_implementation,
         cancel_callback=cancel_callback,
         progress_callback=(
@@ -2759,6 +3069,7 @@ def calculate_quads_jacobian_analytical(
         verbose=analytical_verbose,
         opt_all_location=opt_all_location,
         use_mp=analytical_use_mp,
+        workers=analytical_workers,
         implementation=analytical_implementation,
         cancel_callback=cancel_callback,
         progress_callback=(
@@ -2876,6 +3187,10 @@ def calculate_quads_jacobian_analytical(
             "assembly_and_calibration_seconds": assembly_seconds,
             "analytical_output_bytes": int(J_quad.nbytes),
             "multiprocessing": bool(analytical_use_mp),
+            "formula_worker_count": (
+                available_worker_count(requested=analytical_workers, task_count=len(physical_quads))
+                if analytical_use_mp else 1
+            ),
             "thick_quadrupole": bool(analytical_thick_quadrupole),
             "thick_steerers": bool(analytical_thick_steerers),
         })
@@ -2896,6 +3211,7 @@ def calculate_skew_jacobian_analytical(
     analytical_thick_steerers=False,
     analytical_verbose=False,
     analytical_use_mp=False,
+    analytical_workers=None,
     skew_analytical_implementation="vectorized",
     cancel_callback=None,
     progress_callback=None,
@@ -2966,6 +3282,7 @@ def calculate_skew_jacobian_analytical(
         thick_skew=analytical_thick_skew,
         thick_steerer=analytical_thick_steerers,
         use_mp=analytical_use_mp,
+        workers=analytical_workers,
         cancel_callback=cancel_callback,
         opt_all_location=opt_all_location,
         implementation=skew_analytical_implementation,
@@ -2986,6 +3303,7 @@ def calculate_skew_jacobian_analytical(
         thick_skew=analytical_thick_skew,
         thick_steerer=analytical_thick_steerers,
         use_mp=analytical_use_mp,
+        workers=analytical_workers,
         cancel_callback=cancel_callback,
         opt_all_location=opt_all_location,
         implementation=skew_analytical_implementation,
@@ -3043,6 +3361,10 @@ def calculate_skew_jacobian_analytical(
             "assembly_and_calibration_seconds": assembly_seconds,
             "analytical_output_bytes": int(jacobian.nbytes),
             "multiprocessing": bool(analytical_use_mp),
+            "formula_worker_count": (
+                available_worker_count(requested=analytical_workers, task_count=len(physical_skews))
+                if analytical_use_mp else 1
+            ),
             "thick_skew": bool(analytical_thick_skew),
             "thick_steerers": bool(analytical_thick_steerers),
         })
@@ -5534,15 +5856,26 @@ def pyloco(
         analytical_thick_steerers=False,
         analytical_verbose=False,
         analytical_use_mp=False,
+        analytical_formula_use_mp=None,
+        analytical_formula_workers=None,
+        analytical_dispersion_use_mp=None,
+        analytical_dispersion_workers=None,
         analytical_implementation="vectorized",
         analytical_dispersion_calculator=None,
+        analytical_dispersion_worker="legacy_full_orm",
+        analytical_dispersion_difference="central",
         analytical_thick_skew=True,
         analytical_skew_thick_steerers=False,
         analytical_skew_verbose=False,
         analytical_skew_use_mp=False,
+        skew_analytical_formula_use_mp=None,
+        skew_analytical_formula_workers=None,
+        skew_analytical_dispersion_use_mp=None,
+        skew_analytical_dispersion_workers=None,
         skew_analytical_implementation="vectorized",
         skew_analytical_dispersion_calculator=None,
         skew_analytical_dispersion_worker="legacy_full_orm",
+        skew_analytical_dispersion_difference="central",
         force_recompute=True,
         # Fit multi stage
         continue_from_previous=False,
@@ -5873,10 +6206,11 @@ def pyloco(
 
         def analytical_progress(plane, done, total):
             elapsed = time.perf_counter() - jacobian_started
+            parameter_fraction = float(done) / max(1, int(total))
             progress.emit(
                 "jacobian_calculation",
-                progress.iteration_fraction(iteration, 0.15),
-                f"Analytical Jacobian ({plane}): {done} / {total} "
+                progress.iteration_fraction(iteration, 0.15 + 0.55 * parameter_fraction),
+                f"Jacobian ({plane}): {done} / {total} "
                 f"parameters, elapsed {elapsed:.1f} s.",
                 iteration=iteration,
             )
@@ -5920,15 +6254,26 @@ def pyloco(
             analytical_thick_steerers=analytical_thick_steerers,
             analytical_verbose=analytical_verbose,
             analytical_use_mp=analytical_use_mp,
+            analytical_formula_use_mp=analytical_formula_use_mp,
+            analytical_formula_workers=analytical_formula_workers,
+            analytical_dispersion_use_mp=analytical_dispersion_use_mp,
+            analytical_dispersion_workers=analytical_dispersion_workers,
             analytical_implementation=analytical_implementation,
             analytical_dispersion_calculator=analytical_dispersion_calculator,
+            analytical_dispersion_worker=analytical_dispersion_worker,
+            analytical_dispersion_difference=analytical_dispersion_difference,
             analytical_thick_skew=analytical_thick_skew,
             analytical_skew_thick_steerers=analytical_skew_thick_steerers,
             analytical_skew_verbose=analytical_skew_verbose,
             analytical_skew_use_mp=analytical_skew_use_mp,
+            skew_analytical_formula_use_mp=skew_analytical_formula_use_mp,
+            skew_analytical_formula_workers=skew_analytical_formula_workers,
+            skew_analytical_dispersion_use_mp=skew_analytical_dispersion_use_mp,
+            skew_analytical_dispersion_workers=skew_analytical_dispersion_workers,
             skew_analytical_implementation=skew_analytical_implementation,
             skew_analytical_dispersion_calculator=skew_analytical_dispersion_calculator,
             skew_analytical_dispersion_worker=skew_analytical_dispersion_worker,
+            skew_analytical_dispersion_difference=skew_analytical_dispersion_difference,
             response_matrix_calculator=response_matrix_calculator,
             calculator_trace_callback=calculator_trace_callback,
             cancel_callback=cancel_callback,
@@ -5984,7 +6329,10 @@ def pyloco(
             include_dispersion=includeDispersion,
         )
         if jacobian_callback is not None:
-            jacobian_callback(J_.copy(), iteration=it + 1)
+            # The callback decides whether it needs to retain the full matrix.
+            # Passing another unconditional copy here can add hundreds of MB
+            # for full-machine fits while the solver already owns J_.
+            jacobian_callback(J_, iteration=it + 1)
 
 
 
@@ -6859,6 +7207,16 @@ def _normalize_skew_dispersion_worker(value):
         raise ValueError(
             f"Unknown skew_analytical_dispersion_worker={value!r}. "
             "Choose 'legacy_full_orm' or 'rf_only'."
+        )
+    return normalized
+
+
+def _normalize_dispersion_difference(value):
+    normalized = str(value).strip().lower()
+    if normalized not in {"central", "forward"}:
+        raise ValueError(
+            f"Unknown analytical dispersion difference {value!r}; "
+            "choose 'central' or 'forward'."
         )
     return normalized
 
