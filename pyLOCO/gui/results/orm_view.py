@@ -35,7 +35,7 @@ class OrmView(QWidget):
         row.addWidget(self.metrics, 1, 0, 1, 4)
         row.setColumnStretch(1, 1); row.setColumnStretch(3, 1)
         self.metrics.setWordWrap(True)
-        self.plot = PlotCanvas(show_toolbar=True, minimum_height=140)
+        self.plot = PlotCanvas(show_toolbar=True, minimum_height=360)
         self.plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.unavailable = QLabel()
         self.unavailable.setAlignment(Qt.AlignCenter)
@@ -89,6 +89,7 @@ class OrmView(QWidget):
             )
             ax.set_zlabel("ORM response [m]", labelpad=8)
             ax.view_init(elev=28, azim=-62)
+            ax.set_box_aspect((1.8, 1.0, 0.7))
         else:
             artist = ax.imshow(shown, origin="lower", aspect="auto", extent=(0, cols, 0, rows), **kwargs)
         canvas.figure.colorbar(artist, ax=ax, label="ORM response [m]")

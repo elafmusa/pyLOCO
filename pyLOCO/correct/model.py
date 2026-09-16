@@ -52,6 +52,39 @@ class CorrectItem:
     calibrated_target_current_ampere: float | None = None
 
     @property
+    def magnetic_length_m(self) -> float | None:
+        value = self.metadata.get("magnetic_length_m")
+        return None if value is None else float(value)
+
+    @property
+    def integrated_recommended_delta(self) -> float | None:
+        length = self.magnetic_length_m
+        return None if length is None else self.recommended_machine_delta * length
+
+    @property
+    def integrated_final_delta(self) -> float | None:
+        length = self.magnetic_length_m
+        return None if length is None else self.final_delta * length
+
+    @property
+    def applied_control_delta(self) -> float:
+        """Correction in the mapped control's physical representation."""
+        component = str(self.metadata.get("control_component", "")).upper()
+        if component in {"B2L", "A2L"}:
+            integrated = self.integrated_final_delta
+            if integrated is None:
+                raise ValueError(
+                    f"{self.name} maps to {component}, but its magnetic length is unavailable"
+                )
+            return integrated
+        return self.final_delta
+
+    @property
+    def applied_control_unit(self) -> str:
+        component = str(self.metadata.get("control_component", "")).upper()
+        return "m⁻¹" if component in {"B2L", "A2L"} else self.unit
+
+    @property
     def final_delta(self) -> float:
         return self.recommended_machine_delta * self.global_scale * self.individual_scale if self.included else 0.0
 
@@ -149,7 +182,7 @@ class CorrectionReview:
             if item.initial_value is None:
                 raise ValueError(f"Cannot save correction record {item.name!r}: initial value is unavailable; it will not be fabricated")
             metadata={**item.metadata,"fitted_value":item.fitted_value,"control_name":item.control_name,"included":item.included,"exclusion_reason":item.exclusion_reason,"evaluated_final_delta":item.final_delta,"machine_value":item.machine_value,"current_ampere":item.current_ampere,"target_current_ampere":item.target_current_ampere,"delta_i_ampere":item.delta_i_ampere,"ampere_per_unit":item.ampere_per_unit,"min_current_ampere":item.min_current_ampere,"max_current_ampere":item.max_current_ampere,"calibration_difference_percent":item.calibration_difference_percent,"sign_difference":item.sign_difference,"warnings":list(item.warnings(self.thresholds)),"sign_convention":item.sign_convention}
-            records.append(CorrectionRecord(item.correction_type,item.name,item.lattice_ordinal,item.unit,float(item.initial_value),item.raw_fitted_delta,item.recommended_machine_delta,item.individual_scale,None,item.family,metadata))
+            records.append(CorrectionRecord(item.correction_type,item.name,item.lattice_ordinal,item.unit,float(item.initial_value),item.raw_fitted_delta,item.recommended_machine_delta,item.individual_scale,None,item.family,metadata,item.magnetic_length_m,item.integrated_recommended_delta))
             states[str(item.index)]={"included":item.included,"exclusion_reason":item.exclusion_reason}
         provenance={key:self.items[0].metadata.get(key) for key in ("source_results_directory","source_iteration","source_state","fit_timestamp","measurement_session") if self.items and self.items[0].metadata.get(key) is not None}
         return CorrectionPlan(plan_id,self.source_result,tuple(records),self.global_scale,"dry_run",self.comparison(),{"created_utc":datetime.now(timezone.utc).isoformat(),"comments":self.comments,"warning_thresholds":asdict(self.thresholds),"record_states":states,"source_provenance":provenance,"safety":"OFFLINE DRY RUN — no machine setpoints changed"})
@@ -159,6 +192,8 @@ class CorrectionReview:
         items=[]; source_provenance=dict(plan.metadata.get("source_provenance",{}))
         for index,record in enumerate(plan.records):
             meta=dict(record.metadata); included=bool(meta.pop("included",True)); reason=str(meta.pop("exclusion_reason",""))
+            if record.magnetic_length_m is not None:
+                meta["magnetic_length_m"] = record.magnetic_length_m
             meta={**source_provenance,**meta}; target_current=meta.pop("target_current_ampere",None); machine_value=meta.pop("machine_value",None)
             items.append(CorrectItem(index,record.correction_type,record.name,record.lattice_ordinal,record.unit,record.initial_value,meta.pop("fitted_value",None),record.raw_fitted_delta,record.recommended_machine_delta,str(meta.pop("sign_convention","Loaded correction-plan convention")),record.family,meta.pop("control_name",None),plan.global_scale,record.individual_scale,included,reason,meta.pop("current_ampere",None),meta.pop("ampere_per_unit",None),meta.pop("min_current_ampere",None),meta.pop("max_current_ampere",None),meta.pop("calibration_difference_percent",None),bool(meta.pop("sign_difference",False)),meta,machine_value,target_current))
         return cls(items,plan.source_result,global_scale=plan.global_scale,comments=str(plan.metadata.get("comments","")))
@@ -166,6 +201,61 @@ class CorrectionReview:
 
 def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
     loader=ResultsLoader(path,iteration=iteration); result=[]; correction=loader.quadrupole_corrections; provenance={"source_results_directory":str(loader.result_dir),"source_iteration":iteration,"source_state":"Final" if iteration is None else f"Iteration {iteration}","fit_timestamp":loader.summary.get("completed_utc",loader.summary.get("timestamp")),"measurement_session":loader.request.get("measurement_session",{})}
+    lengths_by_ordinal: dict[int, float] = {}
+    common_names_by_ordinal: dict[int, str] = {}
+    skew_lengths: list[float] = []
+    legacy_strengths = loader.result_dir / "correction" / "quad_skew_deltas_lengths.json"
+    if legacy_strengths.exists():
+        strength_data = json.loads(legacy_strengths.read_text(encoding="utf-8"))
+        normal_indices = strength_data.get("normal_quads_expanded", {}).get("lattice_index", [])
+        normal_lengths = strength_data.get("normal_quads", {}).get("length", [])
+        lengths_by_ordinal = {
+            int(ordinal): float(length)
+            for ordinal, length in zip(normal_indices, normal_lengths)
+            if float(length) > 0
+        }
+        skew_lengths = [
+            float(length) for length in strength_data.get("skew_quads", {}).get("length", [])
+        ]
+    # Current result directories always persist a fitted lattice, even when
+    # the optional legacy correction diagnostics were not requested.  Use
+    # that authoritative lattice metadata so integrated-strength controls do
+    # not depend on a historical sidecar JSON file.
+    if not lengths_by_ordinal:
+        lattice_candidates = [
+            loader.result_dir / "final_lattice.mat",
+            loader.result_dir / "ring_pyloco.mat",
+        ]
+        request_lattice = loader.request.get("lattice_path")
+        if request_lattice:
+            lattice_candidates.append(Path(request_lattice).expanduser())
+        for lattice_path in lattice_candidates:
+            if not lattice_path.is_file():
+                continue
+            try:
+                import at
+
+                ring = at.load_lattice(str(lattice_path))
+                lengths_by_ordinal = {
+                    int(index): float(length)
+                    for index, element in enumerate(ring)
+                    if (length := getattr(element, "Length", None)) is not None
+                    and math.isfinite(float(length))
+                    and float(length) > 0
+                }
+                common_names_by_ordinal = {}
+                for index, element in enumerate(ring):
+                    name = (
+                        getattr(element, "CommonName", None)
+                        or getattr(element, "Device", None)
+                        or getattr(element, "Name", None)
+                    )
+                    if name:
+                        common_names_by_ordinal[int(index)] = str(name)
+            except Exception:
+                continue
+            if lengths_by_ordinal:
+                break
     if correction is not None:
         # ResultsLoader can expose the expanded physical-quadrupole
         # correction directly. For family-mode runs, enrich those rows
@@ -217,6 +307,10 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
             family = family_by_ordinal.get(ordinal)
 
             metadata = dict(provenance)
+            if ordinal in lengths_by_ordinal:
+                metadata["magnetic_length_m"] = lengths_by_ordinal[ordinal]
+            if ordinal in common_names_by_ordinal:
+                metadata["lattice_common_name"] = common_names_by_ordinal[ordinal]
 
             if family is not None:
                 metadata.update(
@@ -350,6 +444,14 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
                         family=None if family is None else str(family),
                         metadata={
                             **provenance,
+                            **(
+                                {"magnetic_length_m": lengths_by_ordinal[int(ordinal_text)]}
+                                if int(ordinal_text) in lengths_by_ordinal else {}
+                            ),
+                            **(
+                                {"lattice_common_name": common_names_by_ordinal[int(ordinal_text)]}
+                                if int(ordinal_text) in common_names_by_ordinal else {}
+                            ),
                             "family_mode_expanded": True,
                             "family_index": row.get("family_index"),
                             "diagnostic_source": (
@@ -364,7 +466,15 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
         if block.key not in type_map: continue
         for i,value in enumerate(block.values):
             identity=loader.parameter_identity(block.key,i); initial=None if block.baseline is None else float(block.baseline[i]); raw=float(value)-(initial or 0.0)
-            result.append(CorrectItem(offset+i,type_map[block.key],str(identity.get("element_name") or f"{block.label} {i}"),identity.get("lattice_ordinal"),block.unit,initial,float(value),raw,-raw,"Recommended machine Δ = initial model value − fitted model value",metadata=dict(provenance)))
+            metadata = dict(provenance)
+            ordinal = identity.get("lattice_ordinal")
+            if ordinal is not None and int(ordinal) in lengths_by_ordinal:
+                metadata["magnetic_length_m"] = lengths_by_ordinal[int(ordinal)]
+            elif block.key == "skew_quads" and i < len(skew_lengths) and skew_lengths[i] > 0:
+                metadata["magnetic_length_m"] = skew_lengths[i]
+            if ordinal is not None and int(ordinal) in common_names_by_ordinal:
+                metadata["lattice_common_name"] = common_names_by_ordinal[int(ordinal)]
+            result.append(CorrectItem(offset+i,type_map[block.key],str(identity.get("element_name") or f"{block.label} {i}"),ordinal,block.unit,initial,float(value),raw,-raw,"Recommended machine Δ = initial model value − fitted model value",metadata=metadata))
         offset=len(result)
     if not result: raise ValueError("No normal quadrupole, skew quadrupole, or quadrupole-tilt corrections were found in this Results directory")
     return result
@@ -421,8 +531,11 @@ def save_review(path: str | Path, review: CorrectionReview) -> Path:
 
 
 def save_review_csv(path: str | Path, review: CorrectionReview) -> Path:
-    destination=Path(path); fields=("index","apply","lattice_ordinal","name","control_name","correction_type","initial_value","fitted_value","raw_fitted_delta","recommended_machine_delta","relative_percent","global_scale","individual_scale","final_delta","target_value","current_ampere","target_current_ampere","delta_i_ampere","min_current_ampere","max_current_ampere","calibration_status","current_limit_status","exclusion_reason","warnings","unit","sign_convention")
+    destination=Path(path); fields=("index","apply","lattice_ordinal","name","control_name","control_component","correction_type","initial_value","fitted_value","raw_fitted_delta","recommended_machine_delta","relative_percent","global_scale","individual_scale","final_delta","magnetic_length_m","integrated_recommended_delta","integrated_final_delta","applied_control_delta","applied_control_unit","target_value","current_ampere","target_current_ampere","delta_i_ampere","min_current_ampere","max_current_ampere","calibration_status","current_limit_status","exclusion_reason","warnings","unit","sign_convention")
     with destination.open("w",newline="",encoding="utf-8") as stream:
         writer=csv.DictWriter(stream,fieldnames=fields); writer.writeheader()
-        for item in review.items: writer.writerow({"index":item.index,"apply":item.included,"lattice_ordinal":item.lattice_ordinal,"name":item.name,"control_name":item.control_name,"correction_type":item.correction_type,"initial_value":item.initial_value,"fitted_value":item.fitted_value,"raw_fitted_delta":item.raw_fitted_delta,"recommended_machine_delta":item.recommended_machine_delta,"relative_percent":item.relative_percent,"global_scale":review.global_scale,"individual_scale":item.individual_scale,"final_delta":item.final_delta,"target_value":item.target_value,"current_ampere":item.current_ampere,"target_current_ampere":item.target_current_ampere,"delta_i_ampere":item.delta_i_ampere,"min_current_ampere":item.min_current_ampere,"max_current_ampere":item.max_current_ampere,"calibration_status":item.calibration_status,"current_limit_status":item.current_limit_status,"exclusion_reason":item.exclusion_reason,"warnings":";".join(item.warnings(review.thresholds)),"unit":item.unit,"sign_convention":item.sign_convention})
+        for item in review.items:
+            try: applied_delta=item.applied_control_delta
+            except ValueError: applied_delta=None
+            writer.writerow({"index":item.index,"apply":item.included,"lattice_ordinal":item.lattice_ordinal,"name":item.name,"control_name":item.control_name,"control_component":item.metadata.get("control_component"),"correction_type":item.correction_type,"initial_value":item.initial_value,"fitted_value":item.fitted_value,"raw_fitted_delta":item.raw_fitted_delta,"recommended_machine_delta":item.recommended_machine_delta,"relative_percent":item.relative_percent,"global_scale":review.global_scale,"individual_scale":item.individual_scale,"final_delta":item.final_delta,"magnetic_length_m":item.magnetic_length_m,"integrated_recommended_delta":item.integrated_recommended_delta,"integrated_final_delta":item.integrated_final_delta,"applied_control_delta":applied_delta,"applied_control_unit":item.applied_control_unit,"target_value":item.target_value,"current_ampere":item.current_ampere,"target_current_ampere":item.target_current_ampere,"delta_i_ampere":item.delta_i_ampere,"min_current_ampere":item.min_current_ampere,"max_current_ampere":item.max_current_ampere,"calibration_status":item.calibration_status,"current_limit_status":item.current_limit_status,"exclusion_reason":item.exclusion_reason,"warnings":";".join(item.warnings(review.thresholds)),"unit":item.unit,"sign_convention":item.sign_convention})
     return destination

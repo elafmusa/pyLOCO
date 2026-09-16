@@ -129,129 +129,34 @@ def set_correction(
 
     r = np.asarray(r, dtype=float).ravel()
 
-    # OLD CommonName handling:
-    # cn_map = _commonname_index_map(ring)
-
     # ============================================================
     # INDIVIDUAL PARAMETERS
     # ============================================================
-
-    # OLD IMPLEMENTATION:
-    #
-    # if individuals:
-    #     if len(r) != len(elem_ind):
-    #         raise ValueError(
-    #             f"len(r)={len(r)} != "
-    #             f"len(elem_ind)={len(elem_ind)} "
-    #             f"for individuals=True"
-    #         )
-    #
-    #     for val, i0 in zip(r, elem_ind):
-    #         cname = getattr(ring[i0], "CommonName", None)
-    #         targets = (
-    #             cn_map.get(cname, [i0])
-    #             if cname is not None
-    #             else [i0]
-    #         )
-    #
-    #         for ti in targets:
-    #             _set_attr_value(
-    #                 ring[ti],
-    #                 attr_name,
-    #                 val,
-    #                 idx,
-    #             )
-
     if individuals:
-
         if len(r) != len(elem_ind):
             raise ValueError(
-                f"len(r)={len(r)} != "
-                f"len(elem_ind)={len(elem_ind)} "
-                f"(individuals=True)"
+                f"len(r)={len(r)} != len(elem_ind)={len(elem_ind)} "
+                "for individuals=True"
             )
-
         for val, i0 in zip(r, elem_ind):
-
-            # Change exactly this lattice element.
-            # Do NOT expand using CommonName.
-            _set_attr_value(
-                ring[int(i0)],
-                attr_name,
-                val,
-                idx,
-            )
+            # One fit parameter changes exactly one selected lattice element.
+            _set_attr_value(ring[int(i0)], attr_name, val, idx)
 
     # ============================================================
     # FAMILY PARAMETERS
     # ============================================================
 
-    # OLD IMPLEMENTATION:
-    #
-    # else:
-    #     if len(r) != len(elem_ind):
-    #         raise ValueError(
-    #             f"len(r)={len(r)} != "
-    #             f"n_families={len(elem_ind)} "
-    #             f"for individuals=False"
-    #         )
-    #
-    #     for fam_val, fam in zip(r, elem_ind):
-    #         fam = list(fam)
-    #
-    #         if not fam:
-    #             continue
-    #
-    #         cname = getattr(
-    #             ring[fam[0]],
-    #             "CommonName",
-    #             None,
-    #         )
-    #
-    #         targets = set(fam)
-    #
-    #         if cname is not None:
-    #             targets.update(
-    #                 cn_map.get(cname, [])
-    #             )
-    #
-    #         for ti in sorted(targets):
-    #             _set_attr_value(
-    #                 ring[ti],
-    #                 attr_name,
-    #                 fam_val,
-    #                 idx,
-    #             )
-
     else:
-
         if len(r) != len(elem_ind):
             raise ValueError(
-                f"len(r)={len(r)} != "
-                f"n_families={len(elem_ind)} "
-                f"for individuals=False"
+                f"len(r)={len(r)} != n_families={len(elem_ind)} "
+                "for individuals=False"
             )
-
         for fam_val, fam in zip(r, elem_ind):
-
-            # Normalize explicitly supplied family indices.
-            if np.isscalar(fam):
-                fam = [int(fam)]
-            else:
-                fam = [int(i) for i in fam]
-
-            if not fam:
-                continue
-
-            # Change exactly the explicitly supplied
-            # members of this family.
-            # Do NOT expand using CommonName.
-            for i0 in fam:
+            # Family membership is explicit; do not expand by CommonName.
+            for lattice_ordinal in fam:
                 _set_attr_value(
-                    ring[i0],
-                    attr_name,
-                    fam_val,
-                    idx,
+                    ring[int(lattice_ordinal)], attr_name, fam_val, idx
                 )
 
     return ring

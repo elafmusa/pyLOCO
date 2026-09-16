@@ -590,8 +590,11 @@ class ResultsLoader:
         if index < len(ordinals):
             result["lattice_ordinal"] = int(ordinals[index])
             try:
-                import at
-                ring = at.load_lattice(self.request["lattice_path"])
+                ring = self._cache.get("parameter_identity_ring")
+                if ring is None:
+                    import at
+                    ring = at.load_lattice(self._resolve_reference(self.request["lattice_path"]))
+                    self._cache["parameter_identity_ring"] = ring
                 result["element_name"] = str(getattr(ring[int(ordinals[index])], "FamName", ordinals[index]))
             except Exception: pass
         return result
@@ -902,6 +905,9 @@ class ResultsLoader:
             if data:
                 data["axis"] = persisted.get("dispersion_s")
                 data["axis_label"] = "Longitudinal position s [m]" if data["axis"] is not None else "BPM index in saved ordering"
+                data["display_quantity"] = str(_scalar_value(
+                    persisted.get("dispersion_display_quantity"), "physical_dispersion"
+                ))
                 self._cache["dispersion_data"] = data
                 return data
         self._cache["dispersion_data"] = self._legacy_dispersion_diagnostic()
@@ -1012,9 +1018,10 @@ class ResultsLoader:
                 np.asarray(get_mcf(reference)).ravel()[0]
             )
             conversion = -alpha_c * float(frequency) / float(rf_step)
-            return {"x": {"measured": eta_x * conversion, "initial": initial_dispersion[:, 0], "fitted": fitted_dispersion[:, 0]},
-                    "y": {"measured": eta_y * conversion, "initial": initial_dispersion[:, 2], "fitted": fitted_dispersion[:, 2]},
-                    "axis": np.asarray(reference.get_s_pos(ords), dtype=float), "axis_label": "Longitudinal position s [m]"}
+            return {"x": {"measured": eta_x, "initial": initial_dispersion[:, 0] / conversion, "fitted": fitted_dispersion[:, 0] / conversion},
+                    "y": {"measured": eta_y, "initial": initial_dispersion[:, 2] / conversion, "fitted": fitted_dispersion[:, 2] / conversion},
+                    "axis": np.asarray(reference.get_s_pos(ords), dtype=float), "axis_label": "Longitudinal position s [m]",
+                    "display_quantity": "rf_orbit_response"}
         except Exception as exc:
             self._unavailable["dispersion_diagnostic"] = f"Could not calculate lattice dispersion: {exc}"
             return None

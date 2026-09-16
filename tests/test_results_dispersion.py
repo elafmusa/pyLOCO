@@ -107,6 +107,9 @@ def test_optics_results_are_plane_separated_and_use_saved_arrays(app, tmp_path):
     assert [view.tabs.tabText(i) for i in range(view.tabs.count())] == ["βx", "βy", "ηx", "ηy"]
     assert view.beta_pages["x"] is not view.beta_pages["y"]
     assert view.dispersion_pages["x"] is not view.dispersion_pages["y"]
+    view.resize(1200, 520); app.processEvents()
+    assert view.beta_pages["x"].verticalScrollBar().maximum() > 0
+    assert view.dispersion_pages["x"].verticalScrollBar().maximum() > 0
     np.testing.assert_allclose(
         view.dispersion_plots["x"]["residuals"].figure.axes[0].lines[0].get_ydata(),
         1000.0 * (initial_x - measured_x),
@@ -174,5 +177,6 @@ def test_new_optics_artifact_persists_independent_dispersion_diagnostic(tmp_path
     _request(tmp_path / "run_request.json", included=False)
     reopened = ResultsLoader(tmp_path)
     assert reopened.dispersion_data is not None
-    np.testing.assert_allclose(reopened.dispersion_data["x"]["measured"], [.001, .002])
-    np.testing.assert_allclose(reopened.dispersion_data["x"]["initial"], [1, 3])
+    np.testing.assert_allclose(reopened.dispersion_data["x"]["measured"], [.01, .02])
+    np.testing.assert_allclose(reopened.dispersion_data["x"]["initial"], [10, 30])
+    assert reopened.dispersion_data["display_quantity"] == "rf_orbit_response"

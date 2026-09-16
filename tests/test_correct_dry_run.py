@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,6 +66,32 @@ def test_current_results_loader_uses_persisted_order_and_explicit_sign(monkeypat
     monkeypatch.setattr("pyLOCO.correct.model.ResultsLoader",FakeLoader); review=load_review(tmp_path)
     assert [(entry.name,entry.lattice_ordinal) for entry in review.items]==[("Q2",20),("Q1",10),("SQ1",30)]
     assert review.items[0].raw_fitted_delta==pytest.approx(-.2); assert review.items[0].recommended_machine_delta==pytest.approx(.2)
+
+
+def test_current_results_loader_recovers_lengths_from_saved_lattice(monkeypatch, tmp_path):
+    class FakeLoader:
+        def __init__(self, path, iteration=None):
+            self.result_dir = Path(path)
+            self.summary = {}
+            self.request = {}
+        quadrupole_corrections = {
+            "names": ["Q1"], "ordinals": [2], "initial": np.array([1.0]),
+            "fitted": np.array([0.9]), "delta_k_apply": np.array([0.1]),
+            "sign_convention": "initial - fitted",
+        }
+        parameter_blocks = []
+
+    class Element:
+        def __init__(self, length, name): self.Length, self.CommonName = length, name
+
+    (tmp_path / "final_lattice.mat").touch()
+    monkeypatch.setattr("pyLOCO.correct.model.ResultsLoader", FakeLoader)
+    monkeypatch.setitem(sys.modules, "at", SimpleNamespace(
+        load_lattice=lambda _path: [Element(0.0, "D0"), Element(0.1, "D1"), Element(0.42, "Q1-COMMON")]))
+    review = load_review(tmp_path)
+    assert review.items[0].magnetic_length_m == pytest.approx(0.42)
+    assert review.items[0].metadata["lattice_common_name"] == "Q1-COMMON"
+    assert review.items[0].integrated_recommended_delta == pytest.approx(0.042)
 
 
 def test_selected_iteration_and_measurement_session_provenance_reach_plan(monkeypatch,tmp_path):

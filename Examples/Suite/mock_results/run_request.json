@@ -1,0 +1,39 @@
+{
+  "project_name": "pyLOCO Suite Mock fit",
+  "lattice_path": "initial_lattice.mat",
+  "measurements": {
+    "orm": "../mock_session/orm.h5",
+    "bpm_noise": "../mock_session/bpm_noise.h5",
+    "dispersion": "../mock_session/dispersion.h5"
+  },
+  "measurement_session": {
+    "session_id": "pyloco-suite-mock-complete",
+    "manifest": "../mock_session/mock_complete.pyloco-session.json",
+    "measurement_files": {
+      "orm": "../mock_session/orm.h5",
+      "bpm_noise": "../mock_session/bpm_noise.h5",
+      "dispersion": "../mock_session/dispersion.h5"
+    }
+  },
+  "backend_mapping": {
+    "MachineElements": {
+      "normal_quadrupole_ords": [
+        1,
+        3
+      ]
+    },
+    "FitInitConfig": {
+      "fit_list": [
+        "quads"
+      ],
+      "individuals": true
+    },
+    "LOCOOptions": {
+      "fit_list": [
+        "quads"
+      ],
+      "algorithm": "lm",
+      "nIter": 1
+    }
+  }
+}

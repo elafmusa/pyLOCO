@@ -54,6 +54,32 @@ def test_explicit_mapping_reports_unmapped_ambiguous_and_duplicate(tmp_path):
     state=review(); counts=apply_explicit_mapping(state,(MagnetMapping("Q1","PQ1"),MagnetMapping("Q2","PQ1"))); assert counts["duplicate"]==2; assert all(item.control_name for item in state.items[:2])
 
 
+def test_integrated_strength_mapping_converts_delta_k_to_delta_kl(tmp_path):
+    source = tmp_path / "mapping.json"
+    source.write_text(json.dumps({"mappings": [{
+        "lattice_name": "Q1", "lattice_ordinal": 12,
+        "control_name": "Q1/B2L", "component": "B2L",
+    }]}))
+    state = review()
+    state.items[0].metadata["magnetic_length_m"] = 0.4
+    state.set_global_scale(0.25)
+    counts = apply_explicit_mapping(state, load_mapping(source))
+    mapped = state.items[0]
+    assert counts["mapped"] == 1
+    assert mapped.metadata["control_component"] == "B2L"
+    assert mapped.metadata["control_unit"] == "m^-1"
+    assert mapped.integrated_recommended_delta == pytest.approx(0.08)
+    assert mapped.applied_control_delta == pytest.approx(0.02)
+    assert mapped.applied_control_unit == "m⁻¹"
+
+
+def test_integrated_strength_requires_magnetic_length():
+    state = review()
+    state.items[0].metadata["control_component"] = "B2L"
+    with pytest.raises(ValueError, match="magnetic length"):
+        _ = state.items[0].applied_control_delta
+
+
 def test_real_shaped_readonly_state_calibration_targets_limits_and_addresses():
     state=review(); apply_explicit_mapping(state,(MagnetMapping("Q1","PQ1"),)); item,fake,calibration=adapter(); service=PETRACorrectReadOnlyService(item,sign_difference_names={"PQ1"}); snapshot=service.read_snapshot(state)
     q1=state.items[0]; assert q1.machine_value==2.; assert q1.current_ampere==20.; assert q1.target_value==pytest.approx(2.1); assert q1.target_current_ampere==pytest.approx(21.); assert q1.delta_i_ampere==pytest.approx(1.); assert q1.current_limit_status=="Within limits"; assert q1.current_limit_margin_ampere==pytest.approx(4.); assert q1.calibration_status=="Sign convention warning"

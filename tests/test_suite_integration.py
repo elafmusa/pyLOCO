@@ -58,7 +58,7 @@ def test_main_suite_launches_use_canonical_handoff(monkeypatch):
     window.close()
 
 
-def test_suite_launcher_does_not_create_duplicate_processes(monkeypatch):
+def test_suite_launcher_starts_new_process_for_stateful_handoff(monkeypatch):
     calls=[]
     monkeypatch.setattr("PySide6.QtCore.QProcess.startDetached",lambda executable,arguments:(calls.append((executable,arguments)) or (True,43210)))
     monkeypatch.setattr(suite.os,"kill",lambda pid,signal:None)
@@ -67,8 +67,8 @@ def test_suite_launcher_does_not_create_duplicate_processes(monkeypatch):
         first=suite.launch_suite_application("correct","--results","/tmp/result")
         second=suite.launch_suite_application("correct","--results","/tmp/result")
         assert first==(True,"process 43210")
-        assert second==(True,"already running (process 43210)")
-        assert len(calls)==1
+        assert second==(True,"process 43210")
+        assert len(calls)==2
     finally:suite._DETACHED_SUITE_PIDS.clear()
 
 
@@ -112,7 +112,7 @@ def test_correct_handoff_shows_and_activates_before_loading_results(monkeypatch,
         def raise_(self):events.append("raise")
         def activateWindow(self):events.append("activate")
         def statusBar(self):return Status()
-        def _load(self,path,iteration=None):events.append(("load",path,iteration))
+        def load_source_responsively(self,path,iteration=None):events.append(("load",path,iteration))
     class App:
         def exec(self):events.append("exec"); return 0
     monkeypatch.setattr(correct_app,"CorrectMainWindow",Window); monkeypatch.setattr(correct_app,"build_application",lambda _argv:App())

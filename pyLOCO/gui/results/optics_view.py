@@ -5,7 +5,7 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView, QLabel, QTabWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QFrame, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 from .plot_canvas import PlotCanvas
 
@@ -20,6 +20,19 @@ def _table(headers):
 def _finish_table(table):
     table.resizeColumnsToContents()
     table.setFixedHeight(min(190, table.verticalHeader().length() + table.horizontalHeader().height() + 6))
+
+
+def _scrollable_page(content: QWidget) -> QScrollArea:
+    """Keep complete scientific plots reachable in short application windows."""
+    content.setMinimumHeight(620)
+    content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+    scroll = QScrollArea()
+    scroll.setObjectName("opticsResultScrollArea")
+    scroll.setWidgetResizable(True)
+    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setWidget(content)
+    return scroll
 
 
 def _render_saved_plot(plot, path):
@@ -65,12 +78,12 @@ class OpticsView(QWidget):
             # Keep the chart visible in the shorter Results viewport used by
             # laptop displays.  The plot still expands to consume all spare
             # space, but no longer forces its lower half below the viewport.
-            "curves": PlotCanvas(show_toolbar=True, minimum_height=120),
-            "beating": PlotCanvas(show_toolbar=True, minimum_height=120),
+            "curves": PlotCanvas(show_toolbar=True, minimum_height=320),
+            "beating": PlotCanvas(show_toolbar=True, minimum_height=320),
         }
         plot_tabs.addTab(plots["curves"], f"β{plane} curves"); plot_tabs.addTab(plots["beating"], f"β{plane} beating")
         layout.addWidget(message); layout.addWidget(table); layout.addWidget(plot_tabs, 1)
-        return page, message, table, plots
+        return _scrollable_page(page), message, table, plots
 
     @staticmethod
     def _make_dispersion_page(plane):
@@ -80,9 +93,9 @@ class OpticsView(QWidget):
         plot_tabs = QTabWidget(); plots = {}
         for key, label in (("comparison", "Comparison"), ("measured", "Measured"), ("initial", "Initial model"), ("fitted", "Fitted model"),
                            ("initial_residual", "Initial residual"), ("fitted_residual", "Fitted residual"), ("residuals", "Residual comparison")):
-            plots[key] = PlotCanvas(show_toolbar=True, minimum_height=120); plot_tabs.addTab(plots[key], label)
+            plots[key] = PlotCanvas(show_toolbar=True, minimum_height=320); plot_tabs.addTab(plots[key], label)
         layout.addWidget(message); layout.addWidget(table); layout.addWidget(plot_tabs, 1)
-        return page, message, table, plots
+        return _scrollable_page(page), message, table, plots
 
     def set_loader(self, loader):
         self.loader = loader
@@ -104,7 +117,11 @@ class OpticsView(QWidget):
             table.hide()
             return
         table.show(); reference_kind = data.get("reference_kind", "run_input_lattice")
-        message.setText(f"β{plane} uses saved longitudinal position s [m]. Reference: " + ("the resumed fitted lattice before this run's corrections." if reference_kind == "resumed_fitted_lattice" else "the input lattice at the start of this run."))
+        reference_label = {
+            "resumed_fitted_lattice": "the resumed fitted lattice before this stage's corrections.",
+            "workflow_input_lattice": "the original lattice at the start of the complete FIT workflow.",
+        }.get(reference_kind, "the input lattice at the start of this run.")
+        message.setText(f"β{plane} uses saved longitudinal position s [m]. Reference: {reference_label}")
         axis = np.asarray(data["s"], dtype=float); curve_axis = plots["curves"].figure.add_subplot(111); curve_count = 0
         for state, label, style in (("reference", "Reference", ":"), ("initial", "Initial", "-."), ("fitted", "Fitted", "-")):
             values = data.get(f"beta_{plane}_{state}")
@@ -146,7 +163,9 @@ class OpticsView(QWidget):
             )
             table.hide()
             return
-        table.show(); message.setText(("Dispersion was included in the LOCO objective. " if loader.dispersion_included else "Dispersion was not included in the LOCO objective; this is an independent post-fit diagnostic. ") + "Displayed dispersion and model − measurement residuals use mm.")
+        quantity = data.get("display_quantity", "physical_dispersion")
+        quantity_label = "RF orbit response" if quantity == "rf_orbit_response" else "dispersion"
+        table.show(); message.setText(("Dispersion was included in the LOCO objective. " if loader.dispersion_included else "Dispersion was not included in the LOCO objective; this is an independent post-fit diagnostic. ") + f"Displayed {quantity_label} and model − measurement residuals use mm.")
         values = data[plane]; axis = np.asarray(data.get("axis", np.arange(np.size(values["measured"]))), dtype=float); axis_label = data.get("axis_label", "BPM index in saved ordering")
         measured = np.asarray(values["measured"], dtype=float) * 1000.0; initial = np.asarray(values["initial"], dtype=float) * 1000.0; fitted = np.asarray(values["fitted"], dtype=float) * 1000.0
         comparison = plots["comparison"].figure.add_subplot(111)
@@ -164,7 +183,7 @@ class OpticsView(QWidget):
             ax = plots[key].figure.add_subplot(111); ax.plot(axis, residual, linewidth=1.2, label=label)
             ax.axhline(0, color="#8d95a8", linewidth=.8); ax.legend()
         for key, plot in plots.items():
-            ax = plot.figure.axes[0]; ax.set(xlabel=axis_label, ylabel=(f"η{plane} residual [mm]" if "residual" in key else f"η{plane} [mm]")); ax.grid(True, alpha=.25)
+            ax = plot.figure.axes[0]; ax.set(xlabel=axis_label, ylabel=(f"η{plane} residual [mm]" if "residual" in key else f"η{plane} RF response [mm]" if quantity == "rf_orbit_response" else f"η{plane} [mm]")); ax.grid(True, alpha=.25)
         stats = loader.dispersion_statistics.get(plane, {})
         for state, suffix in (("Initial − measurement", "before"), ("Fit − measurement", "after")):
             row = table.rowCount(); table.insertRow(row); table.setItem(row, 0, QTableWidgetItem(state))

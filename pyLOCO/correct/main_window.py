@@ -90,7 +90,7 @@ class CorrectionApplyWorker(QObject):
             self.completed.emit(record)
 
 class CorrectMainWindow(QMainWindow):
-    COLUMNS=("Apply?","Index","Lattice ordinal","Element/family name","Control / power-supply name","Mapping status","Type","Initial K","Fitted K","Current machine K","Raw fitted ΔK","Recommended machine ΔK","ΔK/K [%]","Global scale","Individual scale","Final ΔK","Target K","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason")
+    COLUMNS=("Apply?","Index","Lattice ordinal","Element/family name","Control / power-supply name","Mapping status","Type","Initial K","Fitted K","Current machine K","Raw fitted ΔK","Recommended machine ΔK","ΔK/K [%]","Global scale","Individual scale","Final ΔK","Length [m]","Final ΔKL [m⁻¹]","Applied correction","Target K","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason")
     def __init__(self, *, registry=None):
         super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
         screen=self.screen()
@@ -149,7 +149,7 @@ class CorrectMainWindow(QMainWindow):
         for row,(name,value) in enumerate((("Correction source",self.source_path),("Source type",self.source_type),("Parameters",self.source_parameters),("Source iteration / state",self.source_iteration),("Fit timestamp",self.source_timestamp),("Measurement Session",self.source_session),("Status",self.source_status))): grid.addWidget(QLabel(name),row,0); grid.addWidget(value,row,1)
         actions=QHBoxLayout(); a=QPushButton("Open pyLOCO Results…"); a.setObjectName("primary"); a.clicked.connect(self.open_results); b=QPushButton("Open correction plan / legacy JSON…"); b.clicked.connect(self.open_file); actions.addWidget(a); actions.addWidget(b); actions.addStretch(); grid.addLayout(actions,7,0,1,2); layout.addWidget(group)
         explain=QGroupBox("ⓘ Correction conventions"); explain.setCheckable(True); explain.setChecked(False); explain.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); el=QVBoxLayout(explain); self.conventions_body=QWidget(); body=QGridLayout(self.conventions_body); body.setColumnMinimumWidth(0,210); body.setColumnStretch(1,1)
-        definitions=(("Raw fitted ΔK","Original correction reported by pyLOCO. Never modified."),("Recommended machine ΔK","Correction after applying the explicit machine/sign convention."),("Global fraction","Fraction applied to every included magnet."),("Individual fraction","Additional scale for one magnet."),("Final ΔK","Recommended machine ΔK × global fraction × individual fraction."),("ΔK/K [%]","Final correction relative to the initial K value: 100 × Final ΔK / Initial K."))
+        definitions=(("Raw fitted ΔK","Original correction reported by pyLOCO. Never modified."),("Recommended machine ΔK","Correction after applying the explicit machine/sign convention."),("Global fraction","Fraction applied to every included magnet."),("Individual fraction","Additional scale for one magnet."),("Final ΔK","Recommended machine ΔK × global fraction × individual fraction."),("Final ΔKL","Final ΔK × magnetic length; used only by explicitly mapped B2L/A2L controls."),("Applied correction","Final ΔK for B2/A2, or Final ΔKL for B2L/A2L."),("ΔK/K [%]","Final correction relative to the initial K value: 100 × Final ΔK / Initial K."))
         for row,(term,description) in enumerate(definitions): label=QLabel(term); label.setStyleSheet("font-weight:700"); text=QLabel(description); text.setWordWrap(True); body.addWidget(label,row,0,Qt.AlignTop); body.addWidget(text,row,1)
         el.addWidget(self.conventions_body); self.conventions_body.setVisible(False); explain.toggled.connect(self.conventions_body.setVisible); layout.addWidget(explain); return self._scroll_page(page)
 
@@ -169,7 +169,10 @@ class CorrectMainWindow(QMainWindow):
         self.mapping_summary=QLabel("No correction source loaded"); self.mapping_file_status=QLabel("—"); self.mapped_status=QLabel("—"); self.unmapped_status=QLabel("—"); self.ambiguous_status=QLabel("—")
         mapping_grid=status_grid(mapping_group,(("Mapping status",self.mapping_summary),("Mapping file",self.mapping_file_status),("Mapped magnets",self.mapped_status),("Unmapped magnets",self.unmapped_status),("Ambiguous mappings",self.ambiguous_status)))
         self.mapping_source_notice=QLabel("Load a correction source first to configure PETRA magnet mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,5,0,1,2)
-        self.mapping_button=QPushButton("Load mapping…"); self.mapping_button.setMinimumWidth(210); self.mapping_button.clicked.connect(self.load_petra_mapping); self.mapping_button.setEnabled(False); mapping_grid.addWidget(self.mapping_button,6,0,1,2,Qt.AlignLeft)
+        mapping_actions=QHBoxLayout()
+        self.mapping_button=QPushButton("Load mapping…"); self.mapping_button.setMinimumWidth(210); self.mapping_button.clicked.connect(self.load_petra_mapping); self.mapping_button.setEnabled(False)
+        self.generate_mapping_button=QPushButton("Generate mapping template…"); self.generate_mapping_button.clicked.connect(self.generate_mapping_template); self.generate_mapping_button.setEnabled(False)
+        mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addStretch(1); mapping_grid.addLayout(mapping_actions,6,0,1,2)
         self.mapping_note=QLabel("Explicit mapping is required. Each fitted lattice element must resolve uniquely to a verified control-system name. Unmapped, ambiguous, and duplicate mappings remain blocked."); self.mapping_note.setWordWrap(True); self.mapping_note.setObjectName("mappingHelpText"); mapping_grid.addWidget(self.mapping_note,7,0,1,2)
         layout.addWidget(mapping_group)
         current_row=QHBoxLayout(); self.read_current_k_button=QPushButton("Read current K from pySC Server"); self.read_current_k_button.clicked.connect(self.read_current_pysc_k); self.current_k_status=QLabel("Connect a verified pySC machine/profile and load its explicit mapping."); self.current_k_status.setWordWrap(True); current_row.addWidget(self.read_current_k_button); current_row.addWidget(self.current_k_status,1); layout.addLayout(current_row)
@@ -188,12 +191,17 @@ class CorrectMainWindow(QMainWindow):
         controls=QGroupBox("Correction scaling and filters"); controls.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); controls_layout=QVBoxLayout(controls); controls_layout.setSpacing(6); first=QHBoxLayout(); second=QHBoxLayout(); self.fraction=QComboBox()
         for text,value in (("1%",.01),("5%",.05),("10%",.1),("25%",.25),("50%",.5),("100%",1.0),("Custom",None)): self.fraction.addItem(text,value)
         self.fraction.setCurrentIndex(2); self.custom=NoWheelDoubleSpinBox(); self.custom.setRange(0,1000); self.custom.setDecimals(3); self.custom.setSuffix(" %"); self.custom.setValue(10); self.custom.hide(); self.fraction.currentIndexChanged.connect(self._fraction_changed); self.custom.valueChanged.connect(lambda value:self._set_fraction(value/100))
+        self.correction_representation=QComboBox()
+        self.correction_representation.addItem("ΔK — gradient strength [m⁻²]","gradient")
+        self.correction_representation.addItem("ΔK × L — integrated strength [m⁻¹]","integrated")
+        self.correction_representation.setToolTip("The explicit machine mapping must use B2/A2 for ΔK or B2L/A2L for ΔK × L.")
+        self.correction_representation.currentIndexChanged.connect(self._representation_changed)
         self.filter=QComboBox();
         for text,key in (("All","all"),("Normal quadrupoles","normal_quadrupole"),("Skew quadrupoles","skew_quadrupole"),("Quadrupole tilt","quadrupole_tilt"),("Included","included"),("Excluded","excluded"),("Warnings","warnings")): self.filter.addItem(text,key)
         self.filter.currentIndexChanged.connect(self.refresh_table); self.sort_by=QComboBox()
         for text,key in (("Fitted order","index"),("Largest |ΔK/K|","relative"),("Largest |Final ΔK|","final"),("Largest |ΔI|","delta_i"),("Smallest current-limit margin","margin"),("Calibration warnings","calibration"),("Warnings first","warnings"),("Magnet name","name")):self.sort_by.addItem(text,key)
         self.sort_by.currentIndexChanged.connect(self.refresh_table); self.search=QLineEdit(); self.search.setPlaceholderText("Search magnet/control name"); self.search.textChanged.connect(self.refresh_table)
-        first.addWidget(QLabel("Global fraction")); first.addWidget(self.fraction); first.addWidget(self.custom); first.addSpacing(12); first.addWidget(QLabel("Filter")); first.addWidget(self.filter); first.addWidget(QLabel("Sort")); first.addWidget(self.sort_by); first.addWidget(self.search,1)
+        first.addWidget(QLabel("Global fraction")); first.addWidget(self.fraction); first.addWidget(self.custom); first.addSpacing(12); first.addWidget(QLabel("Apply as")); first.addWidget(self.correction_representation); first.addSpacing(12); first.addWidget(QLabel("Filter")); first.addWidget(self.filter); first.addWidget(QLabel("Sort")); first.addWidget(self.sort_by); first.addWidget(self.search,1)
         include=QPushButton("Include selected"); exclude=QPushButton("Exclude selected"); reason=QLineEdit(); reason.setPlaceholderText("Exclusion reason"); include.clicked.connect(lambda:self._set_selected(True,"")); exclude.clicked.connect(lambda:self._set_selected(False,reason.text())); load=QPushButton("Load exclusion list…"); load.clicked.connect(self.load_exclusions); warn=QPushButton("Exclude warning…"); warn.setToolTip("Exclude every correction matching a selected warning category"); warn.clicked.connect(self.exclude_warning_category)
         reason.setMinimumWidth(170); second.addWidget(include); second.addWidget(exclude); second.addWidget(reason,1); second.addWidget(load); second.addWidget(warn); controls_layout.addLayout(first); controls_layout.addLayout(second); layout.addWidget(controls)
         legend_row=QHBoxLayout(); legend=QLabel('● Normal &nbsp;&nbsp; <span style="color:#D99029">● Amber: attention</span> &nbsp;&nbsp; <span style="color:#D32F2F">● Red: blocked / unsafe</span> &nbsp;&nbsp; <span style="color:#888888">● Gray: excluded</span>'); legend.setTextFormat(Qt.RichText); legend.setObjectName("warningLegend"); legend.setToolTip("Only diagnostic cells are highlighted; excluded rows are muted."); legend_row.addWidget(legend); legend_row.addStretch(1)
@@ -246,7 +254,7 @@ class CorrectMainWindow(QMainWindow):
         source=Path(path).resolve(); self.machine_snapshot=None; self.badge.setText(self.registry.descriptor(self.backend_combo.currentData()).badge)
         for item in self.review.items:item.metadata.setdefault("mapping_status","mapped" if item.control_name else "unmapped")
         self.correction_changes=(); self.apply_button.setEnabled(False); self.apply_status.setText("Correction loaded — preview machine changes")
-        provenance=self.review.items[0].metadata if self.review.items else {}; session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False); self.mapping_file_status.setText("—"); self._refresh_mapping_status(); self._sync_fraction(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2); self.statusBar().showMessage(f"Loaded {len(self.review.items)} correction item(s)",5000)
+        provenance=self.review.items[0].metadata if self.review.items else {}; session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False); self.mapping_file_status.setText("—"); self._refresh_mapping_status(); self._sync_fraction(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2); self.statusBar().showMessage(f"Loaded {len(self.review.items)} correction item(s)",5000)
 
     def load_source_responsively(self,path,iteration=None):
         if self._source_load_thread is not None:
@@ -1071,13 +1079,58 @@ class CorrectMainWindow(QMainWindow):
         self.mapping_summary.setText("Mapping ready for review" if mapped else "Explicit PETRA mapping required")
         self.mapped_status.setText(str(mapped)); self.unmapped_status.setText(str(statuses["unmapped"])); self.ambiguous_status.setText(f"{statuses['ambiguous']} ambiguous; {statuses['duplicate']} duplicate")
 
+    def generate_mapping_template(self):
+        """Create an explicit, editable mapping from the loaded FIT result."""
+        if not self.review:
+            return
+        integrated = self.correction_representation.currentData() == "integrated"
+        entries = []
+        for item in self.review.items:
+            skew = item.correction_type in {"skew_quadrupole", "quadrupole_tilt"}
+            component = ("A2L" if skew else "B2L") if integrated else ("A2" if skew else "B2")
+            control_base = str(item.metadata.get("lattice_common_name") or item.name)
+            entries.append({
+                "lattice_name": item.name,
+                "lattice_ordinal": item.lattice_ordinal,
+                "control_name": f"{control_base}/{component}",
+                "component": component,
+                "unit": "m^-1" if integrated else "m^-2",
+            })
+        suggested = Path(self.review.source_result).expanduser()
+        if suggested.is_file():
+            suggested = suggested.parent
+        suggested = suggested / ("integrated_B2L_A2L_mapping.json" if integrated else "gradient_B2_A2_mapping.json")
+        path = QFileDialog.getSaveFileName(
+            self, "Save explicit magnet mapping", str(suggested),
+            "JSON mapping (*.json)", options=QFileDialog.DontUseNativeDialog,
+        )[0]
+        if not path:
+            return
+        target = Path(path).expanduser()
+        target.write_text(json.dumps({
+            "description": (
+                "Generated mapping template. Verify every control_name against the selected machine/profile before applying."
+            ),
+            "correction_representation": "integrated_delta_k_times_length" if integrated else "gradient_delta_k",
+            "mappings": entries,
+        }, indent=2), encoding="utf-8")
+        self._remember_browse("mapping", target)
+        counts = apply_explicit_mapping(self.review, load_mapping(target))
+        self.mapping_path = str(target.resolve())
+        self.mapping_file_status.setText(target.name)
+        self.mapping_file_status.setToolTip(self.mapping_path)
+        self._refresh_mapping_status(); self.refresh_all(); self.tabs.setCurrentIndex(1)
+        self.statusBar().showMessage(
+            f"Generated and loaded mapping: {counts['mapped']} mapped. Verify control names before Preview/Apply.", 8000
+        )
+
     def load_petra_mapping(self):
         path=QFileDialog.getOpenFileName(self,"Load explicit magnet mapping",self._browse_start("mapping"),"Mapping files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
         if not path or not self.review:return
         self._remember_browse("mapping",path)
         try:counts=apply_explicit_mapping(self.review,load_mapping(path))
         except Exception as exc:QMessageBox.critical(self,"Cannot load PETRA mapping",str(exc)); return
-        self.mapping_path=str(Path(path).resolve()); self.mapping_file_status.setText(Path(path).name); self.mapping_file_status.setToolTip(self.mapping_path); self._refresh_mapping_status(); self._read_current_pysc_k(strict=False); self.statusBar().showMessage(f"Mapping loaded: {counts['mapped']} mapped, {counts['unmapped']} unmapped, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate."); self.refresh_all()
+        self.mapping_path=str(Path(path).resolve()); self.mapping_file_status.setText(Path(path).name); self.mapping_file_status.setToolTip(self.mapping_path); self._sync_representation(); self._refresh_mapping_status(); self._read_current_pysc_k(strict=False); self.statusBar().showMessage(f"Mapping loaded: {counts['mapped']} mapped, {counts['unmapped']} unmapped, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate."); self.refresh_all()
 
     def _workflow_complete(self):
         source=self.review is not None
@@ -1092,6 +1145,23 @@ class CorrectMainWindow(QMainWindow):
     def _sync_fraction(self):
         if not self.review:return
         index=self.fraction.findData(self.review.global_scale); self.fraction.setCurrentIndex(index if index>=0 else self.fraction.count()-1); self.custom.setValue(self.review.global_scale*100)
+    def _sync_representation(self):
+        if not self.review:return
+        components={str(item.metadata.get("control_component","")).upper() for item in self.review.items}
+        integrated=bool(components) and components <= {"B2L","A2L"}
+        self.correction_representation.blockSignals(True)
+        self.correction_representation.setCurrentIndex(1 if integrated else 0)
+        self.correction_representation.blockSignals(False)
+    def _representation_changed(self):
+        if not self.review:return
+        integrated=self.correction_representation.currentData()=="integrated"
+        for item in self.review.items:
+            skew=item.correction_type in {"skew_quadrupole","quadrupole_tilt"}
+            item.metadata["control_component"]=("A2L" if skew else "B2L") if integrated else ("A2" if skew else "B2")
+            item.metadata["control_unit"]="m^-1" if integrated else "m^-2"
+        self.statusBar().showMessage(
+            "Integrated ΔK × L selected; use a B2L/A2L mapping." if integrated else "Gradient ΔK selected; use a B2/A2 mapping.",5000)
+        self.refresh_all()
     def _fraction_changed(self):
         custom=self.fraction.currentData() is None; self.custom.setVisible(custom)
         if not custom:self._set_fraction(float(self.fraction.currentData()))
@@ -1119,7 +1189,9 @@ class CorrectMainWindow(QMainWindow):
         self._updating=True; self.table.setSortingEnabled(False); self.table.setRowCount(0)
         if self.review:
             for item in self._sorted_items():
-                row=self.table.rowCount(); self.table.insertRow(row); values=(item.included,item.index,item.lattice_ordinal,item.name,item.control_name,item.metadata.get("mapping_status","unmapped"),item.correction_type,item.initial_value,item.fitted_value,item.machine_value,item.raw_fitted_delta,item.recommended_machine_delta,item.relative_percent,self.review.global_scale,item.individual_scale,item.final_delta,item.target_value,item.current_ampere,item.target_current_ampere,item.delta_i_ampere,item.min_current_ampere,item.max_current_ampere,item.current_limit_margin_ampere,item.calibration_status,item.current_limit_status,item.exclusion_reason)
+                try: applied=f"{item.applied_control_delta:.9g} {item.applied_control_unit}"
+                except ValueError: applied="Length required"
+                row=self.table.rowCount(); self.table.insertRow(row); values=(item.included,item.index,item.lattice_ordinal,item.name,item.control_name,item.metadata.get("mapping_status","unmapped"),item.correction_type,item.initial_value,item.fitted_value,item.machine_value,item.raw_fitted_delta,item.recommended_machine_delta,item.relative_percent,self.review.global_scale,item.individual_scale,item.final_delta,item.magnetic_length_m,item.integrated_final_delta,applied,item.target_value,item.current_ampere,item.target_current_ampere,item.delta_i_ampere,item.min_current_ampere,item.max_current_ampere,item.current_limit_margin_ampere,item.calibration_status,item.current_limit_status,item.exclusion_reason)
                 warnings=item.warnings(self.review.thresholds)
                 for col,value in enumerate(values):
                     table_item=QTableWidgetItem("" if col==0 else self._fmt(value)); table_item.setData(Qt.UserRole,item.index)

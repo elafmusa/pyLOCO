@@ -23,6 +23,8 @@ class MagnetMapping:
     lattice_name: str
     control_name: str
     lattice_ordinal: int | None = None
+    component: str | None = None
+    unit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -52,7 +54,20 @@ def load_mapping(path: str|Path) -> tuple[MagnetMapping,...]:
         if not isinstance(row,dict):raise ValueError(f"Mapping entry {index} is not an object")
         lattice=str(row.get("lattice_name",row.get("element_name",row.get("name","")))).strip(); control=str(row.get("control_name",row.get("power_supply_name",""))).strip(); ordinal=row.get("lattice_ordinal",row.get("ordinal"))
         if not lattice or not control:raise ValueError(f"Mapping entry {index} requires lattice_name and control_name")
-        result.append(MagnetMapping(lattice,control,None if ordinal is None else int(ordinal)))
+        component = row.get("component") or row.get("control_component")
+        if component is None:
+            suffix = control.rsplit("/", 1)[-1].upper()
+            component = suffix if suffix in {"B2", "B2L", "A2", "A2L"} else None
+        component = None if component is None else str(component).upper()
+        if component not in {None, "B2", "B2L", "A2", "A2L"}:
+            raise ValueError(f"Mapping entry {index} has unsupported component {component!r}")
+        unit = row.get("unit") or row.get("control_unit")
+        if unit is None and component is not None:
+            unit = "m^-1" if component.endswith("L") else "m^-2"
+        result.append(MagnetMapping(
+            lattice, control, None if ordinal is None else int(ordinal),
+            component, None if unit is None else str(unit),
+        ))
     return tuple(result)
 
 
@@ -75,7 +90,12 @@ def apply_explicit_mapping(review: CorrectionReview, mappings: Iterable[MagnetMa
         elif len(candidates)>1:
             item.control_name=None; status="ambiguous"
         else:
-            item.control_name=candidates[0].control_name; status="duplicate" if item.control_name in duplicate_controls else "mapped"
+            mapping = candidates[0]
+            item.control_name=mapping.control_name; status="duplicate" if item.control_name in duplicate_controls else "mapped"
+            if mapping.component is not None:
+                item.metadata["control_component"] = mapping.component
+            if mapping.unit is not None:
+                item.metadata["control_unit"] = mapping.unit
         item.metadata["mapping_status"]=status; counts[status]+=1
     return counts
 

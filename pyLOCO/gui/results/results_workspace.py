@@ -35,6 +35,13 @@ class ResultsWorkspace(QWidget):
         self.run_progress = QProgressBar(); self.run_progress.setRange(0, 100); self.run_progress.setValue(0)
         self.run_progress.setFormat("%p%")
         self.run_progress.setMinimumHeight(24)
+        self.stage_progress = QProgressBar(); self.stage_progress.setRange(0, 100); self.stage_progress.setValue(0)
+        self.stage_progress.setFormat("%p%")
+        self.stage_progress.setMinimumHeight(24)
+        self.stage_progress.hide()
+        self.stage_context_label = QLabel()
+        self.stage_context_label.setWordWrap(True)
+        self.stage_context_label.hide()
         self._last_progress_value = 0
         self.run_output_dir = QLineEdit("—")
         self.run_output_dir.setReadOnly(True)
@@ -52,8 +59,15 @@ class ResultsWorkspace(QWidget):
         form.addRow("Status", self.run_status_label)
         form.addRow("Iteration", self.run_iteration_label)
         form.addRow("Elapsed", self.run_elapsed_label)
-        form.addRow("Progress", self.run_progress); form.addRow("Results directory", self.run_output_dir)
+        form.addRow("Overall progress", self.run_progress)
+        form.addRow("Current stage", self.stage_context_label)
+        form.addRow("Stage progress", self.stage_progress)
+        form.addRow("Results directory", self.run_output_dir)
         self._progress_label = form.labelForField(self.run_progress)
+        self._stage_context_title = form.labelForField(self.stage_context_label)
+        self._stage_progress_title = form.labelForField(self.stage_progress)
+        self._stage_context_title.hide()
+        self._stage_progress_title.hide()
         self._output_label = form.labelForField(self.run_output_dir)
         self.monitor = QGroupBox("LOCO Fit"); self.monitor.setLayout(form)
         monitor_actions = QVBoxLayout(); monitor_actions.addWidget(self.cancel_button); monitor_actions.addWidget(self.waiting_games_button); monitor_actions.addStretch(1)
@@ -86,9 +100,17 @@ class ResultsWorkspace(QWidget):
         self.iteration_selector.setObjectName("resultsIterationSelector")
         self.iteration_selector.setMinimumWidth(220)
         self.iteration_selector.currentIndexChanged.connect(self._select_iteration)
+        self.stage_selector = QComboBox()
+        self.stage_selector.setObjectName("resultsStageSelector")
+        self.stage_selector.setMinimumWidth(220)
+        self.stage_selector.currentIndexChanged.connect(self._select_stage)
+        self.stage_selector_label = QLabel("Stage:")
+        self.stage_selector_label.hide(); self.stage_selector.hide()
         self.iteration_notice = QLabel("No iteration history loaded.")
         self.iteration_notice.setWordWrap(True)
         selector_row = QHBoxLayout()
+        selector_row.addWidget(self.stage_selector_label)
+        selector_row.addWidget(self.stage_selector)
         selector_row.addWidget(QLabel("View fitted state:"))
         selector_row.addWidget(self.iteration_selector)
         selector_row.addWidget(self.iteration_notice, 1)
@@ -109,6 +131,9 @@ class ResultsWorkspace(QWidget):
         self.run_elapsed_label.setText("Elapsed: 0s")
         self._last_progress_value = 0
         self.run_progress.setRange(0, 100); self.run_progress.setValue(0)
+        self.stage_progress.setRange(0, 100); self.stage_progress.setValue(0)
+        self.stage_progress.hide(); self.stage_context_label.hide()
+        self._stage_context_title.hide(); self._stage_progress_title.hide()
         self.run_output_dir.setText("Preparing results directory…")
         self.run_output_dir.setCursorPosition(0)
         self.cancel_button.setEnabled(True)
@@ -141,11 +166,25 @@ class ResultsWorkspace(QWidget):
         self._last_progress_value = value
         self.run_progress.setRange(0, 100)
         self.run_progress.setValue(value)
+        stage = int(event.get("workflow_stage", 0) or 0)
+        stages = int(event.get("workflow_stages", 0) or 0)
+        if stage > 0 and stages > 1:
+            stage_fraction = min(1.0, max(0.0, float(event.get("stage_fraction", 0.0))))
+            self.stage_context_label.setText(
+                f"Stage {stage} of {stages} — {event.get('stage_name') or 'FIT stage'}"
+            )
+            self.stage_progress.setValue(int(round(100.0 * stage_fraction)))
+            self.stage_context_label.show(); self.stage_progress.show()
+            self._stage_context_title.show(); self._stage_progress_title.show()
         iteration = int(event.get("iteration", 0) or 0)
         total = int(event.get("total_iterations", 0) or 0)
-        self.run_iteration_label.setText(
-            f"Iteration {iteration} of {total}" if iteration > 0 else f"Preparing {total} iteration(s)"
-        )
+        if iteration > 0:
+            iteration_text = f"Iteration {iteration} of {total}"
+        elif total > 0:
+            iteration_text = f"Preparing {total} iteration(s)"
+        else:
+            iteration_text = "Preparing stage" if stage > 0 else "Preparing fit"
+        self.run_iteration_label.setText(iteration_text)
         self.run_status_label.setText(str(event.get("message") or event.get("phase") or "Running LOCO"))
 
     def append_log(self, message: str) -> None:
@@ -177,12 +216,20 @@ class ResultsWorkspace(QWidget):
             except OSError: pass
         self.tabs.setCurrentIndex(0)
         self.compact_status.setText(f"✓ LOCO completed — 100% — Results saved")
-        self.compact_monitor.hide()
-        self.monitor.show()
+        # Results are the primary content once calculation is complete. Keep
+        # the full run monitor available behind Details, but do not let it
+        # consume most of the vertical plotting area.
+        self.compact_monitor.show()
+        self.monitor.hide()
         self.details_button.setChecked(False)
-        self.monitor.setMaximumHeight(16777215)
 
-    def load_results(self, results_dir, *, runtime=None) -> None:
+    def load_results(self, results_dir, *, runtime=None, workflow_stage: bool = False) -> None:
+        if not workflow_stage:
+            self.stage_selector.blockSignals(True)
+            self.stage_selector.clear()
+            self.stage_selector.blockSignals(False)
+            self.stage_selector_label.hide()
+            self.stage_selector.hide()
         path = Path(results_dir).expanduser()
         if not path.exists():
             self.loader = None; self.run_status_label.setText(f"Saved results directory is unavailable: {path}"); return
@@ -212,6 +259,37 @@ class ResultsWorkspace(QWidget):
         for widget in (self.run_progress, self._progress_label): widget.setVisible(False)
         self.compact_status.setText("✓ Completed run restored — Results available")
         self.compact_monitor.show(); self.monitor.hide(); self.details_button.setChecked(False)
+
+    def load_workflow_session(self, session_path, *, preferred_result=None) -> None:
+        """Expose every saved FIT stage and that stage's iteration history."""
+        from pyLOCO.gui.fit_workflow import FitRunSession
+
+        session = FitRunSession.load(session_path)
+        checkpoints = [item for item in session.checkpoints if not item.validate_files()]
+        if not checkpoints:
+            raise ValueError("The FIT workflow session contains no complete stage checkpoints.")
+        preferred = str(Path(preferred_result).resolve()) if preferred_result else ""
+        selected = len(checkpoints) - 1
+        self.stage_selector.blockSignals(True)
+        self.stage_selector.clear()
+        for position, checkpoint in enumerate(checkpoints):
+            path = str(Path(checkpoint.results_dir).expanduser().resolve())
+            self.stage_selector.addItem(
+                f"Stage {checkpoint.stage_index + 1} — {checkpoint.stage_name}", path
+            )
+            if preferred and path == preferred:
+                selected = position
+        self.stage_selector.setCurrentIndex(selected)
+        self.stage_selector.blockSignals(False)
+        self.stage_selector_label.show(); self.stage_selector.show()
+        self._select_stage(selected)
+
+    def _select_stage(self, index: int) -> None:
+        if index < 0:
+            return
+        results_dir = self.stage_selector.itemData(index)
+        if results_dir:
+            self.load_results(results_dir, workflow_stage=True)
 
     def _select_iteration(self, index: int) -> None:
         if self.base_loader is None or index < 0:

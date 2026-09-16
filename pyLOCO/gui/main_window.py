@@ -16,9 +16,10 @@ from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRect, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot, QTimer
+from PySide6.QtCore import QObject, QMetaObject, QRect, QSettings, QSize, Qt, QThread, QUrl, Signal, Slot, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QDoubleValidator, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QFileDialog,
@@ -362,6 +363,7 @@ class FitWorkflowWorker(LocoRunWorker):
     def __init__(self, request, recipe, session_path, resume_session=None) -> None:
         super().__init__(request); self.recipe = recipe; self.session_path = session_path; self.resume_session = resume_session
 
+    @Slot()
     @Slot()
     def run(self) -> None:
         try:
@@ -890,6 +892,7 @@ class MainWindow(QMainWindow):
         self._project_explorer = ProjectExplorer()
         self._run_thread: QThread | None = None
         self._run_worker: LocoRunWorker | None = None
+        self._run_preparing = False
         self._run_started_at = 0.0
         self._last_loco_result = None
         self._waiting_games_dialog: WaitingGamesDialog | None = None
@@ -1120,6 +1123,8 @@ class MainWindow(QMainWindow):
             button = QPushButton(text)
             button.clicked.connect(slot)
             form.addRow(button)
+            if text == "Open Project…":
+                self.dashboard_open_project_button = button
         group = QGroupBox("Project state")
         group.setLayout(form)
         body.addWidget(group)
@@ -1328,9 +1333,16 @@ class MainWindow(QMainWindow):
         self.fit_workflow_table = QTableWidget(0, 4)
         self.fit_workflow_table.setHorizontalHeaderLabels(["Stage", "Name", "Iterations", "Starting state"])
         configure_item_view(self.fit_workflow_table)
+        self.fit_workflow_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.fit_workflow_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.fit_workflow_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.fit_workflow_table.itemSelectionChanged.connect(self._select_fit_stage)
         self.fit_workflow_table.itemDoubleClicked.connect(self._inspect_fit_stage_result)
         workflow_layout.addWidget(self.fit_workflow_table)
+        self.fit_stage_editor_label = QLabel()
+        self.fit_stage_editor_label.setObjectName("dashboardCardTitle")
+        self.fit_stage_editor_label.setWordWrap(True)
+        workflow_layout.addWidget(self.fit_stage_editor_label)
         workflow_buttons = QHBoxLayout()
         for text, slot in (("+ Add stage", self._add_fit_stage), ("Duplicate", self._duplicate_fit_stage),
                            ("Remove", self._remove_fit_stage), ("↑", lambda: self._move_fit_stage(-1)),
@@ -1787,6 +1799,69 @@ class MainWindow(QMainWindow):
         if 0 <= self._active_fit_stage < len(self.fit_recipe.stages) and not self._loading_config:
             self.fit_recipe.stages[self._active_fit_stage].configuration = self._stage_configuration_snapshot()
 
+    def _configuration_for_fit_stage(self, stage: FitStage) -> LocoConfiguration:
+        """Return an editable GUI configuration for new and legacy recipes.
+
+        Early FIT recipes stored only the backend constructor mapping.  Those
+        recipes have always been executable, but the editor previously kept
+        showing the last GUI configuration when their rows were selected.
+        Merge their complete backend mapping onto the current project defaults
+        so every stage is inspectable and can be edited without changing its
+        continuation semantics.
+        """
+        stored = stage.configuration
+        gui_data = stored.get("gui_config")
+        if gui_data:
+            return LocoConfiguration.from_dict(gui_data)
+
+        mapping = stored.get("backend_mapping", stored)
+        data = json_safe(__import__("dataclasses").asdict(self.project.loco_config))
+
+        def update_known(section: str, values: dict) -> None:
+            target = data[section]
+            for key, value in values.items():
+                if key in target:
+                    target[key] = str(value) if isinstance(target[key], str) and value is not None else value
+
+        options = dict(mapping.get("LOCOOptions", {}))
+        for section in ("solver", "svd", "rejection"):
+            update_known(section, options)
+
+        fit_init = dict(mapping.get("FitInitConfig", {}))
+        selected = set(fit_init.pop("fit_list", options.get("fit_list", [])) or [])
+        parameter_names = tuple(self.parameter_checks) if hasattr(self, "parameter_checks") else ()
+        for name in parameter_names:
+            data["parameters"][name] = name in selected
+        update_known("parameters", fit_init)
+        if "individuals" in fit_init:
+            data["parameters"]["individuals"] = bool(fit_init["individuals"])
+
+        for section, backend_key in (
+            ("machine_elements", "MachineElements"),
+            ("response_matrix", "RMConfig"),
+            ("constraints", "ConstraintConfig"),
+            ("fixed_parameters", "FixedParameters"),
+        ):
+            update_known(section, dict(mapping.get(backend_key, {})))
+
+        momentum = dict(mapping.get("MomentumCompaction", {}))
+        if momentum:
+            data["mcf_source"] = momentum.get("source", data["mcf_source"])
+            value = momentum.get("value")
+            data["mcf_user_value"] = "" if value is None else str(value)
+        output = dict(mapping.get("Output", {}))
+        data["output_directory"] = output.get("directory", data["output_directory"])
+        data["run_name"] = output.get("run_name", data["run_name"])
+        if "BadBPMPositions" in mapping:
+            data["bad_bpm_positions"] = list(mapping["BadBPMPositions"])
+        excluded = dict(mapping.get("ExcludedCorrectorPositions", {}))
+        if excluded:
+            data["excluded_horizontal_corrector_positions"] = list(excluded.get("horizontal", []))
+            data["excluded_vertical_corrector_positions"] = list(excluded.get("vertical", []))
+        if "Resume" in mapping:
+            update_known("resume", dict(mapping["Resume"]))
+        return LocoConfiguration.from_dict(data)
+
     def _refresh_fit_workflow_table(self, select: int | None = None) -> None:
         table = self.fit_workflow_table
         table.blockSignals(True); table.setRowCount(len(self.fit_recipe.stages))
@@ -1803,6 +1878,19 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values): table.setItem(row, column, QTableWidgetItem(str(value)))
         table.blockSignals(False)
         if select is not None and 0 <= select < table.rowCount(): table.selectRow(select)
+        self._refresh_fit_stage_editor_label()
+
+    def _refresh_fit_stage_editor_label(self) -> None:
+        if not hasattr(self, "fit_stage_editor_label"):
+            return
+        if 0 <= self._active_fit_stage < len(self.fit_recipe.stages):
+            stage = self.fit_recipe.stages[self._active_fit_stage]
+            self.fit_stage_editor_label.setText(
+                f"Editing stage {self._active_fit_stage + 1}: {stage.name} — "
+                "the FIT controls below belong to this stage"
+            )
+        else:
+            self.fit_stage_editor_label.setText("Select a workflow row to edit that stage's FIT configuration")
 
     def _add_fit_stage(self, checked=False, *, name: str | None = None, start_from: str | None = None) -> None:
         if hasattr(self, "solver_n_iter"):
@@ -1818,12 +1906,13 @@ class MainWindow(QMainWindow):
         rows = self.fit_workflow_table.selectionModel().selectedRows() if self.fit_workflow_table.selectionModel() else []
         if not rows: return
         selected = rows[0].row()
-        if selected == self._active_fit_stage: return
+        if selected == self._active_fit_stage:
+            self._refresh_fit_stage_editor_label()
+            return
         self._store_active_fit_stage(); self._active_fit_stage = selected
-        data = self.fit_recipe.stages[selected].configuration.get("gui_config")
-        if data:
-            self.project.loco_config = LocoConfiguration.from_dict(data)
-            self._load_config_to_widgets()
+        self.project.loco_config = self._configuration_for_fit_stage(self.fit_recipe.stages[selected])
+        self._load_config_to_widgets()
+        self._refresh_fit_stage_editor_label()
 
     def _duplicate_fit_stage(self) -> None:
         self._store_active_fit_stage()
@@ -2754,6 +2843,10 @@ class MainWindow(QMainWindow):
         self._load_config_to_widgets()
         self.fit_recipe = FitRecipe(); self._active_fit_stage = -1
         self._add_fit_stage(name="Stage 1", start_from="original_model")
+        # A new project always starts at its dashboard.  Keeping the previous
+        # workspace selected can leave an empty Results/Fit view on screen,
+        # which makes the freshly-created project appear broken.
+        self._workspace.setCurrentIndex(0)
         self._refresh_ui("New project created")
 
     @Slot()
@@ -2769,6 +2862,7 @@ class MainWindow(QMainWindow):
                 "Open pyLOCO project",
                 "",
                 "pyLOCO Project (*.pyloco.json);;JSON (*.json)",
+                options=QFileDialog.Option.DontUseNativeDialog,
             )[0]
         )
         if not filename:
@@ -2782,7 +2876,16 @@ class MainWindow(QMainWindow):
         self._load_config_to_widgets()
         self._load_project_fit_recipe()
         completed = self.project.completed_run
-        if completed.results_dir:
+        fit_session = self.project.fit_run_session or {}
+        session_path = fit_session.get("path")
+        resolved_session = self.project.resolve_path(session_path) if session_path else None
+        if resolved_session is not None and resolved_session.is_file():
+            preferred = self.project.resolve_path(completed.results_dir) if completed.results_dir else None
+            self.results_workspace.load_workflow_session(
+                resolved_session, preferred_result=preferred
+            )
+            self._workspace.setCurrentWidget(self.results_page)
+        elif completed.results_dir:
             results_dir = self.project.resolve_path(completed.results_dir)
             if results_dir.exists():
                 self.results_workspace.load_results(
@@ -2906,8 +3009,9 @@ class MainWindow(QMainWindow):
         except Exception:
             return None
 
-    def _element_preview_rows(self, ords: list[int]) -> list[tuple[int, int, str, str]]:
-        lattice = self._load_current_lattice()
+    def _element_preview_rows(self, ords: list[int], lattice=None) -> list[tuple[int, int, str, str]]:
+        if lattice is None:
+            lattice = self._load_current_lattice()
         rows = []
         for position, ordinal in enumerate(ords):
             elem = lattice[ordinal] if lattice and 0 <= ordinal < len(lattice) else None
@@ -2921,12 +3025,24 @@ class MainWindow(QMainWindow):
             return
         elements = self.project.loco_config.machine_elements
         advanced = self.project.mode == "Advanced"
+        signature = (
+            self.project.lattice.path,
+            advanced,
+            tuple((key, tuple(getattr(elements, key))) for key in ELEMENT_ROLES),
+        )
+        if getattr(self, "_element_preview_signature", None) == signature:
+            return
+        self._element_preview_signature = signature
+        # Loading a large AT lattice is comparatively expensive.  Reuse one
+        # load for every element preview instead of loading it independently
+        # for BPMs, correctors, cavities, normal quads, skews, and tilts.
+        lattice = self._load_current_lattice() if advanced else None
         for key in ELEMENT_ROLES:
             values = list(getattr(elements, key))
             self.element_count_labels[key].setText(f"{len(values)} selected")
             table = self.element_preview_tables[key]
             table.setVisible(advanced)
-            rows = self._element_preview_rows(values) if advanced else []
+            rows = self._element_preview_rows(values, lattice) if advanced else []
             table.setRowCount(len(rows))
             for r, row in enumerate(rows):
                 for c, value in enumerate(row):
@@ -3114,14 +3230,18 @@ class MainWindow(QMainWindow):
         self._refresh_ui("Validation complete")
 
     def _rename_project(self) -> None:
-        self.project.name = (
-            self.dashboard_name.text().strip() or "Untitled LOCO Project"
-        )
+        value = self.dashboard_name.text().strip() or "Untitled LOCO Project"
+        if value == self.project.name:
+            return
+        self.project.name = value
         self.project.modified = True
         self._refresh_ui("Project renamed")
 
     def _update_project_description(self) -> None:
-        self.project.description = self.dashboard_description.text().strip()
+        value = self.dashboard_description.text().strip()
+        if value == self.project.description:
+            return
+        self.project.description = value
         self.project.modified = True
         self._refresh_ui("Project description updated")
 
@@ -3173,7 +3293,7 @@ class MainWindow(QMainWindow):
         advanced = self.project.mode == "Advanced"
         widgets = (
             self.rm_fixedpath, self.rm_log_info, self.loco_fixedpath,
-            self.loco_individuals, self.loco_remove_coupling, self.loco_plot_fit_parameters,
+            self.loco_remove_coupling, self.loco_plot_fit_parameters,
             self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v, self.params_cmstep_file_row, self.params_rfstep,
             self.params_init, self.params_quads_attr, self.params_quads_attr_index, self.params_skew_attr,
             self.params_skew_attr_index, self.params_tilt_attr_r1, self.params_tilt_attr_r2,
@@ -3181,6 +3301,10 @@ class MainWindow(QMainWindow):
         )
         for widget in widgets:
             widget.setVisible(advanced)
+        # Legacy configuration compatibility only: the generic Individuals
+        # checkbox has been replaced by the three explicit parameterization
+        # controls and must never become a free-floating visible widget.
+        self.loco_individuals.setVisible(False)
         self.fit_init_group.setVisible(advanced)
         for form, field in self._advanced_form_rows:
             if hasattr(form, "setRowVisible"):
@@ -3228,7 +3352,11 @@ class MainWindow(QMainWindow):
         self._validation_label.setObjectName(
             "validationOk" if self.project.is_complete else "validationMissing"
         )
-        self.run_loco_action.setEnabled(self.project.is_complete)
+        self.run_loco_action.setEnabled(
+            self.project.is_complete
+            and self._run_thread is None
+            and not self._run_preparing
+        )
         self.compare_orms_action.setEnabled(self._can_compare_orms())
         self.lattice_path.setText(self.project.lattice.path or "No lattice selected")
         self.lattice_type.setText(self.project.lattice.file_type or "—")
@@ -3267,32 +3395,76 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def run_loco(self) -> None:
-        self._store_active_fit_stage()
-        messages = self.project.validation_messages()
-        if messages:
-            QMessageBox.warning(self, "Cannot run LOCO", "Missing required inputs:\n\n" + "\n".join(messages))
-            return
-        if self._run_thread is not None:
+        if self._run_thread is not None or self._run_preparing:
             self.statusBar().showMessage("FIT is already running")
             return
-        self.project.loco_config = self._collect_loco_configuration()
-        request = LocoRunRequest.from_project(self.project)
-        workflow = self.fit_recipe if len(self.fit_recipe.stages) > 1 else None
-        if workflow is not None:
-            lattice = self._load_current_lattice() or []
-            names = [str(getattr(element, "CommonName", None) or getattr(element, "FamName", None) or getattr(element, "Name", "")) for element in lattice]
-            report = preflight_recipe(
-                workflow, lattice_path=request.lattice_path,
-                measurement_identity=request.measurement_session, lattice_element_names=names,
-            )
-            if not report["compatible"]:
-                QMessageBox.warning(self, "FIT workflow preflight failed", "\n".join(report["errors"])); return
+        self._run_preparing = True
         self._run_cancel_requested = False
         self._set_waiting_game_status("running")
         self._run_started_at = __import__("time").monotonic()
         self.results_workspace.begin_run()
+        self.results_workspace.update_progress({
+            "phase": "preflight",
+            "message": "Preparing inputs and checking the FIT workflow…",
+            "workflow_fraction": 0.0,
+        })
         self.run_loco_action.setEnabled(False)
         self._workspace.setCurrentIndex(self._workspace.indexOf(self.results_page))
+        self._elapsed_timer.start(500)
+        self.statusBar().showMessage("Preparing LOCO run…")
+        # Return to Qt before loading the lattice or preparing the backend.
+        # This guarantees that the Results page is painted and responsive
+        # before any potentially expensive FIT setup begins.
+        QTimer.singleShot(0, self._prepare_and_start_loco)
+
+    @Slot()
+    def _prepare_and_start_loco(self) -> None:
+        try:
+            self._store_active_fit_stage()
+            messages = self.project.validation_messages()
+            if messages:
+                raise ValueError("Missing required inputs:\n\n" + "\n".join(messages))
+            self.project.loco_config = self._collect_loco_configuration()
+            request = LocoRunRequest.from_project(self.project)
+            workflow = self.fit_recipe if len(self.fit_recipe.stages) > 1 else None
+            if workflow is not None:
+                lattice = self._load_current_lattice() or []
+                names = [str(getattr(element, "CommonName", None) or getattr(element, "FamName", None) or getattr(element, "Name", "")) for element in lattice]
+                report = preflight_recipe(
+                    workflow, lattice_path=request.lattice_path,
+                    measurement_identity=request.measurement_session, lattice_element_names=names,
+                )
+                if not report["compatible"]:
+                    raise ValueError("\n".join(report["errors"]))
+        except Exception as exc:
+            import traceback
+
+            self._run_preparing = False
+            self.results_workspace.fail_run(cancelled=False)
+            self.results_workspace.run_status_label.setText("Run preparation failed")
+            self.results_workspace.run_iteration_label.setText("Not started")
+            self._append_run_log(traceback.format_exc())
+            self._elapsed_timer.stop()
+            self.cancel_loco_button.setEnabled(False)
+            self._set_waiting_game_status("failed")
+            self.run_loco_action.setEnabled(self.project.is_complete)
+            self.statusBar().showMessage("LOCO run could not be prepared")
+            QMessageBox.critical(self, "Cannot start LOCO", f"Run preparation failed:\n\n{exc}")
+            return
+        if workflow is not None and workflow.stages:
+            # Paint the workflow context before starting the worker thread.
+            # On macOS, spawning numerical-Jacobian workers can temporarily
+            # delay queued Qt signals; without this synchronous update the UI
+            # misleadingly remains at "Preparing workflow" and 0%.
+            self._on_loco_progress({
+                "phase": "stage_start",
+                "message": f"Starting {workflow.stages[0].name}.",
+                "workflow_stage": 1,
+                "workflow_stages": len(workflow.stages),
+                "stage_name": workflow.stages[0].name,
+                "stage_fraction": 0.0,
+                "workflow_fraction": 0.0,
+            })
         self._run_thread = QThread(self)
         if workflow is None:
             self._run_worker = LocoRunWorker(request)
@@ -3303,7 +3475,6 @@ class MainWindow(QMainWindow):
                 resume_session=self._resume_fit_session,
             )
         self._run_worker.moveToThread(self._run_thread)
-        self._run_thread.started.connect(self._run_worker.run)
         self._run_worker.log.connect(self._append_run_log)
         self._run_worker.progress.connect(self._on_loco_progress)
         self._run_worker.svd_selection_requested.connect(self._on_svd_selection_requested)
@@ -3314,7 +3485,12 @@ class MainWindow(QMainWindow):
         self._run_thread.finished.connect(self._run_worker.deleteLater)
         self._run_thread.finished.connect(self._run_thread.deleteLater)
         self._run_thread.start()
-        self._elapsed_timer.start(500)
+        # QThread.started is emitted by the QThread object, whose affinity is
+        # the GUI thread.  PySide may consequently execute a Python override
+        # in the GUI despite moveToThread().  Queue the named Qt slot directly
+        # on the worker object after its event loop has started.
+        QMetaObject.invokeMethod(self._run_worker, "run", Qt.QueuedConnection)
+        self._run_preparing = False
         self._refresh_ui("LOCO run started")
 
     @Slot(object)
@@ -3368,6 +3544,10 @@ class MainWindow(QMainWindow):
             self._refresh_fit_workflow_table(self._active_fit_stage)
         self._append_run_log("Saved outputs:\n" + "\n".join(result.output_files))
         self.results_workspace.complete_run(result)
+        if isinstance(self._run_worker, FitWorkflowWorker):
+            self.results_workspace.load_workflow_session(
+                self._run_worker.session_path, preferred_result=result.results_dir
+            )
         self.project.completed_run = CompletedRunReference(
             results_dir=str(result.results_dir),
             elapsed_seconds=float(result.elapsed_seconds),
@@ -3445,6 +3625,7 @@ class MainWindow(QMainWindow):
             self._run_thread.wait()
         self._run_thread = None
         self._run_worker = None
+        self._run_preparing = False
         self.run_loco_action.setEnabled(self.project.is_complete)
         self.compare_orms_action.setEnabled(self._can_compare_orms())
         self._refresh_ui("LOCO run finished")

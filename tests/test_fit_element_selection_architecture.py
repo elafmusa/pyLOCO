@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from pyLOCO.gui.backend import _build_pyloco_kwargs
+from pyLOCO.gui.backend import (
+    _build_pyloco_kwargs,
+    _prepare_loco_lattice,
+    _resolve_momentum_compaction,
+    _validate_physical_fit_selections,
+)
 from pyLOCO.gui.models.project import LocoConfiguration, validate_element_groups
 
 
@@ -44,3 +49,58 @@ def test_backend_uses_explicit_groups_without_changing_fit_math():
     options={"fit_list":["quads"],"machine_element_groups":{"normal_quadrupole_groups":[[3,4]]}}
     result=_build_pyloco_kwargs(ring=None,options=options,rm_cfg=RM(),fit_cfg=Fit(),constraint_cfg=None,fixed_parameters=Fixed(),measured=measured,indices=indices)
     assert result["quads_ords"]==[[3,4]] and result["quad_individuals"] is False
+
+
+def test_skew_component_may_be_hosted_by_a_sextupole():
+    """EBS Case C fits PolynomA[1] on sextupole container elements."""
+    class Sextupole:
+        PolynomA = np.asarray([0.0, 0.0, 0.0])
+
+    class Fit:
+        individuals = True
+        quads_attr = "PolynomB"
+        quads_attr_index = 1
+        skew_attr = "PolynomA"
+        skew_attr_index = 1
+
+    _validate_physical_fit_selections(
+        [Sextupole()],
+        {"quads_ords": [], "skew_ords": [0], "quads_tilt_ind": []},
+        {}, {"skew_individuals": True, "tilt_individuals": True}, Fit(),
+    )
+
+
+def test_momentum_compaction_uses_a_4d_copy_without_mutating_fit_lattice():
+    class Ring:
+        def __init__(self, is_6d=True):
+            self.is_6d = is_6d
+
+        def disable_6d(self, copy=False):
+            assert copy is True
+            return Ring(False)
+
+    class Config:
+        @staticmethod
+        def get_mcf(ring):
+            assert ring.is_6d is False
+            return 1.2e-4
+
+    fit_ring = Ring()
+    assert _resolve_momentum_compaction(Config, fit_ring) == 1.2e-4
+    assert fit_ring.is_6d is True
+
+
+def test_loco_uses_a_4d_working_copy_without_mutating_source_lattice():
+    class Ring:
+        def __init__(self, is_6d=True):
+            self.is_6d = is_6d
+
+        def disable_6d(self, copy=False):
+            assert copy is True
+            return Ring(False)
+
+    source = Ring()
+    working = _prepare_loco_lattice(source)
+    assert source.is_6d is True
+    assert working is not source
+    assert working.is_6d is False

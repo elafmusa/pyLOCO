@@ -979,6 +979,21 @@ class ProjectMetadata:
         for key in ("output_directory", "source_path"):
             config[key] = portable(config.get(key, ""))
         config["resume"]["directory"] = portable(config["resume"].get("directory", ""))
+        # FIT stages keep a complete GUI configuration snapshot.  A project
+        # opened from disk resolves those paths for runtime use, so make the
+        # nested snapshots portable again when saving just like the active
+        # top-level configuration.
+        for stage in data.get("fit_recipe", {}).get("stages", []):
+            stage_config = stage.get("configuration", {}).get("gui_config", {})
+            if not stage_config:
+                continue
+            stage_parameters = stage_config.get("parameters", {})
+            stage_cmstep = stage_parameters.get("cmstep", {})
+            stage_cmstep["file"] = portable(stage_cmstep.get("file", ""))
+            for key in ("output_directory", "source_path"):
+                stage_config[key] = portable(stage_config.get(key, ""))
+            stage_resume = stage_config.get("resume", {})
+            stage_resume["directory"] = portable(stage_resume.get("directory", ""))
         data["completed_run"]["results_dir"] = portable(
             data["completed_run"].get("results_dir", "")
         )

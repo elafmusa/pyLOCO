@@ -27,6 +27,8 @@ class CorrectionRecord:
     final_applied_delta: float | None = None
     family: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    magnetic_length_m: float | None = None
+    integrated_recommended_delta: float | None = None
 
     def final_delta(self, global_scale: float) -> float:
         return self.recommended_machine_delta * global_scale * self.individual_scale
@@ -51,6 +53,22 @@ class CorrectionRecord:
                     f"final_applied_delta for {self.name!r} does not equal "
                     "recommended_machine_delta * global_scale * individual_scale"
                 )
+        if self.magnetic_length_m is not None:
+            if not math.isfinite(float(self.magnetic_length_m)) or self.magnetic_length_m <= 0:
+                raise ValueError(f"Correction record {self.name!r} has an invalid magnetic length")
+            expected_integrated = self.recommended_machine_delta * self.magnetic_length_m
+            if self.integrated_recommended_delta is not None and not math.isclose(
+                self.integrated_recommended_delta, expected_integrated,
+                rel_tol=1e-12, abs_tol=1e-15,
+            ):
+                raise ValueError(
+                    f"integrated_recommended_delta for {self.name!r} does not equal "
+                    "recommended_machine_delta * magnetic_length_m"
+                )
+        elif self.integrated_recommended_delta is not None:
+            raise ValueError(
+                f"Correction record {self.name!r} has an integrated correction without a magnetic length"
+            )
 
 
 @dataclass(frozen=True)

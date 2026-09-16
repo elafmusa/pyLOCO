@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 import argparse
+import os
 from pathlib import Path
 from collections.abc import Sequence
 
@@ -48,6 +49,12 @@ def build_application(argv: Sequence[str] | None = None) -> QApplication:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the pyLOCO GUI shell."""
+    # Numerical Jacobians may otherwise occupy every visible CPU and starve
+    # the Qt event loop on desktop machines.  This GUI-only default leaves
+    # capacity for repainting, cancellation, and progress delivery.  Users and
+    # schedulers can still provide an explicit lower or higher limit.
+    visible_cpus = os.cpu_count() or 1
+    os.environ.setdefault("PYLOCO_MAX_WORKERS", "1")
     values=list(sys.argv[1:] if argv is None else argv); parser=argparse.ArgumentParser(prog="pyloco-gui"); parser.add_argument("project",nargs="?"); parser.add_argument("--measurement-session"); args=parser.parse_args(values)
     app = build_application(["pyloco-gui"])
     window = MainWindow()

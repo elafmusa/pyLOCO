@@ -1,0 +1,26 @@
+{
+  "session_id": "pyloco-suite-mock-complete",
+  "files": [
+    {
+      "role": "orm",
+      "path": "orm.h5",
+      "metadata": {}
+    },
+    {
+      "role": "bpm_noise",
+      "path": "bpm_noise.h5",
+      "metadata": {}
+    },
+    {
+      "role": "dispersion",
+      "path": "dispersion.h5",
+      "metadata": {}
+    }
+  ],
+  "metadata": {
+    "machine": "Mock",
+    "purpose": "Portable pyLOCO Suite handoff example"
+  },
+  "schema_version": "1.0",
+  "file_type": "pyloco.measurement_session"
+}

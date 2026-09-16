@@ -125,7 +125,7 @@ def _qt_app():
 
 
 def test_gui_worker_progress_signal_updates_workspace(monkeypatch):
-    from PySide6.QtCore import QEventLoop, QThread
+    from PySide6.QtCore import QEventLoop, QThread, Qt
     from pyLOCO.gui import main_window
     from pyLOCO.gui.main_window import LocoRunWorker
     from pyLOCO.gui.results.results_workspace import ResultsWorkspace
@@ -153,7 +153,7 @@ def test_gui_worker_progress_signal_updates_workspace(monkeypatch):
     worker.progress.connect(workspace.update_progress)
     worker.finished.connect(loop.quit)
     worker.failed.connect(loop.quit)
-    thread.started.connect(worker.run)
+    thread.started.connect(worker.run, Qt.QueuedConnection)
     thread.start()
     loop.exec()
     thread.quit()
@@ -164,6 +164,36 @@ def test_gui_worker_progress_signal_updates_workspace(monkeypatch):
     assert workspace.run_iteration_label.text() == "Iteration 3 of 4"
     assert workspace.run_status_label.text() == "Computing analytical quadrupole Jacobian."
     workspace.close()
+
+
+def test_multistage_worker_executes_off_the_gui_thread(monkeypatch):
+    from PySide6.QtCore import QEventLoop, QMetaObject, QThread, Qt
+    from pyLOCO.gui import main_window
+    from pyLOCO.gui.main_window import FitWorkflowWorker
+
+    app = _qt_app()
+    observed_threads = []
+
+    def fake_execute(*_args, **_kwargs):
+        observed_threads.append(QThread.currentThread())
+        raise RuntimeError("stop after thread check")
+
+    monkeypatch.setattr(main_window, "execute_workflow", fake_execute)
+    request = SimpleNamespace(backend_mapping={"LOCOOptions": {}})
+    recipe = SimpleNamespace(stages=[])
+    worker = FitWorkflowWorker(request, recipe, "/tmp/unused-session.json")
+    thread = QThread()
+    loop = QEventLoop()
+    worker.moveToThread(thread)
+    worker.failed.connect(loop.quit)
+    thread.start()
+    QMetaObject.invokeMethod(worker, "run", Qt.QueuedConnection)
+    loop.exec()
+    thread.quit()
+    thread.wait()
+
+    assert observed_threads == [thread]
+    assert observed_threads[0] is not app.thread()
 
 
 def test_gui_failure_and_cancellation_retain_last_progress():
@@ -183,4 +213,60 @@ def test_gui_failure_and_cancellation_retain_last_progress():
         assert workspace.run_progress.value() == 41
         assert workspace.run_status_label.text() == expected
         workspace.close()
+    app.processEvents()
+
+
+def test_workspace_shows_independent_multistage_progress():
+    from pyLOCO.gui.results.results_workspace import ResultsWorkspace
+
+    app = _qt_app()
+    workspace = ResultsWorkspace()
+    workspace.begin_run()
+    workspace.update_progress({
+        "workflow_stage": 3,
+        "workflow_stages": 4,
+        "stage_name": "Normal optics",
+        "stage_fraction": .42,
+        "workflow_fraction": .605,
+        "iteration": 1,
+        "total_iterations": 2,
+        "message": "Computing the Jacobian.",
+    })
+    assert workspace.run_progress.value() == 60
+    assert workspace.stage_progress.value() == 42
+    assert workspace.stage_context_label.text() == "Stage 3 of 4 — Normal optics"
+    assert not workspace.stage_progress.isHidden()
+    workspace.close(); app.processEvents()
+
+
+def test_completed_workspace_collapses_run_details_for_plot_space(monkeypatch, tmp_path):
+    from pyLOCO.gui.results.results_workspace import ResultsWorkspace
+
+    app = _qt_app()
+    workspace = ResultsWorkspace()
+    monkeypatch.setattr(workspace, "load_results", lambda *_args, **_kwargs: None)
+    workspace.complete_run(SimpleNamespace(results_dir=str(tmp_path), elapsed_seconds=1.0))
+
+    assert workspace.monitor.isHidden()
+    assert not workspace.compact_monitor.isHidden()
+    assert workspace.details_button.text() == "Details ▾"
+    workspace.close(); app.processEvents()
+
+
+def test_result_plots_keep_a_readable_minimum_height():
+    from pyLOCO.gui.results.optics_view import OpticsView
+    from pyLOCO.gui.results.orm_view import OrmView
+    from pyLOCO.gui.results.parameters_view import ParametersView
+
+    app = _qt_app()
+    orm = OrmView()
+    optics = OpticsView()
+    parameters = ParametersView()
+
+    assert orm.plot.minimumHeight() >= 360
+    assert optics.beta_plots["x"]["curves"].minimumHeight() >= 320
+    assert optics.beta_plots["x"]["beating"].minimumHeight() >= 320
+    assert parameters.plot.minimumHeight() >= 340
+    for widget in (orm, optics, parameters):
+        widget.close()
     app.processEvents()
