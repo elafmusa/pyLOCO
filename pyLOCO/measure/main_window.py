@@ -418,6 +418,26 @@ class MeasureMainWindow(QMainWindow):
         self.pysc_profile_combo.currentIndexChanged.connect(self._pysc_profile_changed)
         for widget in self.pysc_profile_row: widget.setVisible(False)
         layout.addWidget(self.machine_group)
+        self.pyaml_group = QGroupBox("pyAML configuration")
+        pyaml_form = QFormLayout(self.pyaml_group)
+        self.pyaml_fields = {}
+        for field, default in (("config_path", ""), ("mode", "design"), ("bpm_group", "BPM"), ("hcor_group", "HCorr"), ("vcor_group", "VCorr"), ("rf_name", "RF")):
+            editor = QLineEdit(default)
+            self.pyaml_fields[field] = editor
+            pyaml_form.addRow(field.replace("_", " ").title(), editor)
+            editor.textChanged.connect(self._invalidate_pyaml)
+        browse = QPushButton("Choose YAML…")
+        browse.clicked.connect(self._choose_pyaml_config)
+        pyaml_form.addRow(browse)
+        self.pyaml_magnet_writes = QCheckBox("Enable corrector magnet writes (ORM)")
+        self.pyaml_rf_writes = QCheckBox("Enable RF frequency writes (dispersion)")
+        for checkbox in (self.pyaml_magnet_writes, self.pyaml_rf_writes):
+            checkbox.setChecked(True)
+            pyaml_form.addRow(checkbox)
+            checkbox.toggled.connect(self._invalidate_pyaml)
+        pyaml_form.addRow(QLabel("Mode: design or live. RF plant defaults to RF. Writes default to enabled; uncheck to disable. Live connections require confirmation."))
+        self.pyaml_group.setVisible(False)
+        layout.addWidget(self.pyaml_group)
         reference_group=QGroupBox("Optional reference model — requires Accelerator Toolbox (AT)"); reference_layout=QFormLayout(reference_group); self._configure_form(reference_layout)
         self.reference_model_path=QLineEdit(); self.reference_model_path.setPlaceholderText("Automatic from pySC profile, or select an authoritative nominal .mat for LIVE")
         reference_row=QWidget(); rr=QHBoxLayout(reference_row); rr.setContentsMargins(0,0,0,0); rr.addWidget(self.reference_model_path,1); choose=QPushButton("Choose .mat…"); choose.clicked.connect(self._choose_reference_model); rr.addWidget(choose)
@@ -508,10 +528,18 @@ class MeasureMainWindow(QMainWindow):
 
     def _adapter_changed(self,*_):
         key=self.adapter_combo.currentData(); petra=key=="petra"; pysc=key=="pysc"
+        self.pyaml_group.setVisible(key == "pyaml")
         self.reference_model=None
         if hasattr(self,"reference_model_path"):self.reference_model_path.clear(); self.reference_model_summary.setText("Not available — select an authoritative reference lattice." if petra else "No reference model loaded.")
         self._model_orm_cache=None
         for widget in self.pysc_profile_row: widget.setVisible(pysc)
+        if key == "pyaml":
+            self._invalidate_pyaml()
+            self.measurement_type.setCurrentIndex(self.measurement_type.findData("bpm_noise"))
+            self.measurement_type.model().item(self.measurement_type.findData("orm")).setEnabled(False)
+            self.orm_unavailable_label.setText("ORM needs write access. pyAML is read only.")
+            self.orm_unavailable_label.setVisible(True)
+            return
         if petra:
             bpm_names=self._load_repository_names("BPM_names.txt"); hnames=self._load_repository_names("HCM_names_control.txt"); vnames=self._load_repository_names("VCM_names_control.txt")
             self.adapter=PETRAReadOnlyAdapter(bpm_names,hnames,vnames)
@@ -536,7 +564,7 @@ class MeasureMainWindow(QMainWindow):
         for key,devices in (("hcor",self.horizontal_correctors),("vcor",self.vertical_correctors)):
             if hasattr(self,"corrector_selection_widgets"):self.corrector_selection_widgets[key]["devices"]=devices; self._refresh_corrector_preview(key,read_diagnostics=False)
         if hasattr(self,"measurement_type"):
-            orm_item=self.measurement_type.model().item(self.measurement_type.findData("orm")); orm_item.setEnabled(not petra); self.orm_unavailable_label.setVisible(petra)
+            orm_item=self.measurement_type.model().item(self.measurement_type.findData("orm")); orm_item.setEnabled(not petra); self.orm_unavailable_label.setText("ORM needs write access. PETRA is read only."); self.orm_unavailable_label.setVisible(petra)
             if petra and self.measurement_type.currentData()=="orm":self.measurement_type.setCurrentIndex(self.measurement_type.findData("bpm_noise"))
             automatic=self.rf_control_mode.model().item(self.rf_control_mode.findData("automatic")); automatic.setEnabled(AdapterCapability.RF_WRITE in self.adapter.capabilities)
             if pysc: self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("automatic"))
@@ -549,6 +577,8 @@ class MeasureMainWindow(QMainWindow):
 
     def _machine_identity(self):
         key=self.adapter_combo.currentData() if hasattr(self,"adapter_combo") else "mock"
+        if key == "pyaml":
+            return f"pyAML / {self.pyaml_fields['mode'].text()} / {self.pyaml_fields['config_path'].text()}", None
         if key=="pysc":
             profile=next((item for item in available_pysc_profiles() if item.key==self.pysc_profile_combo.currentData()),None)
             if profile:
@@ -570,12 +600,16 @@ class MeasureMainWindow(QMainWindow):
 
     def _sync_rf_presentation(self, *_):
         if not hasattr(self,"rf_control_mode"):return
-        automatic=self.adapter_combo.currentData()=="pysc" and AdapterCapability.RF_WRITE in self.adapter.capabilities
+        automatic=self.adapter_combo.currentData() in ("pysc", "pyaml") and AdapterCapability.RF_WRITE in self.adapter.capabilities
+        self.rf_control_mode.model().item(self.rf_control_mode.findData("automatic")).setEnabled(automatic)
         if automatic:
             self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("automatic")); self.rf_control_mode.setEnabled(False); self.nominal_rf.setReadOnly(True)
             self.verify_restored_orbit.setEnabled(True)
             self.nominal_rf_source.setText("Source: pySC Server RF readback — automatically controlled")
             self.rf_safety.setText("DEMO automatic RF control — the original frequency is restored and read back in cancellation-safe cleanup.")
+            if self.adapter_combo.currentData() == "pyaml":
+                self.nominal_rf_source.setText("Source: pyAML RF frequency readback — automatically controlled")
+                self.rf_safety.setText("WRITES ENABLED — RF frequency is changed during measurement, then restoration is attempted and verified. Check the restoration result.")
         else:
             self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("manual")); self.rf_control_mode.setEnabled(True); self.nominal_rf.setReadOnly(False)
             self.verify_restored_orbit.setEnabled(False)
@@ -589,7 +623,91 @@ class MeasureMainWindow(QMainWindow):
         self._configure_physical_dispersion_option()
         if hasattr(self,"plan_values"):self.refresh_plan()
 
+    def _choose_pyaml_config(self):
+        path = QFileDialog.getOpenFileName(self, "Select pyAML configuration", "", "YAML (*.yaml *.yml)")[0]
+        if path:
+            self.pyaml_fields["config_path"].setText(path)
+
+    def _invalidate_pyaml(self, *_):
+        if self.adapter_combo.currentData() != "pyaml":
+            return
+        self.adapter = MockAdapter()
+        self.devices = self.horizontal_correctors = self.vertical_correctors = ()
+        self.selected_devices = self.selected_hcorrectors = self.selected_vcorrectors = ()
+        self.status_badge.setText("pyAML • READ ONLY")
+        if hasattr(self, "measurement_type"):
+            self.measurement_type.model().item(self.measurement_type.findData("orm")).setEnabled(False)
+            self.orm_unavailable_label.setVisible(True)
+        self.subtitle.setText("pyAML configuration selected — test connection before acquiring data.")
+        self._set_connection_state(False, "DISCONNECTED")
+        for key, label in self.machine_info.items():
+            label.setText("Not connected")
+        self.machine_info["adapter"].setText("pyAML")
+        self.machine_info["access"].setText("Read only")
+        if hasattr(self, "corrector_selection_widgets"):
+            for kind in ("hcor", "vcor"):
+                self.corrector_selection_widgets[kind]["devices"] = ()
+                self._refresh_corrector_preview(kind, read_diagnostics=False)
+        self._reset_selection_states_for_inventory()
+        self._update_machine_identity()
+        self.refresh_preview()
+        self._sync_rf_presentation()
+
+    def _connect_pyaml(self):
+        self._invalidate_pyaml()
+        options = {key: editor.text().strip() for key, editor in self.pyaml_fields.items()}
+        options.update(allow_writes=self.pyaml_magnet_writes.isChecked(),
+                       allow_rf_writes=self.pyaml_rf_writes.isChecked())
+        if options["mode"] == "live" and (options["allow_writes"] or options["allow_rf_writes"]):
+            answer = QMessageBox.question(self, "Enable live pyAML writes?",
+                "Measurements may change configured corrector magnets and/or RF frequency. "
+                "Verify the configuration, units, machine limits and operating permission. "
+                "Restoration is attempted after measurement but can fail. Enable selected writes?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+        try:
+            session = InterfaceRegistry(pyaml_options=options).create("pyaml")
+            result = session.adapter.test_connection()
+        except Exception as exc:
+            self.machine_info["connection"].setText(str(exc))
+            QMessageBox.warning(self, "pyAML connection unavailable", str(exc))
+            return
+        self.adapter = session.adapter
+        self.devices = tuple(BpmDevice(**item) for item in self.adapter.list_devices("bpm"))
+        self.horizontal_correctors = tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("hcor"))
+        self.vertical_correctors = tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("vcor"))
+        self.selected_devices = self.devices
+        self.selected_hcorrectors = self.horizontal_correctors
+        self.selected_vcorrectors = self.vertical_correctors
+        for kind, devices in (("hcor", self.horizontal_correctors), ("vcor", self.vertical_correctors)):
+            self.corrector_selection_widgets[kind]["devices"] = devices
+            self._refresh_corrector_preview(kind, read_diagnostics=False)
+        self.project.metadata["pyaml_options"] = {key: value for key, value in options.items() if key not in ("allow_writes", "allow_rf_writes")}
+        self._set_connection_state(True, "CONNECTED")
+        self.machine_info["connection"].setText("Connected — read only")
+        self.machine_info["bpm_orbit"].setText(f"{result['bpms']} BPMs")
+        for key in ("corrector_readback", "calibration", "rf_readback"):
+            self.machine_info[key].setText(str(result[key]))
+        writable = AdapterCapability.WRITE in self.adapter.capabilities
+        rf_writable = AdapterCapability.RF_WRITE in self.adapter.capabilities
+        access = f"Correctors: {'WRITE' if writable else 'read only'}; RF: {'WRITE' if rf_writable else 'read only'}"
+        self.machine_info["access"].setText(access)
+        self.status_badge.setText("pyAML • WRITES ENABLED" if writable or rf_writable else "pyAML • READ ONLY")
+        self.subtitle.setText(f"pyAML {options['mode']} connected — {access}")
+        self.measurement_type.model().item(self.measurement_type.findData("orm")).setEnabled(writable)
+        self.orm_unavailable_label.setVisible(not writable)
+        if AdapterCapability.RF_READ in self.adapter.capabilities:
+            self.nominal_rf.setText(f"{result['rf_readback']:.12f}")
+        self._sync_rf_presentation()
+        self._reset_selection_states_for_inventory()
+        self._update_machine_identity()
+        self.refresh_preview()
+
     def _test_connection(self):
+        if self.adapter_combo.currentData() == "pyaml":
+            self._connect_pyaml()
+            return
         if self.adapter_combo.currentData()=="pysc":
             try:self._adapter_changed(); result=self.adapter.test_connection()
             except Exception as exc:self._set_connection_state(False,"DISCONNECTED"); QMessageBox.warning(self,"pySC Server unavailable",str(exc)); return
@@ -909,6 +1027,11 @@ class MeasureMainWindow(QMainWindow):
             if read_diagnostics and isinstance(self.adapter,PETRAReadOnlyAdapter):
                 try:diagnostics=self.adapter.read_corrector_diagnostics(device.name)
                 except Exception as exc:table.setToolTip(f"Source: adapter discovery/readback unavailable — {exc}")
+            elif read_diagnostics and self.adapter_combo.currentData() == "pyaml" and self.connection_verified:
+                try:
+                    diagnostics["KICK.RBV"] = self.adapter.read(device.readback_channel).value
+                except Exception as exc:
+                    table.setToolTip(f"pyAML strength read unavailable — {exc}")
             values=(row,device.name,device.identifier,device.plane,*(f"{diagnostics.get(field):.8g}" if field in diagnostics else "—" for field in ("KICK.SP","KICK.RBV","CURRENT.SP","CURRENT.RBV")))
             for col,value in enumerate(values):table.setItem(row,col,QTableWidgetItem(str(value)))
         self._filter_corrector_table(key)
@@ -1160,7 +1283,7 @@ class MeasureMainWindow(QMainWindow):
         if hasattr(self,"live_plot"): self._reset_live_plot()
         if hasattr(self,"plan_values"): self.refresh_plan()
         backend=self.adapter_combo.currentData() if hasattr(self,"adapter_combo") else "mock"
-        context=self.pysc_profile_combo.currentText() if backend=="pysc" else "PETRA III LIVE" if backend=="petra" else "Mock"
+        context=self.pysc_profile_combo.currentText() if backend=="pysc" else "PETRA III LIVE" if backend=="petra" else "pyAML" if backend=="pyaml" else "Mock"
         default_names={"bpm-noise","mock-dispersion","pysc-dispersion","mock-orm","pysc-small-orm","pyloco-bpm-noise","pyloco-dispersion","pyloco-orm"}
         if self.measurement_name.text() in default_names:
             kind="orm" if orm else "dispersion" if dispersion else "bpm_noise"
@@ -1508,12 +1631,14 @@ class MeasureMainWindow(QMainWindow):
         try:self._load_kick_arrays() if orm else None; kick_valid=True
         except Exception:kick_valid=False
         automatic_rf=dispersion and self.rf_control_mode.currentData()=="automatic"
-        requires_connection=self.adapter_combo.currentData()=="pysc"; connection_ok=not requires_connection or self.connection_verified
+        requires_connection=self.adapter_combo.currentData() in ("pysc", "pyaml"); connection_ok=not requires_connection or self.connection_verified
         valid=bool(connection_ok and self.selected_devices and self.measurement_name.text().strip() and self.output_directory.text().strip() and (not dispersion or automatic_rf or self._nominal_rf_value() is not None) and (not automatic_rf or AdapterCapability.RF_WRITE in self.adapter.capabilities) and (not orm or (self.selected_hcorrectors or self.selected_vcorrectors) and kick_valid and AdapterCapability.WRITE in self.adapter.capabilities))
         direction={"bipolar":"Bipolar ±Δf","positive":"One-sided +Δf","negative":"One-sided −Δf"}.get(self.dispersion_direction.currentData(),"—")
         try:kh,kv=self._load_kick_arrays()
         except Exception:kh=kv=np.array([])
         descriptor=InterfaceRegistry().descriptor(self.adapter_combo.currentData()); adapter_text=descriptor.badge
+        if descriptor.key == "pyaml":
+            adapter_text = self.status_badge.text()
         nominal=self._nominal_rf_value(); offset=self._rf_offset_hz(); negative="Waiting for RF readback" if nominal is None else f"{nominal-offset:.3f} Hz"; positive="Waiting for RF readback" if nominal is None else f"{nominal+offset:.3f} Hz"
         separation=2*offset if self.dispersion_direction.currentData()=="bipolar" else offset
         values={"measurement":"ORM" if orm else "Dispersion" if dispersion else "BPM noise","bpms":str(len(self.selected_devices)),"h_correctors":str(len(self.selected_hcorrectors)),"v_correctors":str(len(self.selected_vcorrectors)),"total_correctors":str(len(self.selected_hcorrectors)+len(self.selected_vcorrectors)),"kick_source":"Per-corrector file" if self.orm_kick_mode.currentData()=="file" else "Common","h_kick":f"{np.min(kh)*1e6:g}–{np.max(kh)*1e6:g} µrad" if kh.size else "Invalid","v_kick":f"{np.min(kv)*1e6:g}–{np.max(kv)*1e6:g} µrad" if kv.size else "Invalid","scaled_orm":"Yes — m/rad" if self.orm_scaled.isChecked() else "No — m","orm_direction":self.orm_direction.currentText(),"rf_mode":"Automatic backend RF with restoration protection" if automatic_rf else "Manual (no writes)","nominal_rf":"Read from backend" if automatic_rf and nominal is None else f"{nominal:.3f} Hz" if nominal else "Required","rf_step_±δf":f"{offset:g} Hz per side","bipolar_separation":f"{separation:g} Hz total","negative_rf":negative,"positive_rf":positive,"direction":direction,"readings":str(self.readings.value()),"delay":f"{self.delay.value():g} s","settling_delay":f"{self.settling_delay.value():g} s","rf_states":", ".join(spec[0] for spec in self._dispersion_state_specs()) or "backend-derived","est_duration":f"{estimate:.2f} s","adapter":adapter_text,"output":str(output)}
@@ -1764,6 +1889,14 @@ class MeasureMainWindow(QMainWindow):
         output=self._resolved_output_directory(); output.mkdir(parents=True,exist_ok=True); safe=re.sub(r"[^A-Za-z0-9_.-]+","_",self.measurement_name.text().strip()).strip("_") or "measurement"; stamp=datetime.now().strftime("%Y%m%d-%H%M%S"); measurement=output/f"{safe}-{stamp}.h5"; is_dispersion=isinstance(result,DispersionResult)
         descriptor=InterfaceRegistry().descriptor(self.adapter_combo.currentData())
         identity,profile=self._machine_identity(); profile_metadata={}
+        if descriptor.key == "pyaml":
+            options = {key: editor.text().strip() for key, editor in self.pyaml_fields.items()}
+            profile_metadata = {"pyaml_options": options, "pyaml_mode": options["mode"],
+                                "backend_badge": self.status_badge.text(),
+                                "backend_environment": options["mode"].upper(),
+                                "backend_real_machine": options["mode"] == "live",
+                                "magnet_writes_enabled": AdapterCapability.WRITE in self.adapter.capabilities,
+                                "rf_writes_enabled": AdapterCapability.RF_WRITE in self.adapter.capabilities}
         if profile is not None:
             profile_metadata={"machine":profile.machine,"profile_key":profile.key,"profile":profile.scenario,"profile_label":profile.label,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"lattice_provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
         model_metadata=self.reference_model.provenance() if self.reference_model is not None else {"reference_model_available":False}
@@ -2170,14 +2303,21 @@ class MeasureMainWindow(QMainWindow):
         missing=", ".join(session.missing_roles) or "none"; self.statusBar().showMessage(f"Opening session in pyLOCO Fit ({detail}); missing roles: {missing}")
 
     def _collect_project(self):
+        self.project.metadata["pyaml_options"] = {key: editor.text().strip() for key, editor in self.pyaml_fields.items()}
         self._store_active_selection()
         h=self.corrector_selection_widgets["hcor"]; v=self.corrector_selection_widgets["vcor"]
         identity,profile=self._machine_identity(); profile_meta={} if profile is None else {"machine":profile.machine,"profile":profile.scenario,"profile_key":profile.key,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
         return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),delay_seconds=self.delay.value(),settling_delay_seconds=self.settling_delay.value(),verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=self.orm_scaled.isChecked(),reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta})
 
     def _load_project_widgets(self):
+        self.pyaml_magnet_writes.setChecked(True)
+        self.pyaml_rf_writes.setChecked(True)
+        for key, editor in self.pyaml_fields.items():
+            editor.setText(self.project.metadata.get("pyaml_options", {}).get(key, {"mode": "design", "bpm_group": "BPM", "hcor_group": "HCorr", "vcor_group": "VCorr", "rf_name": "RF"}.get(key, "")))
         self.pysc_profile_combo.setCurrentIndex(max(0,self.pysc_profile_combo.findData(self.project.pysc_profile)))
         self.adapter_combo.setCurrentIndex(max(0,self.adapter_combo.findText(self.project.adapter)))
+        if self.adapter_combo.currentData() == "pyaml":
+            self._invalidate_pyaml()
         p=self.project; self._selection_states=p.measurement_selections; self._active_selection_kind=p.measurement_type; self.measurement_type.blockSignals(True); self.measurement_type.setCurrentIndex(max(0,self.measurement_type.findData(p.measurement_type))); self.measurement_type.blockSignals(False); self._restore_selection(p.measurement_type); self.measurement_name.setText(p.measurement_name); self.measurement_label.setText(p.measurement_label); self.comments.setPlainText(p.operator_comments); self.readings.setValue(p.readings); self.delay.setValue(p.delay_seconds); self.settling_delay.setValue(p.settling_delay_seconds); self.verify_restored_orbit.setChecked(p.verify_restored_orbit); self.nominal_rf.setText("" if p.nominal_rf_hz is None else f"{p.nominal_rf_hz:g}"); self.rf_step.setValue(p.rf_step_hz); self.dispersion_direction.setCurrentIndex(max(0,self.dispersion_direction.findData(p.dispersion_direction))); self.orm_direction.setCurrentIndex(max(0,self.orm_direction.findData(p.orm_direction))); self.orm_kick_mode.setCurrentIndex(max(0,self.orm_kick_mode.findData(p.orm_kick_mode))); self.orm_hkick.setValue(p.orm_horizontal_kick_rad*1e6); self.orm_vkick.setValue(p.orm_vertical_kick_rad*1e6); self.orm_kick_file.setText(p.orm_kick_file); self.orm_scaled.setChecked(p.orm_scaled)
         self.reference_model_path.setText(p.reference_model_path); self.compare_reference.setChecked(p.compare_with_reference_model)
         if p.reference_model_path:self._load_reference_model(p.reference_model_path,"Project reference model")

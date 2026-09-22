@@ -70,6 +70,7 @@ python3 -m pytest
 
 - [Examples and which one to choose](Examples/README.md)
 - [Measured-machine configuration](Examples/measured_machine/README.md)
+- [pyAML configuration and device access](docs/pyaml.md)
 - [PETRA III measurement example](Examples/PETRAIII/measurments/README.md)
 - [PETRA III GUI files](Examples/PETRAIII/GUI/README.md)
 - [Testing guide](tests/README.md)
