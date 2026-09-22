@@ -26,9 +26,9 @@ def adapter(interface=None):
     return AbstractInterfaceAdapter(interface or FakeInterface(),("B1",),("H1",),())
 
 
-def test_registry_has_exact_three_persistent_badges(tmp_path):
+def test_registry_has_persistent_badges(tmp_path):
     descriptors=InterfaceRegistry(repository_root=Path.cwd()).descriptors()
-    assert [(d.key,d.badge) for d in descriptors]==[("mock","MOCK • READ ONLY"),("pysc","DEMO • pySC SERVER"),("petra","LIVE • PETRA III DOOCS")]
+    assert [(d.key,d.badge) for d in descriptors]==[("mock","MOCK • READ ONLY"),("pysc","DEMO • pySC SERVER"),("petra","LIVE • PETRA III DOOCS"),("pyaml","pyAML • READ ONLY")]
 
 
 def test_pysc_registry_uses_its_own_generated_catalog(tmp_path):

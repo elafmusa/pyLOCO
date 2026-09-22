@@ -103,7 +103,9 @@ class CorrectMainWindow(QMainWindow):
             button=QPushButton(text); button.setFixedWidth(96); button.setToolTip(tip); button.clicked.connect(slot); toolbar.addWidget(button)
         spacer=QWidget(); spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding,spacer.sizePolicy().verticalPolicy()); toolbar.addWidget(spacer)
         self.backend_combo=QComboBox()
-        for descriptor in self.registry.descriptors():self.backend_combo.addItem(descriptor.label,descriptor.key)
+        for descriptor in self.registry.descriptors():
+            if descriptor.key != "pyaml":
+                self.backend_combo.addItem(descriptor.label,descriptor.key)
         self.backend_combo.currentIndexChanged.connect(self._backend_changed); toolbar.addWidget(self.backend_combo)
         self.badge=QLabel("MOCK • READ ONLY"); self.badge.setObjectName("safetyBadge"); self.badge.setFixedWidth(230); self.badge.setAlignment(Qt.AlignCenter); toolbar.addWidget(self.badge); self.connection_badge=QLabel("● OFFLINE"); self.connection_badge.setObjectName("correctConnection"); self.connection_badge.setProperty("connected",True); toolbar.addWidget(self.connection_badge); self.theme_button=QPushButton("☾ Dark"); self.theme_button.setFixedWidth(80); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         self.logo_button=ClickableLogo(); set_asset(self.logo_button,QSize(70,29),DISPLAY_ASSET,crop_transparency=False); self.logo_button.clicked.connect(self.about); toolbar.addWidget(self.logo_button)
