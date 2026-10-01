@@ -421,14 +421,21 @@ class MeasureMainWindow(QMainWindow):
         self.pyaml_group = QGroupBox("pyAML configuration")
         pyaml_form = QFormLayout(self.pyaml_group)
         self.pyaml_fields = {}
-        for field, default in (("config_path", ""), ("mode", "design"), ("bpm_group", "BPM"), ("hcor_group", "HCorr"), ("vcor_group", "VCorr"), ("rf_name", "RF")):
+        for field, default in (("config_path", ""), ("mode", "live"), ("bpm_group", "BPM"), ("hcor_group", "HCorr"), ("vcor_group", "VCorr"), ("rf_name", "RF")):
             editor = QLineEdit(default)
             self.pyaml_fields[field] = editor
-            pyaml_form.addRow(field.replace("_", " ").title(), editor)
+            if field == "config_path":
+                config_row = QWidget()
+                config_layout = QHBoxLayout(config_row)
+                config_layout.setContentsMargins(0, 0, 0, 0)
+                config_layout.addWidget(editor, 1)
+                self.pyaml_browse_button = QPushButton("Browse…")
+                self.pyaml_browse_button.clicked.connect(self._choose_pyaml_config)
+                config_layout.addWidget(self.pyaml_browse_button)
+                pyaml_form.addRow("Configuration file", config_row)
+            else:
+                pyaml_form.addRow(field.replace("_", " ").title(), editor)
             editor.textChanged.connect(self._invalidate_pyaml)
-        browse = QPushButton("Choose YAML…")
-        browse.clicked.connect(self._choose_pyaml_config)
-        pyaml_form.addRow(browse)
         self.pyaml_magnet_writes = QCheckBox("Enable corrector magnet writes (ORM)")
         self.pyaml_rf_writes = QCheckBox("Enable RF frequency writes (dispersion)")
         for checkbox in (self.pyaml_magnet_writes, self.pyaml_rf_writes):
@@ -624,7 +631,11 @@ class MeasureMainWindow(QMainWindow):
         if hasattr(self,"plan_values"):self.refresh_plan()
 
     def _choose_pyaml_config(self):
-        path = QFileDialog.getOpenFileName(self, "Select pyAML configuration", "", "YAML (*.yaml *.yml)")[0]
+        path = QFileDialog.getOpenFileName(
+            self, "Select pyAML configuration", self.pyaml_fields["config_path"].text(),
+            "pyAML configuration (*.yaml *.yml *.json);;All files (*)",
+            options=QFileDialog.DontUseNativeDialog,
+        )[0]
         if path:
             self.pyaml_fields["config_path"].setText(path)
 
@@ -2313,7 +2324,7 @@ class MeasureMainWindow(QMainWindow):
         self.pyaml_magnet_writes.setChecked(True)
         self.pyaml_rf_writes.setChecked(True)
         for key, editor in self.pyaml_fields.items():
-            editor.setText(self.project.metadata.get("pyaml_options", {}).get(key, {"mode": "design", "bpm_group": "BPM", "hcor_group": "HCorr", "vcor_group": "VCorr", "rf_name": "RF"}.get(key, "")))
+            editor.setText(self.project.metadata.get("pyaml_options", {}).get(key, {"mode": "live", "bpm_group": "BPM", "hcor_group": "HCorr", "vcor_group": "VCorr", "rf_name": "RF"}.get(key, "")))
         self.pysc_profile_combo.setCurrentIndex(max(0,self.pysc_profile_combo.findData(self.project.pysc_profile)))
         self.adapter_combo.setCurrentIndex(max(0,self.adapter_combo.findText(self.project.adapter)))
         if self.adapter_combo.currentData() == "pyaml":
