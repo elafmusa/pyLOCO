@@ -9,7 +9,7 @@ from .adapters import AdapterCapability, ChannelSample, WritableAdapter
 
 
 class PyAMLAdapter(WritableAdapter):
-    def __init__(self, config_path, *, mode="design", bpm_group="BPM",
+    def __init__(self, config_path, *, mode="live", bpm_group="BPM",
                  hcor_group="HCorr", vcor_group="VCorr", accelerator=None,
                  rf_name="RF", allow_writes=True, allow_rf_writes=True):
         if mode not in ("design", "live"):
@@ -78,25 +78,17 @@ class PyAMLAdapter(WritableAdapter):
         kind, index, plane = self._channels[channel]
         if kind == "bpm":
             raise PermissionError("BPM channels are read only")
-        strength = self.groups[kind][index].strength
-        factors = {"rad": 1.0, "mrad": 1e-3, "urad": 1e-6, "µrad": 1e-6}
-        unit = strength.unit()
-        if unit not in factors:
-            raise ValueError(f"Unsupported pyAML corrector unit: {unit}")
-        target = self._scalar(self._scalar(value) / factors[unit])
-        strength.set(target)
+        strength = self._magnet_strength(kind, index)
+        strength.set(self._scalar(value))
         return self.read(channel)
 
-    def _rf_scale(self):
-        unit = self.rf.unit()
-        factors = {"Hz": 1.0, "kHz": 1e3, "MHz": 1e6, "GHz": 1e9}
-        if unit not in factors:
-            raise ValueError(f"Unsupported pyAML RF unit: {unit}")
-        return factors[unit]
+    def _magnet_strength(self, kind, index):
+        name = self._catalog[kind][index]["name"]
+        return self.machine.magnet.get(name).strength
 
     def get_rf_frequency(self):
         self.require(AdapterCapability.RF_READ)
-        value = self._scalar(self.rf.get()) * self._rf_scale()
+        value = self._scalar(self.rf.get())
         if value <= 0:
             raise ValueError("RF frequency must be positive")
         return value
@@ -106,7 +98,7 @@ class PyAMLAdapter(WritableAdapter):
         value = self._scalar(frequency_hz)
         if value <= 0:
             raise ValueError("RF frequency must be positive")
-        self.rf.set(value / self._rf_scale())
+        self.rf.set(value)
 
     def list_devices(self, kind):
         return self._catalog.get(kind, ())
@@ -124,26 +116,24 @@ class PyAMLAdapter(WritableAdapter):
                 raise KeyError(f"Unknown pyAML channel: {channel}")
         arrays = {}
         for kind in dict.fromkeys(self._channels[channel][0] for channel in requested):
+            if kind != "bpm":
+                continue
             group = self.groups[kind]
-            values = np.asarray((group.positions if kind == "bpm" else group.strengths).get(), dtype=float)
-            expected = (len(self._catalog[kind]), 2) if kind == "bpm" else (len(self._catalog[kind]),)
+            values = np.asarray(group.positions.get(), dtype=float)
+            expected = (len(self._catalog[kind]), 2)
             if values.shape != expected or not np.all(np.isfinite(values)):
                 raise ValueError(f"Invalid pyAML {kind} readings: expected finite array {expected}, got {values.shape}")
-            accessor = group.positions if kind == "bpm" else group.strengths
-            units = np.asarray(accessor.unit())
-            factors = {"m": 1.0, "mm": 1e-3, "um": 1e-6, "µm": 1e-6, "nm": 1e-9} if kind == "bpm" else {"rad": 1.0, "mrad": 1e-3, "urad": 1e-6, "µrad": 1e-6}
-            try:
-                scales = np.array([factors[str(unit)] for unit in units.flat]).reshape(units.shape)
-                if kind == "bpm" and scales.shape == (expected[0],):
-                    scales = scales[:, None]
-                arrays[kind] = values * np.broadcast_to(scales, expected)
-            except (KeyError, ValueError) as exc:
-                raise ValueError(f"Unsupported pyAML {kind} units: {units}") from exc
+            arrays[kind] = values
         stamp = time()
         result = {}
         for channel in requested:
             kind, index, plane = self._channels[channel]
-            value = arrays[kind][index] if plane is None else arrays[kind][index, plane]
+            if kind == "bpm":
+                value = arrays[kind][index, plane]
+            else:
+                value = float(self._magnet_strength(kind, index).get())
+                if not np.isfinite(value):
+                    raise ValueError(f"Invalid pyAML magnet reading for {self._catalog[kind][index]['name']}: {value}")
             result[channel] = ChannelSample(channel, float(value), stamp)
         return result
 
@@ -151,5 +141,5 @@ class PyAMLAdapter(WritableAdapter):
         self.read_many(self.list_channels())
         return {"bpms": len(self._catalog["bpm"]),
                 "corrector_readback": "Configured pyAML strengths available",
-                "calibration": "pyAML units converted to metres / radians",
+                "calibration": "pyAML units ignored — values passed through unchanged",
                 "rf_readback": self.get_rf_frequency() if self.rf is not None else "not configured"}

@@ -28,27 +28,28 @@ class Array:
     def __getitem__(self, index):
         def set_value(value):
             self.values[index] = value
-        return SimpleNamespace(strength=SimpleNamespace(unit=lambda: self.units[index], set=set_value))
+        return SimpleNamespace(strength=SimpleNamespace(unit=lambda: self.units[index], get=lambda: self.values[index], set=set_value))
 
 
 def make_adapter():
     bpms = Array(["B2", "B1"], [[1000, 2000], [3000, 4000]], [["nm", "nm"]] * 2)
     horizontal = Array(["H1"], [2], ["mrad"])
     vertical = Array(["V1"], [3], ["rad"])
-    machine = SimpleNamespace(bpms={"BPM": bpms}, magnets={"HCorr": horizontal, "VCorr": vertical})
-    return PyAMLAdapter("unused.yaml", accelerator=SimpleNamespace(design=machine), rf_name="", allow_writes=False, allow_rf_writes=False), bpms
+    machine = SimpleNamespace(bpms={"BPM": bpms}, magnets={"HCorr": horizontal, "VCorr": vertical},
+                              magnet={"H1": horizontal[0], "V1": vertical[0]})
+    return PyAMLAdapter("unused.yaml", accelerator=SimpleNamespace(live=machine), rf_name="", allow_writes=False, allow_rf_writes=False), bpms
 
 
-def test_batch_reads_preserve_order_and_convert_units():
+def test_batch_reads_preserve_order_and_ignore_units():
     adapter, bpms = make_adapter()
     devices = adapter.list_devices("bpm")
     assert [device["name"] for device in devices] == ["B2", "B1"]
     channels = [devices[1]["y_channel"], devices[0]["x_channel"]]
     readings = adapter.read_many(channels)
     assert list(readings) == channels
-    assert [sample.value for sample in readings.values()] == pytest.approx([4e-6, 1e-6])
+    assert [sample.value for sample in readings.values()] == pytest.approx([4000, 1000])
     assert bpms.calls == 1
-    assert adapter.read(adapter.list_devices("hcor")[0]["readback_channel"]).value == .002
+    assert adapter.read(adapter.list_devices("hcor")[0]["readback_channel"]).value == 2
 
 
 def test_read_only_and_invalid_channels():
@@ -71,11 +72,26 @@ def test_rejects_invalid_orbits(values):
         adapter.test_connection()
 
 
-def test_rejects_unknown_units():
+def test_accepts_unknown_units():
     adapter, bpms = make_adapter()
     bpms.units = "counts"
-    with pytest.raises(ValueError, match="Unsupported pyAML"):
-        adapter.test_connection()
+    assert adapter.test_connection()["bpms"] == 2
+
+
+def test_unit_accessors_are_never_called(monkeypatch):
+    adapter, frequency = writable_adapter(allow_writes=True, allow_rf_writes=True)
+    def fail_unit():
+        raise AssertionError("Unit metadata must not be queried")
+    for group in adapter.groups.values():
+        monkeypatch.setattr(group, "unit", fail_unit)
+    monkeypatch.setattr(frequency, "unit", fail_unit)
+    for magnet in adapter.machine.magnet.values():
+        monkeypatch.setattr(magnet.strength, "unit", fail_unit)
+    assert adapter.test_connection()["bpms"] == 2
+    channel = adapter.list_devices("hcor")[0]["setpoint_channel"]
+    assert adapter.write(channel, .123).value == .123
+    adapter.set_rf_frequency(500e6 + 10)
+    assert adapter.get_rf_frequency() == 500e6 + 10
 
 
 def test_registry_requires_explicit_configuration():
@@ -90,7 +106,7 @@ def test_invalid_mode_rejected_before_loading():
 
 def test_missing_design_machine_has_clear_error():
     with pytest.raises(ValueError, match="no design machine"):
-        PyAMLAdapter("unused.yaml", accelerator=SimpleNamespace(design=None))
+        PyAMLAdapter("unused.yaml", mode="design", accelerator=SimpleNamespace(design=None))
 
 
 def test_registry_loads_selected_file_and_mode(monkeypatch):
@@ -111,7 +127,7 @@ def test_registry_loads_selected_file_and_mode(monkeypatch):
 
 class Frequency:
     def __init__(self):
-        self.value = 500.0
+        self.value = 500e6
         self.writes = []
 
     def get(self):
@@ -134,11 +150,11 @@ def writable_adapter(**options):
     return adapter, frequency
 
 
-def test_single_magnet_write_converts_units_and_rejects_invalid_values():
+def test_single_magnet_write_ignores_units_and_rejects_invalid_values():
     adapter, frequency = writable_adapter(allow_writes=True)
     channel = adapter.list_devices("hcor")[0]["setpoint_channel"]
     assert adapter.write(channel, .004).value == .004
-    assert adapter.groups["hcor"].values == [4.0]
+    assert adapter.groups["hcor"].values == [.004]
     assert adapter.groups["vcor"].values == [3]
     with pytest.raises(ValueError):
         adapter.write(channel, np.nan)
@@ -149,11 +165,29 @@ def test_single_magnet_write_converts_units_and_rejects_invalid_values():
     assert frequency.writes == []
 
 
-def test_rf_read_write_conversion_and_opt_in():
+def test_magnet_write_and_readback_never_access_arrays(monkeypatch):
+    adapter, _ = writable_adapter(allow_writes=True)
+    def fail_array(*args):
+        raise AssertionError("Magnet operations must not access arrays")
+    monkeypatch.setattr(Array, "__getitem__", fail_array)
+    for kind in ("hcor", "vcor"):
+        monkeypatch.setattr(adapter.groups[kind], "get", fail_array)
+        monkeypatch.setattr(adapter.groups[kind], "set", fail_array, raising=False)
+    adapter.groups["vcor"].values[0] = np.nan
+    channel = adapter.list_devices("hcor")[0]["setpoint_channel"]
+    assert adapter.write(channel, .004).value == .004
+    assert adapter.read(channel).value == .004
+    assert np.isnan(adapter.groups["vcor"].values[0])
+    adapter.groups["hcor"].values[0] = np.nan
+    with pytest.raises(ValueError, match="magnet reading for H1"):
+        adapter.read(channel)
+
+
+def test_rf_read_write_ignores_units_and_requires_opt_in():
     adapter, frequency = writable_adapter(allow_rf_writes=True)
     assert adapter.get_rf_frequency() == 500e6
     adapter.set_rf_frequency(500e6 + 1000)
-    assert frequency.value == pytest.approx(500.001)
+    assert frequency.value == 500e6 + 1000
     for value in (0, -1, np.inf, np.nan):
         with pytest.raises(ValueError):
             adapter.set_rf_frequency(value)
@@ -189,8 +223,8 @@ def test_rf_measurement_restores_original(cancelled):
     else:
         result = acquirer.acquire(1000, 2, 0)
         assert result.restoration_status == "restored"
-    assert frequency.value == 500
-    assert frequency.writes[-1] == 500
+    assert frequency.value == 500e6
+    assert frequency.writes[-1] == 500e6
 
 
 def test_rf_failed_restore_is_reported_even_on_cancellation():
@@ -224,6 +258,7 @@ def test_default_write_capabilities_and_rf_name():
     assert AdapterCapability.WRITE in adapter.capabilities
     assert AdapterCapability.RF_WRITE in adapter.capabilities
     assert adapter.rf is frequency
+    assert adapter.machine is base.accelerator.live
     assert frequency.writes == []
 
 
