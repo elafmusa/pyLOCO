@@ -24,6 +24,7 @@ class AutomaticDispersionAcquirer:
                    "positive": (("reference", 0.0), ("positive", rf_step_hz)),
                    "negative": (("reference", 0.0), ("negative", -rf_step_hz))}[direction]
         states = []; start = clock(); restoration = "not_attempted"
+        acquisition_error = None
         try:
             for index, (label, offset) in enumerate(offsets):
                 if cancel.is_set(): raise AcquisitionCancelled("Dispersion acquisition was cancelled")
@@ -39,6 +40,9 @@ class AutomaticDispersionAcquirer:
                     cancel_event=cancel, progress=(lambda *args, state_index=index: progress(state_index, *args) if progress else None),
                     sleeper=sleeper, clock=clock)
                 states.append(state)
+        except Exception as exc:
+            acquisition_error = exc
+            raise
         finally:
             try:
                 if status: status("restoring", {"offset_hz":0.0,"rf_hz":original})
@@ -46,7 +50,12 @@ class AutomaticDispersionAcquirer:
                 restoration = "restored" if abs(float(self.adapter.get_rf_frequency()) - original) <= 1e-6 else "verification_failed"
             except Exception:
                 restoration = "restore_failed"
-        if restoration != "restored": raise RuntimeError(f"RF restoration failed ({restoration})")
+            if acquisition_error is not None:
+                acquisition_error.restoration_status = restoration
+            if restoration != "restored":
+                error = RuntimeError(f"RF restoration failed ({restoration})")
+                error.restoration_status = restoration
+                raise error from acquisition_error
         if verify_restored_orbit:
             if status: status("verifying_orbit", {"offset_hz":0.0,"rf_hz":original})
             state = DispersionStateAcquirer(self.adapter, self.devices).acquire(

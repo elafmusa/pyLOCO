@@ -103,7 +103,8 @@ class CorrectMainWindow(QMainWindow):
             button=QPushButton(text); button.setFixedWidth(96); button.setToolTip(tip); button.clicked.connect(slot); toolbar.addWidget(button)
         spacer=QWidget(); spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding,spacer.sizePolicy().verticalPolicy()); toolbar.addWidget(spacer)
         self.backend_combo=QComboBox()
-        for descriptor in self.registry.descriptors():self.backend_combo.addItem(descriptor.label,descriptor.key)
+        for descriptor in self.registry.descriptors():
+            self.backend_combo.addItem(descriptor.label,descriptor.key)
         self.backend_combo.currentIndexChanged.connect(self._backend_changed); toolbar.addWidget(self.backend_combo)
         self.badge=QLabel("MOCK • READ ONLY"); self.badge.setObjectName("safetyBadge"); self.badge.setFixedWidth(230); self.badge.setAlignment(Qt.AlignCenter); toolbar.addWidget(self.badge); self.connection_badge=QLabel("● OFFLINE"); self.connection_badge.setObjectName("correctConnection"); self.connection_badge.setProperty("connected",True); toolbar.addWidget(self.connection_badge); self.theme_button=QPushButton("☾ Dark"); self.theme_button.setFixedWidth(80); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         self.logo_button=ClickableLogo(); set_asset(self.logo_button,QSize(70,29),DISPLAY_ASSET,crop_transparency=False); self.logo_button.clicked.connect(self.about); toolbar.addWidget(self.logo_button)
@@ -118,12 +119,22 @@ class CorrectMainWindow(QMainWindow):
         from .quadrupole_widget import QuadrupoleWidget
         self.quadrupole_workspace = QuadrupoleWidget(self)
         self.tabs.addTab(self._source_page(),self.workflow_names[0]); self.tabs.addTab(self._mapping_page(),self.workflow_names[1]); self.tabs.addTab(self._plan_page(),self.workflow_names[2]); self.tabs.addTab(self._review_page(),self.workflow_names[3])
+        from .pyaml_widget import PyAMLCorrectionWidget
+        self.pyaml_workspace = PyAMLCorrectionWidget(self)
+        self.pyaml_connection_layout.addWidget(self.pyaml_workspace.settings_box)
+        self.review_actions.addWidget(self.pyaml_workspace.extra_actions)
+        self.pyaml_workspace.hide()
+        self.pyaml_connection_group.hide()
         self.tabs.tabBar().setExpanding(False); self.tabs.tabBar().setElideMode(Qt.ElideNone); self._update_workflow_tabs()
         self.backend_combo.currentIndexChanged.connect(self.quadrupole_workspace.invalidate)
         self.quadrupole_workspace.profile.currentIndexChanged.connect(self._pysc_profile_selected)
         self.statusBar().showMessage("Load a correction file; control-system writes remain confirmation-gated")
 
     def closeEvent(self, event):
+        if self.pyaml_workspace.thread is not None:
+            QMessageBox.warning(self, "Operation in progress", "Wait for the pyAML operation to finish before closing. Applied strengths will be kept; restoration is optional.")
+            event.ignore()
+            return
         fullfit = getattr(self, "fullfit_transaction", None)
         fullfit_pending = bool(
             fullfit is not None
@@ -175,6 +186,11 @@ class CorrectMainWindow(QMainWindow):
         mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addStretch(1); mapping_grid.addLayout(mapping_actions,6,0,1,2)
         self.mapping_note=QLabel("Explicit mapping is required. Each fitted lattice element must resolve uniquely to a verified control-system name. Unmapped, ambiguous, and duplicate mappings remain blocked."); self.mapping_note.setWordWrap(True); self.mapping_note.setObjectName("mappingHelpText"); mapping_grid.addWidget(self.mapping_note,7,0,1,2)
         layout.addWidget(mapping_group)
+        self.mapping_group = mapping_group
+        self.pysc_connection_group = connection_group
+        self.pyaml_connection_group = QGroupBox("pyAML connection")
+        self.pyaml_connection_layout = QVBoxLayout(self.pyaml_connection_group)
+        layout.insertWidget(0, self.pyaml_connection_group)
         current_row=QHBoxLayout(); self.read_current_k_button=QPushButton("Read current K from pySC Server"); self.read_current_k_button.clicked.connect(self.read_current_pysc_k); self.current_k_status=QLabel("Connect a verified pySC machine/profile and load its explicit mapping."); self.current_k_status.setWordWrap(True); current_row.addWidget(self.read_current_k_button); current_row.addWidget(self.current_k_status,1); layout.addLayout(current_row)
         layout.addStretch(1); return self._scroll_page(page)
 
@@ -213,6 +229,7 @@ class CorrectMainWindow(QMainWindow):
 
     def _review_page(self):
         page=QWidget(); layout=QVBoxLayout(page); actions=QHBoxLayout(); self.apply_status=QLabel("Select a backend and preview before Apply"); self.apply_status.setObjectName("safetyBadge"); self.apply_status.setAlignment(Qt.AlignCenter); self.apply_status.setMinimumWidth(500); self.apply_status.setMaximumWidth(650); actions.addWidget(self.apply_status); actions.addStretch(); self.preview_apply_button=QPushButton("Preview machine changes"); self.preview_apply_button.clicked.connect(self.preview_machine_changes); actions.addWidget(self.preview_apply_button); self.apply_button=QPushButton("Apply…"); self.apply_button.setEnabled(False); self.apply_button.clicked.connect(self.apply_machine_changes); actions.addWidget(self.apply_button); self.undo_button=QPushButton("Undo last 10%…"); self.undo_button.setEnabled(False); self.undo_button.setToolTip("Return to the preceding verified cumulative correction level"); self.undo_button.clicked.connect(self.undo_last_machine_changes); actions.addWidget(self.undo_button); self.restore_button=QPushButton("Restore original…"); self.restore_button.setEnabled(False); self.restore_button.setToolTip("Restore exact pre-Apply B2 values in the pySC simulation"); self.restore_button.clicked.connect(self.restore_machine_changes); actions.addWidget(self.restore_button); export=QPushButton("Export CSV…"); export.setToolTip("Export the human-readable correction table"); export.clicked.connect(self.export_csv); actions.addWidget(export); layout.addLayout(actions)
+        self.review_actions = layout
         metrics=QGroupBox(); self.review_metrics_group=metrics; metrics.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); grid=QGridLayout(metrics); self.review_metrics={}
         labels=("Magnets loaded","Magnets included","Magnets excluded","Warnings","Current-limit violations","Global correction fraction","Max |ΔK/K|","Max |Final ΔK|")
         for index,name in enumerate(labels):
@@ -250,13 +267,23 @@ class CorrectMainWindow(QMainWindow):
         self._accept_loaded_review(review,path)
 
     def _accept_loaded_review(self,review,path):
+        if self._pyaml_locked():
+            QMessageBox.warning(self, "Restore required", "Restore pyAML strengths before changing correction source.")
+            return
         self.review=review
+        if hasattr(self, "pyaml_workspace"):
+            self.pyaml_workspace._rendered = None
+            if self.pyaml_workspace.transaction and self.pyaml_workspace.transaction.record:
+                self.pyaml_workspace.transaction.record["status"] = "stale"
         source=Path(path).resolve(); self.machine_snapshot=None; self.badge.setText(self.registry.descriptor(self.backend_combo.currentData()).badge)
         for item in self.review.items:item.metadata.setdefault("mapping_status","mapped" if item.control_name else "unmapped")
         self.correction_changes=(); self.apply_button.setEnabled(False); self.apply_status.setText("Correction loaded — preview machine changes")
         provenance=self.review.items[0].metadata if self.review.items else {}; session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False); self.mapping_file_status.setText("—"); self._refresh_mapping_status(); self._sync_fraction(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2); self.statusBar().showMessage(f"Loaded {len(self.review.items)} correction item(s)",5000)
 
     def load_source_responsively(self,path,iteration=None):
+        if self._pyaml_locked():
+            QMessageBox.warning(self, "Restore required", "Restore pyAML strengths before changing correction source.")
+            return
         if self._source_load_thread is not None:
             self.statusBar().showMessage("A correction source is already loading.",3000)
             return
@@ -318,7 +345,44 @@ class CorrectMainWindow(QMainWindow):
         path=QFileDialog.getOpenFileName(self,"Open correction plan or legacy JSON",self._browse_start("plans"),"Correction files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
         if path:self._remember_browse("plans",path); self.load_source_responsively(path)
 
+    def _pyaml_locked(self):
+        workspace = getattr(self, "pyaml_workspace", None)
+        return bool(workspace and (workspace.pending() or workspace.thread is not None))
+
     def _backend_changed(self,*_):
+        if self._pyaml_locked() and self.backend_combo.currentData() != "pyaml":
+            self.backend_combo.blockSignals(True)
+            self.backend_combo.setCurrentIndex(self.backend_combo.findData("pyaml"))
+            self.backend_combo.blockSignals(False)
+            return
+        if hasattr(self, "pyaml_workspace"):
+            selected = self.backend_combo.currentData() == "pyaml"
+            self.pyaml_connection_group.setVisible(selected)
+            self.pysc_connection_group.setVisible(not selected)
+            self.pyaml_workspace.extra_actions.setVisible(selected)
+            self.pyaml_workspace.clear_mapping_button.setVisible(selected)
+            self.correction_representation.setEnabled(not selected)
+            self.undo_button.setVisible(not selected)
+            self.read_current_k_button.setText("Read current integrated strengths" if selected else "Read current K from pySC Server")
+            self.mapping_note.setText("Match unique literal lattice identities or load an explicit mapping. Array order is not used." if selected else "Explicit mapping is required. Each fitted lattice element must resolve uniquely to a verified control-system name.")
+            if selected:
+                self.tabs.setCurrentIndex(1)
+            else:
+                self.pyaml_workspace.invalidate_connection()
+                self.preview_apply_button.setEnabled(True)
+            self.restore_button.setToolTip("Restore exact original strengths")
+            self.current_k_status.setText("Connect and verify mapping before reading strengths.")
+            if self.review and (selected or getattr(self, "_last_correct_backend", None) == "pyaml"):
+                for item in self.review.items:
+                    item.control_name = None
+                    item.machine_value = None
+                    item.metadata["mapping_status"] = "unmapped"
+                    item.metadata.pop("match_source", None)
+                self.mapping_path = None
+                self.mapping_file_status.setText("—")
+                self.refresh_all()
+            self.pyaml_workspace._rendered = None
+            self._last_correct_backend = self.backend_combo.currentData()
         key=self.backend_combo.currentData(); descriptor=self.registry.descriptor(key); self.badge.setText(descriptor.badge); self.backend_session=None; self.correction_changes=(); self.apply_button.setEnabled(False)
         self._set_connection(False,"OFFLINE" if key=="mock" else "DISCONNECTED"); self._style_backend_badge(key); self._populate_machine_changes(())
         self.apply_status.setText("Mock is read-only" if key=="mock" else "Backend selected — preview reads current values")
@@ -397,12 +461,19 @@ class CorrectMainWindow(QMainWindow):
         return updated
 
     def read_current_pysc_k(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.run(self.pyaml_workspace.read_current)
+            return
         try:self._read_current_pysc_k(strict=True)
         except Exception as exc:
             self.current_k_status.setText(f"Current machine K unavailable: {exc}")
             QMessageBox.warning(self,"Cannot read current machine K",str(exc))
 
     def preview_machine_changes(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.tabs.setCurrentIndex(3)
+            self.pyaml_workspace.run(self.pyaml_workspace.preview)
+            return
         # Preview is read-only. An applied pass may be continued only after
         # its complete live state has been independently verified.
         existing=getattr(self,"fullfit_transaction",None)
@@ -791,6 +862,9 @@ class CorrectMainWindow(QMainWindow):
             )
 
     def apply_machine_changes(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.apply()
+            return
         import math
 
         transaction = getattr(
@@ -926,6 +1000,9 @@ class CorrectMainWindow(QMainWindow):
         self._apply_thread=None; self._apply_worker=None
 
     def undo_last_machine_changes(self):
+        if self.backend_combo.currentData() == "pyaml":
+            QMessageBox.information(self, "pyAML restoration", "Use Restore original in Review & Validate.")
+            return
         transaction = getattr(self, "fullfit_transaction", None)
         if transaction is None or not transaction.record:
             QMessageBox.warning(self, "Nothing to undo", "No applied 10% increment is available.")
@@ -962,6 +1039,9 @@ class CorrectMainWindow(QMainWindow):
             QMessageBox.critical(self, "Undo failed", str(exc))
 
     def restore_machine_changes(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.restore()
+            return
         transaction = getattr(
             self,
             "fullfit_transaction",
@@ -1076,14 +1156,15 @@ class CorrectMainWindow(QMainWindow):
         if not self.review:
             self.mapping_summary.setText("No correction source loaded"); self.mapped_status.setText("—"); self.unmapped_status.setText("—"); self.ambiguous_status.setText("—"); return
         statuses={key:sum(item.metadata.get("mapping_status")==key for item in self.review.items) for key in ("mapped","unmapped","ambiguous","duplicate")}; available=sum(item.control_name is not None for item in self.review.items); mapped=statuses["mapped"] or available
-        self.mapping_summary.setText("Mapping ready for review" if mapped else "Explicit PETRA mapping required")
+        self.mapping_summary.setText("Mapping ready for review" if mapped else "Unique magnet mapping required")
         self.mapped_status.setText(str(mapped)); self.unmapped_status.setText(str(statuses["unmapped"])); self.ambiguous_status.setText(f"{statuses['ambiguous']} ambiguous; {statuses['duplicate']} duplicate")
 
     def generate_mapping_template(self):
         """Create an explicit, editable mapping from the loaded FIT result."""
         if not self.review:
             return
-        integrated = self.correction_representation.currentData() == "integrated"
+        pyaml = self.backend_combo.currentData() == "pyaml"
+        integrated = pyaml or self.correction_representation.currentData() == "integrated"
         entries = []
         for item in self.review.items:
             skew = item.correction_type in {"skew_quadrupole", "quadrupole_tilt"}
@@ -1092,7 +1173,7 @@ class CorrectMainWindow(QMainWindow):
             entries.append({
                 "lattice_name": item.name,
                 "lattice_ordinal": item.lattice_ordinal,
-                "control_name": f"{control_base}/{component}",
+                "control_name": (item.control_name or item.name) if pyaml else f"{control_base}/{component}",
                 "component": component,
                 "unit": "m^-1" if integrated else "m^-2",
             })
@@ -1115,6 +1196,9 @@ class CorrectMainWindow(QMainWindow):
             "mappings": entries,
         }, indent=2), encoding="utf-8")
         self._remember_browse("mapping", target)
+        if pyaml:
+            self.pyaml_workspace.run(lambda: self.pyaml_workspace.load_mapping_path(target))
+            return
         counts = apply_explicit_mapping(self.review, load_mapping(target))
         self.mapping_path = str(target.resolve())
         self.mapping_file_status.setText(target.name)
@@ -1128,6 +1212,9 @@ class CorrectMainWindow(QMainWindow):
         path=QFileDialog.getOpenFileName(self,"Load explicit magnet mapping",self._browse_start("mapping"),"Mapping files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
         if not path or not self.review:return
         self._remember_browse("mapping",path)
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.run(lambda: self.pyaml_workspace.load_mapping_path(path))
+            return
         try:counts=apply_explicit_mapping(self.review,load_mapping(path))
         except Exception as exc:QMessageBox.critical(self,"Cannot load PETRA mapping",str(exc)); return
         self.mapping_path=str(Path(path).resolve()); self.mapping_file_status.setText(Path(path).name); self.mapping_file_status.setToolTip(self.mapping_path); self._sync_representation(); self._refresh_mapping_status(); self._read_current_pysc_k(strict=False); self.statusBar().showMessage(f"Mapping loaded: {counts['mapped']} mapped, {counts['unmapped']} unmapped, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate."); self.refresh_all()
@@ -1199,6 +1286,8 @@ class CorrectMainWindow(QMainWindow):
                     if col in (14,25):table_item.setFlags(table_item.flags()|Qt.ItemIsEditable)
                     elif col!=0:table_item.setFlags(table_item.flags()&~Qt.ItemIsEditable)
                     table_item.setToolTip("Warnings: "+", ".join(warnings) if warnings else "Normal")
+                    if col == 5 and item.metadata.get("match_source"):
+                        table_item.setText(f"{value} ({item.metadata['match_source']})")
                     if not item.included:
                         table_item.setForeground(QColor("#888888"))
                         if col==0:table_item.setBackground(QColor("#D0D0D0"))
