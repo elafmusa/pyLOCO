@@ -7,8 +7,75 @@ Correct also supports normal and skew integrated-strength corrections (see below
 
 Install pyAML and the control-system plugin referenced by your configuration into
 the same Python environment as pyLOCO. They are imported only when connecting.
-For this workspace, the local packages are `../pyaml` and, for the supplied PETRA
-simulation configuration, `../pySC2pyaml` (install with `pip install -e PATH`).
+
+### Tested EBS pySC/pyAML environment
+
+The EBS demonstration has been exercised with:
+
+- Python 3.14.0
+- `accelerator-middle-layer==0.3.1`
+- `accelerator-commissioning==1.5.6`
+- `pySC2pyaml==0.1.0`, installed from the local `../pySC2pyaml` checkout
+- `accelerator-toolbox==0.8.0`
+- `numpy==2.5.3`
+- `PySide6==6.12.0`
+
+The pyAML BPM API changed in upstream PR #464. Current pyAML exposes arrays as
+`machine.diagnostic.bpms`, while the tested 0.3.1 release exposes
+`machine.bpms`. pyLOCO detects those attributes explicitly, prefers the current
+hierarchy when both are present, and retains the 0.3.1 fallback. No array is
+reordered: device names and the X/Y columns are consumed in the order returned
+by the selected BPM array.
+
+Create a dedicated environment; do not install pyLOCO's current `pysc-demo`
+extra into it because that extra pins `accelerator-commissioning==1.5.2`:
+
+```bash
+python3.14 -m venv .venv-pyaml
+.venv-pyaml/bin/python -m pip install --upgrade pip
+.venv-pyaml/bin/python -m pip install -e '.[gui]'
+.venv-pyaml/bin/python -m pip install accelerator-middle-layer==0.3.1
+.venv-pyaml/bin/python -m pip install accelerator-commissioning==1.5.6
+.venv-pyaml/bin/python -m pip install ../pySC2pyaml
+```
+
+There is a known metadata conflict in this exact tested combination:
+`accelerator-middle-layer==0.3.1` declares
+`accelerator-commissioning==1.5.3`, while the demonstrated working environment
+uses 1.5.6. Consequently `pip check` reports that mismatch even though the tested
+pyAML connection and BPM-noise workflow operate correctly. `pySC2pyaml==0.1.0`
+does not narrow the commissioning version. Do not hide the mismatch with a
+pyLOCO dependency declaration: either use the resolver-clean 1.5.3 combination,
+or deliberately install 1.5.6 as the final command above and record the exception.
+The durable fix is for a compatible `accelerator-middle-layer` release to widen
+its commissioning requirement; that should be verified before making 1.5.6 a
+normal pyLOCO optional dependency.
+
+For testing the post-#464 API before a numbered release, install a pinned pyAML
+revision together with its Tango extra. Revision `c7cf416deb2b` was inspected
+for this integration (it contains merged PR #464):
+
+```bash
+python3.14 -m venv .venv-pyaml-current
+.venv-pyaml-current/bin/python -m pip install --upgrade pip
+.venv-pyaml-current/bin/python -m pip install -e '.[gui]'
+.venv-pyaml-current/bin/python -m pip install \
+  'accelerator-middle-layer[tango-pyaml] @ git+https://github.com/python-accelerator-middle-layer/pyaml.git@c7cf416deb2b'
+```
+
+That revision still declares `accelerator-commissioning==1.5.3`. Keep the
+realistic EBS pySC demonstration, which is validated with 1.5.6 and
+`pySC2pyaml==0.1.0`, in its separate environment until the upstream constraint
+is resolved.
+
+### Contribution boundaries
+
+The pyAML adapter, shared backend registration, Measure connection workflow,
+Correct connection/mapping/transaction workflow, and their pyAML tests originate
+from Kostas's PR #35. The persistent Measure status header, compact measurement
+statistics table, 1.0-second new-measurement default, and corresponding GUI tests
+are the subsequent pyLOCO GUI additions. The realistic EBS machine-state example
+is intentionally maintained separately from both sets of application changes.
 
 1. Open `pyloco-measure`, then select **pyAML** in Machine setup.
 2. Click **Browse…** beside **Configuration file** to select your YAML or JSON
@@ -55,6 +122,37 @@ again. Editing settings immediately invalidates the old inventory and connection
 Implementation: `pyLOCO/control_system/pyaml_adapter.py`, registered through
 `InterfaceRegistry` and selected by `pyLOCO/measure/main_window.py`.
 
+## ESRF Tango configuration (read-only connection check)
+
+The upstream ESRF example inspected at revision `c7cf416deb2b` is
+`examples/use_cases/config/esrf/esrf.yaml`. It defines the EBS lattice
+`sr/lattices/ebs.mat`, Tango host `ebs-simu-3:10000`, BPM array `BPM`, horizontal
+and vertical corrector arrays `HCorr` and `VCorr`, RF plant `RF`, skew array
+`Skews`, and tune-correction quadrupole array `QForTune`. Therefore the Measure
+defaults identify the configured BPM, corrector and RF devices exactly.
+
+For a connection-only check, select pyAML/live, choose that file, keep the four
+Measure names above, **uncheck corrector magnet writes and RF frequency writes**,
+and then click **Test connection**. This path calls getters only. Its Tango BPM
+catalog maps horizontal and vertical position attributes in metres. It does not
+start a server, issue a correction, or call a setter.
+
+The file still loads its live Tango control-system class even when a design
+machine is selected, so install the `tango-pyaml` extra before loading it. In the
+inspection environment the checkout itself was not installed (and therefore
+lacked the build-generated `pyaml/_version.py`), and after bypassing only that
+packaging artifact the load stopped at the missing `tango` module. Consequently
+no Tango connection was attempted and no live ESRF device count is claimed here.
+
+The realistic pySC demonstration uses the older configuration schema with
+top-level `eclass:` and nested `class:` keys. Current upstream examples use
+top-level and nested `type:` keys. Do not mechanically rewrite that saved
+realistic configuration: its working `accelerator-middle-layer==0.3.1` /
+`pySC2pyaml==0.1.0` loader owns the legacy schema. Conversely, use the upstream
+`type:`-based ESRF file with current pyAML. Mixing the two schemas was the cause
+of the earlier `eclass`-related loader incompatibility; it is separate from the
+BPM-device hierarchy change.
+
 ## pyLOCO Correct
 
 1. Load the FIT Results directory in Correct using **Results…**. Normal family
@@ -66,6 +164,12 @@ Implementation: `pyLOCO/control_system/pyaml_adapter.py`, registered through
    `SkewQuads`). Both arrays must exist; either can be empty if that correction
    family is unused. No BPM or RF configuration is needed. These settings are
    remembered locally after a successful connection.
+
+For the inspected ESRF example, use `QForTune` and `Skews`, not the generic
+defaults. `QForTune` contains only the configured `QD2*` and `QF1*` families;
+it is not full EBS quadrupole coverage. Do not apply a general LOCO correction
+against it unless the fitted-device mapping and intended physical coverage have
+been reviewed explicitly.
 4. Click **Connect / discover quadrupoles** and confirm live write access if
    enabled. Connection reads individual strengths but does not write them.
 5. Review matching in **Correction Plan**. FIT lattice names match exact, unique
