@@ -11,8 +11,8 @@ from time import monotonic, sleep
 from typing import Sequence
 
 import numpy as np
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QSize, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -54,9 +54,9 @@ QToolBar#mainToolbar { spacing: 5px; padding: 6px 8px; }
 QToolBar#mainToolbar QPushButton { font-size: 10pt; min-height: 27px; padding: 4px 8px; }
 QLabel#measureBrand { color: #12BFC4; font-size: 25pt; font-weight: 850; padding: 1px 9px 1px 2px; }
 QLabel#connectionStatus { background: #123B42; color: #67E8E8; border: 1px solid #20BFC4;
- border-radius: 10px; padding: 7px 14px; font-size: 12pt; font-weight: 900; }
+ border-radius: 8px; padding: 4px 9px; font-size: 9.5pt; font-weight: 850; }
 QLabel#machineIdentity { color:#CFFAFE; padding:3px 9px; font-size:9.5pt; font-weight:750; }
-QLabel#connectionState { border-radius: 9px; padding: 6px 11px; font-size: 10pt; font-weight: 850; }
+QLabel#connectionState { border-radius: 8px; padding: 4px 9px; font-size: 9.5pt; font-weight: 850; }
 QLabel#connectionState[connected="true"] { background:#123D2A; color:#7BE3A7; border:1px solid #38B875; }
 QLabel#connectionState[connected="false"] { background:#4A2424; color:#FFAAAA; border:1px solid #D96666; }
 QLabel#savedPath { background:#102F35; color:#A8F4F1; border:1px solid #20BFC4; border-radius:7px; padding:10px; font-weight:750; }
@@ -69,6 +69,11 @@ QLabel#runState { font-size: 14pt; font-weight: 750; color: #12BFC4; }
 QLabel#runMetric { font-size: 10.5pt; }
 QLabel#summaryCard { background:rgba(32,38,63,0.35); border:1px solid rgba(92,105,145,0.75); border-radius:8px; padding:14px; font-size:11pt; }
 QLabel#statLine { background:rgba(45,53,86,0.28); border-radius:5px; padding:8px 10px; font-size:10.5pt; }
+QFrame#persistentStatus { background:rgba(32,38,63,0.22); border:1px solid rgba(92,105,145,0.65); border-radius:8px; }
+QLabel#statusCaption { color:#7C8AAE; font-size:8.5pt; font-weight:700; }
+QLabel#statusValue { font-size:9.5pt; font-weight:700; }
+QTableWidget#statisticsTable { border:1px solid rgba(92,105,145,0.65); border-radius:6px; gridline-color:rgba(92,105,145,0.45); }
+QTableWidget#statisticsTable::item { padding:5px 9px; }
 QLabel#referenceModelCard { background:rgba(32,38,63,0.35); border:1px solid rgba(92,105,145,0.75); border-radius:8px; padding:14px; font-size:10.5pt; }
 QPushButton#measurePrimary { background: #0F9FA6; border-color: #31D5D8; color: white; }
 QPushButton#measurePrimary:hover { background: #0C858B; }
@@ -104,6 +109,57 @@ class ElidedPathLabel(QLabel):
 
     def _refresh(self):
         if self._full_text: super().setText(self.fontMetrics().elidedText(self._full_text,Qt.ElideMiddle,max(40,self.width())))
+
+
+class MeasurementStatisticsTable(QTableWidget):
+    """Compact, theme-neutral presentation for measurement statistics."""
+
+    def __init__(self) -> None:
+        super().__init__(0, 5)
+        self.setObjectName("statisticsTable")
+        self.setHorizontalHeaderLabels(["Plane / quantity", "Mean", "RMS", "Min", "Max"])
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.NoSelection)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.verticalHeader().setVisible(False)
+        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, 5):
+            self.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.setAlternatingRowColors(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.clear_statistics()
+
+    def clear_statistics(self) -> None:
+        self.setRowCount(0)
+        self.setToolTip("Statistics appear after a completed measurement.")
+        self._fit_height_to_contents()
+
+    def _fit_height_to_contents(self) -> None:
+        """Fit all rows without scrollbars, including high-DPI frame rounding."""
+        self.resizeRowsToContents()
+        header_height = self.horizontalHeader().sizeHint().height()
+        rows_height = sum(self.verticalHeader().sectionSize(row) for row in range(self.rowCount()))
+        self.setFixedHeight(header_height + rows_height + 2 * self.frameWidth() + 10)
+
+    def set_statistics(self, rows, unit: str) -> None:
+        self.setHorizontalHeaderLabels([
+            "Plane / quantity", f"Mean [{unit}]", f"RMS [{unit}]", f"Min [{unit}]", f"Max [{unit}]",
+        ])
+        self.setRowCount(len(rows))
+        colors = ("#11B7C1", "#F59E42")
+        for row, (label, values) in enumerate(rows):
+            label_item = QTableWidgetItem(str(label))
+            label_item.setForeground(QColor(colors[row % len(colors)]))
+            font = label_item.font(); font.setBold(True); label_item.setFont(font)
+            self.setItem(row, 0, label_item)
+            for column, key in enumerate(("Mean", "RMS", "Min", "Max"), start=1):
+                item = QTableWidgetItem(f"{float(values[key]):.3f}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.setItem(row, column, item)
+        self._fit_height_to_contents()
+        self.setToolTip(f"Measurement statistics in {unit}")
 
 
 class ClickableLogoLabel(QLabel):
@@ -286,14 +342,33 @@ class MeasureMainWindow(QMainWindow):
         for text, handler in (("New", self.new_project), ("Open", self.open_project), ("Save Project", self.save_project), ("Save Project As…", self.save_project_as)):
             button=QPushButton(text); button.clicked.connect(handler); toolbar.addWidget(button)
         spacer=QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(spacer)
-        self.status_badge=QLabel("MOCK • READ ONLY"); self.status_badge.setObjectName("connectionStatus"); toolbar.addWidget(self.status_badge)
-        self.machine_identity_badge=QLabel("Machine: Mock\nProfile: offline"); self.machine_identity_badge.setObjectName("machineIdentity"); toolbar.addWidget(self.machine_identity_badge)
-        self.connection_badge=QLabel("● OFFLINE"); self.connection_badge.setObjectName("connectionState"); self.connection_badge.setProperty("connected",True); toolbar.addWidget(self.connection_badge)
         self.theme_button=QPushButton("☀ Light"); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         logo_container=QFrame(); logo_container.setObjectName("measureLogoContainer"); logo_layout=QHBoxLayout(logo_container); logo_layout.setContentsMargins(4,2,4,2)
         self.logo_button=ClickableLogoLabel(); set_asset(self.logo_button,QSize(107,44),DISPLAY_ASSET,crop_transparency=False); self.logo_button.clicked.connect(self._show_about_dialog); logo_layout.addWidget(self.logo_button); toolbar.addWidget(logo_container)
 
-        root=QWidget(); layout=QVBoxLayout(root); layout.setContentsMargins(20,16,20,20)
+        root=QWidget(); layout=QVBoxLayout(root); layout.setContentsMargins(20,12,20,20); layout.setSpacing(9)
+        status_frame=QFrame(); status_frame.setObjectName("persistentStatus")
+        status_layout=QGridLayout(status_frame); status_layout.setContentsMargins(10,7,10,7); status_layout.setHorizontalSpacing(14); status_layout.setVerticalSpacing(3)
+        self.status_badge=QLabel("MOCK • READ ONLY"); self.status_badge.setObjectName("connectionStatus")
+        self.connection_badge=QLabel("● OFFLINE READY"); self.connection_badge.setObjectName("connectionState"); self.connection_badge.setProperty("connected",True)
+        self.machine_identity_badge=QLabel("Mock / offline"); self.machine_identity_badge.setObjectName("statusValue")
+        self.header_mode=QLabel("Mode · Offline"); self.header_mode.setObjectName("statusValue")
+        self.header_capabilities=QLabel("Available · Read Only"); self.header_capabilities.setObjectName("statusValue")
+        self.header_access=QLabel("Authorized · Read Only"); self.header_access.setObjectName("statusValue")
+        for column,widget in enumerate((self.status_badge,self.header_mode,self.connection_badge,self.header_capabilities,self.header_access)):
+            widget.setWordWrap(False)
+            status_layout.addWidget(widget,0,column)
+            status_layout.setColumnStretch(column,1 if column in (3,4) else 0)
+        machine_caption=QLabel("MACHINE"); machine_caption.setObjectName("statusCaption")
+        config_caption=QLabel("CONFIGURATION"); config_caption.setObjectName("statusCaption")
+        output_caption=QLabel("OUTPUT"); output_caption.setObjectName("statusCaption")
+        self.header_configuration=ElidedPathLabel(); self.header_configuration.setObjectName("statusValue")
+        self.header_output=ElidedPathLabel(); self.header_output.setObjectName("statusValue")
+        status_layout.addWidget(machine_caption,1,0); status_layout.addWidget(self.machine_identity_badge,1,1)
+        status_layout.addWidget(config_caption,1,2); status_layout.addWidget(self.header_configuration,1,3)
+        status_layout.addWidget(output_caption,1,4); status_layout.addWidget(self.header_output,1,5)
+        status_layout.setColumnStretch(1,1); status_layout.setColumnStretch(3,2); status_layout.setColumnStretch(5,2)
+        layout.addWidget(status_frame)
         self.heading=QLabel("Machine setup"); self.heading.setObjectName("pageTitle"); layout.addWidget(self.heading)
         self.subtitle=QLabel("Offline planning with deterministic Mock data — no machine writes."); self.subtitle.setVisible(False)
         self.tabs=QTabWidget(); self.tabs.currentChanged.connect(self._workspace_changed); layout.addWidget(self.tabs,1)
@@ -365,7 +440,58 @@ class MeasureMainWindow(QMainWindow):
         self.connection_badge.setProperty("connected",bool(connected))
         self.connection_verified=bool(connected)
         self.connection_badge.style().unpolish(self.connection_badge); self.connection_badge.style().polish(self.connection_badge)
+        self._update_persistent_header()
         if hasattr(self,"plan_values"):self.refresh_plan()
+
+    def _update_persistent_header(self) -> None:
+        if not hasattr(self, "header_configuration") or not hasattr(self, "adapter_combo"):
+            return
+        key = self.adapter_combo.currentData()
+        descriptor = next((item for item in InterfaceRegistry.DESCRIPTORS if item.key == key), None)
+        mode = descriptor.environment.title() if descriptor is not None else "Live"
+        if key == "pyaml" and hasattr(self, "pyaml_fields"):
+            mode = self.pyaml_fields["mode"].text().strip().title() or "Live"
+        capabilities = self.adapter.capabilities
+        if key == "pyaml" and hasattr(self, "pyaml_fields"):
+            magnet_available = bool(self.pyaml_fields["hcor_group"].text().strip() or self.pyaml_fields["vcor_group"].text().strip())
+            rf_available = bool(self.pyaml_fields["rf_name"].text().strip())
+        elif key == "pysc":
+            magnet_available = rf_available = True
+        else:
+            magnet_available = rf_available = False
+
+        def access_text(magnet: bool, rf: bool) -> str:
+            if magnet and rf:return "Magnet + RF"
+            if magnet:return "Magnet"
+            if rf:return "RF"
+            return "Read Only"
+
+        magnet_authorized = self.connection_verified and AdapterCapability.WRITE in capabilities
+        rf_authorized = self.connection_verified and AdapterCapability.RF_WRITE in capabilities
+        available = access_text(magnet_available, rf_available)
+        authorized = access_text(magnet_authorized, rf_authorized)
+        self.header_mode.setText(f"Mode · {mode}")
+        self.header_capabilities.setText(f"Available · {available}")
+        self.header_access.setText(f"Authorized · {authorized}")
+        self.header_capabilities.setToolTip("Backend functions exposed by the selected configuration; this does not grant permission to write.")
+        self.header_access.setToolTip("Write access currently granted to this connected adapter after confirmation. Disconnected backends are read only.")
+        identity, profile = self._machine_identity()
+        pyaml_path = self.pyaml_fields["config_path"].text().strip() if key == "pyaml" and hasattr(self, "pyaml_fields") else ""
+        machine_display = identity.replace("\n", " · ")
+        if key == "pyaml":
+            machine_display = f"pyAML · {mode}" + (f" · {Path(pyaml_path).name}" if pyaml_path else "")
+        self.machine_identity_badge.setText(machine_display)
+        self.machine_identity_badge.setToolTip(identity)
+        if pyaml_path:
+            configuration = pyaml_path
+        elif self.project_path is not None:
+            configuration = str(self.project_path)
+        elif profile is not None:
+            configuration = str(profile.manifest_path)
+        else:
+            configuration = "Unsaved Measure project"
+        self.header_configuration.setFullText(configuration)
+        self.header_output.setFullText(str(self._resolved_output_directory()) if hasattr(self, "output_directory") else "—")
 
     def _set_acquisition_running(self, running: bool) -> None:
         # Keep the active Measurement workspace visible throughout acquisition.
@@ -601,6 +727,7 @@ class MeasureMainWindow(QMainWindow):
             self.devices_identity.setText(f"Machine/profile: {text.replace(chr(10),' — ')}\nAvailable inventory: {len(self.devices)} BPM / {len(self.horizontal_correctors)} H correctors / {len(self.vertical_correctors)} V correctors")
         if hasattr(self,"measurement_machine_identity"):self.measurement_machine_identity.setText(f"Measurement machine/profile: {text.replace(chr(10),' — ')}")
         if hasattr(self,"review_machine_identity"):self.review_machine_identity.setText(f"Saved data machine/profile: {text.replace(chr(10),' — ')}")
+        self._update_persistent_header()
 
     def _pysc_profile_changed(self,*_):
         if self.adapter_combo.currentData()=="pysc": self._adapter_changed()
@@ -747,7 +874,7 @@ class MeasureMainWindow(QMainWindow):
         help_layout.addWidget(self.measurement_help_body); self.measurement_help_group.toggled.connect(self.measurement_help_body.setVisible); self.measurement_help_body.setVisible(False); layout.addWidget(self.measurement_help_group)
         group=QGroupBox("Measurement configuration"); group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); form=QFormLayout(group); self._configure_form(form)
         self.readings=NoWheelSpinBox(); self.readings.setRange(2,100000); self.readings.setValue(20)
-        self.delay=NoWheelDoubleSpinBox(); self.delay.setRange(0,3600); self.delay.setDecimals(3); self.delay.setSingleStep(.1); self.delay.setSuffix(" s"); self.delay.setValue(.1)
+        self.delay=NoWheelDoubleSpinBox(); self.delay.setRange(0,3600); self.delay.setDecimals(3); self.delay.setSingleStep(.1); self.delay.setSuffix(" s"); self.delay.setValue(1.0)
         self.measurement_name=QLineEdit("pyloco-bpm-noise"); self.measurement_label=QLineEdit("pyLOCO BPM noise — Mock"); self.comments=QPlainTextEdit(); self.comments.setMaximumHeight(90)
         self.output_directory=QLineEdit("measurements"); out=QWidget(); ol=QHBoxLayout(out); ol.setContentsMargins(0,0,0,0); ol.addWidget(self.output_directory,1); choose=QPushButton("Choose…"); choose.clicked.connect(self.choose_output); ol.addWidget(choose)
         self.duration=QLabel();
@@ -854,7 +981,7 @@ class MeasureMainWindow(QMainWindow):
         self.orm_vv_plot=PlotCanvas(minimum_height=260); self.orm_column_plot=PlotCanvas(minimum_height=260); self.orm_kick_plot=PlotCanvas(minimum_height=260)
         self.orm_model_plot=PlotCanvas(minimum_height=260); self.orm_difference_plot=PlotCanvas(minimum_height=260)
         self.results_tabs.addTab(self.x_plot,"Horizontal BPM noise"); self.results_tabs.addTab(self.y_plot,"Vertical BPM noise"); self.results_tabs.addTab(self.mean_x_plot,"Mean horizontal orbit"); self.results_tabs.addTab(self.mean_y_plot,"Mean vertical orbit"); layout.addWidget(self.results_tabs)
-        self.stats_group=QGroupBox("Statistics"); stats_layout=QVBoxLayout(self.stats_group); self.orm_measurement_summary=QLabel(); self.orm_measurement_summary.setObjectName("summaryCard"); self.orm_measurement_summary.setWordWrap(True); self.orm_measurement_summary.setTextInteractionFlags(Qt.TextSelectableByMouse); self.orm_restoration_status=QLabel(); self.orm_restoration_status.setObjectName("runState"); self.orm_restoration_status.setWordWrap(True); self.summary_x=QLabel("Horizontal: no completed measurement."); self.summary_y=QLabel("Vertical: no completed measurement."); self.rf_diagnostics=QLabel(); self.restoration_label=QLabel(); self.summary_x.setObjectName("statLine"); self.summary_y.setObjectName("statLine"); self.rf_diagnostics.setObjectName("summaryCard"); self.restoration_label.setObjectName("statLine"); self.summary_x.setWordWrap(True); self.summary_y.setWordWrap(True); self.rf_diagnostics.setWordWrap(True); self.restoration_label.setWordWrap(True); stats_layout.addWidget(self.orm_measurement_summary); stats_layout.addWidget(self.orm_restoration_status); stats_layout.addWidget(self.summary_x); stats_layout.addWidget(self.summary_y); stats_layout.addWidget(self.rf_diagnostics); stats_layout.addWidget(self.restoration_label); layout.addWidget(self.stats_group)
+        self.stats_group=QGroupBox("Statistics"); self.stats_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); stats_layout=QVBoxLayout(self.stats_group); stats_layout.setContentsMargins(10,10,10,10); stats_layout.setSpacing(7); self.orm_measurement_summary=QLabel(); self.orm_measurement_summary.setObjectName("summaryCard"); self.orm_measurement_summary.setWordWrap(True); self.orm_measurement_summary.setTextInteractionFlags(Qt.TextSelectableByMouse); self.orm_restoration_status=QLabel(); self.orm_restoration_status.setObjectName("runState"); self.orm_restoration_status.setWordWrap(True); self.statistics_table=MeasurementStatisticsTable(); self.summary_x=QLabel("Horizontal: no completed measurement."); self.summary_y=QLabel("Vertical: no completed measurement."); self.summary_x.hide(); self.summary_y.hide(); self.rf_diagnostics=QLabel(); self.restoration_label=QLabel(); self.rf_diagnostics.setObjectName("summaryCard"); self.restoration_label.setObjectName("statLine"); self.rf_diagnostics.setWordWrap(True); self.restoration_label.setWordWrap(True); stats_layout.addWidget(self.orm_measurement_summary); stats_layout.addWidget(self.orm_restoration_status); stats_layout.addWidget(self.statistics_table); stats_layout.addWidget(self.rf_diagnostics); stats_layout.addWidget(self.restoration_label); layout.addWidget(self.stats_group)
         self.dispersion_summary=QWidget(); dispersion_summary_layout=QVBoxLayout(self.dispersion_summary); dispersion_summary_layout.setContentsMargins(0,0,0,0)
         rf_response_group=QGroupBox("1. RF orbit difference — pyLOCO-compatible"); rf_response_layout=QVBoxLayout(rf_response_group); self.rf_response_formula=QLabel("Δx_RF = mean[x(f−)] − mean[x(f+)]\nΔy_RF = mean[y(f−)] − mean[y(f+)]"); self.rf_response_formula.setWordWrap(True); self.rf_response_note=QLabel("Stored in metres; displayed in mm; this is the RF-response column supplied to pyLOCO."); self.rf_response_note.setWordWrap(True); self.rf_response_stats=QLabel(); self.rf_response_stats.setWordWrap(True); rf_response_layout.addWidget(self.rf_response_formula); rf_response_layout.addWidget(self.rf_response_note); rf_response_layout.addWidget(self.rf_response_stats); dispersion_summary_layout.addWidget(rf_response_group)
         physical_group=QGroupBox("2. Physical dispersion"); physical_layout=QVBoxLayout(physical_group); self.physical_formula=QLabel("η = αc − 1/γ²\nδ(f) ≈ −(f−f₀)/(η f₀)\nΔδ = δ− − δ+\nDₓ = Δx_RF / Δδ\nDᵧ = Δy_RF / Δδ"); self.physical_formula.setWordWrap(True); self.physical_stats=QLabel(); self.physical_stats.setWordWrap(True); physical_layout.addWidget(self.physical_formula); physical_layout.addWidget(self.physical_stats)
@@ -862,7 +989,7 @@ class MeasureMainWindow(QMainWindow):
         restoration_group=QGroupBox("3. Restoration verification"); restoration_layout=QVBoxLayout(restoration_group); self.restoration_status=QLabel("RF restoration: —"); self.restoration_status.setObjectName("runState"); self.restoration_status.setWordWrap(True); self.restoration_values=QLabel(); self.restoration_values.setWordWrap(True); self.restoration_diagnostic=QLabel(); self.restoration_diagnostic.setWordWrap(True); restoration_layout.addWidget(self.restoration_status); restoration_layout.addWidget(self.restoration_values); restoration_layout.addWidget(self.restoration_diagnostic); dispersion_summary_layout.addWidget(restoration_group)
         comparison_group=QGroupBox("4. Measured vs reference model"); comparison_layout=QVBoxLayout(comparison_group); self.dispersion_model_comparison=QLabel("Comparison not requested."); self.dispersion_model_comparison.setObjectName("summaryCard"); self.dispersion_model_comparison.setWordWrap(True); self.dispersion_model_comparison.setTextInteractionFlags(Qt.TextSelectableByMouse); comparison_layout.addWidget(self.dispersion_model_comparison); dispersion_summary_layout.addWidget(comparison_group)
         self.dispersion_summary.setVisible(False); layout.insertWidget(layout.indexOf(self.stats_group),self.dispersion_summary)
-        save_group=QGroupBox("Saved files"); sl=QVBoxLayout(save_group); self.paths=QLabel("Measurement file: —\nSession manifest: —"); self.paths.setTextInteractionFlags(Qt.TextSelectableByMouse); actions=QHBoxLayout(); self.validate_button=QPushButton("Validate for pyLOCO"); self.validate_button.setEnabled(False); self.validate_button.clicked.connect(self.validate_saved); self.open_button=QPushButton("Open session in pyLOCO"); self.open_button.setEnabled(False); self.open_button.clicked.connect(self.explain_open); actions.addWidget(self.validate_button); actions.addWidget(self.open_button); actions.addStretch(1); sl.addWidget(self.paths); sl.addLayout(actions); layout.addWidget(save_group)
+        save_group=QGroupBox("Saved files"); self.save_group=save_group; sl=QVBoxLayout(save_group); self.paths=QLabel("Measurement file: —\nSession manifest: —"); self.paths.setTextInteractionFlags(Qt.TextSelectableByMouse); actions=QHBoxLayout(); self.validate_button=QPushButton("Validate for pyLOCO"); self.validate_button.setEnabled(False); self.validate_button.clicked.connect(self.validate_saved); self.open_button=QPushButton("Open session in pyLOCO"); self.open_button.setEnabled(False); self.open_button.clicked.connect(self.explain_open); actions.addWidget(self.validate_button); actions.addWidget(self.open_button); actions.addStretch(1); sl.addWidget(self.paths); sl.addLayout(actions); layout.addWidget(save_group)
         self._reset_live_plot()
         self._update_diagnostics_visibility()
         self.acquisition_scroll=self._scroll_page(content)
@@ -915,12 +1042,36 @@ class MeasureMainWindow(QMainWindow):
                 self.orm_view_row.setVisible(True)
                 self.stats_group.setVisible(True)
 
+        # Before completion the compact dual-pane form may shrink vertically.
+        # Completed scientific results must instead retain every section's size
+        # and use the acquisition scroll area when the viewport is too short.
+        content = self.acquisition_scroll.widget() if hasattr(self, "acquisition_scroll") else None
+        if content is not None:
+            if completed:
+                content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+                self._fit_completed_content()
+                # Width-dependent labels acquire their final wrapped height only
+                # after the splitter has completed its layout pass.
+                QTimer.singleShot(0, self._fit_completed_content)
+            else:
+                content.setMinimumHeight(0)
+                content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+            content.updateGeometry()
+
+        if completed:
             # Bring the scientific result directly into view.
-            self.acquisition_scroll.ensureWidgetVisible(
-                self.results_tabs,
-                0,
-                0,
-            )
+            self.acquisition_scroll.ensureWidgetVisible(self.results_tabs, 0, 0)
+
+    def _fit_completed_content(self) -> None:
+        if not hasattr(self, "acquisition_scroll"):
+            return
+        content = self.acquisition_scroll.widget()
+        if content is None or not self.completed_actions.isVisible():
+            return
+        content.layout().activate()
+        # A small guard absorbs style-dependent group-box title overhang.
+        content.setMinimumHeight(content.layout().minimumSize().height() + 12)
+        content.updateGeometry()
 
     def _selection_method_changed(self):
         method=self.selection_method.currentData(); names_visible=method=="names_file"; manual_visible=method=="manual"
@@ -1181,6 +1332,9 @@ class MeasureMainWindow(QMainWindow):
             self.summary_y.setText(
                 "Vertical: no completed measurement."
             )
+
+        if hasattr(self, "statistics_table"):
+            self.statistics_table.clear_statistics()
 
         if hasattr(self, "orm_measurement_summary"):
             self.orm_measurement_summary.clear()
@@ -1669,6 +1823,7 @@ class MeasureMainWindow(QMainWindow):
         for widget in getattr(self,"orm_plan_widgets",[]):widget.setVisible(orm)
         for widget in getattr(self,"dispersion_plan_widgets",[]):widget.setVisible(dispersion)
         for widget in getattr(self,"settling_plan_widgets",[]):widget.setVisible(dispersion or orm)
+        self._update_persistent_header()
         self._update_dispersion_guide()
         self._update_workflow_tabs()
 
@@ -2002,6 +2157,15 @@ class MeasureMainWindow(QMainWindow):
         def text(label,values,plane):
             scale,unit=display[plane]; return label+": "+", ".join(f"{k} {v*scale:.3f} {unit}" for k,v in self._stats(values).items())
         self.summary_x.setText(text("Horizontal",result.noise_x_m,"x")); self.summary_y.setText(text("Vertical",result.noise_y_m,"y"))
+        configured_values=[value for value in (self._configured_bpm_noise("x"),self._configured_bpm_noise("y")) if value is not None]
+        common_scale,common_unit=self._noise_display_unit(
+            np.concatenate((np.asarray(result.noise_x_m),np.asarray(result.noise_y_m))),
+            max(configured_values) if configured_values else None,
+        )
+        self.statistics_table.set_statistics((
+            ("Horizontal (X)",{key:value*common_scale for key,value in self._stats(result.noise_x_m).items()}),
+            ("Vertical (Y)",{key:value*common_scale for key,value in self._stats(result.noise_y_m).items()}),
+        ),common_unit)
         self.rf_diagnostics.clear()
         self.restoration_label.clear()
 
@@ -2077,6 +2241,7 @@ class MeasureMainWindow(QMainWindow):
         values=np.asarray(matrix); display_scale,display_unit=(1e3,"mm") if unit=="m" else (1.0,unit); shown=values*display_scale
         self.summary_x.setText(f"<b>Measured ORM</b> &nbsp; Mean {np.mean(shown):.5g} &nbsp; RMS {np.sqrt(np.mean(shown**2)):.5g} &nbsp; Min {np.min(shown):.5g} &nbsp; Max {np.max(shown):.5g} {display_unit}")
         errors=(result.effective_kicks_rad-np.where(result.direction=="negative",-result.requested_kicks_rad,result.requested_kicks_rad))*1e6; self.summary_y.setText(f"<b>Kick error</b> &nbsp; RMS {np.sqrt(np.mean(errors**2)):.5g} &nbsp; Min {np.min(errors):.5g} &nbsp; Max {np.max(errors):.5g} µrad")
+        self.statistics_table.set_statistics((("Measured ORM",self._stats(shown)),),display_unit)
         intermediate_ok=result.direction!="bipolar" or (all(status=="restored" for status in result.intermediate_restoration_status) and np.allclose(result.intermediate_restored_setpoints_rad,result.original_setpoints_rad,rtol=0,atol=1e-12)); restored=intermediate_ok and all(status=="restored" for status in result.restoration_status) and np.allclose(result.final_setpoints_rad,result.original_setpoints_rad,rtol=0,atol=1e-12); self.orm_restoration_status.setText("✓ ALL CORRECTORS RESTORED" if restored else "✗ CORRECTOR RESTORATION FAILED"); kicks=result.requested_kicks_rad*1e6; kick_text=f"{kicks[0]:g} µrad" if np.allclose(kicks,kicks[0]) else f"{np.min(kicks):g}–{np.max(kicks):g} µrad"; identity,_=self._machine_identity(); readings=result.raw_state_a_m.shape[1] if result.raw_state_a_m.ndim==3 else 1
         summary_html=(f"<h3 style='color:#12BFC4;margin:0 0 8px 0'>Measurement summary</h3>"
                       f"<table cellspacing='0' cellpadding='4' width='100%'>"
@@ -2217,6 +2382,10 @@ class MeasureMainWindow(QMainWindow):
         titles=("Physical Dx","Physical Dy") if display_physical else ("RF orbit difference Δx_RF","RF orbit difference Δy_RF")
         def text(label,values): return label+": "+", ".join(f"{k} {v*scale:.3f} {unit}" for k,v in self._stats(values).items())
         self.summary_x.setText(text(titles[0],values_x)); self.summary_y.setText(text(titles[1],values_y))
+        self.statistics_table.set_statistics((
+            (titles[0],{key:value*scale for key,value in self._stats(values_x).items()}),
+            (titles[1],{key:value*scale for key,value in self._stats(values_y).items()}),
+        ),unit)
         self.rf_response_stats.setText(text("X",result.measured_eta_x)+"\n"+text("Y",result.measured_eta_y))
         self.physical_stats.setText((text("Dₓ",physical_x)+"\n"+text("Dᵧ",physical_y)) if physical_x is not None else "Unavailable: a verified lattice slip factor and bipolar RF readbacks are required.")
         readbacks={state.label:state.actual_rf_hz for state in result.states}; restored=getattr(self,"_restored_rf_readback",np.nan); difference=restored-result.nominal_rf_hz

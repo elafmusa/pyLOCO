@@ -43,6 +43,35 @@ def test_application_launches_offline_without_doocs(app):
     window.close()
 
 
+def test_new_measurement_default_delay_is_one_second_but_saved_value_is_preserved(app, tmp_path):
+    assert MeasureProject().delay_seconds == 1.0
+    window = MeasureMainWindow(devices=default_mock_devices(2))
+    assert window.delay.value() == 1.0
+    path = tmp_path / "saved-delay.pyloco-measure.json"
+    save_measure_project(path, MeasureProject(delay_seconds=0.25))
+    window.project = load_measure_project(path)
+    window.project_path = path
+    window._load_project_widgets()
+    assert window.delay.value() == 0.25
+    window.close()
+
+
+def test_persistent_status_header_is_visible_and_paths_are_tooltipped(app, tmp_path):
+    window = MeasureMainWindow(devices=default_mock_devices(2))
+    window.project_path = tmp_path / "a-very-long-configuration-name.pyloco-measure.json"
+    window.output_directory.setText("nested/output")
+    window._update_persistent_header()
+    for widget in (window.status_badge, window.header_mode, window.connection_badge,
+                   window.header_capabilities, window.header_access, window.machine_identity_badge,
+                   window.header_configuration, window.header_output):
+        assert not widget.isHidden()
+    assert window.header_configuration.toolTip() == str(window.project_path)
+    assert window.header_output.toolTip().endswith("nested/output")
+    window.tabs.setCurrentIndex(3); app.processEvents()
+    assert not window.header_configuration.isHidden()
+    window.close()
+
+
 def test_bpm_selection_preview_and_context_controls(app, tmp_path):
     window = MeasureMainWindow(devices=default_mock_devices(4))
     assert window.preview_table.rowCount() == 4
@@ -269,6 +298,46 @@ def test_bpm_noise_uses_points_optional_backend_reference_and_simple_stats(app):
         assert any("σconfigured = 10 nm"==line.get_label() for line in axis.lines)
         assert axis.get_xlabel()=="BPM index / selection position"
     assert [part.split()[0] for part in window.summary_x.text().split(": ",1)[1].split(", ")]==["Mean","RMS","Min","Max"]
+    assert window.statistics_table.rowCount() == 2
+    assert window.statistics_table.item(0,0).text() == "Horizontal (X)"
+    assert window.statistics_table.item(1,0).text() == "Vertical (Y)"
+    assert [window.statistics_table.item(0,column).text() for column in range(1,5)] == [
+        f"{value:.3f}" for value in (
+            np.mean(result.noise_x_m)*1e9,
+            np.sqrt(np.mean(result.noise_x_m**2))*1e9,
+            np.min(result.noise_x_m)*1e9,
+            np.max(result.noise_x_m)*1e9,
+        )
+    ]
+    assert "[nm]" in window.statistics_table.horizontalHeaderItem(1).text()
+    assert window.statistics_table.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOff
+    expected_height = (
+        window.statistics_table.horizontalHeader().sizeHint().height()
+        + sum(window.statistics_table.verticalHeader().sectionSize(row) for row in range(2))
+        + 2 * window.statistics_table.frameWidth()
+    )
+    assert window.statistics_table.height() >= expected_height
+    window.close()
+
+
+def test_completed_measurement_uses_outer_scroll_without_section_overlap(app):
+    devices=default_mock_devices(8)
+    result=BpmNoiseAcquirer(build_mock_adapter(devices,readings=4),devices).acquire(4,0,sleeper=lambda _:None)
+    window=MeasureMainWindow(devices=devices)
+    window.resize(1200,800); window.tabs.setCurrentIndex(2)
+    window.result=result; window._show_result(result); window._set_completed_result_view(True)
+    window.show(); app.processEvents(); app.processEvents()
+    content=window.acquisition_scroll.widget()
+    sections=(window.results_tabs,window.stats_group,window.save_group)
+    bounds=[]
+    for widget in sections:
+        top=widget.mapTo(content,widget.rect().topLeft()).y()
+        bounds.append((top,top+widget.height()))
+    assert bounds[1][0] >= bounds[0][1]
+    assert bounds[2][0] >= bounds[1][1]
+    assert window.acquisition_scroll.verticalScrollBar().maximum() > 0
+    assert not window.statistics_table.verticalScrollBar().isVisible()
+    assert window.statistics_table.rowCount() == 2
     window.close()
 
 

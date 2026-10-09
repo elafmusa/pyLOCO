@@ -45,7 +45,7 @@ class MeasureProject:
     excluded_vcor_positions: str = ""
     measurement_selections: dict[str, dict[str, Any]] = field(default_factory=_default_measurement_selections)
     readings: int = 20
-    delay_seconds: float = 0.1
+    delay_seconds: float = 1.0
     settling_delay_seconds: float = 0.0
     verify_restored_orbit: bool = True
     rf_control_mode: str = "manual"

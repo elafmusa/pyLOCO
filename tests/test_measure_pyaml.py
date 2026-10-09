@@ -56,6 +56,11 @@ def test_connect_invalidate_and_project_settings(monkeypatch):
         monkeypatch.setattr(InterfaceRegistry, "create", lambda self, key: SimpleNamespace(adapter=adapter))
         window._test_connection()
         assert window.connection_verified
+        assert window.adapter_combo.currentData() == "pyaml"
+        assert window.header_mode.text() == "Mode · Live"
+        assert window.header_capabilities.text() == "Available · Magnet + RF"
+        assert window.header_access.text() == "Authorized · Read Only"
+        assert window.header_configuration.toolTip() == "machine.yaml"
         assert [device.name for device in window.devices] == ["B2", "B1"]
         assert window.start_button.isEnabled()
         window._refresh_corrector_preview("hcor")
@@ -93,6 +98,8 @@ def test_write_opt_in_live_confirmation_and_project_reset(monkeypatch):
     try:
         window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("pyaml"))
         assert window.pyaml_fields["mode"].text() == "live"
+        assert window.header_capabilities.text() == "Available · Magnet + RF"
+        assert window.header_access.text() == "Authorized · Read Only"
         assert window.pyaml_fields["rf_name"].text() == "RF"
         assert window.pyaml_magnet_writes.isChecked()
         assert window.pyaml_rf_writes.isChecked()
@@ -106,6 +113,8 @@ def test_write_opt_in_live_confirmation_and_project_reset(monkeypatch):
         assert window.rf_control_mode.currentData() == "automatic"
         assert window.measurement_type.model().item(window.measurement_type.findData("orm")).isEnabled()
         assert "WRITES ENABLED" in window.status_badge.text()
+        assert window.header_capabilities.text() == "Available · Magnet + RF"
+        assert window.header_access.text() == "Authorized · Magnet + RF"
         window.project = window._collect_project()
         assert "allow_writes" not in window.project.metadata["pyaml_options"]
         window._load_project_widgets()
