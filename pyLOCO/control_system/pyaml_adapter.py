@@ -26,8 +26,9 @@ class PyAMLAdapter(WritableAdapter):
         self.rf = self.machine.rf.get(rf_name).frequency if rf_name else None
         if self.allow_rf_writes and self.rf is None:
             raise ValueError("Select an RF plant before enabling RF writes")
+        bpm_collection, self.bpm_api_path = self._bpm_collection(self.machine)
         self.groups = {
-            "bpm": self.machine.bpms.get(bpm_group),
+            "bpm": bpm_collection.get(bpm_group),
             "hcor": self.machine.magnets.get(hcor_group),
             "vcor": self.machine.magnets.get(vcor_group),
         }
@@ -54,6 +55,27 @@ class PyAMLAdapter(WritableAdapter):
                                         readback_channel=channel,
                                         plane="Horizontal" if kind == "hcor" else "Vertical"))
             self._catalog[kind] = tuple(devices)
+
+    @staticmethod
+    def _bpm_collection(machine):
+        """Return the BPM holder across the pyAML #464 hierarchy change.
+
+        Current pyAML exposes BPM arrays below ``machine.diagnostic.bpms``.
+        The legacy fallback keeps released pyAML 0.3.x configurations working.
+        Attribute detection is deliberate: lookup errors from a present holder
+        must remain visible rather than being mistaken for an older API.
+        """
+        diagnostic = getattr(machine, "diagnostic", None)
+        diagnostic_bpms = getattr(diagnostic, "bpms", None)
+        if diagnostic_bpms is not None:
+            return diagnostic_bpms, "diagnostic.bpms"
+        legacy_bpms = getattr(machine, "bpms", None)
+        if legacy_bpms is not None:
+            return legacy_bpms, "bpms"
+        raise ValueError(
+            "The selected pyAML machine exposes neither diagnostic.bpms "
+            "(pyAML PR #464) nor the legacy bpms holder"
+        )
 
     @property
     def capabilities(self):

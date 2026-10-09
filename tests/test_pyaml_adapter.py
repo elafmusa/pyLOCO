@@ -31,13 +31,57 @@ class Array:
         return SimpleNamespace(strength=SimpleNamespace(unit=lambda: self.units[index], get=lambda: self.values[index], set=set_value))
 
 
-def make_adapter():
+def make_adapter(*, bpm_hierarchy="legacy", include_legacy_with_new=False):
     bpms = Array(["B2", "B1"], [[1000, 2000], [3000, 4000]], [["nm", "nm"]] * 2)
     horizontal = Array(["H1"], [2], ["mrad"])
     vertical = Array(["V1"], [3], ["rad"])
-    machine = SimpleNamespace(bpms={"BPM": bpms}, magnets={"HCorr": horizontal, "VCorr": vertical},
+    machine = SimpleNamespace(magnets={"HCorr": horizontal, "VCorr": vertical},
                               magnet={"H1": horizontal[0], "V1": vertical[0]})
+    if bpm_hierarchy == "new":
+        machine.diagnostic = SimpleNamespace(bpms={"BPM": bpms})
+        if include_legacy_with_new:
+            machine.bpms = {"BPM": Array(["WRONG"], [[9, 9]], [["m", "m"]])}
+    elif bpm_hierarchy == "legacy":
+        machine.bpms = {"BPM": bpms}
+    else:
+        raise ValueError(bpm_hierarchy)
     return PyAMLAdapter("unused.yaml", accelerator=SimpleNamespace(live=machine), rf_name="", allow_writes=False, allow_rf_writes=False), bpms
+
+
+@pytest.mark.parametrize(
+    ("hierarchy", "expected_path"),
+    [("new", "diagnostic.bpms"), ("legacy", "bpms")],
+)
+def test_bpm_hierarchy_compatibility_preserves_physical_identity(hierarchy, expected_path):
+    adapter, bpms = make_adapter(bpm_hierarchy=hierarchy)
+    assert adapter.bpm_api_path == expected_path
+    assert adapter.groups["bpm"] is bpms
+    assert [device["name"] for device in adapter.list_devices("bpm")] == ["B2", "B1"]
+    assert [sample.value for sample in adapter.read_many(adapter.list_channels()[:4]).values()] == [1000, 2000, 3000, 4000]
+
+
+def test_current_bpm_hierarchy_is_preferred_when_both_are_exposed():
+    adapter, bpms = make_adapter(bpm_hierarchy="new", include_legacy_with_new=True)
+    assert adapter.groups["bpm"] is bpms
+    assert adapter.bpm_api_path == "diagnostic.bpms"
+
+
+def test_missing_bpm_hierarchy_has_clear_error():
+    horizontal = Array(["H1"], [2], ["mrad"])
+    vertical = Array(["V1"], [3], ["rad"])
+    machine = SimpleNamespace(
+        magnets={"HCorr": horizontal, "VCorr": vertical},
+        magnet={"H1": horizontal[0], "V1": vertical[0]},
+        rf={},
+    )
+    with pytest.raises(ValueError, match="diagnostic\\.bpms.*legacy bpms"):
+        PyAMLAdapter(
+            "unused.yaml",
+            accelerator=SimpleNamespace(live=machine),
+            rf_name="",
+            allow_writes=False,
+            allow_rf_writes=False,
+        )
 
 
 def test_batch_reads_preserve_order_and_ignore_units():
