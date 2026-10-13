@@ -6,7 +6,7 @@ import pytest
 
 from pyLOCO.correct.model import CorrectItem, CorrectionReview
 from pyLOCO.correct.pyaml_connection import (PyAMLCorrectionConnection, resolve_mapping,
-                                            load_mapping, mapping_template)
+    load_mapping, mapping_template, validate_mapping_entries)
 from pyLOCO.correct.pyaml_transaction import PyAMLCorrectionTransaction
 
 
@@ -106,6 +106,9 @@ def test_selectors_unmatched_and_explicit_mapping(setup, tmp_path):
     inventory = setup.connection.discover()
     assert resolve_mapping(setup.review, inventory)[0]["status"] == "unmapped"
     template = mapping_template(setup.review)
+    assert [row["control_name"] for row in template["mappings"]] == ["", "", ""]
+    assert all(set(row) == {"lattice_name", "lattice_ordinal", "control_name"}
+               for row in template["mappings"])
     for row, name in zip(template["mappings"], ["M1", "M2", "S1"]):
         row["control_name"] = name
     path = tmp_path / "mapping.yaml"
@@ -129,6 +132,95 @@ def test_duplicate_identities_need_explicit_mapping(setup):
     entries[1]["control_name"] = "M1"
     with pytest.raises(ValueError, match="Duplicate mapping target"):
         resolve_mapping(setup.review, inventory, entries)
+
+
+def test_template_with_unmapped_fit_names_is_safe_and_not_a_mapping(setup):
+    setup.review.items[0].name = "QD3J"
+    template = mapping_template(setup.review)
+    row = template["mappings"][0]
+    assert row == {
+        "lattice_ordinal": 0,
+        "lattice_name": "QD3J",
+        "control_name": "",
+    }
+    with pytest.raises(ValueError, match="wrong-family mapping target"):
+        resolve_mapping(setup.review, setup.connection.inventory, [
+            {**row, "control_name": "QD3J"}
+        ])
+
+
+def test_user_mapping_status_cannot_authorize_an_invalid_target(setup):
+    row = mapping_template(setup.review)["mappings"][0]
+    row.update(control_name="not-a-device", mapping_status="mapped")
+    with pytest.raises(ValueError, match="wrong-family mapping target"):
+        resolve_mapping(setup.review, setup.connection.inventory, [row])
+
+
+def test_legacy_full_mapping_metadata_remains_supported(setup):
+    rows = mapping_template(setup.review)["mappings"]
+    names = ["M1", "M2", "S1"]
+    for row, item, name in zip(rows, setup.review.items, names):
+        row.update(
+            control_name=name,
+            component="B2L" if item.correction_type == "normal_quadrupole" else "A2L",
+            unit="m^-1",
+            mapping_status="mapped",
+        )
+    resolved = resolve_mapping(setup.review, setup.connection.inventory, rows)
+    assert all(row["status"] == "mapped" for row in resolved)
+
+
+def test_minimal_mapping_derives_family_component_and_unit(setup):
+    rows = mapping_template(setup.review)["mappings"]
+    for row, name in zip(rows, ["M1", "M2", "S1"]):
+        row["control_name"] = name
+    ring = [SimpleNamespace(FamName=name) for name in ("Q1", "Q2", "SQ1")]
+    resolved = validate_mapping_entries(setup.review, setup.connection, rows, ring)
+    assert all(row["status"] == "mapped" for row in resolved)
+
+
+def test_ebs_smoke_identity_mapping_is_explicit_unique_and_family_checked(tmp_path):
+    source = tmp_path / "ebs-smoke.json"; source.write_text("{}")
+    identities = [("QD3J", 27, "srmag/m-qd3/c04-a-B2L"),
+                  ("QF4J", 36, "srmag/m-qf4/c04-a-B2L"),
+                  ("QD5B", 51, "srmag/m-qd5/c04-b-B2L")]
+    review = CorrectionReview([CorrectItem(
+        index, "normal_quadrupole", lattice, ordinal, "m^-2", 1.0, .9, -.1, .1,
+        "test", metadata={"magnetic_length_m": .2})
+        for index, (lattice, ordinal, _device) in enumerate(identities)], str(source))
+    inventory = [dict(name=device, family="normal_quadrupole", lattice_name=device)
+                 for _lattice, _ordinal, device in identities]
+    explicit = [dict(lattice_name=lattice, lattice_ordinal=ordinal,
+                     control_name=device, component="B2L", unit="m^-1")
+                for lattice, ordinal, device in identities]
+    rows = resolve_mapping(review, inventory, explicit)
+    assert [(row["lattice_name"], row["lattice_ordinal"], row["magnet_name"], row["status"])
+            for row in rows] == [(lattice, ordinal, device, "mapped")
+                                for lattice, ordinal, device in identities]
+    with pytest.raises(ValueError, match="Duplicate mapping target"):
+        resolve_mapping(review, inventory, [explicit[0], {**explicit[1], "control_name": explicit[0]["control_name"]}])
+    with pytest.raises(ValueError, match="wrong-family"):
+        resolve_mapping(review, [{**inventory[0], "family": "skew_quadrupole"}, *inventory[1:]], explicit)
+    with pytest.raises(ValueError, match="requires integrated B2L"):
+        resolve_mapping(review, inventory, [{**explicit[0], "component": "B2"}, *explicit[1:]])
+    with pytest.raises(ValueError, match=r"require m\^-1"):
+        resolve_mapping(review, inventory, [{**explicit[0], "unit": "m^-2"}, *explicit[1:]])
+
+
+def test_integrated_control_values_keep_k_and_kl_distinct(setup):
+    item = setup.review.items[0]
+    item.metadata.update(control_component="B2L", control_unit="m^-1")
+    item.machine_value = 2.0  # pyAML B2L readback: KL [m^-1]
+    item.global_scale = .25
+    assert item.magnetic_length_m == pytest.approx(.5)
+    assert item.current_integrated_value == pytest.approx(2.0)
+    assert item.current_gradient_value == pytest.approx(4.0)
+    assert item.final_delta == pytest.approx(.05)
+    assert item.integrated_final_delta == pytest.approx(.025)
+    assert item.applied_control_delta == pytest.approx(.025)
+    assert item.target_value == pytest.approx(4.05)
+    assert item.target_integrated_value == pytest.approx(2.025)
+    assert item.applied_control_unit == "m⁻¹"
 
 
 def test_preview_integrated_values_and_cumulative_restore(setup):
@@ -290,6 +382,9 @@ def test_configurable_fraction_integrated_targets(setup, fraction):
     expected = [1 + .05 * fraction, 2 - .04 * fraction, 3 + .06 * fraction]
     assert record["fraction"] == fraction
     assert [row["target"] for row in record["changes"]] == pytest.approx(expected)
+    assert [row["applied_delta_k_m2"] for row in record["changes"]] == pytest.approx([.1 * fraction, -.1 * fraction, .3 * fraction])
+    assert [row["applied_delta_kl_m1"] for row in record["changes"]] == pytest.approx([.05 * fraction, -.04 * fraction, .06 * fraction])
+    assert all(row["unit"] == "m^-1" for row in record["changes"])
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
     tx.apply(setup.review, confirmed=True)
     assert [magnet.strength.value for magnet in setup.magnets.values()] == pytest.approx(expected)

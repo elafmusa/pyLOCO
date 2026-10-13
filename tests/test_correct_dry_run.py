@@ -167,7 +167,7 @@ def test_machine_mapping_page_uses_separate_natural_height_sections_at_1000x700(
     assert window.findChild(QGroupBox,"offlineDiagnosticsSection") is None
     assert window.findChild(QGroupBox,"petraReadOnlySection") is None
     assert window.findChild(QGroupBox,"mappingHelpSection") is None
-    assert window.mapping_note.parent() is mapping and window.mapping_note.isVisible()
+    assert not window.mapping_note.isVisible()
     assert isinstance(window.tabs.currentWidget(),QScrollArea)
     assert window.mapping_source_notice.isVisible() and not window.mapping_button.isEnabled()
     window._load(Path("Examples/Correct/mock_corrections.json").resolve()); window.tabs.setCurrentIndex(1); app.processEvents()
@@ -188,10 +188,10 @@ def test_machine_mapping_page_uses_separate_natural_height_sections_at_1000x700(
 
 def test_correction_plan_reads_current_physical_k_from_verified_pysc_snapshot():
     app=QApplication.instance() or build_application(["correct-current-k"]); window=CorrectMainWindow()
-    state=CorrectionReview([item(control_name="Q0K2_7_1/B2",metadata={"mapping_status":"mapped"})],"fit")
-    window.review=state
     window.backend_combo.setCurrentIndex(window.backend_combo.findData("pysc"))
     window.quadrupole_workspace.profile.setCurrentIndex(window.quadrupole_workspace.profile.findData("petra3_realistic"))
+    state=CorrectionReview([item(control_name="Q0K2_7_1/B2",metadata={"mapping_status":"mapped"})],"fit")
+    window.review=state
     writes=[]
     snapshot={"identity":{"profile":"petra3_realistic","machine":"PETRA III","scenario":"realistic_errors"},"quadrupoles":[{"control":"Q0K2_7_1/B2","component":"B2","unit":"m^-2","physical":.241,"current":.24,"factor":1.01,"offset":-.0014}]}
     window.quadrupole_workspace.transaction=SimpleNamespace(connection=SimpleNamespace(snapshot=lambda:snapshot),writes=writes,record=None)
@@ -217,6 +217,102 @@ def test_review_is_compact():
     app=QApplication.instance() or build_application(["correct-repeat-safety"]); window=CorrectMainWindow()
     assert window.review_metrics_group.title()==""
     assert not hasattr(window,"comparison")
+    window.close()
+
+
+def test_correct_toolbar_file_actions_use_clear_labels_and_readable_widths():
+    app=QApplication.instance() or build_application(["correct-toolbar-labels"]); window=CorrectMainWindow(); window.resize(1200,800); window.show(); app.processEvents()
+    assert [button.text() for button in window.toolbar_file_buttons]==["Load FIT results…","Load correction plan…","Save correction plan…"]
+    assert all(button.width()>=button.minimumWidth() and button.isVisible() for button in window.toolbar_file_buttons)
+    assert [button.accessibleName() for button in window.toolbar_file_buttons]==["Load FIT results","Load correction plan","Save correction plan"]
+    window.close()
+
+
+def test_correction_review_plots_use_list_indices_existing_strength_conversions_and_compact_counts():
+    app=QApplication.instance() or build_application(["correct-review-plots"]); window=CorrectMainWindow()
+    review=CorrectionReview([
+        item(7,name="QD3J",lattice_ordinal=27,family="QD3",control_name="srmag/m-qd3/c04-a-B2L",recommended_machine_delta=.2,metadata={"magnetic_length_m":.5,"mapping_status":"mapped","control_component":"B2L"},machine_value=1.5),
+        item(12,name="QS1",lattice_ordinal=31,family="QS",correction_type="skew_quadrupole",control_name="srmag/m-qs/c04-a-A2L",recommended_machine_delta=-.4,individual_scale=.5,metadata={"magnetic_length_m":.25,"mapping_status":"mapped","control_component":"A2L"},machine_value=-.2),
+        item(20,name="QX",lattice_ordinal=44,recommended_machine_delta=.3,included=False),
+    ],"smoke",global_scale=.5)
+    window.review=review; window.refresh_review(); app.processEvents()
+    raw_axis=window._correction_plot_payload["raw"]["axis"]
+    final_axis=window._correction_plot_payload["final"]["axis"]
+    integrated_axis=window._correction_plot_payload["integrated"]["axis"]
+    assert raw_axis.get_xlabel()=="Magnet index (correction list)"
+    assert np.asarray(raw_axis.collections[0].get_offsets())[:,0].tolist()==[0.,1.,2.]
+    assert window._correction_plot_payload["raw"]["values"].tolist()==pytest.approx([.2,-.4,.3])
+    assert window._correction_plot_payload["final"]["values"].tolist()==pytest.approx([.1,-.1,0.])
+    assert window._correction_plot_payload["integrated"]["values"][:2].tolist()==pytest.approx([.05,-.025])
+    assert raw_axis.get_title()=="Raw recommended correction before global and individual fractions"
+    assert final_axis.get_title()=="Final proposed correction after global and individual fractions"
+    assert "validated magnetic length" in integrated_axis.get_title()
+    strength_values=window._correction_plot_payload["strengths"]["values"]
+    assert strength_values[:2].tolist()==pytest.approx([1.55,-.225])
+    summary=window.correction_summary.text()
+    assert "Included for review: 2 (66.7%)" in summary and "Excluded: 1 (33.3%)" in summary
+    assert "Validated mappings: 2" in summary and "Unresolved mappings: 1" in summary
+    assert "does not by itself mean safe" in summary
+    assert [window.plot_tabs.tabText(i) for i in range(5)]==["Final proposed ΔK","Final Δ(KL)","Current / target KL","ΔK/K [%]","Raw recommended ΔK"]
+    assert window.plot_tabs.currentIndex()==0
+    window.close()
+
+
+def test_correction_plot_hover_click_identity_and_callbacks_remain_stable_for_large_lists():
+    app=QApplication.instance() or build_application(["correct-review-interaction"]); window=CorrectMainWindow()
+    entries=[item(index,name=f"Q{index:04d}",lattice_ordinal=1000+index,family="QF",recommended_machine_delta=(index-401)*1e-5,metadata={"magnetic_length_m":.4}) for index in range(802)]
+    window.review=CorrectionReview(entries,"large",global_scale=.1); window.refresh_review(); app.processEvents()
+    callbacks=dict(window._correction_plot_callbacks)
+    axis=window._correction_plot_payload["final"]["axis"]
+    point_x,point_y=axis.transData.transform((123,window._correction_plot_payload["final"]["values"][123]))
+    hover=SimpleNamespace(inaxes=axis,xdata=123.0,ydata=window._correction_plot_payload["final"]["values"][123],x=point_x,y=point_y,button=None)
+    window._correction_plot_hover("final",hover)
+    assert "Q0123" in window.correction_hover_info.text() and "correction-list index 123" in window.correction_hover_info.text()
+    window._correction_plot_click("final",SimpleNamespace(inaxes=axis,xdata=123.0,button=1))
+    assert window._correction_pinned_index==123 and "Q0123" in window.correction_pinned_info.text()
+    assert "Correction-list index: 123" in window.correction_details_info.text()
+    assert "Final proposed ΔK" in window.correction_pinned_info.text()
+    window.plot_tabs.setCurrentWidget(window.plots["integrated"]); app.processEvents()
+    assert "Final Δ(KL)" in window.correction_pinned_info.text()
+    window._correction_plot_hover("final",SimpleNamespace(inaxes=axis,xdata=123.3,button=None))
+    assert "Selected:" in window.correction_hover_info.text() and "Q0123" in window.correction_hover_info.text()
+    for key,payload in window._correction_plot_payload.items():
+        assert sum(artist.get_gid()=="correct-selected-magnet" for artist in tuple(payload["axis"].lines)+tuple(payload["axis"].collections))==2
+    window._correction_plot_click("final",SimpleNamespace(inaxes=axis,xdata=123.0,button=1))
+    assert window._correction_pinned_index is None and "Click a plotted magnet" in window.correction_pinned_info.text()
+    window._correction_plot_click("final",SimpleNamespace(inaxes=axis,xdata=123.0,button=1))
+    window._correction_plot_click("final",SimpleNamespace(inaxes=axis,xdata=123.5,button=1))
+    assert window._correction_pinned_index is None
+    window._correction_plot_click("final",SimpleNamespace(inaxes=axis,xdata=123.0,button=1))
+    window.refresh_review(); app.processEvents()
+    assert window._correction_plot_callbacks==callbacks
+    assert len(window.plots["final"].figure.axes[0].collections)<=2
+    connected_lines=len(window.plots["final"].figure.axes[0].lines)
+    window.connect_correction_markers.setChecked(False); app.processEvents()
+    assert len(window.plots["final"].figure.axes[0].lines)<connected_lines
+    assert window._correction_plot_callbacks==callbacks
+    window.close()
+
+
+def test_current_and_target_strengths_have_one_validated_pair_per_magnet_and_info_is_below_plots():
+    app=QApplication.instance() or build_application(["correct-strength-pairs"]); window=CorrectMainWindow()
+    rows=[item(index,name=f"Q{index}",control_name=f"device-{index}",metadata={"magnetic_length_m":.5,"mapping_status":"mapped","control_component":"B2L"},machine_value=value) for index,value in enumerate((-.8,.56,-.63))]
+    window.review=CorrectionReview(rows,"smoke"); window.refresh_review(); window.tabs.setCurrentIndex(3); window.show(); app.processEvents()
+    payload=window._correction_plot_payload["strengths"]
+    assert len(payload["hit_series"])==2
+    assert [series[2].tolist() for series in payload["hit_series"]]==[[0,1,2],[0,1,2]]
+    assert payload["values"].tolist()==pytest.approx([row.target_integrated_value for row in rows])
+    assert window.correction_info_group.y()>window.plot_tabs.y()
+    window.close()
+
+
+def test_integrated_machine_strength_plot_requires_valid_mapping_and_readback():
+    app=QApplication.instance() or build_application(["correct-integrated-unavailable"]); window=CorrectMainWindow()
+    unmapped=item(control_name=None,metadata={"magnetic_length_m":.4,"mapping_status":"unmapped","control_component":"B2L"},machine_value=2.)
+    window.review=CorrectionReview([unmapped],"fit"); window.refresh_review(); app.processEvents()
+    assert "strengths" not in window._correction_plot_payload
+    message=" ".join(text.get_text() for text in window.plots["strengths"].figure.axes[0].texts)
+    assert "validated mappings" in message and "machine KL readbacks" in message
     window.close()
 
 

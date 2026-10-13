@@ -57,6 +57,10 @@ class CorrectItem:
         return None if value is None else float(value)
 
     @property
+    def control_is_integrated(self) -> bool:
+        return str(self.metadata.get("control_component", "")).upper() in {"B2L", "A2L"}
+
+    @property
     def integrated_recommended_delta(self) -> float | None:
         length = self.magnetic_length_m
         return None if length is None else self.recommended_machine_delta * length
@@ -89,8 +93,34 @@ class CorrectItem:
         return self.recommended_machine_delta * self.global_scale * self.individual_scale if self.included else 0.0
 
     @property
+    def current_gradient_value(self) -> float | None:
+        """Current physical K [m^-2], normalized from KL when required."""
+        if self.machine_value is None:
+            return None
+        if not self.control_is_integrated:
+            return self.machine_value
+        length = self.magnetic_length_m
+        return None if length is None or length <= 0 else self.machine_value / length
+
+    @property
+    def current_integrated_value(self) -> float | None:
+        """Current physical KL [m^-1], integrated from K when required."""
+        if self.machine_value is None:
+            return None
+        if self.control_is_integrated:
+            return self.machine_value
+        length = self.magnetic_length_m
+        return None if length is None else self.machine_value * length
+
+    @property
+    def target_integrated_value(self) -> float | None:
+        current = self.current_integrated_value
+        delta = self.integrated_final_delta
+        return None if current is None or delta is None else current + delta
+
+    @property
     def target_value(self) -> float | None:
-        baseline=self.machine_value if self.machine_value is not None else self.initial_value
+        baseline=self.current_gradient_value if self.machine_value is not None else self.initial_value
         return None if baseline is None else baseline + self.final_delta
 
     @property

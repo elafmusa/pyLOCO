@@ -1,15 +1,17 @@
 """pyAML configuration, identity mapping and correction transaction workspace."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Signal, Slot
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
-    QHBoxLayout, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
 from .pyaml_connection import (PyAMLCorrectionConnection, load_mapping,
-                               resolve_mapping)
+    resolve_mapping, approved_mapping_candidates, find_reference_lattice,
+    file_hash, make_mapping_bundle, validate_mapping_bundle)
 from .pyaml_transaction import PyAMLCorrectionTransaction
 
 
@@ -37,6 +39,7 @@ class PyAMLCorrectionWidget(QWidget):
         self.transaction = None
         self.explicit = []
         self.mapping_path = None
+        self.mapping_hash = None
         self.thread = None
         self._rendered = None
         self.cancel = Event()
@@ -65,18 +68,21 @@ class PyAMLCorrectionWidget(QWidget):
         self.mode.setCurrentText(str(settings.value("correct/pyaml/mode", "live")))
         self.mode.currentTextChanged.connect(self.invalidate_connection)
         form.addRow("Mode", self.mode)
-        self.writes = QCheckBox("Enable magnet writes"); self.writes.setChecked(True)
+        self.writes = QCheckBox("Authorize magnet writes"); self.writes.setChecked(False)
         self.writes.toggled.connect(self.invalidate_connection)
         form.addRow(self.writes)
-        self.connect_button = QPushButton("Connect / discover quadrupoles")
+        connection_help=QLabel("This backend establishes the configured machine connection and discovers its quadrupole inventory in one safe operation."); connection_help.setWordWrap(True); form.addRow(connection_help)
+        self.connect_button = QPushButton("Test connection and discover devices")
         self.connect_button.clicked.connect(lambda: self.run(self.connect_machine))
         form.addRow(self.connect_button)
+        self.connection_result=QLabel("Disconnected"); self.inventory_result=QLabel("Inventory not discovered"); self.authorization_result=QLabel("READ ONLY — writes not authorized")
+        form.addRow("Connection",self.connection_result); form.addRow("Device inventory",self.inventory_result); form.addRow("Authorization",self.authorization_result)
         layout.addWidget(self.settings_box)
         self.mapping_box = owner.mapping_group
         self.mapping_label = owner.mapping_file_status
-        self.clear_mapping_button = QPushButton("Use automatic identity matching")
+        self.clear_mapping_button = QPushButton("Find machine mappings")
         self.clear_mapping_button.clicked.connect(lambda: self.run(self.clear_mapping))
-        owner.mapping_group.layout().addWidget(self.clear_mapping_button, 8, 0, 1, 2)
+        owner.automatic_mapping_actions.insertWidget(0, self.clear_mapping_button)
         self.clear_mapping_button.hide()
         self.table = owner.table
         self.extra_actions = QWidget()
@@ -85,12 +91,20 @@ class PyAMLCorrectionWidget(QWidget):
         self.preview_button = owner.preview_apply_button
         self.apply_button = owner.apply_button
         self.restore_button = owner.restore_button
-        self.recover_button = QPushButton("Recover journal…")
-        self.cancel_button = QPushButton("Cancel / restore")
+        self.recover_button = QPushButton("Restore after interrupted application…")
+        self.recover_button.setToolTip(
+            "Select and validate a saved JSON recovery record. Loading performs no writes; "
+            "restoration requires the matching connection, write authorization and confirmation."
+        )
+        self.cancel_button = QPushButton("Stop application and restore originals")
+        self.cancel_button.setToolTip(
+            "Request cancellation between magnet operations and attempt restoration of every "
+            "device already affected. Restoration is not guaranteed if connection or hardware operations fail."
+        )
         for button in (self.recover_button, self.cancel_button):
             actions.addWidget(button)
         self.recover_button.clicked.connect(lambda: self.run(self.recover))
-        self.cancel_button.clicked.connect(self.cancel.set)
+        self.cancel_button.clicked.connect(self.request_cancel)
         self.status = owner.apply_status
         self.timer = QTimer(self); self.timer.setInterval(300)
         self.timer.timeout.connect(self.refresh); self.timer.start()
@@ -107,6 +121,14 @@ class PyAMLCorrectionWidget(QWidget):
             return
         self.connection = self.transaction = None
         if hasattr(self, "status"):
+            if self.owner.review:
+                for item in self.owner.review.items:
+                    item.control_name = None
+                    item.metadata["mapping_status"] = "unmapped"
+                    item.metadata.pop("match_source", None)
+            self.connection_result.setText("Disconnected — configuration changed")
+            self.inventory_result.setText("Inventory not discovered")
+            self.authorization_result.setText("WRITE AUTHORIZED" if self.writes.isChecked() else "READ ONLY — writes not authorized")
             self.status.setText("Configuration changed — reconnect")
             self.owner._set_connection(False, "DISCONNECTED")
             self.refresh()
@@ -141,7 +163,28 @@ class PyAMLCorrectionWidget(QWidget):
             settings.setValue(f"correct/pyaml/{key}", value)
         self.owner._set_connection(True, "CONNECTED")
         self.owner.badge.setText(f"pyAML • {options['mode'].upper()} • {'WRITE' if connection.allow_writes else 'READ ONLY'}")
+        self.connection_result.setText("Connected")
+        self.inventory_result.setText(f"Inventory discovered — {len(connection.inventory)} quadrupole devices")
+        self.authorization_result.setText("WRITE AUTHORIZED" if connection.allow_writes else "READ ONLY — writes not authorized")
         self.status.setText(f"Connected: {len(connection.inventory)} quadrupoles. No writes performed.")
+        if self.mapping_path:
+            try:
+                lattice = find_reference_lattice(self.owner.review, connection)
+                entries, _rows, provenance, _identity = validate_mapping_bundle(
+                    self.owner.review, connection, self.mapping_path, lattice
+                )
+                self.explicit = entries
+                self.mapping_hash = file_hash(self.mapping_path)
+                self.manual_mapping_feedback.setText(
+                    f"Saved mapping revalidated for this connection — {len(entries)} magnet(s), {provenance}."
+                )
+            except Exception as exc:
+                self.explicit = []; self.mapping_hash = None
+                self.mapping_path = None; self.owner.mapping_path = None
+                self.mapping_label.setText("Saved mapping invalidated")
+                self.manual_mapping_feedback.setText(
+                    f"Previously selected mapping is not valid for this connection: {exc}"
+                )
 
     def import_mapping(self):
         self.owner.load_petra_mapping()
@@ -151,23 +194,113 @@ class PyAMLCorrectionWidget(QWidget):
             raise RuntimeError("Restore before changing mapping")
         if path:
             entries = load_mapping(path)
+            provenance = "explicit"
             if self.owner.review and self.connection:
-                resolve_mapping(self.owner.review, self.connection.inventory, entries)
+                lattice = find_reference_lattice(self.owner.review, self.connection)
+                entries, _rows, provenance, _identity = validate_mapping_bundle(
+                    self.owner.review, self.connection, path, lattice
+                )
             self.explicit = entries
             self.mapping_path = Path(path)
+            self.mapping_hash = file_hash(self.mapping_path)
             self.owner.mapping_path = str(self.mapping_path.resolve())
             self.mapping_label.setText(str(path))
+            self.owner.mapping_action_message = "loaded"
+            self.owner.manual_mapping_feedback.setText(
+                f"Mapping loaded and validated — {len(entries)} fitted magnet(s), {provenance}."
+            )
+            self.owner.automatic_mapping_feedback.setText("Not run — a validated manual mapping is active.")
+            QSettings("pyLOCO", "pyLOCO Correct").setValue(
+                "correct/pyaml/approved_mapping_path", str(self.mapping_path.resolve())
+            )
             self._rendered = None
             self.refresh()
 
     def clear_mapping(self):
         if self.pending():
             raise RuntimeError("Restore before changing mapping")
-        self.explicit = []; self.mapping_path = None
-        self.owner.mapping_path = None
-        self.mapping_label.setText("Automatic exact lattice-identity matching")
+        self.explicit = []; self.mapping_path = None; self.mapping_hash = None; self.owner.mapping_path = None
+        self.owner.mapping_action_message = "automatic"
+        exact = resolve_mapping(self.owner.review, self.connection.inventory) if self.owner.review and self.connection else []
+        exact_unresolved = [row for row in exact if row["included"] and row["status"] != "mapped"]
+        if not exact_unresolved:
+            self.mapping_label.setText("Automatic authoritative backend identities")
+            self.owner.mapping_auto_feedback = (
+                f"Matching completed — {len(exact)} automatically validated from backend lattice identities."
+            )
+            self.owner.automatic_mapping_feedback.setText(self.owner.mapping_auto_feedback)
+        else:
+            settings = QSettings("pyLOCO", "pyLOCO Correct")
+            remembered = [settings.value("correct/pyaml/approved_mapping_path", "")]
+            candidates = approved_mapping_candidates(self.connection, remembered)
+            errors = []
+            for candidate in candidates:
+                try:
+                    lattice = find_reference_lattice(self.owner.review, self.connection)
+                    entries, rows, provenance, _identity = validate_mapping_bundle(
+                        self.owner.review, self.connection, candidate, lattice
+                    )
+                    self.explicit = entries; self.mapping_path = candidate
+                    self.mapping_hash = file_hash(candidate)
+                    self.owner.mapping_path = str(candidate)
+                    self.mapping_label.setText(candidate.name)
+                    self.owner.mapping_auto_feedback = (
+                        f"Mapping completed — {sum(row['status'] == 'mapped' for row in rows)} "
+                        f"validated, 0 unresolved; {provenance}."
+                    )
+                    self.owner.automatic_mapping_feedback.setText(self.owner.mapping_auto_feedback)
+                    settings.setValue("correct/pyaml/approved_mapping_path", str(candidate))
+                    break
+                except Exception as exc:
+                    errors.append(f"{candidate.name}: {exc}")
+            else:
+                self.mapping_label.setText("No compatible authoritative mapping found")
+                detail = errors[0] if errors else "No approved mapping is associated with this machine profile."
+                exact_mapped = sum(row["status"] == "mapped" for row in exact)
+                exact_ambiguous = sum(row["status"] == "ambiguous" for row in exact)
+                self.owner.mapping_auto_feedback = (
+                    f"Matching completed — {exact_mapped} validated, {len(exact_unresolved)} unresolved, "
+                    f"{exact_ambiguous} ambiguous. {detail} "
+                    "Load an approved mapping or create a template for the exceptions."
+                )
+                self.owner.automatic_mapping_feedback.setText(self.owner.mapping_auto_feedback)
         self._rendered = None
         self.refresh()
+
+    def save_validated_mapping(self):
+        if not self.connection or not self.owner.review:
+            raise ValueError("Connect and load a correction source first")
+        entries = self.current_mapping()
+        if not entries:
+            rows = resolve_mapping(self.owner.review, self.connection.inventory)
+            entries = [dict(
+                correction_type=row["correction_type"], lattice_name=row["lattice_name"],
+                lattice_ordinal=row["lattice_ordinal"], control_name=row["magnet_name"],
+                component="B2L" if row["correction_type"] == "normal_quadrupole" else "A2L",
+                unit="m^-1",
+            ) for row in rows if row["status"] == "mapped"]
+        lattice = find_reference_lattice(self.owner.review, self.connection)
+        bundle = make_mapping_bundle(
+            self.owner.review, self.connection, entries, lattice,
+            provenance="validated in pyLOCO Correct",
+        )
+        suggested = Path(self.connection.options["config_path"]).with_suffix(".mapping.json")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save validated reusable mapping", str(suggested), "JSON mapping (*.json)"
+        )
+        if not path:
+            return
+        target = Path(path).expanduser()
+        target.write_text(json.dumps(bundle, indent=2) + "\n", encoding="utf-8")
+        self.mapping_path = target; self.owner.mapping_path = str(target.resolve())
+        self.mapping_hash = file_hash(target)
+        self.mapping_label.setText(target.name)
+        QSettings("pyLOCO", "pyLOCO Correct").setValue(
+            "correct/pyaml/approved_mapping_path", str(target.resolve())
+        )
+        self.owner.manual_mapping_feedback.setText(
+            f"Validated reusable mapping saved — {len(bundle['mappings'])} magnet(s)."
+        )
 
     def export_mapping(self):
         self.owner.generate_mapping_template()
@@ -176,14 +309,18 @@ class PyAMLCorrectionWidget(QWidget):
         if not self.connection or not self.owner.review:
             raise ValueError("Connect and load a correction source first")
         self.refresh()
+        unresolved=[item.name for item in self.owner.review.items if item.included and (item.metadata.get("mapping_status")!="mapped" or not item.control_name)]
+        if unresolved:
+            raise ValueError(f"Valid mappings are required before reading strengths; {len(unresolved)} included magnet(s) remain unresolved")
+        read=[]
         for item in self.owner.review.items:
-            if item.control_name:
-                item.machine_value = self.connection.read(item.control_name)
+            if item.control_name and item.metadata.get("mapping_status")=="mapped":
+                item.machine_value = self.connection.read(item.control_name); read.append(item)
         self.owner.refresh_all()
-        self.owner.current_k_status.setText("Read individual integrated strengths; no writes performed.")
+        self.owner.current_k_status.setText(f"Read {len(read)} integrated KL value(s) [m⁻¹]; no writes performed. Runtime numeric readback succeeded, but physical calibration remains independently unverified.")
 
     def current_mapping(self):
-        if self.mapping_path and load_mapping(self.mapping_path) != self.explicit:
+        if self.mapping_path and self.mapping_hash != file_hash(self.mapping_path):
             raise RuntimeError("Mapping file changed; reload it before preview/apply")
         return self.explicit
 
@@ -219,10 +356,17 @@ class PyAMLCorrectionWidget(QWidget):
     def recover(self):
         if not self.transaction:
             raise ValueError("Reconnect to the matching configuration before recovery")
-        path, _ = QFileDialog.getOpenFileName(self, "Recover pyAML journal", "", "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select interrupted-application recovery record", "", "JSON recovery record (*.json)")
         if path:
             self.transaction.recover(path)
-            self.status.setText("Recovery loaded without writes. Use Restore original strengths.")
+            self.status.setText("Recovery record validated without writes. Review Application safety & recovery, then use Restore original… to confirm restoration.")
+            self.owner.transaction_recovery_group.setChecked(True)
+            self._update_recovery_display(True,self.pending(),False,self.transaction.record)
+
+    def request_cancel(self):
+        self.cancel.set()
+        self.owner.transaction_recovery_group.setChecked(True)
+        self.owner.recovery_activity_status.setText("Cancellation requested. The current operation will stop between magnet operations and attempt restoration of affected magnets.")
 
     def run(self, action):
         try:
@@ -233,7 +377,10 @@ class PyAMLCorrectionWidget(QWidget):
 
     def error(self, message):
         self.status.setText(message)
+        if hasattr(self.owner, "mapping_diagnostics"):
+            self.owner.mapping_diagnostics.setText(message)
         QMessageBox.warning(self, "pyAML correction", message)
+        self.refresh()
 
     def start(self, action):
         self.thread = QThread(self)
@@ -248,10 +395,67 @@ class PyAMLCorrectionWidget(QWidget):
 
     def completed(self, record):
         self.status.setText(f"{record['status']} — {record['fraction'] * 100:.6g}% cumulative. Journal: {self.transaction.path}")
+        self._update_recovery_display(True,self.pending(),False,record)
 
     def finished(self):
         self.thread.deleteLater(); self.thread = None; self.worker = None
         self.refresh()
+
+    def _update_recovery_display(self,active,pending,busy,record):
+        owner=self.owner
+        if busy:
+            owner.transaction_recovery_group.setChecked(True)
+            if self.cancel.is_set():
+                owner.recovery_activity_status.setText("Cancellation requested. Waiting for the current magnet operation to finish before restoration is attempted.")
+            else:
+                owner.recovery_activity_status.setText("A correction application or restoration operation is currently running.")
+        else:
+            owner.recovery_activity_status.setText("No correction application is currently running.")
+        if record and pending:
+            attempted=set(record.get("attempted",()))
+            owner.recovery_availability_status.setText(
+                f"A validated recovery record is loaded: {len(attempted)} magnet(s) may have been modified and require restoration."
+            )
+            owner.transaction_recovery_group.setChecked(True)
+        elif record:
+            owner.recovery_availability_status.setText(
+                f"A transaction record is loaded with status '{record.get('status','unknown')}', but it does not currently indicate pending restoration. You may select another saved recovery record."
+            )
+        else:
+            owner.recovery_availability_status.setText(
+                "No recovery record is currently loaded. Select a saved JSON recovery record to check whether restoration is available."
+            )
+        connection=record.get("identity",{}).get("connection",{}) if record else {}
+        options=connection.get("options",{}) if isinstance(connection,dict) else {}
+        profile=options.get("config_path") or "unavailable"
+        mode=options.get("mode") or "unavailable"
+        changes=record.get("changes",()) if record else ()
+        attempted=set(record.get("attempted",())) if record else set()
+        original_lines=[f"{row.get('name','?')}: {row.get('original','unavailable')} {row.get('unit','')}" for row in changes if row.get("name") in attempted]
+        status=record.get("status") if record else None
+        failed=[row.get("name","?") for row in changes if row.get("status")=="restore_failed"]
+        not_verified=[row.get("name","?") for row in changes if row.get("name") in attempted and row.get("status") not in {"restored","restore_failed"}]
+        if status=="restored" and not failed and not not_verified:
+            outcome="Successfully restored and readback-verified."
+        elif status=="restore_failed":
+            outcome=f"Restoration failed or remains incomplete. Manual intervention required: {', '.join(failed or not_verified) or 'inspect recovery record'}."
+        elif status in {"restoring","write_pending"}:
+            outcome="Restoration/application is in progress; completion has not yet been readback-verified."
+        elif pending:
+            outcome="Restoration is required and has not yet been verified."
+        else:
+            outcome="No loaded record currently requires restoration."
+        authorization=("write authorized" if self.connection and self.connection.allow_writes else "read only / writes not authorized")
+        connection_state="connected" if self.connection else "disconnected"
+        owner.recovery_feedback.setText(
+            f"Recovery record: machine/profile {profile} ({mode}); {len(attempted)} potentially modified magnet(s); "
+            f"writes required for restoration; current state: {connection_state}, {authorization}. {outcome}" if record else ""
+        )
+        details=(f"Record status: {status or 'none'}\nMachine/profile: {profile}\nConnection: {connection_state}; authorization: {authorization}\n"
+                 f"Potentially modified magnets: {len(attempted)}\nOriginal strengths to restore:\n"+
+                 ("\n".join(original_lines) if original_lines else "None recorded or no magnet write was attempted.")+
+                 (f"\nRestoration errors: {'; '.join(record.get('restoration_errors',()))}" if record and record.get("restoration_errors") else ""))
+        owner.recovery_record_details.setPlainText(details)
 
     def refresh(self):
         active = self.owner.backend_combo.currentData() == "pyaml"
@@ -271,10 +475,18 @@ class PyAMLCorrectionWidget(QWidget):
             for index in range(3):
                 self.owner.tabs.setTabEnabled(index, not locked)
         self.preview_button.setEnabled(active and self.connection is not None and not busy)
+        if hasattr(self.owner, "save_validated_mapping_button"):
+            mapped = bool(self.owner.review and self.owner.review.items and all(
+                item.metadata.get("mapping_status") == "mapped" for item in self.owner.review.items if item.included
+            ))
+            self.owner.save_validated_mapping_button.setEnabled(
+                active and self.connection is not None and mapped and not busy and not locked
+            )
         self.restore_button.setEnabled(pending and not busy)
         self.recover_button.setEnabled(active and self.connection is not None and self.connection.allow_writes and not locked)
         self.cancel_button.setEnabled(busy)
         record = self.transaction.record if self.transaction else None
+        self._update_recovery_display(active,pending,busy,record)
         if busy:
             self.apply_button.setEnabled(False)
             return

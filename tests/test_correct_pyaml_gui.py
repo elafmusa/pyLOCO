@@ -4,7 +4,7 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QGroupBox, QLabel, QMessageBox
 
 from pyLOCO.correct.main_window import CorrectMainWindow
 from pyLOCO.correct import pyaml_widget
@@ -46,7 +46,8 @@ def test_defaults_browser_cancel_and_connection_confirmation(window, setup, monk
     assert widget.mode.currentText() == "live"
     assert widget.fields["normal_array"].text() == "Quads"
     assert widget.fields["skew_array"].text() == "SkewQuads"
-    assert widget.writes.isChecked()
+    assert not widget.writes.isChecked()
+    assert widget.authorization_result.text() == "READ ONLY — writes not authorized"
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(setup.config), ""))
     widget.browse_button.click()
     assert widget.fields["config_path"].text() == str(setup.config)
@@ -58,12 +59,16 @@ def test_defaults_browser_cancel_and_connection_confirmation(window, setup, monk
         calls.append(options)
         return setup.connection
     monkeypatch.setattr(pyaml_widget, "PyAMLCorrectionConnection", connect)
+    widget.writes.setChecked(True)
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.No)
     widget.connect_machine()
     assert not calls
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
     widget.connect_machine()
     assert len(calls) == 1
+    assert widget.connection_result.text() == "Connected"
+    assert "3 quadrupole devices" in widget.inventory_result.text()
+    assert widget.authorization_result.text() == "WRITE AUTHORIZED"
     assert Settings.values["correct/pyaml/normal_array"] == "Quads"
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
     widget.fields["skew_array"].setText("Other")
@@ -76,6 +81,56 @@ def connect_workspace(window, setup):
     widget.connection = setup.connection
     widget.transaction = setup.transaction
     return widget
+
+
+def test_transaction_recovery_controls_are_separate_and_explain_possible_writes(window):
+    widget=window.pyaml_workspace
+    assert widget.recover_button.text()=="Restore after interrupted application…"
+    assert "Loading performs no writes" in widget.recover_button.toolTip()
+    assert widget.cancel_button.text()=="Stop application and restore originals"
+    assert "not guaranteed" in widget.cancel_button.toolTip()
+    recovery=next(group for group in window.findChildren(QGroupBox) if group.title()=="Application safety & recovery")
+    assert recovery.isAncestorOf(widget.extra_actions)
+    assert not window.plot_tabs.isAncestorOf(widget.extra_actions)
+    assert not recovery.isChecked() and not window.transaction_recovery_body.isVisible()
+    assert "No correction application is currently running" in window.recovery_activity_status.text()
+    assert "No recovery record is currently loaded" in window.recovery_availability_status.text()
+
+
+def test_recovery_state_feedback_is_truthful_for_active_cancelled_and_failed_states(window,setup):
+    widget=connect_workspace(window,setup); widget.timer.stop()
+    widget.refresh()
+    assert "No recovery record is currently loaded" in window.recovery_availability_status.text()
+    widget.thread=object(); widget.cancel.clear(); widget.refresh()
+    assert window.transaction_recovery_group.isChecked()
+    assert "currently running" in window.recovery_activity_status.text()
+    widget.request_cancel()
+    assert "Cancellation requested" in window.recovery_activity_status.text()
+    widget.thread=None
+    record={
+        "status":"restore_failed","restore_required":True,"attempted":["M1","M2"],"fraction":.1,
+        "identity":{"connection":{"options":{"config_path":"ebs.yaml","mode":"live"}}},
+        "changes":[
+            {"name":"M1","original":1.0,"unit":"m^-1","status":"restored"},
+            {"name":"M2","original":2.0,"unit":"m^-1","status":"restore_failed"},
+        ],"restoration_errors":["M2: readback mismatch"],
+    }
+    transaction=SimpleNamespace(pending=True,record=record)
+    transaction.restore=lambda:setattr(transaction,"pending",False)
+    widget.transaction=transaction
+    widget.refresh()
+    assert "2 magnet(s) may have been modified" in window.recovery_availability_status.text()
+    assert "Manual intervention required: M2" in window.recovery_feedback.text()
+    details=window.recovery_record_details.toPlainText()
+    assert "M1: 1.0 m^-1" in details and "M2: 2.0 m^-1" in details
+    assert "readback mismatch" in details
+    record["status"]="restoring"; record["changes"][1]["status"]="restoring"
+    widget._update_recovery_display(True,True,False,record)
+    assert "not yet been readback-verified" in window.recovery_feedback.text()
+    record["status"]="restored"; record["restore_required"]=False
+    for row in record["changes"]:row["status"]="restored"
+    widget._update_recovery_display(True,False,False,record)
+    assert "Successfully restored and readback-verified" in window.recovery_feedback.text()
 
 
 def test_close_keeps_pyaml_strengths_and_recovery_journal(window, setup, monkeypatch):
@@ -150,7 +205,8 @@ def test_shared_workflow_and_backend_switch(window, setup):
     assert window.table.item(0, 5).text() == "mapped (identity)"
     window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
     assert window.pyaml_connection_group.isHidden()
-    assert not window.pysc_connection_group.isHidden()
+    assert window.pysc_connection_group.isHidden()
+    assert not window.offline_connection_group.isHidden()
     assert window.preview_apply_button.isEnabled()
     assert all(item.control_name is None for item in setup.review.items)
 
@@ -164,13 +220,157 @@ def test_shared_mapping_import_export(window, setup, tmp_path, monkeypatch):
     window.generate_mapping_template()
     mappings = load_mapping(path)
     assert [entry.control_name for entry in mappings] == ["M1", "M2", "S1"]
-    assert [entry.component for entry in mappings] == ["B2L", "B2L", "A2L"]
+    assert [entry.component for entry in mappings] == [None, None, None]
     widget.clear_mapping()
+    monkeypatch.setattr(pyaml_widget, "find_reference_lattice", lambda *_: setup.source)
+    def validate(review, connection, selected, lattice):
+        entries = pyaml_widget.load_mapping(selected)
+        rows = pyaml_widget.resolve_mapping(review, connection.inventory, entries)
+        return entries, rows, "authoritative legacy mapping — revalidated", {"sha256": "test", "element_count": 3}
+    monkeypatch.setattr(pyaml_widget, "validate_mapping_bundle", validate)
     monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *args, **kwargs: (str(path), ""))
     window.load_petra_mapping()
     assert widget.mapping_path == path
     assert all(item.metadata["match_source"] == "explicit" for item in setup.review.items)
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
+
+
+def test_unmapped_template_is_saved_but_not_loaded_or_trusted(window, setup, tmp_path, monkeypatch):
+    widget = connect_workspace(window, setup)
+    for item in setup.review.items:
+        item.control_name = None
+        item.metadata["mapping_status"] = "unmapped"
+    path = tmp_path / "mapping-template.json"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(path), ""))
+    window.generate_mapping_template()
+    data = __import__("json").loads(path.read_text())
+    assert [row["control_name"] for row in data["mappings"]] == ["", "", ""]
+    assert all(set(row) == {"lattice_name", "lattice_ordinal", "control_name"}
+               for row in data["mappings"])
+    assert data["description"] == (
+        "Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded."
+    )
+    assert data["derived_on_load"] == ["component", "unit", "mapping_status"]
+    assert widget.mapping_path is None
+    assert widget.explicit == []
+    assert "not loaded" in window.mapping_file_status.text().lower()
+    assert not window.apply_button.isEnabled()
+    assert all(not magnet.strength.writes for magnet in setup.magnets.values())
+
+
+def test_automatic_mapping_reuses_authoritative_profile_mapping(window, setup, tmp_path, monkeypatch):
+    widget = connect_workspace(window, setup)
+    for row in setup.connection.inventory:
+        row["lattice_name"] = row["name"]
+    path = tmp_path / "approved.mapping.json"
+    path.write_text("{}")
+    entries = [
+        {"lattice_name": item.name, "lattice_ordinal": item.lattice_ordinal,
+         "control_name": name, "component": "B2L" if index < 2 else "A2L", "unit": "m^-1"}
+        for index, (item, name) in enumerate(zip(setup.review.items, ("M1", "M2", "S1")))
+    ]
+    rows = pyaml_widget.resolve_mapping(setup.review, setup.connection.inventory, entries)
+    monkeypatch.setattr(pyaml_widget, "approved_mapping_candidates", lambda *_: [path])
+    monkeypatch.setattr(pyaml_widget, "find_reference_lattice", lambda *_: setup.source)
+    monkeypatch.setattr(
+        pyaml_widget, "validate_mapping_bundle",
+        lambda *_: (entries, rows, "authoritative legacy mapping — revalidated", {}),
+    )
+    widget.clear_mapping()
+    assert len(widget.explicit) == 3
+    assert "3 validated, 0 unresolved" in window.automatic_mapping_feedback.text()
+    assert all(not magnet.strength.writes for magnet in setup.magnets.values())
+
+
+def test_mapping_help_and_details_are_self_explanatory(window, setup):
+    widget = connect_workspace(window, setup)
+    widget.refresh()
+    help_text = " ".join(label.text() for label in window.mapping_help_body.findChildren(QLabel))
+    for term in ("lattice_name", "lattice_ordinal", "control_name", "Derived metadata", "mapping status", "QD3J"):
+        assert term in help_text
+    assert "Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded." in help_text
+    mapping_page = window.tabs.widget(1).widget()
+    assert mapping_page.layout().itemAt(0).widget().title() == "ⓘ Mapping workflow and template format"
+    assert widget.clear_mapping_button.text() == "Find machine mappings"
+    assert window.generate_mapping_button.text() == "Create mapping template…"
+    assert window.mapping_button.text() == "Load completed mapping…"
+    assert window.mapping_details_table.columnCount() == 8
+    assert window.mapping_details_table.horizontalHeaderItem(0).text() == "Fitted magnet"
+    assert window.mapping_details_table.horizontalHeaderItem(3).text() == "Machine device"
+    assert window.mapping_details_table.rowCount() == 3
+    window.mapping_filter.setText("M2")
+    assert window.mapping_details_table.rowCount() == 1
+    assert window.mapping_details_table.item(0, 3).text() == "M2"
+
+
+def test_mapping_status_filter_and_readonly_strength_journey(window, setup):
+    widget = connect_workspace(window, setup)
+    widget.refresh()
+    assert window.mapping_summary.text().startswith("3 of 3 magnets mapped")
+    assert "ready to read current strengths" in window.mapping_summary.text()
+    window.mapping_attention_filter.setCurrentIndex(window.mapping_attention_filter.findData("attention"))
+    assert window.mapping_details_table.rowCount() == 0
+    window.mapping_attention_filter.setCurrentIndex(window.mapping_attention_filter.findData("all"))
+
+    widget.read_current()
+    assert "Read 3 integrated KL value(s)" in window.current_k_status.text()
+    assert "no writes" in window.current_k_status.text()
+    assert "calibration remains independently unverified" in window.current_k_status.text()
+    assert all(not magnet.strength.writes for magnet in setup.magnets.values())
+
+
+def test_backend_neutral_disconnected_and_zero_match_states(window, setup):
+    widget = window.pyaml_workspace
+    assert widget.connection_result.text() == "Disconnected"
+    assert widget.inventory_result.text() == "Inventory not discovered"
+    assert not widget.writes.isChecked()
+    window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
+    assert window.mapping_group.title() == "2. Match fitted magnets to machine devices"
+    assert window.mapping_details_table.horizontalHeaderItem(3).text() == "Machine device"
+    assert window.automatic_mapping_group.isHidden()
+    assert not window.offline_connection_group.isHidden()
+    assert window.pysc_connection_group.isHidden()
+    assert not window.read_current_k_button.isEnabled()
+    assert "MOCK" in window.badge.text() and "READ ONLY" in window.badge.text()
+
+    window.backend_combo.setCurrentIndex(window.backend_combo.findData("pyaml"))
+    widget = connect_workspace(window, setup)
+    for index,item in enumerate(setup.review.items):
+        item.name = f"NO_MATCH_{index}"
+    widget.clear_mapping(); widget.refresh()
+    assert window.mapping_summary.text().startswith("0 of 3 magnets mapped")
+    feedback=window.automatic_mapping_feedback.text()
+    assert "Matching completed — 0 validated, 3 unresolved, 0 ambiguous" in feedback
+    assert "create a template" in feedback
+    assert all(not magnet.strength.writes for magnet in setup.magnets.values())
+
+    for item,name in zip(setup.review.items,("Q1","Q2","SQ1")):
+        item.name=name
+    setup.review.items[0].name = "NO_EXACT_IDENTITY"
+    widget.clear_mapping(); widget.refresh()
+    assert window.mapping_summary.text().startswith("2 of 3 magnets mapped")
+    assert "2 validated, 1 unresolved" in window.automatic_mapping_feedback.text()
+    window.mapping_attention_filter.setCurrentIndex(window.mapping_attention_filter.findData("attention"))
+    assert window.mapping_details_table.rowCount() == 1
+    with pytest.raises(ValueError, match="Valid mappings are required"):
+        widget.read_current()
+    assert all(not magnet.strength.writes for magnet in setup.magnets.values())
+
+
+def test_pyaml_representation_lock_explains_k_to_kl_conversion(window, setup):
+    widget = connect_workspace(window, setup)
+    widget.refresh(); window.refresh_all()
+    assert not window.correction_representation.isEnabled()
+    assert window.correction_representation.currentData() == "integrated"
+    explanation = window.representation_explanation.text()
+    assert "locked" in explanation
+    assert "Δ(KL) = ΔK × L" in explanation
+    assert "m⁻²" in explanation and "m⁻¹" in explanation
+    assert "integrated B2L/A2L" in window.correction_representation.toolTip()
+    assert window.table.horizontalHeaderItem(9).text() == "Current K [m⁻²]"
+    assert window.table.horizontalHeaderItem(17).text() == "Final Δ(KL) [m⁻¹]"
+    assert window.table.horizontalHeaderItem(29).text() == "Current KL [m⁻¹]"
+    assert window.table.horizontalHeaderItem(30).text() == "Target KL [m⁻¹]"
 
 
 def test_mapping_table_preview_invalidates_and_pending_locks(window, setup):
@@ -248,3 +448,19 @@ def test_recovery_displays_frozen_mapping_without_loaded_review(window, setup, m
     assert window.machine_changes_table.item(0, 0).text() == "M1"
     assert widget.restore_button.isEnabled()
     assert not widget.apply_button.isEnabled()
+    assert "validated recovery record is loaded" in window.recovery_availability_status.text()
+    assert "writes required for restoration" in window.recovery_feedback.text()
+    assert "Original strengths to restore" in window.recovery_record_details.toPlainText()
+
+
+def test_missing_or_invalid_recovery_selection_is_safe_and_actionable(window,setup,tmp_path,monkeypatch):
+    widget=connect_workspace(window,setup); widget.timer.stop(); writes_before=sum(len(m.strength.writes) for m in setup.magnets.values())
+    monkeypatch.setattr(QFileDialog,"getOpenFileName",lambda *a,**k:("",""))
+    widget.recover()
+    assert "No recovery record is currently loaded" in window.recovery_availability_status.text()
+    invalid=tmp_path/"invalid-recovery.json"; invalid.write_text('{"schema":"wrong"}')
+    monkeypatch.setattr(QFileDialog,"getOpenFileName",lambda *a,**k:(str(invalid),""))
+    warnings=[]; monkeypatch.setattr(QMessageBox,"warning",lambda *a,**k:warnings.append(a))
+    widget.run(widget.recover)
+    assert warnings and "Not a pending" in window.apply_status.text()
+    assert sum(len(m.strength.writes) for m in setup.magnets.values())==writes_before

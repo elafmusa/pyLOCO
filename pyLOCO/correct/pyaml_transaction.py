@@ -82,11 +82,16 @@ class PyAMLCorrectionTransaction:
             if prior and not close(current, prior["target"]):
                 raise RuntimeError(f"Stale applied readback: {name}")
             original = prior["original"] if prior else current
-            target = original + (row["delta"] / step_fraction) * length * fraction
+            applied_delta_k = (row["delta"] / step_fraction) * fraction
+            applied_delta_kl = applied_delta_k * length
+            target = original + applied_delta_kl
             if not math.isfinite(target):
                 raise ValueError(f"Nonfinite target: {name}")
             rows.append(dict(name=name, original=original, current=current, target=target,
-                             readback=current, status="preview"))
+                             readback=current, status="preview", component="B2L" if row["correction_type"] == "normal_quadrupole" else "A2L",
+                             unit="m^-1", magnetic_length_m=length,
+                             applied_delta_k_m2=applied_delta_k,
+                             applied_delta_kl_m1=applied_delta_kl))
         if not rows:
             raise ValueError("No included corrections")
         if not previous:
