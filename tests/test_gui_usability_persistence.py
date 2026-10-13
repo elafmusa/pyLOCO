@@ -541,6 +541,18 @@ def test_plot_parameter_and_summary_exports(app, tmp_path, monkeypatch):
     summary._export("json"); assert json.loads(summary_path.read_text())["final_chi2"] == 2.0
 
 
+def test_shared_plot_export_can_omit_title_without_changing_the_screen_plot(app,tmp_path,monkeypatch):
+    plot=PlotCanvas(); axis=plot.figure.add_subplot(111); axis.set_title("Scientific plot title")
+    destination=tmp_path/"without-title.png"; observed=[]
+    monkeypatch.setattr("pyLOCO.gui.results.plot_canvas.QFileDialog.getSaveFileName",lambda *a,**k:(str(destination),""))
+    monkeypatch.setattr(plot.figure,"savefig",lambda *a,**k:observed.append(axis.get_title()))
+    assert plot.include_title.isChecked()
+    plot.include_title.setChecked(False); assert plot.save_plot()==str(destination)
+    assert observed==[""] and axis.get_title()=="Scientific plot title"
+    plot.include_title.setChecked(True); plot.save_plot()
+    assert observed[-1]=="Scientific plot title"
+
+
 def test_restored_run_exports_exact_fitted_data_and_jacobian(app, tmp_path, monkeypatch):
     result_dir = tmp_path / "results"; _synthetic_results(result_dir)
     matrix = np.arange(30.0).reshape(10, 3)

@@ -419,7 +419,7 @@ class ParameterSelectionConfig:
             "CMstep": self.cmstep_value(),
             "rfStep": self.rfStep,
             "individuals": self.individuals,
-            "init": _literal_or_none(self.init),
+            "init": self.init_value(),
             "quads_attr": self.quads_attr,
             "quads_attr_index": self.quads_attr_index,
             "skew_attr": self.skew_attr,
@@ -430,7 +430,7 @@ class ParameterSelectionConfig:
         }
 
     def init_policy_value(self) -> dict[str, str] | None:
-        if self.init_policy.strip():
+        if str(self.init_policy or "").strip():
             value = _literal_or_none(self.init_policy)
             if not isinstance(value, dict):
                 raise ValueError("init_policy must be a dictionary when edited as a literal")
@@ -440,6 +440,17 @@ class ParameterSelectionConfig:
             if str(value).strip():
                 policy[key] = str(value).strip()
         return policy
+
+    def init_value(self) -> dict[str, Any] | None:
+        if not str(self.init or "").strip():
+            return None
+        value = _literal_or_none(self.init)
+        if not isinstance(value, dict):
+            raise ValueError("Explicit initial values must be a Python-literal dictionary")
+        unknown = sorted(set(value) - set(DEFAULT_INIT_POLICY))
+        if unknown:
+            raise ValueError(f"Unsupported explicit-initial-value key: {unknown[0]}")
+        return value
 
     def cmstep_value(self, n_hcor: int | None = None, n_vcor: int | None = None) -> Any:
         return self.cmstep.value(n_hcor, n_vcor)

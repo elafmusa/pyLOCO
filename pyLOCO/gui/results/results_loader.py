@@ -251,7 +251,10 @@ class ResultsLoader:
             lattice_path = resolve(lattice.get("file"))
 
             if lattice_path:
-                ring = at.load_lattice(lattice_path)
+                lattice_kwargs = {}
+                if lattice.get("use") is not None:
+                    lattice_kwargs["use"] = str(lattice["use"])
+                ring = at.load_lattice(lattice_path, **lattice_kwargs)
                 resolved = resolve_example_machine_elements(
                     str(config_path),
                     ring,
@@ -361,7 +364,9 @@ class ResultsLoader:
             or summary.get("run_name"),
             "project_path": str(config_path),
             "lattice_path": resolve(lattice.get("file")),
+            "lattice_use": lattice.get("use"),
             "measurements": measurements,
+            "measurement_session": config.get("measurement_session") or {},
             "measurement_options": measurement_options,
             "backend_mapping": backend_mapping,
         }

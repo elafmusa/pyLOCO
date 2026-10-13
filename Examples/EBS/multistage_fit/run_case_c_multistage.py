@@ -73,6 +73,8 @@ def main() -> int:
         lattice_path=request.lattice_path,
         measurement_identity=request.measurement_session,
         lattice_element_names=names,
+        measurements=request.measurements,
+        measurement_options=request.measurement_options,
     )
     print(json.dumps(report, indent=2))
     if not report["compatible"]:

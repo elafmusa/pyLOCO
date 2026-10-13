@@ -1328,11 +1328,18 @@ class MainWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
 
-        workflow_group = QGroupBox("FIT workflow / reusable recipe")
+        workflow_group = QGroupBox("Multi-stage fitting workflow")
         workflow_layout = QVBoxLayout(workflow_group)
-        self.fit_workflow_table = QTableWidget(0, 4)
-        self.fit_workflow_table.setHorizontalHeaderLabels(["Stage", "Name", "Iterations", "Starting state"])
+        self.fit_workflow_table = QTableWidget(0, 5)
+        self.fit_workflow_table.setHorizontalHeaderLabels(
+            ["Stage", "Name", "Parameters fitted in this stage", "Iterations", "Starting model"]
+        )
         configure_item_view(self.fit_workflow_table)
+        self.fit_workflow_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.fit_workflow_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.fit_workflow_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.fit_workflow_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.fit_workflow_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         self.fit_workflow_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.fit_workflow_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.fit_workflow_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -1343,17 +1350,23 @@ class MainWindow(QMainWindow):
         self.fit_stage_editor_label.setObjectName("dashboardCardTitle")
         self.fit_stage_editor_label.setWordWrap(True)
         workflow_layout.addWidget(self.fit_stage_editor_label)
-        workflow_buttons = QHBoxLayout()
-        for text, slot in (("+ Add stage", self._add_fit_stage), ("Duplicate", self._duplicate_fit_stage),
-                           ("Remove", self._remove_fit_stage), ("↑", lambda: self._move_fit_stage(-1)),
-                           ("↓", lambda: self._move_fit_stage(1)), ("Save FIT recipe…", self.save_fit_recipe),
-                           ("Load FIT recipe…", self.load_fit_recipe),
-                           ("Preview full workflow", self.preview_fit_workflow),
-                           ("Save FIT run/session…", self.save_fit_run_session),
-                           ("Resume FIT run…", self.resume_fit_run)):
-            button = QPushButton(text); button.clicked.connect(slot); workflow_buttons.addWidget(button)
-        workflow_buttons.addStretch(1); workflow_layout.addLayout(workflow_buttons)
-        workflow_help = QLabel("A recipe stores stage strategy only. Measurements and the selected reference lattice remain in the FIT run/session.")
+        stage_buttons = QHBoxLayout(); session_buttons = QHBoxLayout()
+        for text, slot in (("+ Add stage", self._add_fit_stage), ("Duplicate stage", self._duplicate_fit_stage),
+                           ("Remove", self._remove_fit_stage), ("Move up", lambda: self._move_fit_stage(-1)),
+                           ("Move down", lambda: self._move_fit_stage(1)),
+                           ("Review fitting sequence", self.preview_fit_workflow)):
+            button = QPushButton(text); button.clicked.connect(slot); stage_buttons.addWidget(button)
+        stage_buttons.addStretch(1); workflow_layout.addLayout(stage_buttons)
+        for text, slot in (("Save fitting stages…", self.save_fit_recipe),
+                           ("Load fitting stages…", self.load_fit_recipe),
+                           ("Save complete fitting session…", self.save_fit_run_session),
+                           ("Resume previous fitting run…", self.resume_fit_run)):
+            button = QPushButton(text); button.clicked.connect(slot); session_buttons.addWidget(button)
+        session_buttons.addStretch(1); workflow_layout.addLayout(session_buttons)
+        workflow_help = QLabel(
+            "Fitting stages store the reusable sequence and settings. A complete fitting session also stores "
+            "the selected lattice, measurements and completed-stage checkpoints."
+        )
         workflow_help.setWordWrap(True); workflow_layout.addWidget(workflow_help)
         layout.addWidget(workflow_group)
 
@@ -1413,7 +1426,11 @@ class MainWindow(QMainWindow):
         self.rm_frequency = QLineEdit()
         self.rm_harm_number = QLineEdit()
         self.rm_rf_attr = QLineEdit("Frequency")
-        self.rm_fixedpath = QCheckBox("fixedpathlength")
+        self.rm_fixedpath = QCheckBox("Apply fixed-circumference correction")
+        self.rm_fixedpath.setToolTip(
+            "Modify corrector-response columns by the dispersive momentum correction required to keep the closed-orbit path length at the reference circumference. "
+            "This is separate from fitting the RF-dispersion column. This setting applies to the selected stage."
+        )
         self.rm_log_info = QCheckBox("log_info")
         self.rm_rf_step.setToolTip("RF frequency step in Hz. Positive and negative shifts are supported and the sign is preserved.")
         self.rm_delta_coupling.setToolTip("Small dimensionless delta used to evaluate corrector coupling terms; scientific notation is accepted.")
@@ -1549,12 +1566,23 @@ class MainWindow(QMainWindow):
         jacobian_form.addRow("Skew quadrupole Jacobian", self.skew_jacobian_calculator)
         jacobian_form.addRow(self.skew_analytical_options)
         self.fixed_dk = QLineEdit()
+        self.fixed_dk.setPlaceholderText("Automatic per parameter (None)")
+        self.fixed_dk.setToolTip(
+            "Blank means no fixed normal-quadrupole step. For a numerical Jacobian, pyLOCO starts "
+            "from 0.001 × each fitted K (or 0.001 when K is zero), then adapts the step when automatic adjustment is enabled."
+        )
         self.fixed_delta_skew = self._double_spin(-1.0, 1.0, 1e-3, 9)
         self.fixed_delta_q_tilt = self._double_spin(-1.0, 1.0, 1e-6, 9)
         perturbation_group=QGroupBox("Numerical perturbation steps")
         perturbation_form=QFormLayout(perturbation_group)
-        for label, widget in (("Normal quadrupole ΔK", self.fixed_dk), ("Skew quadrupole ΔK", self.fixed_delta_skew), ("Quadrupole tilt Δθ", self.fixed_delta_q_tilt)):
+        for label, widget in (("Normal quadrupole step", self.fixed_dk), ("Skew strength step [lattice units]", self.fixed_delta_skew), ("Quadrupole tilt step [rad]", self.fixed_delta_q_tilt)):
             perturbation_form.addRow(label, widget)
+        self.normal_step_resolution = QLabel()
+        self.normal_step_resolution.setWordWrap(True)
+        perturbation_form.addRow("Resolved normal step", self.normal_step_resolution)
+        self.skew_step_status = QLabel(); self.tilt_step_status = QLabel()
+        perturbation_form.addRow("Skew step status", self.skew_step_status)
+        perturbation_form.addRow("Tilt step status", self.tilt_step_status)
         jacobian_form.addRow(perturbation_group)
         jacobian_group = QGroupBox("Jacobian calculation")
         jacobian_group.setLayout(jacobian_form)
@@ -1565,21 +1593,36 @@ class MainWindow(QMainWindow):
         self.norm_enabled = QCheckBox("Apply normalization")
         self.norm_mode = QComboBox()
         self.norm_mode.addItems(["component", "global", "none"])
-        self.auto_delta = QCheckBox("Automatically adjust numerical perturbations")
+        self.auto_delta = QCheckBox("Automatically optimize Jacobian step sizes")
         self.loco_fixedpath = QCheckBox("Keep path length fixed")
         self.loco_individuals = QCheckBox("individuals")
-        self.loco_remove_coupling = QCheckBox("Remove coupling contribution")
-        self.loco_plot_fit_parameters = QCheckBox("Plot fitted parameters")
-        rej_form = QFormLayout()
-        rej_form.addRow(self.outlier_enabled)
-        rej_form.addRow("Sigma cut", self.outlier_sigma)
-        rej_form.addRow(self.norm_enabled)
-        rej_form.addRow("Normalization mode", self.norm_mode)
+        self.loco_remove_coupling = QCheckBox("Exclude cross-plane ORM responses from the fit")
+        self.loco_plot_fit_parameters = QCheckBox("Generate fitted-parameter plots")
+        rej_layout = QVBoxLayout()
+        outlier_group = QGroupBox("Outlier rejection")
+        outlier_form = QFormLayout(outlier_group)
+        outlier_form.addRow(self.outlier_enabled)
+        outlier_form.addRow("Sigma cut", self.outlier_sigma)
+        self.outlier_enabled.setToolTip("Remove residual entries beyond the two-pass sigma threshold before solving; removed entries are also excluded from χ².")
+        normalization_group = QGroupBox("Residual normalization")
+        normalization_form = QFormLayout(normalization_group)
+        normalization_form.addRow(self.norm_enabled)
+        normalization_form.addRow("Normalization mode", self.norm_mode)
+        self.norm_enabled.setToolTip("Rescale weighted Jacobian columns before solving; component mode treats parameter blocks separately.")
+        calculation_group = QGroupBox("Calculation behavior")
+        calculation_form = QFormLayout(calculation_group)
         self.loco_individuals.hide()  # compatibility state; superseded by explicit modes
-        for widget in (self.auto_delta, self.loco_fixedpath, self.loco_remove_coupling, self.loco_plot_fit_parameters):
-            rej_form.addRow(widget)
-        rej_group = QGroupBox("Iterations and Outlier Rejection")
-        rej_group.setLayout(rej_form)
+        self.auto_delta.setToolTip("Adapt finite-difference perturbations to obtain a numerically useful ORM change.")
+        self.loco_fixedpath.setText("Apply fixed-circumference correction")
+        self.loco_fixedpath.setToolTip("Modify corrector-response columns by the dispersive momentum correction required by a fixed ring circumference. This does not add the RF-dispersion column. Applies to this stage.")
+        self.loco_remove_coupling.setToolTip("Exclude H→Y and V→X from residuals, Jacobian, outlier selection and χ² for this stage. Raw measurement arrays remain unchanged.")
+        self.loco_plot_fit_parameters.setToolTip("Generate parameter-history plots; this changes output only, not fitted values.")
+        self.loco_fixedpath.hide()  # compatibility mirror; the Response Matrix control is authoritative in the UI
+        for widget in (self.auto_delta, self.loco_remove_coupling, self.loco_plot_fit_parameters):
+            calculation_form.addRow(widget)
+        rej_layout.addWidget(outlier_group); rej_layout.addWidget(normalization_group); rej_layout.addWidget(calculation_group)
+        rej_group = QGroupBox("Fit data treatment and diagnostics")
+        rej_group.setLayout(rej_layout)
         layout.addWidget(rej_group)
 
         self.constraint_enabled = QCheckBox("Enable constraints")
@@ -1605,7 +1648,6 @@ class MainWindow(QMainWindow):
         self.constraint_skew_selected_weight = self._double_spin(0.0, 1e12, 1.0, 8)
         self.constraint_skew_exceptions = FamilyWeightEditor()
         constraint_form = QFormLayout()
-        constraint_form.addRow(self.constraint_enabled)
         constraint_form.addRow("Quadrupole sigma definition", self.constraint_quad_sigma_mode)
         constraint_form.addRow("Quadrupole sigma", self.constraint_quad_sigma)
         constraint_form.addRow("Relative quadrupole sigma", self.constraint_quad_relative_sigma)
@@ -1623,8 +1665,12 @@ class MainWindow(QMainWindow):
         constraint_form.addRow("Skew weights", self.constraint_skew_weights)
         constraint_form.addRow("Quadrupole mask", self.constraint_quad_mask)
         constraint_form.addRow("Skew mask", self.constraint_skew_mask)
+        self.constraint_details = QWidget()
+        self.constraint_details.setLayout(constraint_form)
         constraint_group = QGroupBox("Constraints")
-        constraint_group.setLayout(constraint_form)
+        constraint_layout = QVBoxLayout(constraint_group)
+        constraint_layout.addWidget(self.constraint_enabled)
+        constraint_layout.addWidget(self.constraint_details)
         layout.addWidget(constraint_group)
 
         self.parameter_checks = {}
@@ -1651,6 +1697,20 @@ class MainWindow(QMainWindow):
         self.cmstep_mode.addItem("Load from file", "file")
         self.params_init_policy = QLineEdit()
         self.params_init_policy.setPlaceholderText("Uses DEFAULT_INIT_POLICY unless overridden")
+        self.params_init_policy.setToolTip(
+            "Advanced Python-literal dictionary. Supported values: ones, zeros, cmstep:h, cmstep:v, "
+            "rfstep, quads:K, quads:attr, quads:Attribute[index], and tilts:zeros."
+        )
+        self.params_init_policy.hide()
+        self.params_init_policy_summary = QLabel("Built-in defaults")
+        self.params_init_policy_summary.setWordWrap(True)
+        self.params_init_policy_edit = QPushButton("Edit policies…")
+        self.params_init_policy_edit.clicked.connect(self._edit_initialization_policies)
+        self.params_init_policy_row = QWidget()
+        init_policy_row_layout = QHBoxLayout(self.params_init_policy_row)
+        init_policy_row_layout.setContentsMargins(0, 0, 0, 0)
+        init_policy_row_layout.addWidget(self.params_init_policy_summary, 1)
+        init_policy_row_layout.addWidget(self.params_init_policy_edit)
         self.params_cmstep_h = self._double_spin(-1e-1, 1e-1, 1e-5, 9, " rad")
         self.params_cmstep_v = self._double_spin(-1e-1, 1e-1, 1e-5, 9, " rad")
         for spin, plane in ((self.params_cmstep_h, "Horizontal"), (self.params_cmstep_v, "Vertical")):
@@ -1681,6 +1741,19 @@ class MainWindow(QMainWindow):
         resolved_layout.addRow("Resolved vertical values", self.params_cmstep_resolved_v)
         self.params_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
         self.params_init = QLineEdit()
+        self.params_init.setPlaceholderText("Optional dictionary, e.g. {'hbpm_gain': 1.0}")
+        self.params_init.setToolTip(
+            "Advanced Python-literal dictionary keyed by parameter block. A scalar is broadcast; "
+            "an array must match that block's parameter count. Explicit values override the policy for that block."
+        )
+        self.params_init.hide()
+        self.params_init_summary = QLabel("Optional — no explicit overrides")
+        self.params_init_summary.setWordWrap(True)
+        self.params_init_edit = QPushButton("Edit optional overrides…")
+        self.params_init_edit.clicked.connect(self._edit_explicit_initial_values)
+        self.params_init_row = QWidget(); params_init_row_layout = QHBoxLayout(self.params_init_row)
+        params_init_row_layout.setContentsMargins(0, 0, 0, 0)
+        params_init_row_layout.addWidget(self.params_init_summary, 1); params_init_row_layout.addWidget(self.params_init_edit)
         self.params_quads_attr = QLineEdit("PolynomB")
         self.params_quads_attr_index = self._spin(0, 100, 1)
         self.params_skew_attr = QLineEdit("PolynomA")
@@ -1701,7 +1774,15 @@ class MainWindow(QMainWindow):
         init_group = QGroupBox("Fit Initialization")
         self.fit_init_group = init_group
         param_form = QFormLayout(init_group)
-        for label, widget in (("Initialization policy overrides", self.params_init_policy), ("Explicit initial values", self.params_init), ("Normal quadrupole attribute", self.params_quads_attr), ("Normal quadrupole attribute index", self.params_quads_attr_index), ("Skew quadrupole attribute", self.params_skew_attr), ("Skew quadrupole attribute index", self.params_skew_attr_index), ("Tilt R1 attribute", self.params_tilt_attr_r1), ("Tilt R2 attribute", self.params_tilt_attr_r2), ("Tilt update method", self.params_tilt_method)):
+        init_help = QLabel(
+            "Policies create the initial vector for this stage. Explicit initial values override a policy block. "
+            "When a stage resumes, matching values from the previous fit state then replace the newly initialized blocks."
+        )
+        init_help.setWordWrap(True)
+        param_form.addRow(init_help)
+        param_form.addRow("Initialization policies", self.params_init_policy_row)
+        param_form.addRow("Explicit initial-value overrides", self.params_init_row)
+        for label, widget in (("Normal quadrupole attribute", self.params_quads_attr), ("Normal quadrupole attribute index", self.params_quads_attr_index), ("Skew quadrupole attribute", self.params_skew_attr), ("Skew quadrupole attribute index", self.params_skew_attr_index), ("Tilt R1 attribute", self.params_tilt_attr_r1), ("Tilt R2 attribute", self.params_tilt_attr_r2), ("Tilt update method", self.params_tilt_method)):
             param_form.addRow(label, widget)
         param_layout.addWidget(init_group)
         self._advanced_form_rows = (
@@ -1867,13 +1948,16 @@ class MainWindow(QMainWindow):
         table.blockSignals(True); table.setRowCount(len(self.fit_recipe.stages))
         completed = int((self.project.fit_run_session or {}).get("completed_stages", 0))
         for row, stage in enumerate(self.fit_recipe.stages):
-            options = stage.configuration.get("backend_mapping", stage.configuration).get("LOCOOptions", {})
+            mapping = stage.configuration.get("backend_mapping", stage.configuration)
+            options = mapping.get("LOCOOptions", {})
+            fit_list = mapping.get("FitInitConfig", {}).get("fit_list") or options.get("fit_list") or []
             inheritance = {
-                "original_model": "Original model — independent start",
-                "previous_stage": "Previous fitted state + stage overrides",
-                "saved_result": "Saved FIT result + stage overrides",
+                "original_model": "Start from reference lattice",
+                "previous_stage": "Continue from previous stage",
+                "saved_result": "Continue from saved fitted result",
             }.get(stage.start_from, stage.start_from)
             values = (f"{'✓' if row < completed else '○'} {row + 1}", stage.name,
+                      ", ".join(fit_list) if fit_list else "None",
                       options.get("nIter", 1), inheritance)
             for column, value in enumerate(values): table.setItem(row, column, QTableWidgetItem(str(value)))
         table.blockSignals(False)
@@ -2251,6 +2335,15 @@ class MainWindow(QMainWindow):
         self.svd_method.currentIndexChanged.connect(self._update_svd_input_availability)
         self.cmstep_mode.currentIndexChanged.connect(self._update_cmstep_input_availability)
         self.params_cmstep_file.textChanged.connect(self._refresh_cmstep_resolved_values)
+        self.params_init_policy.textChanged.connect(self._refresh_initialization_policy_summary)
+        self.params_init.textChanged.connect(self._refresh_explicit_initial_values_summary)
+        self.fixed_dk.textChanged.connect(self._refresh_normal_step_resolution)
+        self.auto_delta.toggled.connect(self._refresh_normal_step_resolution)
+        self.parameter_checks["quads"].toggled.connect(self._refresh_normal_step_resolution)
+        self.quad_jacobian_calculator.currentTextChanged.connect(self._refresh_normal_step_resolution)
+        self.parameter_checks["skew_quads"].toggled.connect(self._refresh_numerical_step_status)
+        self.parameter_checks["quads_tilt"].toggled.connect(self._refresh_numerical_step_status)
+        self.skew_jacobian_calculator.currentTextChanged.connect(self._refresh_numerical_step_status)
         self.quad_jacobian_calculator.currentTextChanged.connect(
             self._update_jacobian_option_availability
         )
@@ -2261,6 +2354,7 @@ class MainWindow(QMainWindow):
         self.constraint_skew_exceptions.changed.connect(self._on_fit_config_changed)
         self.rm_dispersion.toggled.connect(self._update_context_controls)
         self.constraint_enabled.toggled.connect(self._update_context_controls)
+        self.rm_fixedpath.toggled.connect(self.loco_fixedpath.setChecked)
         self.resume_current.toggled.connect(self._on_fit_config_changed)
         self.resume_previous.toggled.connect(self._on_fit_config_changed)
         self.resume_previous.toggled.connect(self._update_resume_availability)
@@ -2277,12 +2371,147 @@ class MainWindow(QMainWindow):
         self.loco_hor_dispersion_weight.setEnabled(dispersion)
         self.loco_ver_dispersion_weight.setEnabled(dispersion)
         enabled = self.constraint_enabled.isChecked()
+        self.constraint_details.setVisible(enabled)
         for widget in (
-            self.constraint_quad_sigma, self.constraint_skew_sigma,
+            self.constraint_quad_sigma_mode, self.constraint_quad_sigma,
+            self.constraint_quad_relative_sigma, self.constraint_quad_minimum_sigma,
+            self.constraint_quad_default_weight, self.constraint_quad_selected_families,
+            self.constraint_quad_selected_weight, self.constraint_quad_exceptions,
+            self.constraint_skew_sigma, self.constraint_skew_default_weight,
+            self.constraint_skew_selected_families, self.constraint_skew_selected_weight,
+            self.constraint_skew_exceptions,
             self.constraint_quad_weights, self.constraint_skew_weights,
             self.constraint_quad_mask, self.constraint_skew_mask,
         ):
             widget.setEnabled(enabled)
+
+    def _refresh_initialization_policy_summary(self) -> None:
+        import ast
+        raw = self.params_init_policy.text().strip()
+        if not raw:
+            self.params_init_policy_summary.setText("Built-in defaults for all parameter groups")
+            return
+        try:
+            value = ast.literal_eval(raw)
+            if not isinstance(value, dict):
+                raise ValueError
+            self.params_init_policy_summary.setText(f"{len(value)} policy entries · click Edit policies to inspect")
+        except (SyntaxError, ValueError):
+            self.params_init_policy_summary.setText("Invalid policy dictionary — review required")
+
+    def _refresh_normal_step_resolution(self) -> None:
+        if not self.parameter_checks["quads"].isChecked():
+            text = "Not used in this stage: normal quadrupoles are not fitted."
+        elif self.quad_jacobian_calculator.currentText() == "Analytical":
+            text = "Not used: the normal-quadrupole Jacobian is analytical."
+        elif self.fixed_dk.text().strip():
+            text = f"Fixed configured value: {self.fixed_dk.text().strip()} (lattice quadrupole-strength units)."
+        else:
+            adaptive = "adaptive refinement enabled" if self.auto_delta.isChecked() else "adaptive refinement disabled"
+            text = (
+                "Per fitted parameter: initial ΔK = 0.001 × K; if K = 0, ΔK = 0.001 "
+                f"(lattice quadrupole-strength units); {adaptive}."
+            )
+        self.normal_step_resolution.setText(text)
+
+    def _refresh_numerical_step_status(self) -> None:
+        skew_used = self.parameter_checks["skew_quads"].isChecked() and self.skew_jacobian_calculator.currentText() == "Numerical"
+        tilt_used = self.parameter_checks["quads_tilt"].isChecked()
+        self.fixed_delta_skew.setEnabled(skew_used)
+        self.fixed_delta_q_tilt.setEnabled(tilt_used)
+        self.skew_step_status.setText("Used by this stage" if skew_used else "Not used in this stage")
+        self.tilt_step_status.setText("Used by this stage" if tilt_used else "Not used in this stage")
+
+    def _refresh_explicit_initial_values_summary(self) -> None:
+        import ast
+        raw = str(self.params_init.text() or "").strip()
+        if not raw:
+            self.params_init_summary.setText("Optional — no explicit overrides")
+            return
+        try:
+            value = ast.literal_eval(raw)
+            if not isinstance(value, dict): raise ValueError
+            self.params_init_summary.setText(f"Overrides {len(value)} parameter group(s)")
+        except (SyntaxError, ValueError):
+            self.params_init_summary.setText("Invalid override dictionary — review required")
+
+    def _edit_explicit_initial_values(self) -> None:
+        dialog = QDialog(self); dialog.setWindowTitle("Explicit initial-value overrides — advanced")
+        layout = QVBoxLayout(dialog)
+        help_label = QLabel(
+            "Optional. Values entered here override the initialization policy for the named parameter group. "
+            "Use a Python-style dictionary; a scalar is broadcast and a list must match the group size. "
+            "Example: {'hbpm_gain': 1.0, 'hcor_cal': [0.0001, 0.0001]}."
+        )
+        help_label.setWordWrap(True); layout.addWidget(help_label)
+        editor = QPlainTextEdit(); editor.setPlainText(self.params_init.text()); editor.setPlaceholderText("{'hbpm_gain': 1.0}")
+        editor.setMinimumSize(620, 180); layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        layout.addWidget(buttons); buttons.rejected.connect(dialog.reject)
+
+        def accept() -> None:
+            from pyLOCO.gui.models.project import ParameterSelectionConfig
+            candidate = editor.toPlainText().strip()
+            try: ParameterSelectionConfig(init=candidate).init_value()
+            except ValueError as exc:
+                QMessageBox.warning(dialog, "Invalid initial-value overrides", str(exc)); return
+            self.params_init.setText(candidate); dialog.accept()
+
+        buttons.accepted.connect(accept); dialog.exec()
+
+    def _edit_initialization_policies(self) -> None:
+        import ast
+        from pyLOCO.config import BLOCK_ORDER, DEFAULT_INIT_POLICY
+
+        dialog = QDialog(self); dialog.setWindowTitle("Initialization policies — advanced")
+        layout = QVBoxLayout(dialog)
+        help_label = QLabel(
+            "For a new stage, these sources construct its initial parameter vector. When continuing, the previous fitted lattice and calibration state are loaded first, and matching fitted parameter values take precedence."
+        )
+        help_label.setWordWrap(True); layout.addWidget(help_label)
+        raw = self.params_init_policy.text().strip()
+        try: current = ast.literal_eval(raw) if raw else dict(DEFAULT_INIT_POLICY)
+        except (SyntaxError, ValueError): current = dict(DEFAULT_INIT_POLICY)
+        table = QTableWidget(len(BLOCK_ORDER), 2)
+        table.setHorizontalHeaderLabels(["Parameter group", "Initialization source"])
+        configure_item_view(table); table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents); table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        source_labels = (
+            ("Start at 1", "ones"), ("Start at 0", "zeros"),
+            ("Horizontal corrector kick steps", "cmstep:h"), ("Vertical corrector kick steps", "cmstep:v"),
+            ("Configured RF frequency step", "rfstep"), ("Values from lattice K", "quads:K"),
+            ("Configured lattice attribute", "quads:attr"), ("Zero tilt", "tilts:zeros"),
+        )
+        policy_combos = {}
+        for row, key in enumerate(BLOCK_ORDER):
+            table.setItem(row, 0, QTableWidgetItem(key))
+            combo = QComboBox()
+            for label, value in source_labels: combo.addItem(label, value)
+            value = current.get(key, DEFAULT_INIT_POLICY.get(key, "zeros"))
+            index = combo.findData(value)
+            if index < 0: combo.addItem(f"Custom lattice source: {value}", value); index = combo.count() - 1
+            combo.setCurrentIndex(index); table.setCellWidget(row, 1, combo); policy_combos[key] = combo
+        table.setMinimumSize(700, 390); layout.addWidget(table)
+        raw_toggle = QCheckBox("Show raw policy dictionary (advanced)")
+        editor = QPlainTextEdit(); editor.setPlainText(raw or repr(dict(current))); editor.setVisible(False); editor.setMinimumHeight(150)
+        raw_toggle.toggled.connect(editor.setVisible); layout.addWidget(raw_toggle); layout.addWidget(editor)
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        layout.addWidget(buttons); buttons.rejected.connect(dialog.reject)
+
+        def accept() -> None:
+            try:
+                value = (ast.literal_eval(editor.toPlainText().strip()) if raw_toggle.isChecked()
+                         else {key: combo.currentData() for key, combo in policy_combos.items()})
+                if not isinstance(value, dict): raise ValueError("Policy configuration must be a dictionary.")
+                unknown = sorted(set(value) - set(BLOCK_ORDER))
+                if unknown: raise ValueError(f"Unsupported policy key: {unknown[0]}")
+                allowed = {"ones", "zeros", "cmstep:h", "cmstep:v", "rfstep", "quads:K", "quads:attr", "tilts:zeros"}
+                invalid = [item for item in value.values() if item not in allowed and not (isinstance(item, str) and item.startswith("quads:") and len(item) > 6)]
+                if invalid: raise ValueError(f"Unsupported initialization policy: {invalid[0]!r}")
+            except (SyntaxError, ValueError) as exc:
+                QMessageBox.warning(dialog, "Invalid initialization policies", str(exc)); return
+            self.params_init_policy.setText(repr(value)); dialog.accept()
+
+        buttons.accepted.connect(accept); dialog.exec()
 
     def _set_calculator_value(self, calculator: str) -> None:
         aliases = {"linear": "Linear", "analytical": "Analytical", "numerical": "Numerical", "tracking": "Numerical"}
@@ -2594,6 +2823,10 @@ class MainWindow(QMainWindow):
         self._apply_mode_visibility()
         self._update_svd_input_availability()
         self._update_cmstep_input_availability()
+        self._refresh_initialization_policy_summary()
+        self._refresh_explicit_initial_values_summary()
+        self._refresh_normal_step_resolution()
+        self._refresh_numerical_step_status()
         self._update_fit_summary()
         self._update_exclusion_counts()
         self._loading_config = False
@@ -3292,7 +3525,7 @@ class MainWindow(QMainWindow):
             return
         advanced = self.project.mode == "Advanced"
         widgets = (
-            self.rm_fixedpath, self.rm_log_info, self.loco_fixedpath,
+            self.rm_fixedpath, self.rm_log_info,
             self.loco_remove_coupling, self.loco_plot_fit_parameters,
             self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v, self.params_cmstep_file_row, self.params_rfstep,
             self.params_init, self.params_quads_attr, self.params_quads_attr_index, self.params_skew_attr,
@@ -3301,6 +3534,7 @@ class MainWindow(QMainWindow):
         )
         for widget in widgets:
             widget.setVisible(advanced)
+        self.loco_fixedpath.setVisible(False)
         # Legacy configuration compatibility only: the generic Individuals
         # checkbox has been replaced by the three explicit parameterization
         # controls and must never become a free-floating visible widget.
@@ -3433,6 +3667,8 @@ class MainWindow(QMainWindow):
                 report = preflight_recipe(
                     workflow, lattice_path=request.lattice_path,
                     measurement_identity=request.measurement_session, lattice_element_names=names,
+                    measurements=request.measurements,
+                    measurement_options=request.measurement_options,
                 )
                 if not report["compatible"]:
                     raise ValueError("\n".join(report["errors"]))

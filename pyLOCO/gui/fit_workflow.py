@@ -136,6 +136,129 @@ def file_sha256(path: str | Path) -> str:
     return digest.hexdigest()
 
 
+def _text_items(dataset) -> list[str]:
+    return [item.decode("utf-8") if isinstance(item, bytes) else str(item) for item in dataset[:]]
+
+
+def inspect_measurement_files(measurements: dict[str, str],
+                              measurement_options: dict[str, dict[str, Any]] | None = None,
+                              *, trusted_hashes: dict[str, str] | None = None,
+                              trusted_identity: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Inspect the selected payload, never cached project/session metadata.
+
+    Schema-1.0 files expose identities directly.  Historical files which do
+    not contain identity datasets may use recipe metadata only when their
+    bytes match a recipe-pinned SHA-256 digest.
+    """
+    import h5py
+    import numpy as np
+
+    options = measurement_options or {}
+    trusted_hashes = trusted_hashes or {}
+    trusted_identity = trusted_identity or {}
+    report: dict[str, Any] = {"files": {}, "errors": []}
+    embedded_bpms: dict[str, list[str]] = {}
+
+    def dataset_name(role: str, axis: str | None = None) -> str:
+        role_options = options.get(role, {})
+        if role == "orm":
+            return str(role_options.get("dataset", "response_matrix"))
+        names = role_options.get("datasets", {})
+        key = "horizontal_dataset" if axis == "horizontal" else "vertical_dataset"
+        defaults = {("dispersion", "horizontal"): "measured_eta_x",
+                    ("dispersion", "vertical"): "measured_eta_y",
+                    ("bpm_noise", "horizontal"): "Noise_BPMx",
+                    ("bpm_noise", "vertical"): "Noise_BPMy"}
+        return str(role_options.get(key, names.get(axis, defaults[(role, axis)])))
+
+    for role in ("orm", "dispersion", "bpm_noise"):
+        raw_path = measurements.get(role)
+        if not raw_path:
+            report["errors"].append(f"Selected measurement is missing required {role} file.")
+            continue
+        path = Path(raw_path).expanduser().resolve()
+        if not path.is_file():
+            report["errors"].append(f"Selected {role} file does not exist: {path}")
+            continue
+        digest = file_sha256(path)
+        pinned = trusted_hashes.get(role)
+        legacy_trusted = bool(pinned and digest == pinned)
+        entry: dict[str, Any] = {"path": str(path), "sha256": digest,
+                                 "identity_source": "embedded"}
+        try:
+            with h5py.File(path, "r") as handle:
+                metadata: dict[str, Any] = {}
+                if "metadata/json" in handle:
+                    raw = handle["metadata/json"][()]
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8")
+                    metadata = json.loads(str(raw))
+                if role == "orm":
+                    name = dataset_name(role)
+                    if name not in handle:
+                        raise ValueError(f"dataset {name!r} is absent")
+                    matrix = handle[name]
+                    entry["shape"] = list(matrix.shape)
+                    if matrix.ndim != 2:
+                        raise ValueError(f"matrix must be two-dimensional, got {matrix.shape}")
+                    if not np.isfinite(matrix[:]).all():
+                        raise ValueError("matrix contains non-finite values")
+                    entry["unit"] = str(handle.attrs.get("response_matrix_unit", metadata.get("response_matrix_unit", "")))
+                    entry["row_order"] = str(handle.attrs.get("row_order", metadata.get("row_order", "")))
+                    entry["column_order"] = str(handle.attrs.get("column_order", metadata.get("column_order", "")))
+                    for key, target in (("names/bpms", "bpm_names"),
+                                        ("names/horizontal_correctors", "horizontal_corrector_names"),
+                                        ("names/vertical_correctors", "vertical_corrector_names")):
+                        if key in handle:
+                            entry[target] = _text_items(handle[key])
+                    if not all(key in entry for key in ("bpm_names", "horizontal_corrector_names",
+                                                        "vertical_corrector_names")):
+                        if not legacy_trusted:
+                            raise ValueError("device identities are absent and the file does not match a recipe-pinned checksum")
+                        entry["identity_source"] = "recipe identity, verified by SHA-256"
+                        for key in ("bpm_names", "horizontal_corrector_names", "vertical_corrector_names"):
+                            entry[key] = list(trusted_identity.get(key, []))
+                        entry["unit"] = entry["unit"] or trusted_identity.get("units", {}).get("orm", "")
+                else:
+                    horizontal = handle[dataset_name(role, "horizontal")]
+                    vertical = handle[dataset_name(role, "vertical")]
+                    entry["shape"] = [list(horizontal.shape), list(vertical.shape)]
+                    if horizontal.ndim != 1 or vertical.ndim != 1 or horizontal.shape != vertical.shape:
+                        raise ValueError("horizontal and vertical datasets must be equal-length vectors")
+                    if not np.isfinite(horizontal[:]).all() or not np.isfinite(vertical[:]).all():
+                        raise ValueError("datasets contain non-finite values")
+                    if "names/bpms" in handle:
+                        entry["bpm_names"] = _text_items(handle["names/bpms"])
+                    elif legacy_trusted:
+                        entry["identity_source"] = "recipe identity, verified by SHA-256"
+                        entry["bpm_names"] = list(trusted_identity.get("bpm_names", []))
+                    else:
+                        raise ValueError("BPM identities are absent and the file does not match a recipe-pinned checksum")
+                    if role == "dispersion":
+                        entry["unit"] = str(handle.attrs.get("measured_eta_unit", metadata.get("canonical_measured_eta_unit", "")))
+                        entry["rf_step_hz"] = float(handle.attrs.get("rf_bipolar_separation_hz",
+                                                         abs(handle.attrs.get("rf_step_hz", 0.0))))
+                        if not entry["unit"] and legacy_trusted:
+                            entry["unit"] = trusted_identity.get("units", {}).get("dispersion", "")
+                            entry["rf_step_hz"] = abs(float(options.get(role, {}).get("rf_step_hz", 0.0)))
+                    else:
+                        entry["unit"] = str(metadata.get("bpm_noise_unit", ""))
+                        if not entry["unit"] and legacy_trusted:
+                            entry["unit"] = trusted_identity.get("units", {}).get("bpm_noise", "")
+        except Exception as exc:
+            report["errors"].append(f"Selected {role} file is incompatible: {exc}")
+        report["files"][role] = entry
+        if entry.get("bpm_names"):
+            embedded_bpms[role] = entry["bpm_names"]
+
+    if embedded_bpms:
+        first_role, first_names = next(iter(embedded_bpms.items()))
+        for role, names in embedded_bpms.items():
+            if names != first_names:
+                report["errors"].append(f"BPM identities/order differ between selected {first_role} and {role} files.")
+    return report
+
+
 def _rebase_workflow_optics(results_dir: str | Path, workflow_lattice: str | Path) -> bool:
     """Make stage optics relative to the lattice that started the workflow.
 
@@ -192,7 +315,9 @@ def _rebase_workflow_optics(results_dir: str | Path, workflow_lattice: str | Pat
 
 
 def preflight_recipe(recipe: FitRecipe, *, lattice_path: str, measurement_identity: dict[str, Any],
-                     lattice_element_names: list[str] | None = None) -> dict[str, Any]:
+                     lattice_element_names: list[str] | None = None,
+                     measurements: dict[str, str] | None = None,
+                     measurement_options: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     """Validate identity/order and explicitly report any stable-name remapping."""
     errors = recipe.validate()
     checksum = file_sha256(lattice_path)
@@ -201,12 +326,69 @@ def preflight_recipe(recipe: FitRecipe, *, lattice_path: str, measurement_identi
     machine = str(measurement_identity.get("machine_profile") or measurement_identity.get("machine") or "")
     if recipe.machine_identity and machine and machine != recipe.machine_identity:
         errors.append(f"Measurement machine/profile {machine!r} does not match recipe {recipe.machine_identity!r}.")
-    for key in ("bpm_names", "horizontal_corrector_names", "vertical_corrector_names",
-                "orm_convention", "dispersion_convention", "rf_convention", "units"):
-        expected = recipe.data_requirements.get(key)
-        actual = measurement_identity.get(key)
-        if expected not in (None, [], "") and actual != expected:
-            errors.append(f"Measurement {key} does not match the recipe.")
+    # Cached session identity is useful for old callers, but must never decide
+    # replacement-file compatibility when actual paths were supplied.
+    if measurements is None:
+        for key in ("bpm_names", "horizontal_corrector_names", "vertical_corrector_names",
+                    "orm_convention", "dispersion_convention", "rf_convention", "units"):
+            expected = recipe.data_requirements.get(key)
+            actual = measurement_identity.get(key)
+            if expected not in (None, [], "") and actual != expected:
+                errors.append(f"Measurement {key} does not match the recipe.")
+    payload = None
+    if measurements is not None:
+        payload = inspect_measurement_files(
+            measurements, measurement_options,
+            trusted_hashes=recipe.data_requirements.get("measurement_sha256", {}),
+            trusted_identity=recipe.data_requirements,
+        )
+        errors.extend(payload["errors"])
+        files = payload["files"]
+        orm = files.get("orm", {})
+        expected_bpms = recipe.data_requirements.get("bpm_names", [])
+        expected_h = recipe.data_requirements.get("horizontal_corrector_names", [])
+        expected_v = recipe.data_requirements.get("vertical_corrector_names", [])
+        expected_shape = [2 * len(expected_bpms), len(expected_h) + len(expected_v)]
+        if orm.get("shape") and orm["shape"] != expected_shape:
+            errors.append(f"Selected ORM shape {tuple(orm['shape'])} does not satisfy the recipe/stages; expected {tuple(expected_shape)}.")
+        for key, expected in (("bpm_names", expected_bpms),
+                              ("horizontal_corrector_names", expected_h),
+                              ("vertical_corrector_names", expected_v)):
+            if expected and orm.get(key) != expected:
+                errors.append(f"Selected ORM {key} identities/order do not match the recipe.")
+        for role in ("dispersion", "bpm_noise"):
+            entry = files.get(role, {})
+            if expected_bpms and entry.get("bpm_names") != expected_bpms:
+                errors.append(f"Selected {role} BPM identities/order do not match the recipe.")
+            if entry.get("shape") and entry["shape"] != [[len(expected_bpms)], [len(expected_bpms)]]:
+                errors.append(f"Selected {role} vectors do not match the recipe BPM count {len(expected_bpms)}.")
+        expected_units = recipe.data_requirements.get("units", {})
+        for role in ("orm", "dispersion", "bpm_noise"):
+            expected_unit = expected_units.get(role)
+            actual_unit = files.get(role, {}).get("unit")
+            if expected_unit and actual_unit != expected_unit:
+                errors.append(f"Selected {role} unit {actual_unit!r} does not match required {expected_unit!r}.")
+        expected_rf = recipe.data_requirements.get("rf_step_hz")
+        if expected_rf is not None and files.get("dispersion", {}).get("rf_step_hz") != float(expected_rf):
+            errors.append("Selected dispersion RF bipolar separation does not match the recipe.")
+        stage_roles = (("bpm_ords", len(expected_bpms), "BPMs"),
+                       ("horizontal_corrector_ords", len(expected_h), "horizontal correctors"),
+                       ("vertical_corrector_ords", len(expected_v), "vertical correctors"))
+        for position, stage in enumerate(recipe.stages, 1):
+            mapping = stage.configuration.get("backend_mapping", stage.configuration)
+            elements = mapping.get("MachineElements", {})
+            for key, count, label in stage_roles:
+                selected = elements.get(key)
+                if selected is not None and len(selected) != count:
+                    errors.append(
+                        f"Stage {position} ({stage.name}) selects {len(selected)} {label}, "
+                        f"but the selected measurements/recipe require {count}."
+                    )
+            fit_list = mapping.get("FitInitConfig", {}).get("fit_list", [])
+            for parameter, key in (("quads", "normal_quadrupole_ords"),
+                                   ("skew_quads", "skew_quadrupole_ords")):
+                if parameter in fit_list and key in elements and not elements.get(key):
+                    errors.append(f"Stage {position} ({stage.name}) fits {parameter} but selects no lattice elements.")
     remapping: dict[str, list[int]] = {}
     if lattice_element_names is not None:
         lookup: dict[str, list[int]] = {}
@@ -219,7 +401,7 @@ def preflight_recipe(recipe: FitRecipe, *, lattice_path: str, measurement_identi
             else:
                 remapping[role] = [lookup[name][0] for name in names]
     return {"compatible": not errors, "errors": errors, "remapping": remapping,
-            "lattice_checksum": checksum}
+            "lattice_checksum": checksum, "measurement_payload": payload}
 
 
 def execute_workflow(base_request, recipe: FitRecipe, *, session_path: str | Path,

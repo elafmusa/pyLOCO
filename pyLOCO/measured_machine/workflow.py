@@ -31,6 +31,14 @@ def load_config(path: Path) -> dict[str, Any]:
     return cfg
 
 
+def load_configured_lattice(base: Path, lattice_cfg: dict[str, Any]) -> at.Lattice:
+    """Load a lattice, including a named variable from multi-lattice MAT files."""
+    kwargs = {}
+    if lattice_cfg.get("use") is not None:
+        kwargs["use"] = str(lattice_cfg["use"])
+    return at.load_lattice(base / lattice_cfg["file"], **kwargs)
+
+
 # Historical name retained for PETRA example imports.
 load_yaml = load_config
 
@@ -198,7 +206,7 @@ def prepare_measurement(config_path: Path) -> dict[str, Any]:
     cfg = load_config(config_path)
     base = config_path.parent
     data_cfg = cfg["data"]
-    ring = at.load_lattice(base / cfg["lattice"]["file"])
+    ring = load_configured_lattice(base, cfg["lattice"])
     if bool(cfg["lattice"].get("disable_6d", True)):
         ring.disable_6d()
 

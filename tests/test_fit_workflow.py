@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import h5py
+import numpy as np
+
 from pyLOCO.gui.fit_workflow import (
     FitRecipe, FitRunSession, FitStage, execute_workflow, preflight_recipe,
 )
@@ -48,6 +51,118 @@ def test_stable_name_remap_is_explicit_and_unique(tmp_path):
                               lattice_element_names=["Q1", "D", "Q2"])
     assert report["compatible"]
     assert report["remapping"] == {"normal_quadrupoles": [2, 0]}
+
+
+def _modern_measurements(tmp_path, *, bpm_names=("B1", "B2"), h_names=("H1",),
+                         v_names=("V1",), columns=None):
+    paths = {}
+    with h5py.File(tmp_path / "orm.h5", "w") as handle:
+        names = handle.create_group("names")
+        text = h5py.string_dtype("utf-8")
+        names.create_dataset("bpms", data=list(bpm_names), dtype=text)
+        names.create_dataset("horizontal_correctors", data=list(h_names), dtype=text)
+        names.create_dataset("vertical_correctors", data=list(v_names), dtype=text)
+        handle.create_dataset("response_matrix", data=np.zeros((2 * len(bpm_names), columns or len(h_names) + len(v_names))))
+        handle.attrs["response_matrix_unit"] = "m"
+        handle.attrs["row_order"] = "horizontal_bpms,vertical_bpms"
+        handle.attrs["column_order"] = "horizontal_correctors,vertical_correctors"
+    paths["orm"] = str(tmp_path / "orm.h5")
+    for role, datasets in (("dispersion", ("measured_eta_x", "measured_eta_y")),
+                           ("bpm_noise", ("Noise_BPMx", "Noise_BPMy"))):
+        path = tmp_path / f"{role}.h5"
+        with h5py.File(path, "w") as handle:
+            names = handle.create_group("names")
+            names.create_dataset("bpms", data=list(bpm_names), dtype=h5py.string_dtype("utf-8"))
+            for name in datasets:
+                handle.create_dataset(name, data=np.zeros(len(bpm_names)))
+            if role == "dispersion":
+                handle.attrs["measured_eta_unit"] = "m"
+                handle.attrs["rf_bipolar_separation_hz"] = 200.0
+            else:
+                metadata = handle.create_group("metadata")
+                metadata.create_dataset("json", data=json.dumps({"bpm_noise_unit": "m"}))
+        paths[role] = str(path)
+    return paths
+
+
+def test_preflight_reads_selected_hdf5_payload_not_stale_session_identity(tmp_path):
+    lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"ring")
+    requirements = {
+        "bpm_names": ["B1", "B2"], "horizontal_corrector_names": ["H1"],
+        "vertical_corrector_names": ["V1"], "rf_step_hz": 200.0,
+        "units": {"orm": "m", "dispersion": "m", "bpm_noise": "m"},
+    }
+    recipe = FitRecipe(data_requirements=requirements,
+                       stages=[FitStage("one", mapping("quads"), "original_model")])
+    valid = _modern_measurements(tmp_path)
+    stale = {**requirements, "machine_profile": ""}
+    report = preflight_recipe(recipe, lattice_path=str(lattice), measurement_identity=stale,
+                              measurements=valid)
+    assert report["compatible"]
+    assert report["measurement_payload"]["files"]["orm"]["shape"] == [4, 2]
+
+    invalid_root = tmp_path / "replacement"; invalid_root.mkdir()
+    invalid = _modern_measurements(invalid_root, h_names=("OTHER",), v_names=(), columns=1)
+    report = preflight_recipe(recipe, lattice_path=str(lattice), measurement_identity=stale,
+                              measurements=invalid)
+    assert not report["compatible"]
+    assert any("Selected ORM shape (4, 1)" in error for error in report["errors"])
+    assert any("horizontal_corrector_names" in error for error in report["errors"])
+
+
+def test_preflight_rejects_stage_selection_incompatible_with_payload(tmp_path):
+    lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"ring")
+    paths = _modern_measurements(tmp_path)
+    stage_mapping = mapping("quads")
+    stage_mapping["MachineElements"] = {
+        "bpm_ords": [1, 2], "horizontal_corrector_ords": [3, 4],
+        "vertical_corrector_ords": [5], "normal_quadrupole_ords": [],
+    }
+    recipe = FitRecipe(data_requirements={
+        "bpm_names": ["B1", "B2"], "horizontal_corrector_names": ["H1"],
+        "vertical_corrector_names": ["V1"], "rf_step_hz": 200.0,
+        "units": {"orm": "m", "dispersion": "m", "bpm_noise": "m"},
+    }, stages=[FitStage("normal", stage_mapping, "original_model")])
+    report = preflight_recipe(recipe, lattice_path=str(lattice), measurement_identity={},
+                              measurements=paths)
+    assert not report["compatible"]
+    assert any("selects 2 horizontal correctors" in error for error in report["errors"])
+    assert any("fits quads but selects no lattice elements" in error for error in report["errors"])
+
+
+def test_legacy_identity_is_accepted_only_with_recipe_pinned_hashes(tmp_path):
+    lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"ring")
+    paths = {}
+    for role, datasets in (("orm", ("response_matrix",)),
+                           ("dispersion", ("measured_eta_x", "measured_eta_y")),
+                           ("bpm_noise", ("Noise_BPMx", "Noise_BPMy"))):
+        path = tmp_path / f"legacy-{role}.h5"
+        with h5py.File(path, "w") as handle:
+            for name in datasets:
+                shape = (4, 2) if role == "orm" else (2,)
+                handle.create_dataset(name, data=np.zeros(shape))
+        paths[role] = str(path)
+    from pyLOCO.gui.fit_workflow import file_sha256
+    requirements = {
+        "bpm_names": ["B1", "B2"], "horizontal_corrector_names": ["H1"],
+        "vertical_corrector_names": ["V1"], "rf_step_hz": 200.0,
+        "units": {"orm": "m", "dispersion": "m", "bpm_noise": "m"},
+        "measurement_sha256": {role: file_sha256(path) for role, path in paths.items()},
+    }
+    recipe = FitRecipe(data_requirements=requirements,
+                       stages=[FitStage("one", mapping("quads"), "original_model")])
+    report = preflight_recipe(recipe, lattice_path=str(lattice), measurement_identity={},
+                              measurements=paths,
+                              measurement_options={"dispersion": {"rf_step_hz": 200.0}})
+    assert report["compatible"]
+    assert "verified by SHA-256" in report["measurement_payload"]["files"]["orm"]["identity_source"]
+
+    with h5py.File(paths["orm"], "r+") as handle:
+        handle["response_matrix"][0, 0] = 1.0
+    report = preflight_recipe(recipe, lattice_path=str(lattice), measurement_identity={},
+                              measurements=paths)
+    assert not report["compatible"]
+    assert any("recipe-pinned checksum" in error for error in report["errors"])
 
 
 def test_continuous_and_saved_resume_use_identical_stage2_checkpoint(tmp_path):

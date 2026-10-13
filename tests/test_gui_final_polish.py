@@ -125,6 +125,72 @@ def test_backend_only_fit_recipe_stages_are_editable_in_gui(app):
     window.close()
 
 
+def test_case_c_all_stages_keep_scientific_mapping_and_show_parameter_summary(app):
+    import json
+    from pathlib import Path
+
+    project_path = Path(__file__).parents[1] / "Examples/EBS/multistage_fit/EBS_case_C_multistage.pyloco.json"
+    source_stages = json.loads(project_path.read_text())["fit_recipe"]["stages"]
+    window = MainWindow(); window.project.modified = False; window.open_project(project_path)
+    app.processEvents()
+    assert window.fit_workflow_table.rowCount() == 4
+    assert window.fit_workflow_table.columnCount() == 5
+    expected = (
+        "hbpm_gain, vbpm_gain, hcor_cal, vcor_cal",
+        "hbpm_coupling, vbpm_coupling", "quads",
+        "skew_quads, hbpm_coupling, vbpm_coupling",
+    )
+    for index, summary in enumerate(expected):
+        assert window.fit_workflow_table.item(index, 2).text() == summary
+        window.fit_workflow_table.selectRow(index); app.processEvents()
+        assert not window.constraint_details.isVisible()
+        assert window.fixed_dk.text() == ""
+        if index == 2:
+            assert "initial ΔK = 0.001 × K" in window.normal_step_resolution.text()
+        else:
+            assert "not fitted" in window.normal_step_resolution.text()
+    window._store_active_fit_stage()
+    stored = window.fit_recipe.to_dict()["stages"]
+    assert [item["configuration"]["backend_mapping"] for item in stored] == [
+        item["configuration"]["backend_mapping"] for item in source_stages
+    ]
+    window.project.modified = False; window.close()
+
+
+def test_constraints_collapse_without_changing_values_and_init_literals_validate(app):
+    window = MainWindow()
+    window.constraint_quad_sigma.setValue(0.125)
+    window.constraint_enabled.setChecked(False); app.processEvents()
+    assert not window.constraint_details.isVisible()
+    assert window.constraint_quad_sigma.value() == 0.125
+    assert window._collect_loco_configuration().constraints.enable is False
+    window.constraint_enabled.setChecked(True); app.processEvents()
+    assert not window.constraint_details.isHidden()
+    assert window.constraint_quad_sigma.value() == 0.125
+
+    window.params_init.setText("{'hbpm_gain': 1.0}")
+    assert window._collect_loco_configuration().parameters.init_value() == {"hbpm_gain": 1.0}
+    window.params_init.setText("not a dictionary")
+    with pytest.raises(ValueError, match="dictionary"):
+        window._collect_loco_configuration().parameters.to_fit_init_config_kwargs()
+    window.project.modified = False; window.close()
+
+
+def test_fit_workflow_plain_language_and_fixed_circumference_control(app):
+    window = MainWindow()
+    assert window.fit_workflow_table.horizontalHeaderItem(2).text() == "Parameters fitted in this stage"
+    assert window.fit_workflow_table.horizontalHeaderItem(4).text() == "Starting model"
+    assert window.loco_remove_coupling.text() == "Exclude cross-plane ORM responses from the fit"
+    assert window.loco_plot_fit_parameters.text() == "Generate fitted-parameter plots"
+    assert window.loco_fixedpath.isHidden()
+
+    window.rm_fixedpath.setChecked(True); app.processEvents()
+    assert window._collect_loco_configuration().response_matrix.fixedpathlength is True
+    window.rm_fixedpath.setChecked(False); app.processEvents()
+    assert window._collect_loco_configuration().response_matrix.fixedpathlength is False
+    window.project.modified = False; window.close()
+
+
 def test_run_monitor_is_visible_when_run_preparation_fails(app, monkeypatch):
     messages = []
     monkeypatch.setattr(ProjectMetadata, "validation_messages", lambda _self: [])
