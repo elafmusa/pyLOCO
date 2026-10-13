@@ -31,13 +31,57 @@ class Array:
         return SimpleNamespace(strength=SimpleNamespace(unit=lambda: self.units[index], get=lambda: self.values[index], set=set_value))
 
 
-def make_adapter():
+def make_adapter(*, bpm_hierarchy="legacy", include_legacy_with_new=False):
     bpms = Array(["B2", "B1"], [[1000, 2000], [3000, 4000]], [["nm", "nm"]] * 2)
     horizontal = Array(["H1"], [2], ["mrad"])
     vertical = Array(["V1"], [3], ["rad"])
-    machine = SimpleNamespace(bpms={"BPM": bpms}, magnets={"HCorr": horizontal, "VCorr": vertical},
+    machine = SimpleNamespace(magnets={"HCorr": horizontal, "VCorr": vertical},
                               magnet={"H1": horizontal[0], "V1": vertical[0]})
+    if bpm_hierarchy == "new":
+        machine.diagnostic = SimpleNamespace(bpms={"BPM": bpms})
+        if include_legacy_with_new:
+            machine.bpms = {"BPM": Array(["WRONG"], [[9, 9]], [["m", "m"]])}
+    elif bpm_hierarchy == "legacy":
+        machine.bpms = {"BPM": bpms}
+    else:
+        raise ValueError(bpm_hierarchy)
     return PyAMLAdapter("unused.yaml", accelerator=SimpleNamespace(live=machine), rf_name="", allow_writes=False, allow_rf_writes=False), bpms
+
+
+@pytest.mark.parametrize(
+    ("hierarchy", "expected_path"),
+    [("new", "diagnostic.bpms"), ("legacy", "bpms")],
+)
+def test_bpm_hierarchy_compatibility_preserves_physical_identity(hierarchy, expected_path):
+    adapter, bpms = make_adapter(bpm_hierarchy=hierarchy)
+    assert adapter.bpm_api_path == expected_path
+    assert adapter.groups["bpm"] is bpms
+    assert [device["name"] for device in adapter.list_devices("bpm")] == ["B2", "B1"]
+    assert [sample.value for sample in adapter.read_many(adapter.list_channels()[:4]).values()] == [1000, 2000, 3000, 4000]
+
+
+def test_current_bpm_hierarchy_is_preferred_when_both_are_exposed():
+    adapter, bpms = make_adapter(bpm_hierarchy="new", include_legacy_with_new=True)
+    assert adapter.groups["bpm"] is bpms
+    assert adapter.bpm_api_path == "diagnostic.bpms"
+
+
+def test_missing_bpm_hierarchy_has_clear_error():
+    horizontal = Array(["H1"], [2], ["mrad"])
+    vertical = Array(["V1"], [3], ["rad"])
+    machine = SimpleNamespace(
+        magnets={"HCorr": horizontal, "VCorr": vertical},
+        magnet={"H1": horizontal[0], "V1": vertical[0]},
+        rf={},
+    )
+    with pytest.raises(ValueError, match="diagnostic\\.bpms.*legacy bpms"):
+        PyAMLAdapter(
+            "unused.yaml",
+            accelerator=SimpleNamespace(live=machine),
+            rf_name="",
+            allow_writes=False,
+            allow_rf_writes=False,
+        )
 
 
 def test_batch_reads_preserve_order_and_ignore_units():
@@ -49,6 +93,8 @@ def test_batch_reads_preserve_order_and_ignore_units():
     assert list(readings) == channels
     assert [sample.value for sample in readings.values()] == pytest.approx([4000, 1000])
     assert bpms.calls == 1
+    # Read-only sessions preserve backend-native values because no write
+    # calibration has been authorized or validated.
     assert adapter.read(adapter.list_devices("hcor")[0]["readback_channel"]).value == 2
 
 
@@ -78,18 +124,16 @@ def test_accepts_unknown_units():
     assert adapter.test_connection()["bpms"] == 2
 
 
-def test_unit_accessors_are_never_called(monkeypatch):
+def test_non_corrector_unit_accessors_are_never_called(monkeypatch):
     adapter, frequency = writable_adapter(allow_writes=True, allow_rf_writes=True)
     def fail_unit():
         raise AssertionError("Unit metadata must not be queried")
     for group in adapter.groups.values():
         monkeypatch.setattr(group, "unit", fail_unit)
     monkeypatch.setattr(frequency, "unit", fail_unit)
-    for magnet in adapter.machine.magnet.values():
-        monkeypatch.setattr(magnet.strength, "unit", fail_unit)
     assert adapter.test_connection()["bpms"] == 2
     channel = adapter.list_devices("hcor")[0]["setpoint_channel"]
-    assert adapter.write(channel, .123).value == .123
+    assert adapter.write(channel, .123).value == pytest.approx(.123)
     adapter.set_rf_frequency(500e6 + 10)
     assert adapter.get_rf_frequency() == 500e6 + 10
 
@@ -150,11 +194,11 @@ def writable_adapter(**options):
     return adapter, frequency
 
 
-def test_single_magnet_write_ignores_units_and_rejects_invalid_values():
-    adapter, frequency = writable_adapter(allow_writes=True)
+def test_single_magnet_write_converts_si_radians_to_declared_unit():
+    adapter, frequency = writable_adapter(allow_writes=True, corrector_values_in_radians=True)
     channel = adapter.list_devices("hcor")[0]["setpoint_channel"]
     assert adapter.write(channel, .004).value == .004
-    assert adapter.groups["hcor"].values == [.004]
+    assert adapter.groups["hcor"].values == [4.0]
     assert adapter.groups["vcor"].values == [3]
     with pytest.raises(ValueError):
         adapter.write(channel, np.nan)
@@ -163,6 +207,13 @@ def test_single_magnet_write_ignores_units_and_rejects_invalid_values():
     with pytest.raises(PermissionError):
         adapter.set_rf_frequency(500e6)
     assert frequency.writes == []
+
+
+def test_corrector_writes_reject_non_angular_strength_units():
+    base, _ = make_adapter()
+    base.groups["hcor"].units[0] = "1/m"
+    with pytest.raises(ValueError, match="not a verified angular unit"):
+        PyAMLAdapter("unused.yaml", accelerator=base.accelerator, rf_name="", allow_writes=True, allow_rf_writes=False, corrector_values_in_radians=True)
 
 
 def test_magnet_write_and_readback_never_access_arrays(monkeypatch):
@@ -197,7 +248,7 @@ def test_rf_read_write_ignores_units_and_requires_opt_in():
 
 def test_orm_restores_pyaml_correctors():
     from pyLOCO.measure.acquisition import BpmDevice, CorrectorDevice, ORMAcquirer
-    adapter, _ = writable_adapter(allow_writes=True)
+    adapter, _ = writable_adapter(allow_writes=True, corrector_values_in_radians=True)
     acquirer = ORMAcquirer(adapter,
         [BpmDevice(**item) for item in adapter.list_devices("bpm")],
         [CorrectorDevice(**item) for item in adapter.list_devices("hcor")], [])
@@ -265,7 +316,7 @@ def test_default_write_capabilities_and_rf_name():
 def test_orm_cancellation_restores_changed_corrector():
     from threading import Event
     from pyLOCO.measure.acquisition import BpmDevice, CorrectorDevice, ORMAcquirer, AcquisitionCancelled
-    adapter, _ = writable_adapter(allow_writes=True)
+    adapter, _ = writable_adapter(allow_writes=True, corrector_values_in_radians=True)
     cancel = Event()
     original_write = adapter.write
     def write(channel, value):

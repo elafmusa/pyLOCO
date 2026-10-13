@@ -45,7 +45,8 @@ class MeasureProject:
     excluded_vcor_positions: str = ""
     measurement_selections: dict[str, dict[str, Any]] = field(default_factory=_default_measurement_selections)
     readings: int = 20
-    delay_seconds: float = 0.1
+    bpm_noise_ddof: int = 0
+    delay_seconds: float = 1.0
     settling_delay_seconds: float = 0.0
     verify_restored_orbit: bool = True
     rf_control_mode: str = "manual"
@@ -106,6 +107,8 @@ class MeasureProject:
             raise ValueError("ORM kick values must be positive")
         if self.readings < 2 or self.delay_seconds < 0:
             raise ValueError("Readings must be at least 2 and delay must be non-negative")
+        if self.bpm_noise_ddof not in (0, 1):
+            raise ValueError("BPM-noise ddof must be 0 or 1")
         if not self.measurement_name.strip() or not self.output_directory.strip():
             raise ValueError("Measurement name and output directory are required")
         if Path(self.output_directory).is_absolute():

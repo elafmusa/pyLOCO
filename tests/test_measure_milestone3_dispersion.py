@@ -9,6 +9,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 import pytest
+from matplotlib.backend_bases import MouseEvent
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,9 +19,10 @@ from pyLOCO.control_system import AbstractInterfaceAdapter, AdapterCapability, M
 from pyLOCO.control_system.backends import BackendSession, InterfaceRegistry
 from pyLOCO.data_schema import MeasurementSession, SessionFile, load_session, save_session, validate_measurement_file, write_bpm_noise
 from pyLOCO.gui.backend import _load_measurements
-from pyLOCO.measure.acquisition import DispersionResult, DispersionStateAcquirer
+from pyLOCO.measure.acquisition import BpmDevice, DispersionResult, DispersionStateAcquirer
 from pyLOCO.measure.app import build_application
 from pyLOCO.measure.main_window import MeasureMainWindow, build_mock_adapter, default_mock_devices
+from pyLOCO.measure.automatic import AutomaticDispersionAcquirer
 from pyLOCO.measure.dispersion import physical_dispersion, relative_momentum_deviation
 from pyLOCO.measure.project import load_measure_project, save_measure_project
 
@@ -97,6 +99,7 @@ def test_dispersion_save_schema_session_and_importer_compatibility(app,tmp_path)
         assert handle.attrs["slip_factor_eta"]==pytest.approx(1e-4-1e-8)
         assert handle.attrs["rf_restoration_difference_hz"]==0
         assert handle["diagnostics/physical_dispersion_x_m"].shape==(4,)
+        assert handle["diagnostics/state_first_sample_minus_later_mean_x_m"].shape==(3,4)
         assert handle["raw/mean_orbits_x_m"].shape==(3,4)
         assert [x.decode() if isinstance(x,bytes) else x for x in handle["raw/state_labels"][:]]==["reference_before","negative","positive"]
         assert set(handle["raw/states"])=={"reference_before","negative","positive"}
@@ -133,7 +136,7 @@ def test_dispersion_gui_is_manual_read_only_and_context_sensitive(app):
     assert not window.rf_control_mode.model().item(1).isEnabled(); assert "never write RF" in window.rf_safety.text()
     assert not window.start_button.isEnabled(); window.nominal_rf.setText("500000000"); window.refresh_plan(); assert window.start_button.isEnabled()
     assert window.plan_values["measurement"].text()=="Dispersion"; assert window.plan_values["rf_states"].text()=="reference, positive, negative"
-    assert "STEP 1 OF 4" in window.step_instruction.text(); assert "Actual RF: not available" in window.step_instruction.text()
+    assert "STEP 1 OF 4" in window.step_instruction.text(); assert "not independently verified" in window.step_instruction.text()
     window.measurement_type.setCurrentIndex(window.measurement_type.findData("bpm_noise")); assert window.dispersion_config_group.isHidden(); assert window.start_button.text()=="Start BPM-noise measurement"
     assert all(widget.isHidden() for widget in window.dispersion_plan_widgets)
     assert window.rf_diagnostics.isHidden() and window.restoration_label.isHidden()
@@ -155,7 +158,7 @@ def test_connected_pysc_dispersion_presents_automatic_total_200_hz_scan(app,monk
     window=MeasureMainWindow(); window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("pysc")); window._test_connection()
     window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion")); window.refresh_plan()
     nominal=adapter.get_rf_frequency()
-    assert window.rf_control_mode.currentData()=="automatic" and not window.rf_control_mode.isEnabled()
+    assert window.rf_control_mode.currentData()=="automatic" and window.rf_control_mode.isEnabled()
     assert "pySC Server RF readback" in window.nominal_rf_source.text()
     assert "READ ONLY" not in window.rf_safety.text() and "restored" in window.rf_safety.text()
     assert window.rf_step.text()=="200 Hz"
@@ -164,6 +167,8 @@ def test_connected_pysc_dispersion_presents_automatic_total_200_hz_scan(app,monk
     assert window.plan_values["negative_rf"].text()==f"{nominal-100:.3f} Hz"
     assert window.plan_values["positive_rf"].text()==f"{nominal+100:.3f} Hz"
     assert "Automatic backend RF with restoration protection"==window.plan_values["rf_mode"].text()
+    assert "RF WRITES AUTHORIZED" in window.start_block_reason.text()
+    assert "BPM orbit acquisition is read only" in window.start_block_reason.text()
     window.close()
 
 
@@ -191,7 +196,8 @@ def test_dispersion_results_expose_physical_raw_rf_state_and_shift_views(app):
     assert "mm" in window.summary_x.text() and "RF orbit difference" in window.summary_x.text()
     assert "mean[x(f−)] − mean[x(f+)]" in window.rf_response_formula.text()
     assert "Stored in metres; displayed in mm" in window.rf_response_note.text()
-    assert "Mean" in window.rf_response_stats.text() and "RMS" in window.physical_stats.text()
+    assert window.rf_response_stats.rowCount()==2 and "Mean [mm]"==window.rf_response_stats.horizontalHeaderItem(1).text()
+    assert window.physical_stats.rowCount()==2 and "RMS [mm]"==window.physical_stats.horizontalHeaderItem(2).text()
     assert not window.calculation_details_group.isChecked() and window.calculation_details_body.isHidden()
     details=window.calculation_details_body.text()
     assert "Momentum compaction αc:" in details and "Relativistic correction 1/γ²:" in details
@@ -249,7 +255,6 @@ def test_automatic_dispersion_live_preview_names_each_rf_state(app):
     assert window.reading_status.text()=="Restoring — RF offset 0 Hz"
     window._on_automatic_dispersion_status("verifying_orbit",{"offset_hz":0.0,"rf_hz":500_000_000.0})
     assert window.reading_status.text()=="Verifying — restored reference orbit"
-    assert "RESTORE (not a measurement state)" in window.step_instruction.text()
     window.close()
 
 
@@ -265,19 +270,103 @@ def test_measurement_splitter_can_shrink_either_pane_and_survives_type_switch(ap
 
 
 def test_guided_manual_sequence_completes_only_after_restore_confirmation(app,tmp_path):
-    devices=default_mock_devices(2); window=MeasureMainWindow(devices=devices,adapter=build_mock_adapter(devices,readings=3))
+    devices=default_mock_devices(2); adapter=build_mock_adapter(devices,readings=3); window=MeasureMainWindow(devices=devices,adapter=adapter)
     window.measurement_type.setCurrentIndex(1); window.nominal_rf.setText("500000000"); window.readings.setValue(3); window.delay.setValue(0); window.output_directory.setText(str(tmp_path)); window.measurement_name.setText("guided")
-    for expected_step in (1,2,3):
+    window.verify_restored_orbit.setChecked(False)
+    for expected_step,actual in ((1,500_000_000),(2,500_000_100),(3,499_999_900)):
+        adapter.set_simulated_rf_state(actual); window.manual_actual_rf.setText(str(actual))
         assert f"STEP {expected_step} OF 4" in window.step_instruction.text(); window.start_acquisition()
         deadline=time.monotonic()+3
         while window.thread is not None and time.monotonic()<deadline:
             app.processEvents()
         assert window.thread is None
     assert window.result is None and "STEP 4 OF 4" in window.step_instruction.text()
+    adapter.set_simulated_rf_state(500_000_000); window.manual_actual_rf.setText("500000000")
     window.start_acquisition()
     assert isinstance(window.result,DispersionResult)
-    assert window.result.restoration_status=="confirmed_by_operator"
+    assert window.result.restoration_status=="confirmed_by_operator_unverified"
     assert window.saved_measurement_path.exists()
+    window.close()
+
+
+def test_manual_gui_confirmation_never_calls_any_rf_setter(app,monkeypatch):
+    devices=default_mock_devices(2); adapter=build_mock_adapter(devices,readings=2)
+    calls=[]
+    monkeypatch.setattr(adapter,"set_simulated_rf_state",lambda value:calls.append(value))
+    window=MeasureMainWindow(devices=devices,adapter=adapter)
+    window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion"))
+    window.nominal_rf.setText("500000000"); window.manual_actual_rf.setText("500000000")
+    launched=[]
+    monkeypatch.setattr(window,"_launch_manual_dispersion_state",lambda *args:launched.append(args))
+    window._start_dispersion_step()
+    assert launched and launched[0][0]=="reference"
+    assert calls==[]
+    window.close()
+
+
+def test_automatic_dispersion_still_writes_bipolar_states_and_restores_original():
+    class Interface:
+        def __init__(self):self.rf=500_000_000.0; self.writes=[]
+        def get_orbit(self):return np.zeros(2),np.zeros(2)
+        def get(self,name):return 0.0
+        def set(self,name,value):pass
+        def get_rf_main_frequency(self):return self.rf
+        def set_rf_main_frequency(self,value):self.rf=float(value); self.writes.append(self.rf)
+    interface=Interface(); names=("BPM-1","BPM-2")
+    adapter=AbstractInterfaceAdapter(interface,names,(),())
+    devices=tuple(BpmDevice(**item) for item in adapter.list_devices("bpm"))
+    result=AutomaticDispersionAcquirer(adapter,devices).acquire(100.0,2,0,direction="bipolar",verify_restored_orbit=False,sleeper=lambda _:None)
+    assert interface.writes==[500_000_000.0,500_000_100.0,499_999_900.0,500_000_000.0]
+    assert interface.rf==500_000_000.0 and result.restoration_status=="restored"
+
+
+def test_dispersion_hdf5_records_manual_frequency_evidence(tmp_path):
+    _,base=_mock_result(readings=2,step=100.0); devices=base.devices
+    states=tuple(replace(state,actual_rf_hz=state.requested_rf_hz,actual_rf_source="operator_entry_unverified",rf_readback_verified=False) for state in base.states)
+    path=tmp_path/"manual-evidence.h5"
+    from pyLOCO.data_schema import write_dispersion
+    write_dispersion(path,measured_eta_x=base.measured_eta_x,measured_eta_y=base.measured_eta_y,bpm_names=[d.name for d in devices],rf_frequency_hz=[s.requested_rf_hz for s in states],rf_setpoint_hz=[s.requested_rf_hz for s in states],rf_readback_hz=[s.actual_rf_hz for s in states],raw_orbits_x_m=np.stack([s.orbits_x_m for s in states]),raw_orbits_y_m=np.stack([s.orbits_y_m for s in states]),rf_step_hz=base.canonical_rf_step_hz,bidirectional=True,state_labels=[s.label for s in states],operator_confirmed=[True]*3,rf_actual_sources=[s.actual_rf_source for s in states],rf_readback_verified=[False]*3,restoration_status="confirmed_by_operator_unverified",metadata={"rf_control_mode":"manual"})
+    with h5py.File(path,"r") as handle:
+        assert not handle["raw/rf_readback_verified"][:].any()
+        assert [x.decode() if isinstance(x,bytes) else x for x in handle["raw/rf_actual_sources"][:]]==["operator_entry_unverified"]*3
+        assert handle["raw/states/reference"].attrs["rf_actual_source"]=="operator_entry_unverified"
+
+
+def _dispersion_plot_event(canvas,index,value,name):
+    canvas.canvas.draw(); x,y=canvas.figure.axes[0].transData.transform((index,value))
+    return MouseEvent(name,canvas.canvas,x,y,button=1 if name=="button_press_event" else None)
+
+
+def test_live_dispersion_bpm_identity_relative_view_and_persistent_highlight(app):
+    devices=(BpmDevice("srdiag/beam-position/c04-01","x0","y0"),BpmDevice("srdiag/beam-position/c04-02","x1","y1"))
+    window=MeasureMainWindow(devices=devices); window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion"))
+    reference=np.array([1e-6,2e-6]); reference_y=np.array([-1e-6,-2e-6]); window._live_dispersion_reference=(reference,reference_y)
+    window.live_dispersion_view.setCurrentIndex(window.live_dispersion_view.findData("relative")); window._update_live_orbit(reference+np.array([3e-6,4e-6]),reference_y+np.array([5e-6,6e-6]),title="Positive RF",dispersion=True)
+    state=window._live_dispersion_plot_state; event=_dispersion_plot_event(window.live_plot,1,4.0,"motion_notify_event"); window._on_live_dispersion_hover(event)
+    assert "srdiag/beam-position/c04-02" in state["annotation"].get_text(); assert "BPM index 1 (zero-based)" in state["annotation"].get_text(); assert "X 4" in state["annotation"].get_text()
+    window._on_live_dispersion_click(_dispersion_plot_event(window.live_plot,1,4.0,"button_press_event")); window._toggle_live_dispersion_pin()
+    assert window._dispersion_selected_bpm_index==1 and window._dispersion_pinned_bpm_indices=={1}; assert len(state["pin_lines"])==1
+    window._update_live_orbit(reference+np.array([7e-6,8e-6]),reference_y,title="Positive RF",dispersion=True)
+    assert window._dispersion_pinned_bpm_indices=={1} and len(window._live_dispersion_plot_state["pin_lines"])==1
+    window.close()
+
+
+def test_completed_dispersion_click_preserves_original_bpm_identity_and_pins(app):
+    _,result=_mock_result(readings=2,step=100.0); window=MeasureMainWindow(devices=result.devices); window.result=result; window._show_dispersion_result(result)
+    state=window._dispersion_plot_state["raw_x"]; assert sum(line.get_linestyle()=="-" for line in state["axis"].lines)==1
+    value=state["value_by_index"][2]; window._on_dispersion_plot_click("raw_x",_dispersion_plot_event(window.raw_x_plot,2,value,"button_press_event")); window._toggle_live_dispersion_pin()
+    assert window._dispersion_selected_bpm_index==2; assert result.devices[2].name in window.dispersion_selected_details.text(); assert 2 in window._dispersion_pinned_bpm_indices; assert len(state["pin_lines"])==1
+    window.dispersion_connect_points.setChecked(False); state=window._dispersion_plot_state["raw_x"]; assert sum(line.get_linestyle()=="-" for line in state["axis"].lines)==0; assert 2 in window._dispersion_pinned_bpm_indices and len(state["pin_lines"])==1
+    window._toggle_live_dispersion_pin(); assert window._dispersion_selected_bpm_index is None and not window._dispersion_pinned_bpm_indices; assert state["highlight"].get_offsets().shape==(0,2)
+    window.close()
+
+
+def test_every_completed_dispersion_plot_identifies_original_bpm(app):
+    _,result=_mock_result(readings=2,step=100.0); window=MeasureMainWindow(devices=result.devices); window.result=result; window._show_dispersion_result(result)
+    for key,canvas in (("raw_x",window.raw_x_plot),("raw_y",window.raw_y_plot),("states_x",window.mean_x_plot),("states_y",window.mean_y_plot),("shift_x",window.rf_shift_x_plot),("shift_y",window.rf_shift_y_plot)):
+        state=window._dispersion_plot_state[key]; values=state.get("active_values",state.get("value_by_index")); event=_dispersion_plot_event(canvas,1,values[1],"motion_notify_event"); window._on_dispersion_plot_hover(key,event); text=state["annotation"].get_text(); assert result.devices[1].name in text and "BPM index 1 (zero-based)" in text and state["unit"] in text
+    window._on_dispersion_plot_click("shift_x",_dispersion_plot_event(window.rf_shift_x_plot,1,window._dispersion_plot_state["shift_x"]["active_values"][1],"button_press_event")); assert result.devices[1].name in window.dispersion_selected_details.text()
+    window._clear_dispersion_selection(); assert window._dispersion_selected_bpm_index is None
     window.close()
 
 

@@ -18,6 +18,8 @@ from pyLOCO.data_schema import (
     save_session,
     validate_measurement_file,
     write_bpm_noise,
+    write_bpm_noise_review_annotations,
+    read_bpm_noise_review_annotations,
     write_dispersion,
     write_orm,
 )
@@ -31,6 +33,31 @@ def test_mock_adapter_is_deterministic_and_read_only_by_default():
     assert adapter.read("A").timestamp == 10.5
     with pytest.raises(PermissionError, match="write"):
         adapter.write("A", 4.0)
+
+
+def test_bpm_review_annotations_preserve_canonical_identity_order_and_fit_inputs(tmp_path):
+    path=tmp_path/"review.h5"; names=["BPM-Z","BPM-A","BPM-M"]
+    raw_x=np.asarray([[0.,1.,2.],[2.,5.,8.]])*1e-9; raw_y=raw_x*2
+    noise_x=np.std(raw_x,axis=0); noise_y=np.std(raw_y,axis=0)
+    write_bpm_noise(path,noise_x_m=noise_x,noise_y_m=noise_y,bpm_names=names,raw_orbits_x_m=raw_x,raw_orbits_y_m=raw_y)
+    write_bpm_noise_review_annotations(path,manual_bad_bpm_indices=[2],threshold_flagged_bpm_indices=[0,2],pinned_bpm_indices=[1,2],review_notes={2:"Check pickup cable"},review_statuses={1:"Good",2:"Bad"},horizontal_threshold_nm=1.5)
+    with h5py.File(path,"r") as handle:
+        stored_names=[value.decode() if isinstance(value,bytes) else str(value) for value in handle["names/bpms"][:]]
+        assert stored_names==names
+        np.testing.assert_array_equal(handle["raw/orbits_x_m"][:],raw_x)
+        np.testing.assert_array_equal(handle["Noise_BPMx"][:],noise_x)
+        np.testing.assert_array_equal(handle["review/manual_bad_bpm_indices"][:],[2])
+        np.testing.assert_array_equal(handle["review/pinned_bpm_indices"][:],[1,2])
+        assert handle["review/note_text"][0].decode()=="Check pickup cable"
+        assert handle["review"].attrs["affects_fitting"] in (False,np.bool_(False))
+    orm=tmp_path/"orm.h5"
+    with h5py.File(orm,"w") as handle:handle["response_matrix"]=np.zeros((6,1))
+    loaded=_load_measurements({"orm":str(orm),"bpm_noise":str(path)})
+    np.testing.assert_array_equal(loaded["noise_x"],noise_x)
+    np.testing.assert_array_equal(loaded["noise_y"],noise_y)
+    review=read_bpm_noise_review_annotations(path)
+    assert review["review_statuses"]=={1:"Good",2:"Bad"}
+    assert review["review_notes"]=={2:"Check pickup cable"}
 
 
 def test_mock_adapter_simulated_write_is_explicit_and_in_memory():
@@ -102,6 +129,40 @@ def test_measurement_schema_preserves_raw_states_and_importer_compatibility(tmp_
     assert loaded["orm"].shape == (6, 4)
     np.testing.assert_allclose(loaded["eta_y"], [0.01, 0.02, 0.03])
     np.testing.assert_allclose(loaded["noise_x"], [1e-7, 2e-7, 3e-7])
+
+
+@pytest.mark.parametrize(("ddof", "statistic"), [(0, "population_standard_deviation"), (1, "sample_standard_deviation")])
+def test_bpm_noise_validator_checks_recorded_convention_and_keeps_legacy_10(tmp_path, ddof, statistic):
+    path = tmp_path / f"strict-noise-{ddof}.h5"
+    raw_x = np.array([[0.0, 1e-9], [2e-9, 3e-9], [4e-9, 8e-9]])
+    raw_y = raw_x * 2
+    write_bpm_noise(
+        path,
+        noise_x_m=np.std(raw_x, axis=0, ddof=ddof),
+        noise_y_m=np.std(raw_y, axis=0, ddof=ddof),
+        bpm_names=["B1", "B2"],
+        raw_orbits_x_m=raw_x,
+        raw_orbits_y_m=raw_y,
+        ddof=ddof,
+        metadata={"selected_bpm_names": ["B1", "B2"]},
+    )
+    validate_measurement_file(path)
+    with h5py.File(path, "r") as handle:
+        assert handle.attrs["noise_statistic"] == statistic
+        assert handle.attrs["noise_standard_deviation_ddof"] == ddof
+    with h5py.File(path, "r+") as handle:
+        handle["Noise_BPMx"][0] *= 2
+    with pytest.raises(ValueError, match=f"standard deviation \\(ddof={ddof}\\)"):
+        validate_measurement_file(path)
+
+    legacy = tmp_path / "legacy-noise.h5"
+    write_bpm_noise(
+        legacy,
+        noise_x_m=[1e-7, 2e-7], noise_y_m=[3e-7, 4e-7],
+        bpm_names=["B1", "B2"],
+        raw_orbits_x_m=np.zeros((2, 2)), raw_orbits_y_m=np.zeros((2, 2)),
+    )
+    assert validate_measurement_file(legacy)["schema_version"] == "1.0"
 
 
 def test_measurement_session_is_portable_and_populates_three_gui_roles(tmp_path):

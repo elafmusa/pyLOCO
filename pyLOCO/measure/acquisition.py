@@ -95,14 +95,21 @@ class BpmNoiseResult:
     orbits_x_m: np.ndarray
     orbits_y_m: np.ndarray
     elapsed_seconds: float
+    ddof: int = 0
+
+    def __post_init__(self) -> None:
+        if self.ddof not in (0, 1):
+            raise ValueError("BPM-noise ddof must be 0 or 1")
 
     @property
     def noise_x_m(self) -> np.ndarray:
-        return np.std(self.orbits_x_m, axis=0, ddof=0)
+        """Per-BPM standard deviation across orbit readings [m]."""
+        return np.std(self.orbits_x_m, axis=0, ddof=self.ddof)
 
     @property
     def noise_y_m(self) -> np.ndarray:
-        return np.std(self.orbits_y_m, axis=0, ddof=0)
+        """Per-BPM standard deviation across orbit readings [m]."""
+        return np.std(self.orbits_y_m, axis=0, ddof=self.ddof)
 
     @property
     def mean_x_m(self) -> np.ndarray:
@@ -123,6 +130,8 @@ class DispersionStateResult:
     orbits_y_m: np.ndarray
     timestamps_s: np.ndarray
     bpm_names: tuple[str, ...] = ()
+    actual_rf_source: str = "backend_readback"
+    rf_readback_verified: bool = True
 
     @property
     def mean_x_m(self) -> np.ndarray:
@@ -202,10 +211,13 @@ class DispersionResult:
 class BpmNoiseAcquirer:
     """Acquire orbit samples using only the read-only adapter contract."""
 
-    def __init__(self, adapter: ReadOnlyAdapter, devices: Sequence[BpmDevice]) -> None:
+    def __init__(self, adapter: ReadOnlyAdapter, devices: Sequence[BpmDevice], *, ddof: int = 0) -> None:
         adapter.require(AdapterCapability.READ)
+        if ddof not in (0, 1):
+            raise ValueError("BPM-noise ddof must be 0 or 1")
         self.adapter = adapter
         self.devices = tuple(devices)
+        self.ddof = ddof
 
     def acquire(
         self,
@@ -243,7 +255,7 @@ class BpmNoiseAcquirer:
                 progress(reading + 1, readings, elapsed, x[reading].copy(), y[reading].copy())
             if reading + 1 < readings:
                 sleeper(delay_seconds)
-        return BpmNoiseResult(self.devices, x, y, clock() - start)
+        return BpmNoiseResult(self.devices, x, y, clock() - start, self.ddof)
 
 
 class DispersionStateAcquirer:
@@ -263,6 +275,8 @@ class DispersionStateAcquirer:
         *,
         actual_rf_hz: float = float("nan"),
         operator_confirmed: bool = True,
+        actual_rf_source: str = "backend_readback",
+        rf_readback_verified: bool = True,
         cancel_event: Event | None = None,
         progress: Callable[[int, int, float, np.ndarray, np.ndarray], None] | None = None,
         sleeper: Callable[[float], None] = sleep,
@@ -279,6 +293,7 @@ class DispersionStateAcquirer:
             label, float(requested_rf_hz), float(actual_rf_hz), bool(operator_confirmed),
             result.orbits_x_m, result.orbits_y_m, timestamps + start,
             tuple(device.name for device in self.devices),
+            str(actual_rf_source), bool(rf_readback_verified),
         )
 
 
@@ -339,6 +354,12 @@ class ORMAcquirer:
                         if progress: progress({"event":"intermediate_restored","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"K0 restored and verified","readback":arrays["intermediate"][index],"original":original,"elapsed":clock()-start})
                         raw_ref_intermediate[index],_=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":"restored reference before −kick"})
                 effective=arrays["act_a"][index]-arrays["act_b"][index]; arrays["effective"][index]=effective
+                expected_sign=-1.0 if direction=="negative" else 1.0
+                if not np.isfinite(effective) or abs(effective)<=1e-18 or np.sign(effective)!=expected_sign:
+                    raise RuntimeError(
+                        f"Invalid corrector readback separation for {corrector.name}: "
+                        f"requested {dkick:+.9g} rad in {direction} mode, measured {effective:+.9g} rad"
+                    )
                 column=np.mean(raw_a[index],axis=0)-np.mean(raw_b[index],axis=0)
                 matrix[:,index]=column/effective if scaled else column
                 if progress: progress({"event":"column","corrector":index+1,"correctors":ncor,"column":column,"matrix":matrix.copy(),"elapsed":clock()-start})

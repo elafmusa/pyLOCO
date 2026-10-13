@@ -121,6 +121,8 @@ def test_schema_session_and_main_importer(app,tmp_path):
         assert f["raw/reference_final_m"].shape==f["raw/orbit_plus_m"].shape
         metadata=json.loads(f["metadata/json"][()].decode() if isinstance(f["metadata/json"][()],bytes) else f["metadata/json"][()])
         assert metadata["machine_identity"]=="Mock / offline"
+        assert metadata["readings_per_state"]==3 and metadata["settling_delay_seconds"]==1.0
+        assert "diagnostics/state_a_first_sample_minus_later_mean_m" in f
     window._show_result(result); transaction=window.rf_diagnostics.text()
     assert "Original K0:" in transaction and "requested K+/K−:" in transaction
     assert "Readback K+:" in transaction and "Final restore K− → K0:" in transaction
@@ -128,9 +130,19 @@ def test_schema_session_and_main_importer(app,tmp_path):
     assert window.orm_restoration_status.text()=="✓ ALL CORRECTORS RESTORED"
     assert "Intermediate restore K+ → K0" in transaction
     assert "Final orbit return:" in transaction and "diagnostic-only" in transaction
-    assert "Matrix shape: 8 × 5" in window.orm_measurement_summary.text()
+    assert "Matrix: 8 × 5" in window.orm_measurement_summary.text()
     assert len(window.x_plot.figure.axes[0].lines)>=2  # X/Y and H/V boundaries
     assert window.orm_view_mode.currentData()=="2d" and window.x_plot.figure.axes[0].images[0].get_cmap().name=="viridis"
+    assert window.x_plot.figure.axes[0].images[0].origin=="upper"
+    state=window._orm_plot_state[window.x_plot]
+    event=type("Event",(),{"inaxes":state["axis"],"xdata":4.0,"ydata":7.0})()
+    window._on_orm_plot_hover(window.x_plot,event)
+    assert h[0].name not in window.orm_element_info.text()
+    assert v[1].name in window.orm_element_info.text() and bpms[3].name in window.orm_element_info.text()
+    window._on_orm_plot_click(window.x_plot,event); assert v[1].name in window.orm_element_info.text() and "V→Y" in window.orm_element_info.text()
+    column_state=window._orm_column_state; column_event=type("Event",(),{"inaxes":column_state["axis"],"xdata":2.0,"ydata":column_state["series"][0][2][2]})()
+    window._on_orm_column_hover(column_event); assert bpms[2].name in window.orm_element_info.text() and "plane X" in window.orm_element_info.text()
+    window._on_orm_column_click(column_event); assert np.asarray(column_state["selected"].get_offsets()).shape==(1,2)
     window.orm_view_mode.setCurrentIndex(window.orm_view_mode.findData("3d")); app.processEvents(); assert window.x_plot.figure.axes[0].name=="3d"
     window._set_completed_result_view(True)
     assert window.live_plot.isHidden() and window.plan_group.isHidden()
@@ -146,6 +158,9 @@ def test_schema_session_and_main_importer(app,tmp_path):
 
 def test_orm_gui_context_preview_kicks_and_project_roundtrip(app,tmp_path):
     window=MeasureMainWindow(); window.measurement_type.setCurrentIndex(2); app.processEvents()
+    assert window.readings.value()==10 and window.delay.value()==pytest.approx(.1) and window.settling_delay.value()==pytest.approx(1.0)
+    assert window.orm_output_format.text()=="Orbit difference [m] — required for pyLOCO FIT"
+    assert not window.orm_normalized_analysis.isChecked()
     assert not window.orm_config_group.isHidden() and not window.orm_corrector_group.isHidden(); assert window.start_button.text()=="Start ORM measurement"; assert window.kick_preview.rowCount()==12
     assert window.results_tabs.tabText(0)=="Full ORM" and window.results_tabs.currentIndex()==0
     assert [window.results_tabs.tabText(index) for index in range(5)]==["Full ORM","Direct H→X","Direct V→Y","Coupling V→X","Coupling H→Y"]
@@ -153,7 +168,58 @@ def test_orm_gui_context_preview_kicks_and_project_roundtrip(app,tmp_path):
     assert window.results_tabs.tabToolTip(6)=="Measured − Model"
     window.corrector_selection_widgets["hcor"]["exclusion"].setText("1"); window._refresh_corrector_preview("hcor"); assert len(window.selected_hcorrectors)==5
     kicks=tmp_path/"kicks.npz"; np.savez(kicks,horizontal=np.arange(1,6)*10e-6,vertical=np.arange(1,7)*20e-6); window.orm_kick_mode.setCurrentIndex(1); window.orm_kick_file.setText(str(kicks)); window._update_kick_preview(); assert window.kick_preview.rowCount()==11
-    window.orm_direction.setCurrentIndex(2); window.orm_scaled.setChecked(True); project=window._collect_project(); path=tmp_path/"orm.pyloco-measure.json"; save_measure_project(path,project); loaded=load_measure_project(path); assert loaded.orm_direction=="negative" and loaded.orm_scaled and loaded.excluded_hcor_positions=="1"
+    window.orm_direction.setCurrentIndex(2); window.orm_normalized_analysis.setChecked(True); project=window._collect_project(); path=tmp_path/"orm.pyloco-measure.json"; save_measure_project(path,project); loaded=load_measure_project(path); assert loaded.orm_direction=="negative" and not loaded.orm_scaled and loaded.metadata["orm_normalized_analysis"] and loaded.excluded_hcor_positions=="1"
+    window.close()
+
+
+@pytest.mark.parametrize("size",[(1200,800),(1600,1000)])
+@pytest.mark.parametrize("theme",["light","dark"])
+def test_orm_heatmap_remains_readable_in_both_themes(app,theme,size):
+    bpms,h,v,_,adapter=setup(); result=ORMAcquirer(adapter,bpms,h,v).acquire([80e-6,100e-6,130e-6],[90e-6,120e-6],readings=2,delay_seconds=0)
+    window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v); window.resize(*size); window.apply_theme(theme); window.measurement_type.setCurrentIndex(2); window._show_result(result); window.result=result; window._update_diagnostics_visibility(); window.tabs.setCurrentIndex(2); window.show(); app.processEvents()
+    axis=window.x_plot.figure.axes[0]; image=axis.images[0]
+    assert image.origin=="upper" and image.get_cmap().name=="viridis"
+    assert axis.get_xlabel()=="Corrector index" and axis.get_ylabel()=="BPM index"
+    assert axis.get_position().width>.55
+    assert window.x_plot.figure.axes[1].get_ylabel()=="Response [m]"
+    assert window.orm_element_info.isVisible()
+    assert window.results_tabs.height()==340
+    window.orm_palette.setCurrentIndex(window.orm_palette.findData("red_blue")); app.processEvents(); image=window.x_plot.figure.axes[0].images[0]; assert image.get_cmap().name=="RdBu_r" and image.norm.vmin==pytest.approx(-image.norm.vmax)
+    window.close()
+
+def test_normalized_response_is_display_only_and_fit_matrix_stays_in_metres(app,tmp_path):
+    bpms,h,v,_,adapter=setup(); result=ORMAcquirer(adapter,bpms,h,v).acquire([80e-6,100e-6,130e-6],[90e-6,120e-6],scaled=False,readings=2,delay_seconds=0)
+    original=result.response_matrix.copy(); window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v)
+    window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm")); window.orm_normalized_analysis.setChecked(True); window._show_result(result)
+    np.testing.assert_allclose(window._displayed_orm_matrix,original/result.effective_kicks_rad[np.newaxis,:])
+    np.testing.assert_allclose(result.response_matrix,original); assert window._displayed_orm_unit=="m/rad"
+    window.output_directory.setText(str(tmp_path)); window.measurement_name.setText("fit-metres"); window._save_result(result)
+    with h5py.File(window.saved_measurement_path,"r") as handle:
+        assert handle.attrs["response_matrix_unit"]=="m"
+        np.testing.assert_allclose(handle["response_matrix"][:],original)
+    np.testing.assert_allclose(_load_measurements({"orm":str(window.saved_measurement_path)})["orm"],original)
+    window.close()
+
+def test_all_orm_views_keep_titles_and_exact_identity_mapping_after_interaction(app):
+    bpms,h,v,_,adapter=setup(); result=ORMAcquirer(adapter,bpms,h,v).acquire([80e-6,100e-6,130e-6],[90e-6,120e-6],readings=2,delay_seconds=0)
+    window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v); window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm")); window._show_result(result); window.show(); app.processEvents()
+    cases=((window.x_plot,7,4,"V→Y",bpms[3].name,v[1].name),(window.y_plot,2,1,"H→X",bpms[2].name,h[1].name),(window.mean_x_plot,1,0,"V→X",bpms[1].name,v[0].name),(window.mean_y_plot,3,2,"H→Y",bpms[3].name,h[2].name),(window.orm_vv_plot,0,1,"V→Y",bpms[0].name,v[1].name))
+    callback_counts={canvas:(len(canvas.canvas.callbacks.callbacks.get("motion_notify_event",{})),len(canvas.canvas.callbacks.callbacks.get("button_press_event",{}))) for canvas,*_ in cases}
+    for canvas,row,column,block,bpm_name,corrector_name in cases:
+        state=window._orm_plot_state[canvas]; title=state["axis"].get_title(); event=type("Event",(),{"inaxes":state["axis"],"xdata":float(column),"ydata":float(row)})()
+        window._on_orm_plot_hover(canvas,event); text=window.orm_element_info.text(); assert bpm_name in text and corrector_name in text and block in text and "zero-based" in text
+        window._on_orm_plot_click(canvas,event); canvas.canvas.draw(); assert state["axis"].get_title()==title and state["axis"].get_xlabel()=="Corrector index" and state["axis"].get_ylabel()=="BPM index"
+    window.resize(1600,1000); window.results_tabs.setCurrentIndex(4); window.results_tabs.setCurrentIndex(0); app.processEvents()
+    for canvas,*_ in cases:
+        assert callback_counts[canvas]==(len(canvas.canvas.callbacks.callbacks.get("motion_notify_event",{})),len(canvas.canvas.callbacks.callbacks.get("button_press_event",{})))
+        assert window._orm_plot_state[canvas]["axis"].get_title()
+    window.close()
+
+def test_evolving_orm_does_not_invent_identity_for_unacquired_cells(app):
+    bpms,h,v,_,adapter=setup(); window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v); window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm"))
+    matrix=np.full((2*len(bpms),len(h)+len(v)),np.nan); matrix[:,0]=np.arange(2*len(bpms))*1e-6; window._show_orm_progress(matrix,matrix[:,0]); state=window._orm_plot_state[window.x_plot]
+    valid=type("Event",(),{"inaxes":state["axis"],"xdata":0.0,"ydata":1.0})(); window._on_orm_plot_hover(window.x_plot,valid); assert bpms[1].name in window.orm_element_info.text() and h[0].name in window.orm_element_info.text()
+    missing=type("Event",(),{"inaxes":state["axis"],"xdata":1.0,"ydata":1.0})(); window._on_orm_plot_hover(window.x_plot,missing); assert "not been acquired" in window.orm_element_info.text() and bpms[1].name not in window.orm_element_info.text()
     window.close()
 
 def test_measurement_specific_device_selections_and_project_roundtrip(app,tmp_path):

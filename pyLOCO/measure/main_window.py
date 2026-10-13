@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import csv
 from html import escape
 from datetime import datetime
 from pathlib import Path
@@ -11,8 +12,8 @@ from time import monotonic, sleep
 from typing import Sequence
 
 import numpy as np
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QSize, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -26,7 +27,8 @@ from pyLOCO.control_system import (AdapterCapability, InterfaceRegistry, MockAda
                                    available_pysc_profiles)
 from pyLOCO.data_schema import (
     MeasurementSession, SessionFile, load_session, save_session,
-    validate_measurement_file, write_bpm_noise, write_dispersion, write_orm,
+    read_bpm_noise_review_annotations, validate_measurement_file, write_bpm_noise, write_bpm_noise_review_annotations,
+    write_dispersion, write_orm,
 )
 from pyLOCO.gui.branding import DISPLAY_ASSET, application_icon, set_asset
 from pyLOCO.gui.project_info import (
@@ -49,33 +51,68 @@ from .dispersion import MOMENTUM_RELATION, physical_dispersion, relative_momentu
 from pyLOCO.reference_model import comparison_metrics, load_reference_model, model_dispersion, model_orm, reference_model_for_pysc, store_reference_model_arrays
 
 
-TEAL_QSS = """
+MEASURE_COMMON_QSS = """
 QToolBar#mainToolbar { spacing: 5px; padding: 6px 8px; }
 QToolBar#mainToolbar QPushButton { font-size: 10pt; min-height: 27px; padding: 4px 8px; }
-QLabel#measureBrand { color: #12BFC4; font-size: 25pt; font-weight: 850; padding: 1px 9px 1px 2px; }
-QLabel#connectionStatus { background: #123B42; color: #67E8E8; border: 1px solid #20BFC4;
- border-radius: 10px; padding: 7px 14px; font-size: 12pt; font-weight: 900; }
-QLabel#machineIdentity { color:#CFFAFE; padding:3px 9px; font-size:9.5pt; font-weight:750; }
-QLabel#connectionState { border-radius: 9px; padding: 6px 11px; font-size: 10pt; font-weight: 850; }
-QLabel#connectionState[connected="true"] { background:#123D2A; color:#7BE3A7; border:1px solid #38B875; }
-QLabel#connectionState[connected="false"] { background:#4A2424; color:#FFAAAA; border:1px solid #D96666; }
-QLabel#savedPath { background:#102F35; color:#A8F4F1; border:1px solid #20BFC4; border-radius:7px; padding:10px; font-weight:750; }
-QFrame#measureLogoContainer { background: #FFFFFF; border: 1px solid #D7DCE6; border-radius: 8px; }
+QLabel#measureBrand { font-size: 25pt; font-weight: 850; padding: 1px 9px 1px 2px; }
+QLabel#connectionStatus { border-radius: 8px; padding: 4px 9px; font-size: 9.5pt; font-weight: 850; }
+QLabel#connectionState { border-radius: 8px; padding: 4px 9px; font-size: 9.5pt; font-weight: 850; }
+QLabel#savedPath { border-radius:7px; padding:10px; font-weight:750; }
+QFrame#measureLogoContainer { border-radius: 8px; }
 QLabel#measureLogo { border: 0; background: transparent; }
-QLabel#measurementHelpTitle { color: #12BFC4; font-size: 12pt; font-weight: 750; }
+QLabel#measurementHelpTitle { font-size: 12pt; font-weight: 750; }
 QLabel#measurementConvention { font-family: monospace; font-weight: 650; }
 QLabel#planValue { font-weight: 650; }
-QLabel#runState { font-size: 14pt; font-weight: 750; color: #12BFC4; }
+QLabel#runState { font-size: 14pt; font-weight: 750; }
 QLabel#runMetric { font-size: 10.5pt; }
-QLabel#summaryCard { background:rgba(32,38,63,0.35); border:1px solid rgba(92,105,145,0.75); border-radius:8px; padding:14px; font-size:11pt; }
-QLabel#statLine { background:rgba(45,53,86,0.28); border-radius:5px; padding:8px 10px; font-size:10.5pt; }
-QLabel#referenceModelCard { background:rgba(32,38,63,0.35); border:1px solid rgba(92,105,145,0.75); border-radius:8px; padding:14px; font-size:10.5pt; }
-QPushButton#measurePrimary { background: #0F9FA6; border-color: #31D5D8; color: white; }
-QPushButton#measurePrimary:hover { background: #0C858B; }
-QTabBar::tab:selected { border-color: #18B8BE; }
-QGroupBox::title { color: #13A9AF; }
+QLabel#summaryCard { border-radius:8px; padding:14px; font-size:11pt; }
+QLabel#statLine { border-radius:5px; padding:8px 10px; font-size:10.5pt; }
+QFrame#persistentStatus { border-radius:8px; }
+QLabel#statusCaption { font-size:8.5pt; font-weight:700; }
+QLabel#statusValue { font-size:9.5pt; font-weight:700; }
+QTableWidget#statisticsTable { border-radius:6px; }
+QTableWidget#statisticsTable::item { padding:5px 9px; }
+QLabel#referenceModelCard { border-radius:8px; padding:14px; font-size:10.5pt; }
+QLabel#warningText { font-weight:700; }
+QLabel#infoText { border-radius:6px; padding:8px 10px; }
 QProgressBar { min-height: 34px; }
-QProgressBar::chunk { background: #12BFC4; }
+"""
+
+
+def measure_stylesheet(theme_key: str) -> str:
+    """Measure-specific styling derived from the shared theme and accent tokens."""
+    theme = theme_for_key(theme_key)
+    accent = accent_for_key("teal")
+    primary, hover, soft, pale, title, tint, deep, pressed = accent[1:]
+    dark = theme.key == "dark"
+    surface = "#34374E" if dark else "#F7F8FB"
+    subtle = "#2F3247" if dark else "#EEF1F6"
+    border = "#59607A" if dark else "#CBD1DF"
+    secondary = "#B8C0D2" if dark else "#4D586D"
+    success_bg, success_text, success_border = (("#123D2A", "#7BE3A7", "#38B875") if dark else ("#E8F7EF", "#11643B", "#55A878"))
+    danger_bg, danger_text, danger_border = (("#4A2424", "#FFAAAA", "#D96666") if dark else ("#FDECEC", "#9F2929", "#D98686"))
+    warning = "#F8C66B" if dark else "#8A4B08"
+    text_accent = soft if dark else primary
+    group_title = soft if dark else title
+    return MEASURE_COMMON_QSS + f"""
+QLabel#measureBrand, QLabel#measurementHelpTitle, QLabel#runState {{ color: {text_accent}; }}
+QLabel#connectionStatus {{ background:{deep}; color:{pale}; border:1px solid {primary}; }}
+QLabel#connectionState[connected="true"] {{ background:{success_bg}; color:{success_text}; border:1px solid {success_border}; }}
+QLabel#connectionState[connected="false"] {{ background:{danger_bg}; color:{danger_text}; border:1px solid {danger_border}; }}
+QLabel#savedPath {{ background:{tint}; color:{deep}; border:1px solid {primary}; }}
+QFrame#measureLogoContainer {{ background:#FFFFFF; border:1px solid {border}; }}
+QLabel#summaryCard, QLabel#statLine, QLabel#referenceModelCard {{ background:{subtle}; color:{theme.plot_text}; border:1px solid {border}; }}
+QFrame#persistentStatus {{ background:{surface}; border:1px solid {border}; }}
+QLabel#statusCaption {{ color:{secondary}; }}
+QTableWidget#statisticsTable {{ border:1px solid {border}; gridline-color:{border}; }}
+QPushButton#measurePrimary {{ background:{primary}; border-color:{hover}; color:#FFFFFF; }}
+QPushButton#measurePrimary:hover {{ background:{hover}; }}
+QPushButton#measurePrimary:pressed {{ background:{pressed}; }}
+QTabBar::tab:selected {{ border-color:{primary}; }}
+QGroupBox::title {{ color:{group_title}; }}
+QProgressBar::chunk {{ background:{primary}; }}
+QLabel#warningText {{ color:{warning}; }}
+QLabel#infoText {{ background:{subtle}; color:{secondary}; border:1px solid {border}; }}
 """
 
 
@@ -104,6 +141,57 @@ class ElidedPathLabel(QLabel):
 
     def _refresh(self):
         if self._full_text: super().setText(self.fontMetrics().elidedText(self._full_text,Qt.ElideMiddle,max(40,self.width())))
+
+
+class MeasurementStatisticsTable(QTableWidget):
+    """Compact, theme-neutral presentation for measurement statistics."""
+
+    def __init__(self) -> None:
+        super().__init__(0, 5)
+        self.setObjectName("statisticsTable")
+        self.setHorizontalHeaderLabels(["Plane / quantity", "Mean", "RMS", "Min", "Max"])
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setSelectionMode(QAbstractItemView.NoSelection)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.verticalHeader().setVisible(False)
+        self.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for column in range(1, 5):
+            self.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.setAlternatingRowColors(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.clear_statistics()
+
+    def clear_statistics(self) -> None:
+        self.setRowCount(0)
+        self.setToolTip("Statistics appear after a completed measurement.")
+        self._fit_height_to_contents()
+
+    def _fit_height_to_contents(self) -> None:
+        """Fit all rows without scrollbars, including high-DPI frame rounding."""
+        self.resizeRowsToContents()
+        header_height = self.horizontalHeader().sizeHint().height()
+        rows_height = sum(self.verticalHeader().sectionSize(row) for row in range(self.rowCount()))
+        self.setFixedHeight(header_height + rows_height + 2 * self.frameWidth() + 10)
+
+    def set_statistics(self, rows, unit: str) -> None:
+        self.setHorizontalHeaderLabels([
+            "Plane / quantity", f"Mean [{unit}]", f"RMS [{unit}]", f"Min [{unit}]", f"Max [{unit}]",
+        ])
+        self.setRowCount(len(rows))
+        colors = ("#11B7C1", "#F59E42")
+        for row, (label, values) in enumerate(rows):
+            label_item = QTableWidgetItem(str(label))
+            label_item.setForeground(QColor(colors[row % len(colors)]))
+            font = label_item.font(); font.setBold(True); label_item.setFont(font)
+            self.setItem(row, 0, label_item)
+            for column, key in enumerate(("Mean", "RMS", "Min", "Max"), start=1):
+                item = QTableWidgetItem(f"{float(values[key]):.3f}")
+                item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.setItem(row, column, item)
+        self._fit_height_to_contents()
+        self.setToolTip(f"Measurement statistics in {unit}")
 
 
 class ClickableLogoLabel(QLabel):
@@ -195,8 +283,8 @@ class DispersionAcquisitionWorker(QObject):
     cancelled = Signal(str)
     failed = Signal(str)
 
-    def __init__(self, acquirer, label, requested_rf_hz, readings, delay, settling, cancel_event):
-        super().__init__(); self.acquirer=acquirer; self.label=label; self.requested_rf_hz=requested_rf_hz; self.readings=readings; self.delay=delay; self.settling=settling; self.cancel_event=cancel_event
+    def __init__(self, acquirer, label, requested_rf_hz, actual_rf_hz, actual_rf_source, rf_readback_verified, readings, delay, settling, cancel_event):
+        super().__init__(); self.acquirer=acquirer; self.label=label; self.requested_rf_hz=requested_rf_hz; self.actual_rf_hz=actual_rf_hz; self.actual_rf_source=actual_rf_source; self.rf_readback_verified=rf_readback_verified; self.readings=readings; self.delay=delay; self.settling=settling; self.cancel_event=cancel_event
 
     @Slot()
     def run(self):
@@ -205,6 +293,8 @@ class DispersionAcquisitionWorker(QObject):
                 raise AcquisitionCancelled("Dispersion acquisition was cancelled during RF settling")
             result = self.acquirer.acquire(
                 self.label, self.requested_rf_hz, self.readings, self.delay,
+                actual_rf_hz=self.actual_rf_hz, actual_rf_source=self.actual_rf_source,
+                rf_readback_verified=self.rf_readback_verified,
                 cancel_event=self.cancel_event, progress=lambda *args: self.progress.emit(*args),
             )
         except AcquisitionCancelled as exc: self.cancelled.emit(str(exc))
@@ -264,6 +354,14 @@ class MeasureMainWindow(QMainWindow):
         self.dispersion_states = []
         self.dispersion_step_index = 0
         self.dispersion_started_at: float | None = None
+        self._manual_restoration_pending = False
+        self._manual_nominal_source = "manual_entry_unverified"
+        self._manual_restoration_source = "not_confirmed"
+        self._manual_restoration_verified = False
+        self._live_dispersion_reference = None
+        self._live_dispersion_plot_state = None
+        self._dispersion_selected_bpm_index = None
+        self._dispersion_pinned_bpm_indices = set()
         self.saved_measurement_path: Path | None = None
         self.saved_session_path: Path | None = None
         self.reference_model = None
@@ -274,7 +372,9 @@ class MeasureMainWindow(QMainWindow):
         self._fresh_measurement_session = True
         self.cancel_event = Event(); self.thread: QThread | None = None; self.worker = None
         self.connection_verified = True
-        self._build_ui(); self._measurement_type_changed(); self._update_machine_identity(); self.apply_theme(self.project.theme); self.refresh_preview(); self.refresh_plan()
+        self._build_ui(); self._measurement_type_changed(); self._update_machine_identity()
+        active_theme=QApplication.instance().property("pyLOCOTheme") if QApplication.instance() is not None else None
+        self.apply_theme(str(active_theme or self.project.theme)); self.refresh_preview(); self.refresh_plan()
 
     def _build_ui(self):
         toolbar = QToolBar("Measure toolbar"); toolbar.setObjectName("mainToolbar"); toolbar.setMovable(False); self.addToolBar(toolbar)
@@ -286,14 +386,33 @@ class MeasureMainWindow(QMainWindow):
         for text, handler in (("New", self.new_project), ("Open", self.open_project), ("Save Project", self.save_project), ("Save Project As…", self.save_project_as)):
             button=QPushButton(text); button.clicked.connect(handler); toolbar.addWidget(button)
         spacer=QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(spacer)
-        self.status_badge=QLabel("MOCK • READ ONLY"); self.status_badge.setObjectName("connectionStatus"); toolbar.addWidget(self.status_badge)
-        self.machine_identity_badge=QLabel("Machine: Mock\nProfile: offline"); self.machine_identity_badge.setObjectName("machineIdentity"); toolbar.addWidget(self.machine_identity_badge)
-        self.connection_badge=QLabel("● OFFLINE"); self.connection_badge.setObjectName("connectionState"); self.connection_badge.setProperty("connected",True); toolbar.addWidget(self.connection_badge)
         self.theme_button=QPushButton("☀ Light"); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         logo_container=QFrame(); logo_container.setObjectName("measureLogoContainer"); logo_layout=QHBoxLayout(logo_container); logo_layout.setContentsMargins(4,2,4,2)
         self.logo_button=ClickableLogoLabel(); set_asset(self.logo_button,QSize(107,44),DISPLAY_ASSET,crop_transparency=False); self.logo_button.clicked.connect(self._show_about_dialog); logo_layout.addWidget(self.logo_button); toolbar.addWidget(logo_container)
 
-        root=QWidget(); layout=QVBoxLayout(root); layout.setContentsMargins(20,16,20,20)
+        root=QWidget(); layout=QVBoxLayout(root); layout.setContentsMargins(20,12,20,20); layout.setSpacing(9)
+        status_frame=QFrame(); status_frame.setObjectName("persistentStatus")
+        status_layout=QGridLayout(status_frame); status_layout.setContentsMargins(10,7,10,7); status_layout.setHorizontalSpacing(14); status_layout.setVerticalSpacing(3)
+        self.status_badge=QLabel("MOCK • READ ONLY"); self.status_badge.setObjectName("connectionStatus")
+        self.connection_badge=QLabel("● OFFLINE READY"); self.connection_badge.setObjectName("connectionState"); self.connection_badge.setProperty("connected",True)
+        self.machine_identity_badge=QLabel("Mock / offline"); self.machine_identity_badge.setObjectName("statusValue")
+        self.header_mode=QLabel("Mode · Offline"); self.header_mode.setObjectName("statusValue")
+        self.header_capabilities=QLabel("Available · Read Only"); self.header_capabilities.setObjectName("statusValue")
+        self.header_access=QLabel("Authorized · Read Only"); self.header_access.setObjectName("statusValue")
+        for column,widget in enumerate((self.status_badge,self.header_mode,self.connection_badge,self.header_capabilities,self.header_access)):
+            widget.setWordWrap(False)
+            status_layout.addWidget(widget,0,column)
+            status_layout.setColumnStretch(column,1 if column in (3,4) else 0)
+        machine_caption=QLabel("MACHINE"); machine_caption.setObjectName("statusCaption")
+        config_caption=QLabel("CONFIGURATION"); config_caption.setObjectName("statusCaption")
+        output_caption=QLabel("OUTPUT"); output_caption.setObjectName("statusCaption")
+        self.header_configuration=ElidedPathLabel(); self.header_configuration.setObjectName("statusValue")
+        self.header_output=ElidedPathLabel(); self.header_output.setObjectName("statusValue")
+        status_layout.addWidget(machine_caption,1,0); status_layout.addWidget(self.machine_identity_badge,1,1)
+        status_layout.addWidget(config_caption,1,2); status_layout.addWidget(self.header_configuration,1,3)
+        status_layout.addWidget(output_caption,1,4); status_layout.addWidget(self.header_output,1,5)
+        status_layout.setColumnStretch(1,1); status_layout.setColumnStretch(3,2); status_layout.setColumnStretch(5,2)
+        layout.addWidget(status_frame)
         self.heading=QLabel("Machine setup"); self.heading.setObjectName("pageTitle"); layout.addWidget(self.heading)
         self.subtitle=QLabel("Offline planning with deterministic Mock data — no machine writes."); self.subtitle.setVisible(False)
         self.tabs=QTabWidget(); self.tabs.currentChanged.connect(self._workspace_changed); layout.addWidget(self.tabs,1)
@@ -365,7 +484,58 @@ class MeasureMainWindow(QMainWindow):
         self.connection_badge.setProperty("connected",bool(connected))
         self.connection_verified=bool(connected)
         self.connection_badge.style().unpolish(self.connection_badge); self.connection_badge.style().polish(self.connection_badge)
+        self._update_persistent_header()
         if hasattr(self,"plan_values"):self.refresh_plan()
+
+    def _update_persistent_header(self) -> None:
+        if not hasattr(self, "header_configuration") or not hasattr(self, "adapter_combo"):
+            return
+        key = self.adapter_combo.currentData()
+        descriptor = next((item for item in InterfaceRegistry.DESCRIPTORS if item.key == key), None)
+        mode = descriptor.environment.title() if descriptor is not None else "Live"
+        if key == "pyaml" and hasattr(self, "pyaml_fields"):
+            mode = self.pyaml_fields["mode"].text().strip().title() or "Live"
+        capabilities = self.adapter.capabilities
+        if key == "pyaml" and hasattr(self, "pyaml_fields"):
+            magnet_available = bool(self.pyaml_fields["hcor_group"].text().strip() or self.pyaml_fields["vcor_group"].text().strip())
+            rf_available = bool(self.pyaml_fields["rf_name"].text().strip())
+        elif key == "pysc":
+            magnet_available = rf_available = True
+        else:
+            magnet_available = rf_available = False
+
+        def access_text(magnet: bool, rf: bool) -> str:
+            if magnet and rf:return "Magnet + RF"
+            if magnet:return "Magnet"
+            if rf:return "RF"
+            return "Read Only"
+
+        magnet_authorized = self.connection_verified and AdapterCapability.WRITE in capabilities
+        rf_authorized = self.connection_verified and AdapterCapability.RF_WRITE in capabilities
+        available = access_text(magnet_available, rf_available)
+        authorized = access_text(magnet_authorized, rf_authorized)
+        self.header_mode.setText(f"Mode · {mode}")
+        self.header_capabilities.setText(f"Available · {available}")
+        self.header_access.setText(f"Authorized · {authorized}")
+        self.header_capabilities.setToolTip("Backend functions exposed by the selected configuration; this does not grant permission to write.")
+        self.header_access.setToolTip("Write access currently granted to this connected adapter after confirmation. Disconnected backends are read only.")
+        identity, profile = self._machine_identity()
+        pyaml_path = self.pyaml_fields["config_path"].text().strip() if key == "pyaml" and hasattr(self, "pyaml_fields") else ""
+        machine_display = identity.replace("\n", " · ")
+        if key == "pyaml":
+            machine_display = f"pyAML · {mode}" + (f" · {Path(pyaml_path).name}" if pyaml_path else "")
+        self.machine_identity_badge.setText(machine_display)
+        self.machine_identity_badge.setToolTip(identity)
+        if pyaml_path:
+            configuration = pyaml_path
+        elif self.project_path is not None:
+            configuration = str(self.project_path)
+        elif profile is not None:
+            configuration = str(profile.manifest_path)
+        else:
+            configuration = "Unsaved Measure project"
+        self.header_configuration.setFullText(configuration)
+        self.header_output.setFullText(str(self._resolved_output_directory()) if hasattr(self, "output_directory") else "—")
 
     def _set_acquisition_running(self, running: bool) -> None:
         # Keep the active Measurement workspace visible throughout acquisition.
@@ -543,6 +713,8 @@ class MeasureMainWindow(QMainWindow):
         if key == "pyaml":
             self._invalidate_pyaml()
             self.measurement_type.setCurrentIndex(self.measurement_type.findData("bpm_noise"))
+            if self.measurement_label.text().startswith("pyLOCO BPM noise — Mock"):
+                self.measurement_label.setText("pyLOCO BPM noise — pyAML")
             self.measurement_type.model().item(self.measurement_type.findData("orm")).setEnabled(False)
             self.orm_unavailable_label.setText("ORM needs write access. pyAML is read only.")
             self.orm_unavailable_label.setVisible(True)
@@ -577,7 +749,7 @@ class MeasureMainWindow(QMainWindow):
             if pysc: self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("automatic"))
             current_label=self.measurement_label.text()
             if current_label.startswith(("Mock", "pyLOCO")) or " pySC " in current_label:
-                context=profile_label if pysc else "PETRA III LIVE" if petra else "Mock"
+                context=profile_label if pysc else "PETRA III LIVE" if petra else "pyAML" if self.adapter_combo.currentData()=="pyaml" else "Mock"
                 labels={"bpm_noise":f"pyLOCO BPM noise — {context}","dispersion":f"pyLOCO dispersion — {context}","orm":f"pyLOCO ORM — {context}"}; self.measurement_label.setText(labels[self.measurement_type.currentData()])
         self._reset_selection_states_for_inventory(); self._update_machine_identity()
         self.refresh_preview(); self.statusBar().showMessage("PETRA adapter selected — not connected" if petra else "pySC Server ready — test connection" if pysc else "Mock ready — read only"); self._sync_rf_presentation()
@@ -601,27 +773,31 @@ class MeasureMainWindow(QMainWindow):
             self.devices_identity.setText(f"Machine/profile: {text.replace(chr(10),' — ')}\nAvailable inventory: {len(self.devices)} BPM / {len(self.horizontal_correctors)} H correctors / {len(self.vertical_correctors)} V correctors")
         if hasattr(self,"measurement_machine_identity"):self.measurement_machine_identity.setText(f"Measurement machine/profile: {text.replace(chr(10),' — ')}")
         if hasattr(self,"review_machine_identity"):self.review_machine_identity.setText(f"Saved data machine/profile: {text.replace(chr(10),' — ')}")
+        self._update_persistent_header()
 
     def _pysc_profile_changed(self,*_):
         if self.adapter_combo.currentData()=="pysc": self._adapter_changed()
 
     def _sync_rf_presentation(self, *_):
         if not hasattr(self,"rf_control_mode"):return
-        automatic=self.adapter_combo.currentData() in ("pysc", "pyaml") and AdapterCapability.RF_WRITE in self.adapter.capabilities
-        self.rf_control_mode.model().item(self.rf_control_mode.findData("automatic")).setEnabled(automatic)
+        automatic_available=self.adapter_combo.currentData() in ("pysc", "pyaml") and AdapterCapability.RF_WRITE in self.adapter.capabilities
+        self.rf_control_mode.model().item(self.rf_control_mode.findData("automatic")).setEnabled(automatic_available)
+        if self.rf_control_mode.currentData()=="automatic" and not automatic_available:
+            self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("manual"))
+        automatic=self.rf_control_mode.currentData()=="automatic"
+        self.rf_control_mode.setEnabled(automatic_available); self.nominal_rf.setReadOnly(automatic)
+        self.manual_actual_rf.setVisible(not automatic)
+        self.verify_restored_orbit.setEnabled(True)
         if automatic:
-            self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("automatic")); self.rf_control_mode.setEnabled(False); self.nominal_rf.setReadOnly(True)
-            self.verify_restored_orbit.setEnabled(True)
             self.nominal_rf_source.setText("Source: pySC Server RF readback — automatically controlled")
             self.rf_safety.setText("DEMO automatic RF control — the original frequency is restored and read back in cancellation-safe cleanup.")
             if self.adapter_combo.currentData() == "pyaml":
                 self.nominal_rf_source.setText("Source: pyAML RF frequency readback — automatically controlled")
                 self.rf_safety.setText("WRITES ENABLED — RF frequency is changed during measurement, then restoration is attempted and verified. Check the restoration result.")
         else:
-            self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("manual")); self.rf_control_mode.setEnabled(True); self.nominal_rf.setReadOnly(False)
-            self.verify_restored_orbit.setEnabled(False)
-            self.nominal_rf_source.setText("Source: manual entry (no RF readback available)")
-            self.rf_safety.setText("READ ONLY — pyLOCO Measure will guide RF changes but will never write RF.")
+            has_readback=AdapterCapability.RF_READ in self.adapter.capabilities
+            self.nominal_rf_source.setText("Source: backend RF readback (manual control; no writes)" if has_readback else "Source: operator entry (not independently verified)")
+            self.rf_safety.setText("MANUAL / READ ONLY — change RF externally. pyLOCO will read or record the actual frequency, acquire orbits, and never issue an RF write, including during cancellation or errors.")
         bipolar=self.dispersion_direction.currentData()=="bipolar"
         self.rf_step_label.setText("Total RF separation Δ" if bipolar else "RF offset Δf")
         if hasattr(self,"rf_states_explanation"):
@@ -629,6 +805,9 @@ class MeasureMainWindow(QMainWindow):
             self.rf_states_explanation.setText(f"Applied states: f₀ + {half:g} Hz / f₀ − {half:g} Hz\nTotal separation: Δ = {self.rf_step.value():g} Hz" if bipolar else "One-sided RF offset")
         self._configure_physical_dispersion_option()
         if hasattr(self,"plan_values"):self.refresh_plan()
+
+    def _rf_mode_changed(self, *_):
+        self._sync_rf_presentation(); self._update_dispersion_guide(); self.refresh_plan()
 
     def _choose_pyaml_config(self):
         path = QFileDialog.getOpenFileName(
@@ -668,7 +847,8 @@ class MeasureMainWindow(QMainWindow):
         self._invalidate_pyaml()
         options = {key: editor.text().strip() for key, editor in self.pyaml_fields.items()}
         options.update(allow_writes=self.pyaml_magnet_writes.isChecked(),
-                       allow_rf_writes=self.pyaml_rf_writes.isChecked())
+                       allow_rf_writes=self.pyaml_rf_writes.isChecked(),
+                       corrector_values_in_radians=True)
         if options["mode"] == "live" and (options["allow_writes"] or options["allow_rf_writes"]):
             answer = QMessageBox.question(self, "Enable live pyAML writes?",
                 "Measurements may change configured corrector magnets and/or RF frequency. "
@@ -702,6 +882,8 @@ class MeasureMainWindow(QMainWindow):
             self.machine_info[key].setText(str(result[key]))
         writable = AdapterCapability.WRITE in self.adapter.capabilities
         rf_writable = AdapterCapability.RF_WRITE in self.adapter.capabilities
+        if rf_writable:
+            self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("automatic"))
         access = f"Correctors: {'WRITE' if writable else 'read only'}; RF: {'WRITE' if rf_writable else 'read only'}"
         self.machine_info["access"].setText(access)
         self.status_badge.setText("pyAML • WRITES ENABLED" if writable or rf_writable else "pyAML • READ ONLY")
@@ -747,18 +929,22 @@ class MeasureMainWindow(QMainWindow):
         help_layout.addWidget(self.measurement_help_body); self.measurement_help_group.toggled.connect(self.measurement_help_body.setVisible); self.measurement_help_body.setVisible(False); layout.addWidget(self.measurement_help_group)
         group=QGroupBox("Measurement configuration"); group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); form=QFormLayout(group); self._configure_form(form)
         self.readings=NoWheelSpinBox(); self.readings.setRange(2,100000); self.readings.setValue(20)
-        self.delay=NoWheelDoubleSpinBox(); self.delay.setRange(0,3600); self.delay.setDecimals(3); self.delay.setSingleStep(.1); self.delay.setSuffix(" s"); self.delay.setValue(.1)
+        self.delay=NoWheelDoubleSpinBox(); self.delay.setRange(0,3600); self.delay.setDecimals(3); self.delay.setSingleStep(.1); self.delay.setSuffix(" s"); self.delay.setValue(1.0)
+        self.bpm_noise_convention=QComboBox(); self.bpm_noise_convention.addItem("Population standard deviation (ddof=0) — default",0); self.bpm_noise_convention.addItem("Sample standard deviation (ddof=1)",1)
         self.measurement_name=QLineEdit("pyloco-bpm-noise"); self.measurement_label=QLineEdit("pyLOCO BPM noise — Mock"); self.comments=QPlainTextEdit(); self.comments.setMaximumHeight(90)
         self.output_directory=QLineEdit("measurements"); out=QWidget(); ol=QHBoxLayout(out); ol.setContentsMargins(0,0,0,0); ol.addWidget(self.output_directory,1); choose=QPushButton("Choose…"); choose.clicked.connect(self.choose_output); ol.addWidget(choose)
         self.duration=QLabel();
-        for label,widget in (("Number of orbit readings",self.readings),("Delay between readings",self.delay),("Estimated duration",self.duration),("Measurement name",self.measurement_name),("Measurement label",self.measurement_label),("Notes",self.comments),("Output/session directory",out)): form.addRow(label,widget)
-        self.readings.valueChanged.connect(self.refresh_plan); self.delay.valueChanged.connect(self.refresh_plan)
+        for label,widget in (("Number of orbit readings",self.readings),("Delay between readings",self.delay),("BPM-noise convention",self.bpm_noise_convention),("Estimated duration",self.duration),("Measurement name",self.measurement_name),("Measurement label",self.measurement_label),("Notes",self.comments),("Output/session directory",out)): form.addRow(label,widget)
+        self.bpm_noise_convention_label=form.labelForField(self.bpm_noise_convention)
+        self.readings.valueChanged.connect(self.refresh_plan); self.delay.valueChanged.connect(self.refresh_plan); self.bpm_noise_convention.currentIndexChanged.connect(self.refresh_plan); self.bpm_noise_convention.currentIndexChanged.connect(self._update_measurement_help)
         for widget in (self.measurement_name,self.measurement_label,self.output_directory): widget.textChanged.connect(self.refresh_plan)
         layout.addWidget(group)
         self.dispersion_config_group=QGroupBox("Manual RF dispersion configuration"); dispersion_form=QFormLayout(self.dispersion_config_group); self._configure_form(dispersion_form)
         self.rf_control_mode=QComboBox(); self.rf_control_mode.addItem("Manual RF change","manual"); self.rf_control_mode.addItem("Automatic (adapter RF-write capability required)","automatic"); self.rf_control_mode.model().item(1).setEnabled(AdapterCapability.RF_WRITE in self.adapter.capabilities)
         self.nominal_rf=QLineEdit(); self.nominal_rf.setPlaceholderText("Required — enter nominal RF frequency in Hz"); self.nominal_rf_source=QLabel("Source: manual entry (no RF readback available)")
         nominal_widget=QWidget(); nominal_layout=QVBoxLayout(nominal_widget); nominal_layout.setContentsMargins(0,0,0,0); nominal_layout.addWidget(self.nominal_rf); nominal_layout.addWidget(self.nominal_rf_source)
+        self.manual_actual_rf=QLineEdit(); self.manual_actual_rf.setPlaceholderText("Enter the actual applied RF frequency in Hz")
+        self.manual_actual_rf.setToolTip("Required only when the backend cannot provide an RF readback. The value is saved as operator-entered and not independently verified.")
         self.rf_step=NoWheelDoubleSpinBox(); self.rf_step.setRange(1,1e9); self.rf_step.setDecimals(0); self.rf_step.setValue(200.0); self.rf_step.setSuffix(" Hz")
         self.dispersion_direction=QComboBox(); self.dispersion_direction.addItem("Bipolar ±Δf","bipolar"); self.dispersion_direction.addItem("One-sided +Δf","positive"); self.dispersion_direction.addItem("One-sided −Δf","negative")
         self.settling_delay=NoWheelDoubleSpinBox(); self.settling_delay.setRange(0,3600); self.settling_delay.setDecimals(3); self.settling_delay.setSuffix(" s")
@@ -766,13 +952,14 @@ class MeasureMainWindow(QMainWindow):
         self.verify_restored_orbit.setToolTip("After exact RF restoration, acquire a read-only reference orbit for comparison. This orbit is never used in the dispersion calculation.")
         self.rf_safety=QLabel("READ ONLY — pyLOCO Measure will guide RF changes but will never write RF."); self.rf_safety.setWordWrap(True)
         self.rf_states_explanation=QLabel("Applied states: f₀ + 100 Hz / f₀ − 100 Hz\nTotal separation: Δ = 200 Hz"); self.rf_states_explanation.setWordWrap(True)
-        for label,widget in (("RF control mode",self.rf_control_mode),("Nominal RF frequency",nominal_widget),("Total RF separation Δ",self.rf_step),("Applied RF states",self.rf_states_explanation),("Measurement direction",self.dispersion_direction),("Settling delay",self.settling_delay),("Restoration check",self.verify_restored_orbit),("",self.rf_safety)): dispersion_form.addRow(label,widget)
+        for label,widget in (("RF control mode",self.rf_control_mode),("Nominal RF frequency",nominal_widget),("Actual applied RF",self.manual_actual_rf),("Total RF separation Δ",self.rf_step),("Applied RF states",self.rf_states_explanation),("Measurement direction",self.dispersion_direction),("Settling delay",self.settling_delay),("Restoration check",self.verify_restored_orbit),("",self.rf_safety)): dispersion_form.addRow(label,widget)
         self.rf_step_label=dispersion_form.labelForField(self.rf_step)
         for widget in (self.nominal_rf,self.rf_step,self.dispersion_direction,self.settling_delay):
             signal=widget.textChanged if isinstance(widget,QLineEdit) else widget.currentIndexChanged if isinstance(widget,QComboBox) else widget.valueChanged
             signal.connect(self.refresh_plan)
         self.dispersion_direction.currentIndexChanged.connect(self._update_measurement_help)
         self.dispersion_direction.currentIndexChanged.connect(self._sync_rf_presentation)
+        self.rf_control_mode.currentIndexChanged.connect(self._rf_mode_changed)
         self.verify_restored_orbit.toggled.connect(self.refresh_plan)
         layout.addWidget(self.dispersion_config_group)
         self.orm_config_group=QGroupBox("ORM corrector perturbation configuration"); orm_form=QFormLayout(self.orm_config_group); self._configure_form(orm_form)
@@ -781,11 +968,13 @@ class MeasureMainWindow(QMainWindow):
         self.orm_hkick=NoWheelDoubleSpinBox(); self.orm_hkick.setRange(.001,1e6); self.orm_hkick.setDecimals(3); self.orm_hkick.setValue(100); self.orm_hkick.setSuffix(" µrad")
         self.orm_vkick=NoWheelDoubleSpinBox(); self.orm_vkick.setRange(.001,1e6); self.orm_vkick.setDecimals(3); self.orm_vkick.setValue(100); self.orm_vkick.setSuffix(" µrad")
         self.orm_kick_file=QLineEdit(); kick_browse=QPushButton("Browse…"); kick_browse.clicked.connect(lambda:self._browse_into(self.orm_kick_file)); self.orm_kick_file_row=QWidget(); kfl=QHBoxLayout(self.orm_kick_file_row); kfl.setContentsMargins(0,0,0,0); kfl.addWidget(self.orm_kick_file,1); kfl.addWidget(kick_browse)
-        self.orm_scaled=QCheckBox("Store scaled ORM in metres/radian (otherwise store orbit differences in metres)")
+        self.orm_output_format=QLabel("Orbit difference [m] — required for pyLOCO FIT"); self.orm_output_format.setObjectName("infoText"); self.orm_output_format.setWordWrap(True)
+        self.orm_normalized_analysis=QCheckBox("Also calculate normalized response [m/rad] for analysis")
+        self.orm_normalized_analysis.setToolTip("Display-only analysis: divide each measured column by its actual kick readback separation. The saved FIT matrix remains the orbit difference in metres.")
         self.orm_state_explanation=QLabel("Applied states: K₀ + Δ/2 / K₀ − Δ/2\nTotal separation: Δ"); self.orm_state_explanation.setWordWrap(True)
-        orm_form.addRow("Measurement direction",self.orm_direction); orm_form.addRow("Corrector kick mode",self.orm_kick_mode); orm_form.addRow("Total horizontal bipolar kick Δ",self.orm_hkick); self.orm_hkick_label=orm_form.labelForField(self.orm_hkick); orm_form.addRow("Total vertical bipolar kick Δ",self.orm_vkick); self.orm_vkick_label=orm_form.labelForField(self.orm_vkick); orm_form.addRow("Applied corrector states",self.orm_state_explanation); orm_form.addRow("Kick arrays file",self.orm_kick_file_row); self.orm_kick_file_label=orm_form.labelForField(self.orm_kick_file_row); orm_form.addRow("Scaling",self.orm_scaled)
+        orm_form.addRow("ORM output format",self.orm_output_format); orm_form.addRow("Optional analysis",self.orm_normalized_analysis); orm_form.addRow("Measurement direction",self.orm_direction); orm_form.addRow("Corrector kick mode",self.orm_kick_mode); orm_form.addRow("Total horizontal bipolar kick Δ",self.orm_hkick); self.orm_hkick_label=orm_form.labelForField(self.orm_hkick); orm_form.addRow("Total vertical bipolar kick Δ",self.orm_vkick); self.orm_vkick_label=orm_form.labelForField(self.orm_vkick); orm_form.addRow("Applied corrector states",self.orm_state_explanation); orm_form.addRow("Kick arrays file",self.orm_kick_file_row); self.orm_kick_file_label=orm_form.labelForField(self.orm_kick_file_row)
         self.kick_preview=QTableWidget(0,5); self.kick_preview.setMinimumHeight(180); self.kick_preview.setHorizontalHeaderLabels(["Position","Plane","Corrector","Effective kick [µrad]","Source"]); self.kick_preview.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch); orm_form.addRow("Effective kicks",self.kick_preview)
-        for widget in (self.orm_direction,self.orm_kick_mode,self.orm_hkick,self.orm_vkick,self.orm_kick_file,self.orm_scaled):
+        for widget in (self.orm_direction,self.orm_kick_mode,self.orm_hkick,self.orm_vkick,self.orm_kick_file,self.orm_normalized_analysis):
             signal=widget.currentIndexChanged if isinstance(widget,QComboBox) else widget.valueChanged if isinstance(widget,QDoubleSpinBox) else widget.textChanged if isinstance(widget,QLineEdit) else widget.toggled
             signal.connect(self._orm_config_changed)
         layout.addWidget(self.orm_config_group)
@@ -796,7 +985,7 @@ class MeasureMainWindow(QMainWindow):
         plan_group=QGroupBox("Show measurement plan"); plan_group.setCheckable(True); plan_group.setChecked(False); plan_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
         plan_outer=QVBoxLayout(plan_group); self.plan_body=QWidget(); plan=QGridLayout(self.plan_body); plan.setContentsMargins(2,4,2,4); plan.setHorizontalSpacing(18); plan.setVerticalSpacing(9); plan_outer.addWidget(self.plan_body); plan_group.toggled.connect(self.plan_body.setVisible); self.plan_body.setVisible(False)
         self.plan_values={}; self.dispersion_plan_widgets=[]; self.orm_plan_widgets=[]; self.settling_plan_widgets=[]
-        plan_pairs=(("Measurement","BPMs"),("H correctors","V correctors"),("Total correctors","Kick source"),("H kick","V kick"),("Scaled ORM","ORM direction"),("RF mode","Nominal RF"),("RF step ±Δf","Bipolar separation"),("Negative RF","Positive RF"),("Direction","RF states"),("Readings","Delay"),("Settling delay","Est. duration"),("Adapter","Output"))
+        plan_pairs=(("Measurement","Measurement I/O"),("BPMs","Noise definition"),("H correctors","V correctors"),("Total correctors","Kick source"),("H kick","V kick"),("Scaled ORM","ORM direction"),("RF mode","Nominal RF"),("RF step ±Δf","Bipolar separation"),("Negative RF","Positive RF"),("Direction","RF states"),("Readings","Delay"),("Settling delay","Est. duration"),("Adapter","Output"))
         for row,(left,right) in enumerate(plan_pairs):
             for pair,label in enumerate((left,right)):
                 column=pair*2; key=label.lower().replace(".","").replace(" ","_"); name=QLabel(label); value=QLabel("—"); value.setObjectName("planValue"); self.plan_values[key]=value; plan.addWidget(name,row,column); plan.addWidget(value,row,column+1); plan.setColumnStretch(column+1,1)
@@ -808,8 +997,11 @@ class MeasureMainWindow(QMainWindow):
         status_row=QHBoxLayout(); self.elapsed=QLabel("Elapsed: 0.00 s"); self.remaining=QLabel("Remaining: —"); self.samples=QLabel("Samples: 0 / 0")
         for metric in (self.elapsed,self.remaining,self.samples): metric.setObjectName("runMetric"); status_row.addWidget(metric)
         status_row.addStretch(1); rl.addLayout(status_row)
-        self.live_plot=PlotCanvas(show_toolbar=False,minimum_height=230); self.live_plot.save_button.setVisible(False); rl.addWidget(self.live_plot)
-        buttons=QHBoxLayout(); self.start_button=QPushButton("Start BPM-noise measurement"); self.start_button.setObjectName("measurePrimary"); self.start_button.clicked.connect(self.start_acquisition); self.repeat_button=QPushButton("Repeat measurement"); self.repeat_button.setObjectName("measurePrimary"); self.repeat_button.clicked.connect(self.repeat_measurement); self.repeat_button.setVisible(False); self.cancel_button=QPushButton("Cancel"); self.cancel_button.setEnabled(False); self.cancel_button.clicked.connect(self.cancel_acquisition); self.preview_toggle=QPushButton("Show live preview"); self.preview_toggle.setCheckable(True); self.preview_toggle.setVisible(False); self.preview_toggle.toggled.connect(self._toggle_completed_preview); buttons.addWidget(self.start_button); buttons.addWidget(self.repeat_button); buttons.addWidget(self.cancel_button); buttons.addWidget(self.preview_toggle); buttons.addStretch(1); rl.addLayout(buttons); self.start_block_reason=QLabel(); self.start_block_reason.setWordWrap(True); self.start_block_reason.setStyleSheet("color:#F0A35E;font-weight:700"); rl.addWidget(self.start_block_reason); self.plan_group=plan_group; layout.addWidget(plan_group); layout.addWidget(run_group)
+        self.live_plot=PlotCanvas(show_toolbar=False,minimum_height=230); self.live_plot.save_button.setVisible(False); self.live_plot.include_title.setVisible(False); rl.addWidget(self.live_plot)
+        self.live_plot.canvas.mpl_connect("motion_notify_event",self._on_live_dispersion_hover)
+        self.live_plot.canvas.mpl_connect("button_press_event",self._on_live_dispersion_click)
+        self.live_dispersion_controls=QWidget(); ldc=QHBoxLayout(self.live_dispersion_controls); ldc.setContentsMargins(0,0,0,0); ldc.addWidget(QLabel("Live orbit view")); self.live_dispersion_view=QComboBox(); self.live_dispersion_view.addItem("Absolute orbit","absolute"); self.live_dispersion_view.addItem("Change from reference","relative"); self.live_dispersion_view.currentIndexChanged.connect(self._redisplay_live_orbit); ldc.addWidget(self.live_dispersion_view); self.live_dispersion_selection=QLabel("Click a BPM point to inspect it"); self.live_dispersion_selection.setObjectName("statusValue"); ldc.addWidget(self.live_dispersion_selection,1); self.live_dispersion_pin=QPushButton("Keep highlighted"); self.live_dispersion_pin.setEnabled(False); self.live_dispersion_pin.clicked.connect(self._toggle_live_dispersion_pin); ldc.addWidget(self.live_dispersion_pin); self.live_dispersion_clear=QPushButton("Clear selection and highlights"); self.live_dispersion_clear.clicked.connect(self._clear_dispersion_selection); ldc.addWidget(self.live_dispersion_clear); rl.addWidget(self.live_dispersion_controls); self.live_dispersion_controls.setVisible(False)
+        buttons=QHBoxLayout(); self.start_button=QPushButton("Start BPM-noise measurement"); self.start_button.setObjectName("measurePrimary"); self.start_button.clicked.connect(self.start_acquisition); self.repeat_button=QPushButton("Repeat measurement"); self.repeat_button.setObjectName("measurePrimary"); self.repeat_button.clicked.connect(self.repeat_measurement); self.repeat_button.setVisible(False); self.cancel_button=QPushButton("Cancel"); self.cancel_button.setEnabled(False); self.cancel_button.clicked.connect(self.cancel_acquisition); self.preview_toggle=QPushButton("Show live preview"); self.preview_toggle.setCheckable(True); self.preview_toggle.setVisible(False); self.preview_toggle.toggled.connect(self._toggle_completed_preview); buttons.addWidget(self.start_button); buttons.addWidget(self.repeat_button); buttons.addWidget(self.cancel_button); buttons.addWidget(self.preview_toggle); buttons.addStretch(1); rl.addLayout(buttons); self.start_block_reason=QLabel(); self.start_block_reason.setWordWrap(True); self.start_block_reason.setObjectName("warningText"); rl.addWidget(self.start_block_reason); self.plan_group=plan_group; layout.addWidget(plan_group); layout.addWidget(run_group)
         # Compact actions shown after a measurement completes.
         self.completed_actions = QWidget()
         completed_actions_layout = QHBoxLayout(self.completed_actions)
@@ -825,9 +1017,11 @@ class MeasureMainWindow(QMainWindow):
         layout.addWidget(self.completed_actions)
 
         self.log_group=QGroupBox("Measurement log"); self.log_group.setCheckable(True); self.log_group.setChecked(False); log_layout=QVBoxLayout(self.log_group); self.log_body=QWidget(); body_layout=QVBoxLayout(self.log_body); body_layout.setContentsMargins(0,0,0,0); self.log=QPlainTextEdit(); self.log.setReadOnly(True); self.log.setMinimumHeight(110); log_actions=QHBoxLayout(); clear_log=QPushButton("Clear"); clear_log.clicked.connect(self.log.clear); save_log=QPushButton("Save log…"); save_log.clicked.connect(self.save_log); log_actions.addWidget(clear_log); log_actions.addWidget(save_log); log_actions.addStretch(1); body_layout.addLayout(log_actions); body_layout.addWidget(self.log); log_layout.addWidget(self.log_body); self.log_group.toggled.connect(self.log_body.setVisible); self.log_body.setVisible(False); layout.addWidget(self.log_group)
-        self.orm_column_row=QWidget(); ocr=QHBoxLayout(self.orm_column_row); ocr.setContentsMargins(0,0,0,0); ocr.addWidget(QLabel("Selected ORM column")); self.orm_column_selector=QComboBox(); self.orm_column_selector.currentIndexChanged.connect(self._update_selected_orm_column); ocr.addWidget(self.orm_column_selector,1); layout.addWidget(self.orm_column_row); self.orm_column_row.setVisible(False)
-        self.orm_view_row=QWidget(); ovr=QHBoxLayout(self.orm_view_row); ovr.setContentsMargins(0,0,0,0); ovr.addWidget(QLabel("ORM matrix plot")); self.orm_view_mode=QComboBox(); self.orm_view_mode.addItem("2D heatmap — FIT colors","2d"); self.orm_view_mode.addItem("3D surface — FIT colors","3d"); self.orm_view_mode.currentIndexChanged.connect(self._redraw_orm_result); ovr.addWidget(self.orm_view_mode); ovr.addStretch(1); layout.addWidget(self.orm_view_row); self.orm_view_row.setVisible(False)
-        self.dispersion_display_row=QWidget(); ddr=QHBoxLayout(self.dispersion_display_row); ddr.setContentsMargins(0,0,0,0); self.dispersion_display_label=QLabel("Showing: RF orbit difference"); self.dispersion_display_label.setStyleSheet("font-weight:750"); ddr.addWidget(self.dispersion_display_label); self.dispersion_display=QComboBox(); self.dispersion_display.addItem("RF orbit difference (pyLOCO-compatible)","raw"); self.dispersion_display.addItem("Physical dispersion (optional — requires AT)","physical"); self.dispersion_display.currentIndexChanged.connect(self._dispersion_display_changed); ddr.addWidget(self.dispersion_display,1); self.dispersion_display_reason=QLabel(); self.dispersion_display_reason.setWordWrap(True); ddr.addWidget(self.dispersion_display_reason,2); layout.addWidget(self.dispersion_display_row); self.dispersion_display_row.setVisible(False)
+        self.orm_column_row=QWidget(); ocr=QHBoxLayout(self.orm_column_row); ocr.setContentsMargins(0,0,0,0); ocr.addWidget(QLabel("Selected ORM column")); self.orm_column_selector=QComboBox(); self.orm_column_selector.currentIndexChanged.connect(self._update_selected_orm_column); ocr.addWidget(self.orm_column_selector,1); self.orm_column_corrector_info=QLabel("Corrector: —"); self.orm_column_corrector_info.setObjectName("statusValue"); self.orm_column_corrector_info.setWordWrap(True); ocr.addWidget(self.orm_column_corrector_info,2); layout.addWidget(self.orm_column_row); self.orm_column_row.setVisible(False)
+        self.orm_view_row=QWidget(); ovr=QHBoxLayout(self.orm_view_row); ovr.setContentsMargins(0,0,0,0); ovr.addWidget(QLabel("ORM matrix plot")); self.orm_view_mode=QComboBox(); self.orm_view_mode.addItem("2D heatmap","2d"); self.orm_view_mode.addItem("3D surface","3d"); self.orm_view_mode.currentIndexChanged.connect(self._redraw_orm_result); ovr.addWidget(self.orm_view_mode); ovr.addWidget(QLabel("Palette")); self.orm_palette=QComboBox(); self.orm_palette.addItem("FIT viridis — default","viridis"); self.orm_palette.addItem("Signed RdBu_r — symmetric about zero","red_blue"); self.orm_palette.currentIndexChanged.connect(self._redraw_orm_result); ovr.addWidget(self.orm_palette); ovr.addStretch(1); layout.addWidget(self.orm_view_row); self.orm_view_row.setVisible(False)
+        self.orm_element_info=QLabel("Hover over an ORM cell or selected-column BPM point to identify it."); self.orm_element_info.setObjectName("infoText"); self.orm_element_info.setWordWrap(True); self.orm_element_info.setVisible(False); layout.addWidget(self.orm_element_info)
+        self.dispersion_display_row=QWidget(); ddr=QHBoxLayout(self.dispersion_display_row); ddr.setContentsMargins(0,0,0,0); self.dispersion_display_label=QLabel("Showing: RF orbit difference"); self.dispersion_display_label.setStyleSheet("font-weight:750"); ddr.addWidget(self.dispersion_display_label); self.dispersion_display=QComboBox(); self.dispersion_display.addItem("RF orbit difference (pyLOCO-compatible)","raw"); self.dispersion_display.addItem("Physical dispersion (optional — requires AT)","physical"); self.dispersion_display.currentIndexChanged.connect(self._dispersion_display_changed); ddr.addWidget(self.dispersion_display,1); self.dispersion_connect_points=QCheckBox("Connect points"); self.dispersion_connect_points.setChecked(True); self.dispersion_connect_points.setToolTip("Connected markers are shown by default; uncheck for a scatter-only view."); self.dispersion_connect_points.toggled.connect(self._redraw_dispersion_plots); ddr.addWidget(self.dispersion_connect_points); self.dispersion_display_reason=QLabel(); self.dispersion_display_reason.setWordWrap(True); ddr.addWidget(self.dispersion_display_reason,2); layout.addWidget(self.dispersion_display_row); self.dispersion_display_row.setVisible(False)
+        self.dispersion_selection_row=QWidget(); dsr=QHBoxLayout(self.dispersion_selection_row); dsr.setContentsMargins(0,0,0,0); dsr.addWidget(QLabel("Selected BPM")); self.dispersion_selected_details=QLabel("Click a plotted BPM to inspect it"); self.dispersion_selected_details.setObjectName("statusValue"); self.dispersion_selected_details.setWordWrap(True); dsr.addWidget(self.dispersion_selected_details,1); self.dispersion_pin_button=QPushButton("Keep highlighted"); self.dispersion_pin_button.setEnabled(False); self.dispersion_pin_button.clicked.connect(self._toggle_live_dispersion_pin); dsr.addWidget(self.dispersion_pin_button); self.dispersion_clear_button=QPushButton("Clear selection and highlights"); self.dispersion_clear_button.clicked.connect(self._clear_dispersion_selection); dsr.addWidget(self.dispersion_clear_button); layout.addWidget(self.dispersion_selection_row); self.dispersion_selection_row.setVisible(False)
         self.results_tabs=QTabWidget()
         # Keep completed measurement plots within the laptop viewport.
         # PlotCanvas itself uses an Expanding vertical size policy, so a
@@ -854,15 +1048,50 @@ class MeasureMainWindow(QMainWindow):
         self.orm_vv_plot=PlotCanvas(minimum_height=260); self.orm_column_plot=PlotCanvas(minimum_height=260); self.orm_kick_plot=PlotCanvas(minimum_height=260)
         self.orm_model_plot=PlotCanvas(minimum_height=260); self.orm_difference_plot=PlotCanvas(minimum_height=260)
         self.results_tabs.addTab(self.x_plot,"Horizontal BPM noise"); self.results_tabs.addTab(self.y_plot,"Vertical BPM noise"); self.results_tabs.addTab(self.mean_x_plot,"Mean horizontal orbit"); self.results_tabs.addTab(self.mean_y_plot,"Mean vertical orbit"); layout.addWidget(self.results_tabs)
-        self.stats_group=QGroupBox("Statistics"); stats_layout=QVBoxLayout(self.stats_group); self.orm_measurement_summary=QLabel(); self.orm_measurement_summary.setObjectName("summaryCard"); self.orm_measurement_summary.setWordWrap(True); self.orm_measurement_summary.setTextInteractionFlags(Qt.TextSelectableByMouse); self.orm_restoration_status=QLabel(); self.orm_restoration_status.setObjectName("runState"); self.orm_restoration_status.setWordWrap(True); self.summary_x=QLabel("Horizontal: no completed measurement."); self.summary_y=QLabel("Vertical: no completed measurement."); self.rf_diagnostics=QLabel(); self.restoration_label=QLabel(); self.summary_x.setObjectName("statLine"); self.summary_y.setObjectName("statLine"); self.rf_diagnostics.setObjectName("summaryCard"); self.restoration_label.setObjectName("statLine"); self.summary_x.setWordWrap(True); self.summary_y.setWordWrap(True); self.rf_diagnostics.setWordWrap(True); self.restoration_label.setWordWrap(True); stats_layout.addWidget(self.orm_measurement_summary); stats_layout.addWidget(self.orm_restoration_status); stats_layout.addWidget(self.summary_x); stats_layout.addWidget(self.summary_y); stats_layout.addWidget(self.rf_diagnostics); stats_layout.addWidget(self.restoration_label); layout.addWidget(self.stats_group)
+        self._bpm_plot_state={}; self._mean_plot_state={}; self._dispersion_plot_state={}; self._orm_plot_state={}; self._orm_column_state=None; self._orm_selected_info=""; self._selected_bpm_index=None; self._manual_bad_bpm_indices=set(); self._threshold_flagged_bpm_indices=set(); self._pinned_bpm_indices=set(); self._bpm_review_notes={}; self._saved_bpm_review_notes={}; self._bpm_review_statuses={}; self._bpm_review_dirty=False; self._loading_bpm_review_panel=False
+        for plane,canvas in (("x",self.x_plot),("y",self.y_plot)):
+            canvas.canvas.mpl_connect("motion_notify_event",lambda event,p=plane:self._on_bpm_plot_hover(p,event))
+            canvas.canvas.mpl_connect("button_press_event",lambda event,p=plane:self._on_bpm_plot_click(p,event))
+        for plane,canvas in (("x",self.mean_x_plot),("y",self.mean_y_plot)):
+            canvas.canvas.mpl_connect("motion_notify_event",lambda event,p=plane:self._on_mean_plot_hover(p,event))
+            canvas.canvas.mpl_connect("button_press_event",lambda event,p=plane:self._on_mean_plot_click(p,event))
+        for key,canvas in (("raw_x",self.raw_x_plot),("raw_y",self.raw_y_plot),("physical_x",self.x_plot),("physical_y",self.y_plot)):
+            canvas.canvas.mpl_connect("motion_notify_event",lambda event,k=key:self._on_dispersion_plot_hover(k,event))
+            canvas.canvas.mpl_connect("button_press_event",lambda event,k=key:self._on_dispersion_plot_click(k,event))
+        for key,canvas in (("states_x",self.mean_x_plot),("states_y",self.mean_y_plot),("shift_x",self.rf_shift_x_plot),("shift_y",self.rf_shift_y_plot)):
+            canvas.canvas.mpl_connect("motion_notify_event",lambda event,k=key:self._on_dispersion_plot_hover(k,event))
+            canvas.canvas.mpl_connect("button_press_event",lambda event,k=key:self._on_dispersion_plot_click(k,event))
+        for canvas in (self.x_plot,self.y_plot,self.mean_x_plot,self.mean_y_plot,self.orm_vv_plot,self.orm_model_plot,self.orm_difference_plot):
+            canvas.canvas.mpl_connect("motion_notify_event",lambda event,c=canvas:self._on_orm_plot_hover(c,event))
+            canvas.canvas.mpl_connect("button_press_event",lambda event,c=canvas:self._on_orm_plot_click(c,event))
+        self.orm_column_plot.canvas.mpl_connect("motion_notify_event",self._on_orm_column_hover)
+        self.orm_column_plot.canvas.mpl_connect("button_press_event",self._on_orm_column_click)
+        self.stats_group=QGroupBox("Statistics"); self.stats_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); stats_layout=QVBoxLayout(self.stats_group); stats_layout.setContentsMargins(10,10,10,10); stats_layout.setSpacing(7); self.orm_measurement_summary=QLabel(); self.orm_measurement_summary.setObjectName("summaryCard"); self.orm_measurement_summary.setWordWrap(True); self.orm_measurement_summary.setTextInteractionFlags(Qt.TextSelectableByMouse); self.orm_restoration_status=QLabel(); self.orm_restoration_status.setObjectName("runState"); self.orm_restoration_status.setWordWrap(True); self.statistics_table=MeasurementStatisticsTable(); self.summary_x=QLabel("Horizontal: no completed measurement."); self.summary_y=QLabel("Vertical: no completed measurement."); self.summary_x.hide(); self.summary_y.hide(); self.rf_diagnostics=QLabel(); self.restoration_label=QLabel(); self.rf_diagnostics.setObjectName("summaryCard"); self.restoration_label.setObjectName("statLine"); self.rf_diagnostics.setWordWrap(True); self.restoration_label.setWordWrap(True); stats_layout.addWidget(self.orm_measurement_summary); stats_layout.addWidget(self.orm_restoration_status); stats_layout.addWidget(self.statistics_table); stats_layout.addWidget(self.rf_diagnostics); stats_layout.addWidget(self.restoration_label); layout.addWidget(self.stats_group)
+        self.bpm_review_group=QGroupBox("BPM identification and review — no automatic FIT exclusion"); self.bpm_review_group.setCheckable(True); self.bpm_review_group.setChecked(False); self.bpm_review_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        bpm_review_layout=QVBoxLayout(self.bpm_review_group); self.bpm_review_body=QWidget(); brl=QVBoxLayout(self.bpm_review_body); brl.setContentsMargins(0,2,0,0)
+        self.bpm_review_details=QLabel("Hover or click a BPM point to identify it. Manual selections are review annotations only."); self.bpm_review_details.setObjectName("summaryCard"); self.bpm_review_details.setWordWrap(True); brl.addWidget(self.bpm_review_details)
+        review_controls=QHBoxLayout(); self.bpm_review_search=QLineEdit(); self.bpm_review_search.setPlaceholderText("Search BPM name or original index…"); self.bpm_review_search.textChanged.connect(self._filter_bpm_review_table); review_controls.addWidget(self.bpm_review_search,1); review_controls.addWidget(QLabel("Review status")); self.bpm_review_status_filter=QComboBox(); self.bpm_review_status_filter.addItem("All BPMs","all"); self.bpm_review_status_filter.addItem("Bad + Suspect","bad_suspect"); self.bpm_review_status_filter.addItem("Bad only","Bad"); self.bpm_review_status_filter.addItem("Suspect only","Suspect"); self.bpm_review_status_filter.addItem("Good only","Good"); self.bpm_review_status_filter.addItem("Unreviewed","Unreviewed"); self.bpm_review_status_filter.currentIndexChanged.connect(self._apply_bpm_review_filter); review_controls.addWidget(self.bpm_review_status_filter); self.bpm_review_match_count=QLabel("0 of 0 BPMs"); self.bpm_review_match_count.setObjectName("statusValue"); review_controls.addWidget(self.bpm_review_match_count); self.bpm_clear_pins_button=QPushButton("Clear highlights"); self.bpm_clear_pins_button.clicked.connect(self._clear_bpm_pins); review_controls.addWidget(self.bpm_clear_pins_button)
+        brl.addLayout(review_controls)
+        self.bpm_advanced_group=QGroupBox("Advanced noise thresholds"); self.bpm_advanced_group.setCheckable(True); self.bpm_advanced_group.setChecked(False); advanced_group_layout=QVBoxLayout(self.bpm_advanced_group); self.bpm_advanced_controls=QWidget(); advanced_layout=QHBoxLayout(self.bpm_advanced_controls); advanced_layout.setContentsMargins(0,0,0,0)
+        self.bpm_threshold_x=NoWheelDoubleSpinBox(); self.bpm_threshold_y=NoWheelDoubleSpinBox()
+        for plane,spin in (("X",self.bpm_threshold_x),("Y",self.bpm_threshold_y)):
+            spin.setRange(0,1e12); spin.setDecimals(3); spin.setSuffix(" nm"); spin.setSpecialValueText("Off"); spin.setToolTip(f"Flag {plane}-plane noise above this value; zero disables the threshold"); spin.valueChanged.connect(self._threshold_review_changed); advanced_layout.addWidget(QLabel(f"{plane} threshold")); advanced_layout.addWidget(spin)
+        advanced_layout.addStretch(1); advanced_group_layout.addWidget(self.bpm_advanced_controls); self.bpm_advanced_controls.setVisible(False); self.bpm_advanced_group.toggled.connect(self.bpm_advanced_controls.setVisible); brl.addWidget(self.bpm_advanced_group)
+        self.bpm_review_table=QTableWidget(0,6); self.bpm_review_table.setHorizontalHeaderLabels(["BPM (original index)","Horizontal [nm]","Vertical [nm]","Highlight","Review status","Notes"]); self.bpm_review_table.setAlternatingRowColors(True); self.bpm_review_table.setSortingEnabled(True); self.bpm_review_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.bpm_review_table.setSelectionMode(QAbstractItemView.SingleSelection); self.bpm_review_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.bpm_review_table.setMinimumHeight(190); self.bpm_review_table.setMaximumHeight(260); header=self.bpm_review_table.horizontalHeader(); header.setSectionResizeMode(0,QHeaderView.Stretch); header.setSectionResizeMode(1,QHeaderView.ResizeToContents); header.setSectionResizeMode(2,QHeaderView.ResizeToContents); header.setSectionResizeMode(3,QHeaderView.ResizeToContents); header.setSectionResizeMode(4,QHeaderView.ResizeToContents); header.setSectionResizeMode(5,QHeaderView.Stretch); self.bpm_review_table.itemSelectionChanged.connect(self._bpm_review_table_selection_changed); self.bpm_review_table.itemChanged.connect(self._bpm_review_item_changed); brl.addWidget(self.bpm_review_table)
+        self.bpm_review_empty=QLabel("No BPMs match the current search and review-status filter."); self.bpm_review_empty.setObjectName("infoText"); self.bpm_review_empty.setAlignment(Qt.AlignCenter); self.bpm_review_empty.setVisible(False); brl.addWidget(self.bpm_review_empty)
+        selected_group=QGroupBox("Review selected BPM"); selected_layout=QGridLayout(selected_group); selected_layout.addWidget(QLabel("Status"),0,0); self.bpm_review_status=QComboBox(); self.bpm_review_status.addItems(["Unreviewed","Good","Suspect","Bad"]); self.bpm_review_status.setEnabled(False); self.bpm_review_status.currentTextChanged.connect(self._selected_bpm_review_changed); selected_layout.addWidget(self.bpm_review_status,0,1); self.bpm_review_highlight=QCheckBox("Keep highlighted on plots"); self.bpm_review_highlight.setEnabled(False); self.bpm_review_highlight.toggled.connect(self._selected_bpm_review_changed); selected_layout.addWidget(self.bpm_review_highlight,0,2); selected_layout.addWidget(QLabel("Notes"),1,0); self.bpm_review_note=QLineEdit(); self.bpm_review_note.setPlaceholderText("Optional machine-study note…"); self.bpm_review_note.setEnabled(False); self.bpm_review_note.textChanged.connect(self._selected_bpm_review_changed); selected_layout.addWidget(self.bpm_review_note,1,1,1,2); self.bpm_save_review_button=QPushButton("Save Review"); self.bpm_save_review_button.setEnabled(False); self.bpm_save_review_button.clicked.connect(self._save_bpm_review); selected_layout.addWidget(self.bpm_save_review_button,2,0); self.bpm_review_save_state=QLabel("All review changes saved"); self.bpm_review_save_state.setObjectName("validationOk"); selected_layout.addWidget(self.bpm_review_save_state,2,1); self.bpm_export_review_button=QPushButton("Export Review CSV…"); self.bpm_export_review_button.clicked.connect(self._export_bpm_review_csv); selected_layout.addWidget(self.bpm_export_review_button,2,2); brl.addWidget(selected_group)
+        annotation_note=QLabel("Review only — marking a BPM as Bad does not automatically exclude it from LOCO fitting. Original measurement data remains unchanged."); self.bpm_review_notice=annotation_note; annotation_note.setWordWrap(True); annotation_note.setObjectName("infoText"); brl.addWidget(annotation_note)
+        bpm_review_layout.addWidget(self.bpm_review_body); self.bpm_review_group.toggled.connect(self.bpm_review_body.setVisible); self.bpm_review_body.setVisible(False); self.bpm_review_group.setVisible(False); layout.addWidget(self.bpm_review_group)
         self.dispersion_summary=QWidget(); dispersion_summary_layout=QVBoxLayout(self.dispersion_summary); dispersion_summary_layout.setContentsMargins(0,0,0,0)
-        rf_response_group=QGroupBox("1. RF orbit difference — pyLOCO-compatible"); rf_response_layout=QVBoxLayout(rf_response_group); self.rf_response_formula=QLabel("Δx_RF = mean[x(f−)] − mean[x(f+)]\nΔy_RF = mean[y(f−)] − mean[y(f+)]"); self.rf_response_formula.setWordWrap(True); self.rf_response_note=QLabel("Stored in metres; displayed in mm; this is the RF-response column supplied to pyLOCO."); self.rf_response_note.setWordWrap(True); self.rf_response_stats=QLabel(); self.rf_response_stats.setWordWrap(True); rf_response_layout.addWidget(self.rf_response_formula); rf_response_layout.addWidget(self.rf_response_note); rf_response_layout.addWidget(self.rf_response_stats); dispersion_summary_layout.addWidget(rf_response_group)
-        physical_group=QGroupBox("2. Physical dispersion"); physical_layout=QVBoxLayout(physical_group); self.physical_formula=QLabel("η = αc − 1/γ²\nδ(f) ≈ −(f−f₀)/(η f₀)\nΔδ = δ− − δ+\nDₓ = Δx_RF / Δδ\nDᵧ = Δy_RF / Δδ"); self.physical_formula.setWordWrap(True); self.physical_stats=QLabel(); self.physical_stats.setWordWrap(True); physical_layout.addWidget(self.physical_formula); physical_layout.addWidget(self.physical_stats)
+        rf_response_group=QGroupBox("1. RF orbit difference — pyLOCO-compatible"); rf_response_layout=QVBoxLayout(rf_response_group); self.rf_response_formula=QLabel("Δx_RF = mean[x(f−)] − mean[x(f+)]\nΔy_RF = mean[y(f−)] − mean[y(f+)]"); self.rf_response_formula.setWordWrap(True); self.rf_response_note=QLabel("Stored in metres; displayed in mm; this is the RF-response column supplied to pyLOCO."); self.rf_response_note.setWordWrap(True); self.rf_response_stats=MeasurementStatisticsTable(); rf_response_layout.addWidget(self.rf_response_formula); rf_response_layout.addWidget(self.rf_response_note); rf_response_layout.addWidget(self.rf_response_stats); dispersion_summary_layout.addWidget(rf_response_group)
+        physical_group=QGroupBox("2. Physical dispersion"); physical_layout=QVBoxLayout(physical_group); self.physical_formula=QLabel("η = αc − 1/γ²\nδ(f) ≈ −(f−f₀)/(η f₀)\nΔδ = δ− − δ+\nDₓ = Δx_RF / Δδ\nDᵧ = Δy_RF / Δδ"); self.physical_formula.setWordWrap(True); self.physical_stats=MeasurementStatisticsTable(); self.physical_unavailable=QLabel(); self.physical_unavailable.setObjectName("infoText"); self.physical_unavailable.setWordWrap(True); physical_layout.addWidget(self.physical_formula); physical_layout.addWidget(self.physical_stats); physical_layout.addWidget(self.physical_unavailable)
         self.calculation_details_group=QGroupBox("Show calculation details"); self.calculation_details_group.setCheckable(True); self.calculation_details_group.setChecked(False); calculation_layout=QVBoxLayout(self.calculation_details_group); self.calculation_details_body=QLabel(); self.calculation_details_body.setWordWrap(True); self.calculation_details_body.setTextInteractionFlags(Qt.TextSelectableByMouse); calculation_layout.addWidget(self.calculation_details_body); self.calculation_details_group.toggled.connect(self.calculation_details_body.setVisible); self.calculation_details_body.setVisible(False); physical_layout.addWidget(self.calculation_details_group); dispersion_summary_layout.addWidget(physical_group)
         restoration_group=QGroupBox("3. Restoration verification"); restoration_layout=QVBoxLayout(restoration_group); self.restoration_status=QLabel("RF restoration: —"); self.restoration_status.setObjectName("runState"); self.restoration_status.setWordWrap(True); self.restoration_values=QLabel(); self.restoration_values.setWordWrap(True); self.restoration_diagnostic=QLabel(); self.restoration_diagnostic.setWordWrap(True); restoration_layout.addWidget(self.restoration_status); restoration_layout.addWidget(self.restoration_values); restoration_layout.addWidget(self.restoration_diagnostic); dispersion_summary_layout.addWidget(restoration_group)
         comparison_group=QGroupBox("4. Measured vs reference model"); comparison_layout=QVBoxLayout(comparison_group); self.dispersion_model_comparison=QLabel("Comparison not requested."); self.dispersion_model_comparison.setObjectName("summaryCard"); self.dispersion_model_comparison.setWordWrap(True); self.dispersion_model_comparison.setTextInteractionFlags(Qt.TextSelectableByMouse); comparison_layout.addWidget(self.dispersion_model_comparison); dispersion_summary_layout.addWidget(comparison_group)
         self.dispersion_summary.setVisible(False); layout.insertWidget(layout.indexOf(self.stats_group),self.dispersion_summary)
-        save_group=QGroupBox("Saved files"); sl=QVBoxLayout(save_group); self.paths=QLabel("Measurement file: —\nSession manifest: —"); self.paths.setTextInteractionFlags(Qt.TextSelectableByMouse); actions=QHBoxLayout(); self.validate_button=QPushButton("Validate for pyLOCO"); self.validate_button.setEnabled(False); self.validate_button.clicked.connect(self.validate_saved); self.open_button=QPushButton("Open session in pyLOCO"); self.open_button.setEnabled(False); self.open_button.clicked.connect(self.explain_open); actions.addWidget(self.validate_button); actions.addWidget(self.open_button); actions.addStretch(1); sl.addWidget(self.paths); sl.addLayout(actions); layout.addWidget(save_group)
+        save_group=QGroupBox("Saved files"); self.save_group=save_group; sl=QVBoxLayout(save_group); self.paths=QLabel("Measurement file: —\nSession manifest: —"); self.paths.setTextInteractionFlags(Qt.TextSelectableByMouse); actions=QHBoxLayout(); self.validate_button=QPushButton("Validate for pyLOCO"); self.validate_button.setEnabled(False); self.validate_button.clicked.connect(self.validate_saved); self.open_button=QPushButton("Open session in pyLOCO"); self.open_button.setEnabled(False); self.open_button.clicked.connect(self.explain_open); actions.addWidget(self.validate_button); actions.addWidget(self.open_button); actions.addStretch(1); sl.addWidget(self.paths); sl.addLayout(actions); layout.addWidget(save_group)
+        self.paths.setWordWrap(True)
+        self.open_output_button=QPushButton("Open output folder"); self.open_output_button.setEnabled(False); self.open_output_button.clicked.connect(self.open_output_folder); actions.insertWidget(2,self.open_output_button)
         self._reset_live_plot()
         self._update_diagnostics_visibility()
         self.acquisition_scroll=self._scroll_page(content)
@@ -915,12 +1144,36 @@ class MeasureMainWindow(QMainWindow):
                 self.orm_view_row.setVisible(True)
                 self.stats_group.setVisible(True)
 
+        # Before completion the compact dual-pane form may shrink vertically.
+        # Completed scientific results must instead retain every section's size
+        # and use the acquisition scroll area when the viewport is too short.
+        content = self.acquisition_scroll.widget() if hasattr(self, "acquisition_scroll") else None
+        if content is not None:
+            if completed:
+                content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+                self._fit_completed_content()
+                # Width-dependent labels acquire their final wrapped height only
+                # after the splitter has completed its layout pass.
+                QTimer.singleShot(0, self._fit_completed_content)
+            else:
+                content.setMinimumHeight(0)
+                content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+            content.updateGeometry()
+
+        if completed:
             # Bring the scientific result directly into view.
-            self.acquisition_scroll.ensureWidgetVisible(
-                self.results_tabs,
-                0,
-                0,
-            )
+            self.acquisition_scroll.ensureWidgetVisible(self.results_tabs, 0, 0)
+
+    def _fit_completed_content(self) -> None:
+        if not hasattr(self, "acquisition_scroll"):
+            return
+        content = self.acquisition_scroll.widget()
+        if content is None or not self.completed_actions.isVisible():
+            return
+        content.layout().activate()
+        # A small guard absorbs style-dependent group-box title overhang.
+        content.setMinimumHeight(content.layout().minimumSize().height() + 12)
+        content.updateGeometry()
 
     def _selection_method_changed(self):
         method=self.selection_method.currentData(); names_visible=method=="names_file"; manual_visible=method=="manual"
@@ -1182,6 +1435,15 @@ class MeasureMainWindow(QMainWindow):
                 "Vertical: no completed measurement."
             )
 
+        if hasattr(self, "statistics_table"):
+            self.statistics_table.clear_statistics()
+
+        if hasattr(self,"bpm_review_group"):
+            self.bpm_review_group.setVisible(False); self.bpm_review_group.setChecked(False)
+            self.bpm_review_table.setRowCount(0); self.bpm_review_search.clear(); self.bpm_review_status_filter.setCurrentIndex(0); self.bpm_review_match_count.setText("0 of 0 BPMs"); self.bpm_review_empty.setVisible(False)
+            self._bpm_plot_state.clear(); self._mean_plot_state.clear(); self._dispersion_plot_state.clear(); self._selected_bpm_index=None
+            self._manual_bad_bpm_indices.clear(); self._threshold_flagged_bpm_indices.clear(); self._pinned_bpm_indices.clear(); self._bpm_review_notes.clear(); self._saved_bpm_review_notes.clear(); self._bpm_review_statuses.clear(); self.bpm_review_note.clear(); self.bpm_review_note.setEnabled(False); self.bpm_review_status.setEnabled(False); self.bpm_review_highlight.setEnabled(False); self._set_bpm_review_dirty(False)
+
         if hasattr(self, "orm_measurement_summary"):
             self.orm_measurement_summary.clear()
 
@@ -1195,10 +1457,11 @@ class MeasureMainWindow(QMainWindow):
             self.restoration_label.clear()
 
         if hasattr(self, "rf_response_stats"):
-            self.rf_response_stats.clear()
+            self.rf_response_stats.clear_statistics()
 
         if hasattr(self, "physical_stats"):
-            self.physical_stats.clear()
+            self.physical_stats.clear_statistics()
+        if hasattr(self,"physical_unavailable"):self.physical_unavailable.clear()
 
         if hasattr(self, "calculation_details_body"):
             self.calculation_details_body.clear()
@@ -1271,10 +1534,19 @@ class MeasureMainWindow(QMainWindow):
         if kind!=self._active_selection_kind:
             self._store_active_selection(); self._active_selection_kind=kind; self._restore_selection(kind)
         dispersion=kind=="dispersion"; orm=kind=="orm"
+        if orm and not getattr(self,"_fresh_orm_defaults_applied",False):
+            # Match the established PETRA III ORM procedure for a fresh GUI
+            # workflow. Loaded projects subsequently restore their own values.
+            self.readings.setValue(10); self.delay.setValue(.1); self.settling_delay.setValue(1.0)
+            self._fresh_orm_defaults_applied=True
         if orm and isinstance(self.adapter,MockAdapter) and hasattr(self.adapter,"set_simulated_writes_enabled"):
             self.adapter.set_simulated_writes_enabled(True)
         self.dispersion_config_group.setVisible(dispersion)
+        if hasattr(self,"live_dispersion_controls"):self.live_dispersion_controls.setVisible(dispersion)
+        if hasattr(self,"dispersion_selection_row"):self.dispersion_selection_row.setVisible(dispersion)
         self.orm_config_group.setVisible(orm)
+        self.bpm_noise_convention.setVisible(not dispersion and not orm)
+        self.bpm_noise_convention_label.setVisible(not dispersion and not orm)
         if hasattr(self,"orm_corrector_group"): self.orm_corrector_group.setEnabled(bool(self.devices))
         if hasattr(self,"bpm_exclusions"): self.bpm_exclusions.setVisible(orm); self.bpm_exclusions_label.setVisible(orm)
         self._update_measurement_help()
@@ -1351,6 +1623,9 @@ class MeasureMainWindow(QMainWindow):
         index=self.results_tabs.indexOf(target)
         if index>=0:self.results_tabs.setCurrentIndex(index)
 
+    def _redraw_dispersion_plots(self,*_):
+        if isinstance(self.result,DispersionResult):self._show_dispersion_result(self.result)
+
     def _update_diagnostics_visibility(self):
         if not hasattr(self, "stats_group"):
             return
@@ -1376,7 +1651,7 @@ class MeasureMainWindow(QMainWindow):
         self.rf_diagnostics.setVisible(has_dispersion_result)
         self.restoration_label.setVisible(has_dispersion_result)
 
-        self.orm_measurement_summary.setVisible(has_orm_result)
+        self.orm_measurement_summary.setVisible(has_bpm_result or has_orm_result)
         self.orm_restoration_status.setVisible(has_orm_result)
 
         if kind == "bpm_noise":
@@ -1409,9 +1684,14 @@ class MeasureMainWindow(QMainWindow):
 
         if hasattr(self, "orm_view_row"):
             self.orm_view_row.setVisible(has_orm_result)
+        if hasattr(self,"orm_element_info"):
+            self.orm_element_info.setVisible(has_orm_result)
 
         if hasattr(self, "results_tabs"):
             self.results_tabs.setVisible(has_result)
+
+        if hasattr(self,"bpm_review_group"):
+            self.bpm_review_group.setVisible(has_bpm_result)
 
     def _configure_result_tabs(self,kind):
         # These are final-result controls; visibility is managed by
@@ -1439,19 +1719,21 @@ class MeasureMainWindow(QMainWindow):
                 "• σy = standard deviation of its vertical readings\n\n"
                 "The mean orbit is shown separately. The standard deviations can be used as measurement weights in pyLOCO."
             )
-            self.measurement_help_convention.clear(); self.measurement_help_convention.setVisible(False)
+            ddof=int(self.bpm_noise_convention.currentData()) if hasattr(self,"bpm_noise_convention") else 0
+            label="population" if ddof==0 else "sample"
+            self.measurement_help_convention.setText(f"Current convention: {label} standard deviation, NumPy ddof={ddof}.\nArray layout: (reading, BPM); standard deviation axis: 0."); self.measurement_help_convention.setVisible(True)
             return
         if self.measurement_type.currentData()=="orm":
             self.measurement_help_title.setText("Orbit Response Matrix (ORM)")
-            self.measurement_help_text.setText("Measure changes one corrector at a time and records the resulting X/Y orbit change. The original corrector value is restored and checked between states and after each column.\n\nMatrix order: X BPM rows, then Y BPM rows; H corrector columns, then V corrector columns.")
+            self.measurement_help_text.setText("Measure changes one corrector at a time and records the resulting X/Y orbit change. The original corrector value is restored and checked between states and after each column.\n\nFor bipolar acquisition, each ORM column is mean orbit at K₀ + ΔK/2 minus mean orbit at K₀ − ΔK/2. The FIT-ready matrix is stored as orbit difference in metres [m]; the actual corrector separation is recorded separately in radians. Normalized response [m/rad] is available only as a display analysis and does not replace the FIT matrix.\n\nMatrix order: X BPM rows, then Y BPM rows; H corrector columns, then V corrector columns.")
             direction=self.orm_direction.currentData() if hasattr(self,"orm_direction") else "bipolar"
             convention={"bipolar":"K+ = K0 + ΔK/2; K− = K0 − ΔK/2\nORM column = orbit(+) − orbit(−)","positive":"K+ = K0 + ΔK\nORM column = orbit(+) − reference","negative":"K− = K0 − ΔK\nORM column = orbit(−) − reference"}.get(direction,"")
             self.measurement_help_convention.setText("Current convention:\n"+convention); self.measurement_help_convention.setVisible(True); return
         self.measurement_help_title.setText("Dispersion / RF response")
         self.measurement_help_text.setText(
             "Measure records the orbit at reference, positive and negative RF frequencies, then restores and checks the original RF.\n\n"
-            "The raw RF-state orbit measurements produce the signed RF orbit difference used directly by pyLOCO. "
-            "Physical dispersion is an optional conversion that requires an AT reference lattice."
+            "The stored measured_eta_x/y datasets are the signed RF-induced orbit differences in metres [m] used directly by the current pyLOCO FIT importer. "
+            "Physical dispersion is a separate derived quantity, also dimensionally in metres [m], calculated only with a verified RF-to-momentum conversion from an AT reference lattice; it does not replace the FIT datasets."
         )
         convention={
             "bipolar":"RF orbit difference (pyLOCO-compatible) = mean(−Δf) − mean(+Δf)\ncanonical signed RF step = f− − f+ = −2Δf\nphysical dispersion = RF orbit difference / (δ− − δ+)",
@@ -1484,6 +1766,7 @@ class MeasureMainWindow(QMainWindow):
         file_mode=self.orm_kick_mode.currentData()=="file"; self.orm_kick_file_row.setVisible(file_mode); self.orm_kick_file_label.setVisible(file_mode)
         for widget in (self.orm_hkick,self.orm_vkick,self.orm_hkick_label,self.orm_vkick_label):widget.setVisible(not file_mode)
         self._update_kick_preview(); self._update_measurement_help(); self.refresh_plan()
+        if getattr(self,"_displayed_orm_result",None) is not None:self._show_orm_result(self._displayed_orm_result)
 
     def _update_kick_preview(self):
         if not hasattr(self,"kick_preview"):return
@@ -1589,11 +1872,42 @@ class MeasureMainWindow(QMainWindow):
             label,frequency,title=specs[self.dispersion_step_index]
             offset=frequency-self._nominal_rf_value()
             action="Set/confirm the machine at nominal RF." if label=="reference" else f"Set RF externally to {frequency:.3f} Hz (requested offset {offset:+.3f} Hz)."
-            self.step_instruction.setText(f"STEP {self.dispersion_step_index+1} OF {total} — {title}\n{action}\nActual RF: not available — manual confirmation only.")
-            self.start_button.setText("Measure reference orbit" if label=="reference" else "I have set the RF — Measure orbit")
+            evidence="pyLOCO will verify the backend RF readback before acquisition." if AdapterCapability.RF_READ in self.adapter.capabilities else "Enter the actual applied frequency above; it will be recorded as operator-entered and not independently verified."
+            self.step_instruction.setText(f"STEP {self.dispersion_step_index+1} OF {total} — {title}\n{action}\n{evidence}")
+            self.start_button.setText("Confirm actual RF and measure orbit")
         else:
-            self.step_instruction.setText(f"STEP {total} OF {total} — Restore RF\nRestore RF externally to nominal frequency {self._nominal_rf_value():.3f} Hz. Actual RF: not available.")
-            self.start_button.setText("Confirm RF restored")
+            evidence="pyLOCO will verify the RF readback." if AdapterCapability.RF_READ in self.adapter.capabilities else "Enter the actual restored frequency above; independent readback is unavailable."
+            orbit=" A diagnostic restored orbit will then be acquired." if self.verify_restored_orbit.isChecked() else ""
+            self.step_instruction.setText(f"STEP {total} OF {total} — Restore RF\nRestore RF externally to nominal frequency {self._nominal_rf_value():.3f} Hz. {evidence}{orbit}")
+            self.start_button.setText("Confirm and verify RF restoration")
+
+    def _manual_rf_evidence(self, label, requested):
+        """Return actual RF, provenance, and independent-verification state without writing RF."""
+        if AdapterCapability.RF_READ in self.adapter.capabilities:
+            try:
+                actual=float(self.adapter.get_rf_frequency())
+            except Exception as exc:
+                text=self.manual_actual_rf.text().strip()
+                try:actual=float(text)
+                except ValueError as parse_exc:raise ValueError(f"RF readback failed: {exc}. Enter the actual applied frequency after confirming it externally.") from parse_exc
+                source="operator_entry_unverified"; verified=False
+            else:source="backend_readback"; verified=True
+        else:
+            text=self.manual_actual_rf.text().strip()
+            try:actual=float(text)
+            except ValueError as exc:raise ValueError("Enter the actual applied RF frequency in Hz before confirming this step.") from exc
+            source="operator_entry_unverified"; verified=False
+        if not np.isfinite(actual) or actual<=0:
+            raise ValueError("The actual applied RF frequency must be a finite positive value.")
+        nominal=self._nominal_rf_value()
+        tolerance=max(1e-6,min(0.1,max(0.01,self._rf_offset_hz()*0.01)))
+        if label in {"reference","reference_after","restoration"} and abs(actual-nominal)>tolerance:
+            raise ValueError(f"RF is not at nominal: actual {actual:.6f} Hz, nominal {nominal:.6f} Hz (tolerance {tolerance:g} Hz).")
+        if label=="positive" and actual<=nominal:
+            raise ValueError("Positive RF state must be above the nominal frequency.")
+        if label=="negative" and actual>=nominal:
+            raise ValueError("Negative RF state must be below the nominal frequency.")
+        return actual,source,verified
 
     def _resolve_selection(self):
         method=self.selection_method.currentData()
@@ -1652,7 +1966,9 @@ class MeasureMainWindow(QMainWindow):
             adapter_text = self.status_badge.text()
         nominal=self._nominal_rf_value(); offset=self._rf_offset_hz(); negative="Waiting for RF readback" if nominal is None else f"{nominal-offset:.3f} Hz"; positive="Waiting for RF readback" if nominal is None else f"{nominal+offset:.3f} Hz"
         separation=2*offset if self.dispersion_direction.currentData()=="bipolar" else offset
-        values={"measurement":"ORM" if orm else "Dispersion" if dispersion else "BPM noise","bpms":str(len(self.selected_devices)),"h_correctors":str(len(self.selected_hcorrectors)),"v_correctors":str(len(self.selected_vcorrectors)),"total_correctors":str(len(self.selected_hcorrectors)+len(self.selected_vcorrectors)),"kick_source":"Per-corrector file" if self.orm_kick_mode.currentData()=="file" else "Common","h_kick":f"{np.min(kh)*1e6:g}–{np.max(kh)*1e6:g} µrad" if kh.size else "Invalid","v_kick":f"{np.min(kv)*1e6:g}–{np.max(kv)*1e6:g} µrad" if kv.size else "Invalid","scaled_orm":"Yes — m/rad" if self.orm_scaled.isChecked() else "No — m","orm_direction":self.orm_direction.currentText(),"rf_mode":"Automatic backend RF with restoration protection" if automatic_rf else "Manual (no writes)","nominal_rf":"Read from backend" if automatic_rf and nominal is None else f"{nominal:.3f} Hz" if nominal else "Required","rf_step_±δf":f"{offset:g} Hz per side","bipolar_separation":f"{separation:g} Hz total","negative_rf":negative,"positive_rf":positive,"direction":direction,"readings":str(self.readings.value()),"delay":f"{self.delay.value():g} s","settling_delay":f"{self.settling_delay.value():g} s","rf_states":", ".join(spec[0] for spec in self._dispersion_state_specs()) or "backend-derived","est_duration":f"{estimate:.2f} s","adapter":adapter_text,"output":str(output)}
+        values={"measurement":"ORM" if orm else "Dispersion" if dispersion else "BPM noise","bpms":str(len(self.selected_devices)),"h_correctors":str(len(self.selected_hcorrectors)),"v_correctors":str(len(self.selected_vcorrectors)),"total_correctors":str(len(self.selected_hcorrectors)+len(self.selected_vcorrectors)),"kick_source":"Per-corrector file" if self.orm_kick_mode.currentData()=="file" else "Common","h_kick":f"{np.min(kh)*1e6:g}–{np.max(kh)*1e6:g} µrad" if kh.size else "Invalid","v_kick":f"{np.min(kv)*1e6:g}–{np.max(kv)*1e6:g} µrad" if kv.size else "Invalid","scaled_orm":"Saved FIT matrix: orbit difference [m]"+("; normalized analysis view enabled" if self.orm_normalized_analysis.isChecked() else ""),"orm_direction":self.orm_direction.currentText(),"rf_mode":"Automatic backend RF with restoration protection" if automatic_rf else "Manual (no writes)","nominal_rf":"Read from backend" if automatic_rf and nominal is None else f"{nominal:.3f} Hz" if nominal else "Required","rf_step_±δf":f"{offset:g} Hz per side","bipolar_separation":f"{separation:g} Hz total","negative_rf":negative,"positive_rf":positive,"direction":direction,"readings":str(self.readings.value()),"delay":f"{self.delay.value():g} s","settling_delay":f"{self.settling_delay.value():g} s","rf_states":", ".join(spec[0] for spec in self._dispersion_state_specs()) or "backend-derived","est_duration":f"{estimate:.2f} s","adapter":adapter_text,"output":str(output)}
+        values["measurement_i/o"] = "Temporary magnet writes" if orm else "Temporary RF writes" if automatic_rf else "Read only — orbit reads only"
+        values["noise_definition"] = f"{'Population' if self.bpm_noise_convention.currentData()==0 else 'Sample'} σ per BPM (ddof={self.bpm_noise_convention.currentData()})" if not (orm or dispersion) else "—"
         for key,value in values.items(): self.plan_values[key].setText(value)
         self.plan_output.setToolTip(str(output))
         self.start_button.setEnabled(valid and self.thread is None)
@@ -1665,10 +1981,13 @@ class MeasureMainWindow(QMainWindow):
         if automatic_rf and AdapterCapability.RF_WRITE not in self.adapter.capabilities:reasons.append("selected backend does not support RF writes")
         if orm and not (self.selected_hcorrectors or self.selected_vcorrectors):reasons.append("select at least one corrector")
         if orm and not kick_valid:reasons.append("corrector kick settings are invalid")
-        self.start_block_reason.setText("Cannot start: "+"; ".join(reasons)+"." if reasons else "Ready to acquire through "+descriptor.badge+".")
+        if reasons:self.start_block_reason.setText("Cannot start: "+"; ".join(reasons)+".")
+        elif automatic_rf:self.start_block_reason.setText(f"Ready for automatic dispersion through {descriptor.badge.split(' • ')[0]} • RF WRITES AUTHORIZED; BPM orbit acquisition is read only.")
+        else:self.start_block_reason.setText("Ready to acquire through "+descriptor.badge+".")
         for widget in getattr(self,"orm_plan_widgets",[]):widget.setVisible(orm)
         for widget in getattr(self,"dispersion_plan_widgets",[]):widget.setVisible(dispersion)
         for widget in getattr(self,"settling_plan_widgets",[]):widget.setVisible(dispersion or orm)
+        self._update_persistent_header()
         self._update_dispersion_guide()
         self._update_workflow_tabs()
 
@@ -1692,7 +2011,7 @@ class MeasureMainWindow(QMainWindow):
         if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="automatic": return self._start_automatic_dispersion()
         if self.measurement_type.currentData()=="dispersion": return self._start_dispersion_step()
         self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat(f"Starting — 0 / {self.readings.value()}"); self.reading_status.setText("Starting…"); self.elapsed.setText("Elapsed: 0.00 s"); self.remaining.setText(f"Remaining: ~{max(0,self.readings.value()-1)*self.delay.value():.2f} s"); self.samples.setText(f"Samples: 0 / {self.readings.value()}"); self._reset_live_plot(); self.log.clear(); self.log.appendPlainText(f"Starting BPM-noise measurement through {self.status_badge.text()}…")
-        self.thread=QThread(self); self.worker=AcquisitionWorker(BpmNoiseAcquirer(self.adapter,self.selected_devices),self.readings.value(),self.delay.value(),self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_progress); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
+        self.thread=QThread(self); self.worker=AcquisitionWorker(BpmNoiseAcquirer(self.adapter,self.selected_devices,ddof=int(self.bpm_noise_convention.currentData())),self.readings.value(),self.delay.value(),self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_progress); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed): signal.connect(self._finish_thread)
         self._set_acquisition_running(True); self.thread.start()
 
@@ -1705,10 +2024,10 @@ class MeasureMainWindow(QMainWindow):
         self._model_orm_cache=None
         if self.compare_reference.isChecked() and self.reference_model is not None:
             try:
-                self._model_orm_cache=model_orm(self.reference_model,self.selected_devices,self.selected_hcorrectors,self.selected_vcorrectors,kick_h,kick_v,scaled=self.orm_scaled.isChecked())
+                self._model_orm_cache=model_orm(self.reference_model,self.selected_devices,self.selected_hcorrectors,self.selected_vcorrectors,kick_h,kick_v,scaled=False)
             except Exception as exc:self.statusBar().showMessage(f"Reference-model ORM unavailable: {exc}")
         self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat("Preparing ORM"); self.reading_status.setText("Preparing first corrector…"); self.log.clear(); self.log.appendPlainText(f"Starting ORM through {self.status_badge.text()}; each original setpoint will be restored.")
-        options={"direction":self.orm_direction.currentData(),"scaled":self.orm_scaled.isChecked(),"readings":self.readings.value(),"delay_seconds":self.delay.value(),"settling_delay_seconds":self.settling_delay.value()}
+        options={"direction":self.orm_direction.currentData(),"scaled":False,"readings":self.readings.value(),"delay_seconds":self.delay.value(),"settling_delay_seconds":self.settling_delay.value()}
         self.thread=QThread(self); self.worker=ORMAcquisitionWorker(acquirer,kick_h,kick_v,options,self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.event.connect(self._on_orm_event); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed):signal.connect(self._finish_thread)
         self._set_acquisition_running(True); self.thread.start()
@@ -1730,7 +2049,8 @@ class MeasureMainWindow(QMainWindow):
         label="Verifying — restored reference orbit" if state_index==measurement_states else labels[state_index] if state_index<len(labels) else f"measurement {state_index+1}"
         offset=self._rf_offset_hz()
         preview={0:"Orbit preview — reference RF",1:f"Orbit preview — positive RF (+{offset:g} Hz)",2:f"Orbit preview — negative RF (−{offset:g} Hz)",3:"Orbit preview — restored reference RF"}.get(state_index,f"Orbit preview — {label}")
-        self.progress.setValue(round(100*overall/overall_total)); self.progress.setFormat(f"{label} — orbit {current} / {total}"); self.reading_status.setText(f"Automatic RF: {label} — reading {current} / {total}"); self.samples.setText(f"Samples: {overall} / {overall_total}"); self.elapsed.setText(f"Elapsed: {elapsed:.2f} s"); self._update_live_orbit(x,y,title=preview)
+        if state_index==0:self._live_dispersion_reference=(np.asarray(x,dtype=float).copy(),np.asarray(y,dtype=float).copy())
+        self.progress.setValue(round(100*overall/overall_total)); self.progress.setFormat(f"{label} — orbit {current} / {total}"); self.reading_status.setText(f"Automatic RF: {label} — reading {current} / {total}"); self.samples.setText(f"Samples: {overall} / {overall_total}"); self.elapsed.setText(f"Elapsed: {elapsed:.2f} s"); self._update_live_orbit(x,y,title=preview,dispersion=True)
 
     @Slot(str,object)
     def _on_automatic_dispersion_status(self,phase,details):
@@ -1796,17 +2116,41 @@ class MeasureMainWindow(QMainWindow):
             self._show_orm_progress(np.asarray(event["matrix"]),column)
 
     def _start_dispersion_step(self):
+        if self._nominal_rf_value() is None and AdapterCapability.RF_READ in self.adapter.capabilities:
+            try:
+                nominal=float(self.adapter.get_rf_frequency())
+                if np.isfinite(nominal) and nominal>0:
+                    self.nominal_rf.setText(f"{nominal:.12f}")
+                    self._manual_nominal_source="backend_readback"
+                    self.nominal_rf_source.setText("Source: backend RF readback (manual control; no writes)")
+            except Exception as exc:
+                self.log.appendPlainText(f"Nominal RF readback unavailable: {exc}")
         specs=self._dispersion_state_specs()
         if not specs:
             QMessageBox.warning(self,"Nominal RF required","Enter an explicit nominal RF frequency before measuring dispersion."); return
         if self.dispersion_step_index >= len(specs):
-            return self._complete_dispersion()
+            try:actual,source,verified=self._manual_rf_evidence("restoration",self._nominal_rf_value())
+            except ValueError as exc:QMessageBox.warning(self,"RF restoration not confirmed",str(exc)); return
+            self._restored_rf_readback=actual; self._manual_restoration_source=source; self._manual_restoration_verified=verified
+            if not self.verify_restored_orbit.isChecked():return self._complete_dispersion()
+            label="reference_after"; frequency=self._nominal_rf_value(); title="Restored reference orbit"
+            self._manual_restoration_pending=True
+            self.log.appendPlainText(f"Operator confirmed restored RF {actual:.6f} Hz ({source}); acquiring diagnostic restored orbit.")
+            return self._launch_manual_dispersion_state(label,frequency,title,actual,source,verified)
         if self.dispersion_step_index==0:
-            self.dispersion_states=[]; self.dispersion_started_at=monotonic(); self.log.clear()
+            self.dispersion_states=[]; self.dispersion_started_at=monotonic(); self.log.clear(); self._manual_restoration_pending=False
         label,frequency,title=specs[self.dispersion_step_index]
-        if hasattr(self.adapter,"set_simulated_rf_state"): self.adapter.set_simulated_rf_state(frequency)
-        self.cancel_event=Event(); self.result=None; total=len(specs)*self.readings.value(); completed=self.dispersion_step_index*self.readings.value(); self.progress.setValue(round(100*completed/total)); self.progress.setFormat(f"RF state {self.dispersion_step_index+1} / {len(specs)} — 0 / {self.readings.value()}"); self.reading_status.setText(f"{title} — settling/acquiring"); self.log.appendPlainText(f"User confirmed requested state {label}: {frequency:.3f} Hz. Actual RF readback unavailable.")
-        self.thread=QThread(self); self.worker=DispersionAcquisitionWorker(DispersionStateAcquirer(self.adapter,self.selected_devices),label,frequency,self.readings.value(),self.delay.value(),self.settling_delay.value(),self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_progress); self.worker.completed.connect(self._on_dispersion_state_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
+        try:actual,source,verified=self._manual_rf_evidence(label,frequency)
+        except ValueError as exc:QMessageBox.warning(self,"Actual RF not confirmed",str(exc)); return
+        if label=="reference":self._manual_nominal_source=source
+        self.log.appendPlainText(f"Operator confirmed {label}: requested {frequency:.6f} Hz; actual {actual:.6f} Hz ({source}).")
+        self.manual_actual_rf.clear()
+        self._launch_manual_dispersion_state(label,frequency,title,actual,source,verified)
+
+    def _launch_manual_dispersion_state(self,label,frequency,title,actual,source,verified):
+        self.cancel_event=Event(); self.result=None
+        specs=self._dispersion_state_specs(); total=(len(specs)+(1 if label=="reference_after" else 0))*self.readings.value(); completed=min(self.dispersion_step_index,len(specs))*self.readings.value(); self.progress.setValue(round(100*completed/total)); self.progress.setFormat(f"RF state {min(self.dispersion_step_index+1,len(specs))} / {len(specs)} — 0 / {self.readings.value()}"); self.reading_status.setText(f"{title} — settling/acquiring")
+        self.thread=QThread(self); self.worker=DispersionAcquisitionWorker(DispersionStateAcquirer(self.adapter,self.selected_devices),label,frequency,actual,source,verified,self.readings.value(),self.delay.value(),self.settling_delay.value(),self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_progress); self.worker.completed.connect(self._on_dispersion_state_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed): signal.connect(self._finish_thread)
         self._set_acquisition_running(True); self.thread.start()
 
@@ -1814,10 +2158,11 @@ class MeasureMainWindow(QMainWindow):
     def _on_progress(self,current,total,elapsed,x,y):
         if self.measurement_type.currentData()=="dispersion":
             states=max(1,len(self._dispersion_state_specs())); overall=self.dispersion_step_index*total+current; overall_total=states*total; remaining=(elapsed/current)*(overall_total-overall) if current else 0.0; self.progress.setValue(round(100*overall/overall_total)); self.progress.setFormat(f"RF state {self.dispersion_step_index+1} / {states} — orbit {current} / {total}"); self.reading_status.setText(f"RF state {self.dispersion_step_index+1} / {states} — Reading {current} / {total}"); self.samples.setText(f"Samples: {overall} / {overall_total}")
+            if self.dispersion_step_index==0:self._live_dispersion_reference=(np.asarray(x,dtype=float).copy(),np.asarray(y,dtype=float).copy())
         else:
             remaining=(elapsed/current)*(total-current) if current else 0.0; self.progress.setValue(round(100*current/total)); self.progress.setFormat(f"Reading {current} / {total}"); self.reading_status.setText(f"Reading {current} / {total}"); self.samples.setText(f"Samples: {current} / {total}")
         self.elapsed.setText(f"Elapsed: {elapsed:.2f} s"); self.remaining.setText(f"Remaining: ~{remaining:.2f} s")
-        if current in (1,total) or current % max(1,total//20)==0: self._update_live_orbit(x,y)
+        if current in (1,total) or current % max(1,total//20)==0:self._update_live_orbit(x,y,dispersion=self.measurement_type.currentData()=="dispersion")
 
     @Slot(object)
     def _on_completed(self,result):
@@ -1842,8 +2187,9 @@ class MeasureMainWindow(QMainWindow):
         try:
             if self.adapter_combo.currentData()!="mock" and hasattr(self.adapter,"test_connection"):self.adapter.test_connection()
             if isinstance(previous,DispersionResult):
-                current=float(self.adapter.get_rf_frequency())
-                if current != previous.nominal_rf_hz:raise RuntimeError(f"RF is not exactly restored: {current!r} != {previous.nominal_rf_hz!r}")
+                if AdapterCapability.RF_READ in self.adapter.capabilities:
+                    current=float(self.adapter.get_rf_frequency())
+                    if current != previous.nominal_rf_hz:raise RuntimeError(f"RF is not exactly restored: {current!r} != {previous.nominal_rf_hz!r}")
             if isinstance(previous,ORMResult):
                 if any(status!="restored" for status in previous.restoration_status):raise RuntimeError("One or more corrector restorations were not confirmed")
                 if previous.direction=="bipolar" and any(status!="restored" for status in previous.intermediate_restoration_status):raise RuntimeError("One or more between-kick restorations were not confirmed")
@@ -1858,18 +2204,26 @@ class MeasureMainWindow(QMainWindow):
 
     @Slot(object)
     def _on_dispersion_state_completed(self,state):
-        self.dispersion_states.append(state); self.dispersion_step_index+=1
+        self.dispersion_states.append(state)
+        if state.label=="reference_after":
+            self._manual_restoration_pending=False
+            self.log.appendPlainText(f"Measured {state.label}: {state.orbits_x_m.shape[0]} diagnostic orbit samples retained.")
+            return self._complete_dispersion()
+        self.dispersion_step_index+=1
         self.log.appendPlainText(f"Measured {state.label}: {state.orbits_x_m.shape[0]} orbit samples retained.")
         self.reading_status.setText("State complete — continue when the next RF state is confirmed")
         self._update_dispersion_guide(); self._update_workflow_tabs()
 
     def _complete_dispersion(self):
         specs=self._dispersion_state_specs()
-        if len(self.dispersion_states)!=len(specs):
+        measurement_states=[state for state in self.dispersion_states if state.label!="reference_after"]
+        if len(measurement_states)!=len(specs):
             QMessageBox.warning(self,"Incomplete dispersion","Measure every requested RF state before confirming restoration."); return
+        if any(not state.operator_confirmed or not np.isfinite(state.actual_rf_hz) for state in measurement_states):
+            QMessageBox.warning(self,"Unconfirmed RF state","Every dispersion state needs a confirmed, finite actual RF frequency. Nothing was saved."); return
         result=DispersionResult(
             tuple(self.selected_devices),tuple(self.dispersion_states),self.dispersion_direction.currentData(),
-            self._nominal_rf_value(),self._rf_offset_hz(),"confirmed_by_operator",
+            self._nominal_rf_value(),self._rf_offset_hz(),"verified_readback" if self._manual_restoration_verified else "confirmed_by_operator_unverified",
             0.0 if self.dispersion_started_at is None else monotonic()-self.dispersion_started_at,
         )
         self.result=result; self.reading_status.setText("Completed — RF restoration manually confirmed"); self.progress.setValue(100); self.progress.setFormat("Completed — RF restored"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Samples: {len(specs)*self.readings.value()} / {len(specs)*self.readings.value()}")
@@ -1882,19 +2236,120 @@ class MeasureMainWindow(QMainWindow):
         if thread: thread.quit(); thread.wait(3000); thread.deleteLater()
         self.thread=None; self.worker=None; self._set_acquisition_running(False); self.refresh_plan()
 
-    def cancel_acquisition(self): self.cancel_event.set(); self.log.appendPlainText("Stopping…")
-    def _on_cancelled(self,message): self.progress.setValue(0); self.progress.setFormat("Cancelled"); self.reading_status.setText("Cancelled — no measurement saved"); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message); self._update_workflow_tabs()
-    def _on_failed(self,message): self.progress.setValue(0); self.progress.setFormat("Failed"); self.reading_status.setText("Failed — no measurement saved"); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message); QMessageBox.critical(self,"Measurement failed",message); self._update_workflow_tabs()
+    def _manual_rf_restore_instruction(self):
+        nominal=self._nominal_rf_value()
+        return f" Restore RF externally to nominal {nominal:.6f} Hz and verify it before leaving the machine." if nominal is not None else " Restore RF externally to its original nominal value and verify it before leaving the machine."
+
+    def cancel_acquisition(self):
+        self.cancel_event.set(); self.log.appendPlainText("Stopping…")
+        if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual":self.log.appendPlainText(self._manual_rf_restore_instruction().strip())
+    def _on_cancelled(self,message):
+        instruction=self._manual_rf_restore_instruction() if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual" else ""
+        self.progress.setValue(0); self.progress.setFormat("Cancelled"); self.reading_status.setText("Cancelled — no measurement saved."+instruction); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message+instruction); self._update_workflow_tabs()
+    def _on_failed(self,message):
+        instruction=self._manual_rf_restore_instruction() if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual" else ""
+        self.progress.setValue(0); self.progress.setFormat("Failed"); self.reading_status.setText("Failed — no measurement saved."+instruction); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message+instruction); QMessageBox.critical(self,"Measurement failed",message+instruction); self._update_workflow_tabs()
+
+    def closeEvent(self,event):
+        if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual" and self.result is None and (self.dispersion_step_index or self.thread is not None):
+            self.cancel_event.set()
+            QMessageBox.warning(self,"Manual RF restoration required","The manual dispersion workflow is incomplete."+self._manual_rf_restore_instruction())
+        super().closeEvent(event)
 
     def _reset_live_plot(self):
         self.live_plot.clear(); axis=self.live_plot.figure.add_subplot(111); axis.set_title("Orbit Preview"); axis.set_xlabel("BPM selection position"); axis.set_ylabel("Orbit [µm]"); axis.grid(True,alpha=.25); self.live_plot.apply_theme()
 
-    def _update_live_orbit(self,x,y,*,title="Orbit preview — most recent reading"):
-        self.live_plot.clear(); axis=self.live_plot.figure.add_subplot(111); axis.plot(np.asarray(x)*1e6,"o-",label="X",color="#12BFC4",markersize=3); axis.plot(np.asarray(y)*1e6,"s-",label="Y",color="#F59E42",markersize=3); axis.set_title(title); axis.set_xlabel("BPM selection position"); axis.set_ylabel("Orbit [µm]"); axis.grid(True,alpha=.25); axis.legend(ncol=2); self.live_plot.apply_theme()
+    def _update_live_orbit(self,x,y,*,title="Orbit preview — most recent reading",dispersion=False):
+        x=np.asarray(x,dtype=float); y=np.asarray(y,dtype=float); self._live_orbit_absolute=(x.copy(),y.copy(),title,dispersion)
+        relative=bool(dispersion and self.live_dispersion_view.currentData()=="relative" and self._live_dispersion_reference is not None)
+        if relative:x=x-self._live_dispersion_reference[0]; y=y-self._live_dispersion_reference[1]; title=title+" — change from reference"
+        self.live_plot.clear(); axis=self.live_plot.figure.add_subplot(111); positions=np.arange(len(x)); sx=x*1e6; sy=y*1e6
+        line_x=axis.plot(positions,sx,"o-",label="X",color="#12BFC4",markersize=3,picker=5)[0]; line_y=axis.plot(positions,sy,"s-",label="Y",color="#F59E42",markersize=3,picker=5)[0]
+        axis.set_title(title); axis.set_xlabel("BPM index (zero-based)"); axis.set_ylabel("Orbit change [µm]" if relative else "Orbit [µm]"); axis.grid(True,alpha=.25); axis.legend(ncol=2); self.live_plot.apply_theme(); theme=self.live_plot.theme(); annotation=axis.annotate("",xy=(0,0),xytext=(12,14),textcoords="offset points",bbox={"boxstyle":"round,pad=0.45","facecolor":theme["face"],"edgecolor":theme["spine"],"alpha":.97},color=theme["text"],fontsize=9,zorder=6); annotation.set_gid("bpm-identification-tooltip"); annotation.set_visible(False); highlight_x=axis.scatter([],[],s=90,facecolors="none",edgecolors="#D946EF",linewidths=2,zorder=5); highlight_y=axis.scatter([],[],s=90,facecolors="none",edgecolors="#D946EF",linewidths=2,zorder=5)
+        pinned_x=axis.scatter([],[],s=55,facecolors="#12BFC4",edgecolors="#8B5CF6",linewidths=1.8,zorder=4); pinned_y=axis.scatter([],[],s=55,facecolors="#F59E42",edgecolors="#8B5CF6",linewidths=1.8,zorder=4)
+        self._live_dispersion_plot_state={"axis":axis,"lines":(("X",line_x,sx),("Y",line_y,sy)),"annotation":annotation,"highlight_x":highlight_x,"highlight_y":highlight_y,"pinned_x":pinned_x,"pinned_y":pinned_y,"pin_lines":[]}
+        self._refresh_dispersion_highlights()
+
+    def _redisplay_live_orbit(self,*_):
+        cached=getattr(self,"_live_orbit_absolute",None)
+        if cached is not None:self._update_live_orbit(cached[0],cached[1],title=cached[2],dispersion=cached[3])
+
+    def _live_dispersion_index_from_event(self,event):
+        state=self._live_dispersion_plot_state
+        if state is None or event.inaxes is not state["axis"]:return None,None
+        for plane,line,values in state["lines"]:
+            contains,details=line.contains(event)
+            if contains and details.get("ind"):return int(details["ind"][0]),plane
+        return None,None
+
+    def _dispersion_bpm_text(self,index,plane=None):
+        if not 0<=index<len(self.selected_devices):return ""
+        state=self._live_dispersion_plot_state; values={p:v for p,_line,v in state["lines"]} if state else {}
+        prefix=f"{self.selected_devices[index].name}\nBPM index {index} (zero-based)"
+        if plane:return f"{prefix}\n{plane} {values[plane][index]:.6g} µm"
+        return f"{prefix} · X {values.get('X',[np.nan])[index]:.6g} µm · Y {values.get('Y',[np.nan])[index]:.6g} µm"
+
+    def _on_live_dispersion_hover(self,event):
+        state=self._live_dispersion_plot_state
+        if state is None:return
+        index,plane=self._live_dispersion_index_from_event(event); annotation=state["annotation"]
+        if index is None:annotation.set_visible(False)
+        else:
+            values={p:v for p,_line,v in state["lines"]}; value=values[plane][index]; self._place_plot_annotation(annotation,state["axis"],index,value); annotation.set_text(self._dispersion_bpm_text(index,plane)); annotation.set_visible(True)
+        self.live_plot.canvas.draw_idle()
+
+    def _on_live_dispersion_click(self,event):
+        index,_plane=self._live_dispersion_index_from_event(event)
+        if index is None:return
+        self._dispersion_selected_bpm_index=index; text=self._dispersion_bpm_text(index); self.live_dispersion_selection.setText(text); self.dispersion_selected_details.setText(text.replace("\n"," · ")); self.live_dispersion_pin.setEnabled(True); self.dispersion_pin_button.setEnabled(True); label="Remove highlight" if index in self._dispersion_pinned_bpm_indices else "Keep highlighted"; self.live_dispersion_pin.setText(label); self.dispersion_pin_button.setText(label); self._refresh_dispersion_highlights()
+
+    def _toggle_live_dispersion_pin(self):
+        index=self._dispersion_selected_bpm_index
+        if index is None:return
+        if index in self._dispersion_pinned_bpm_indices:
+            self._dispersion_pinned_bpm_indices.remove(index); self._dispersion_selected_bpm_index=None
+            self.live_dispersion_selection.setText("Click a BPM point to inspect it"); self.dispersion_selected_details.setText("Click a plotted BPM to inspect it")
+            for button in (self.live_dispersion_pin,self.dispersion_pin_button):button.setEnabled(False); button.setText("Keep highlighted")
+            self._refresh_dispersion_highlights(); return
+        self._dispersion_pinned_bpm_indices.add(index)
+        label="Remove highlight" if index in self._dispersion_pinned_bpm_indices else "Keep highlighted"; self.live_dispersion_pin.setText(label); self.dispersion_pin_button.setText(label); self._refresh_dispersion_highlights()
+
+    def _clear_dispersion_pins(self):self._dispersion_pinned_bpm_indices.clear(); self._refresh_dispersion_highlights()
+
+    def _clear_dispersion_selection(self):
+        self._dispersion_selected_bpm_index=None; self._dispersion_pinned_bpm_indices.clear()
+        self.live_dispersion_selection.setText("Click a BPM point to inspect it"); self.dispersion_selected_details.setText("Click a plotted BPM to inspect it")
+        for button in (self.live_dispersion_pin,self.dispersion_pin_button):button.setEnabled(False); button.setText("Keep highlighted")
+        self._refresh_dispersion_highlights()
+
+    def _refresh_dispersion_highlights(self):
+        states=([self._live_dispersion_plot_state] if self._live_dispersion_plot_state else [])+list(self._dispersion_plot_state.values())
+        for state in states:
+            for line in state.get("pin_lines",[]):line.remove()
+            state["pin_lines"]=[state["axis"].axvline(i,color="#8B5CF6",linestyle="--",linewidth=1.0,alpha=.55,zorder=0) for i in sorted(self._dispersion_pinned_bpm_indices)]
+            pins=sorted(self._dispersion_pinned_bpm_indices)
+            if "pinned" in state:
+                pin_values=state.get("active_values",state.get("value_by_index",{})); state["pinned"].set_offsets([[i,pin_values[i]] for i in pins] if pins else np.empty((0,2)))
+            elif "pinned_x" in state:
+                values={p:v for p,_line,v in state["lines"]}; state["pinned_x"].set_offsets([[i,values["X"][i]] for i in pins] if pins else np.empty((0,2))); state["pinned_y"].set_offsets([[i,values["Y"][i]] for i in pins] if pins else np.empty((0,2)))
+            index=self._dispersion_selected_bpm_index
+            if index is not None:
+                if "highlight" in state:
+                    selected_values=state.get("active_values",state.get("value_by_index",{})); state["highlight"].set_offsets([[index,selected_values[index]]])
+                elif "highlight_x" in state:
+                    values={p:v for p,_line,v in state["lines"]}; state["highlight_x"].set_offsets([[index,values["X"][index]]]); state["highlight_y"].set_offsets([[index,values["Y"][index]]])
+            else:
+                if "highlight" in state:state["highlight"].set_offsets(np.empty((0,2)))
+                elif "highlight_x" in state:state["highlight_x"].set_offsets(np.empty((0,2))); state["highlight_y"].set_offsets(np.empty((0,2)))
+            state.get("canvas",self.live_plot).canvas.draw_idle()
 
     def save_log(self):
         filename=QFileDialog.getSaveFileName(self,"Save measurement log","pyloco-measure.log","Log files (*.log *.txt)")[0]
         if filename: Path(filename).write_text(self.log.toPlainText()+"\n",encoding="utf-8")
+
+    def open_output_folder(self):
+        path = self.saved_measurement_path.parent if self.saved_measurement_path is not None else self._resolved_output_directory()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _save_result(self,result):
         output=self._resolved_output_directory(); output.mkdir(parents=True,exist_ok=True); safe=re.sub(r"[^A-Za-z0-9_.-]+","_",self.measurement_name.text().strip()).strip("_") or "measurement"; stamp=datetime.now().strftime("%Y%m%d-%H%M%S"); measurement=output/f"{safe}-{stamp}.h5"; is_dispersion=isinstance(result,DispersionResult)
@@ -1907,20 +2362,29 @@ class MeasureMainWindow(QMainWindow):
                                 "backend_environment": options["mode"].upper(),
                                 "backend_real_machine": options["mode"] == "live",
                                 "magnet_writes_enabled": AdapterCapability.WRITE in self.adapter.capabilities,
-                                "rf_writes_enabled": AdapterCapability.RF_WRITE in self.adapter.capabilities}
+                                "rf_writes_enabled": AdapterCapability.RF_WRITE in self.adapter.capabilities,
+                                "corrector_control_unit": "rad" if AdapterCapability.WRITE in self.adapter.capabilities else None,
+                                "corrector_unit_source": "pyAML strength.unit converted to SI rad by Measure" if AdapterCapability.WRITE in self.adapter.capabilities else "not verified"}
         if profile is not None:
             profile_metadata={"machine":profile.machine,"profile_key":profile.key,"profile":profile.scenario,"profile_label":profile.label,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"lattice_provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
         model_metadata=self.reference_model.provenance() if self.reference_model is not None else {"reference_model_available":False}
-        metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"acquisition_timestamp":datetime.now().astimezone().isoformat(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"machine_identity":identity,**profile_metadata,**model_metadata,"compare_with_reference_model":self.compare_reference.isChecked(),"pysc_machine_profile":self.pysc_profile_combo.currentData() if descriptor.key=="pysc" else None,"readings_per_state":self.readings.value(),"delay_seconds":self.delay.value(),"elapsed_seconds":result.elapsed_seconds}
+        actual_readings=(result.raw_state_a_m.shape[1] if isinstance(result,ORMResult) and result.raw_state_a_m.ndim==3 else self.readings.value())
+        metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"acquisition_timestamp":datetime.now().astimezone().isoformat(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"machine_identity":identity,**profile_metadata,**model_metadata,"compare_with_reference_model":self.compare_reference.isChecked(),"pysc_machine_profile":self.pysc_profile_combo.currentData() if descriptor.key=="pysc" else None,"readings_per_state":actual_readings,"delay_seconds":self.delay.value(),"settling_delay_seconds":self.settling_delay.value() if isinstance(result,(ORMResult,DispersionResult)) else 0.0,"elapsed_seconds":result.elapsed_seconds}
         if isinstance(result,ORMResult):
-            nh=len(result.horizontal_correctors); write_orm(measurement,response_matrix=result.response_matrix,bpm_names=[d.name for d in result.bpms],horizontal_corrector_names=[d.name for d in result.horizontal_correctors],vertical_corrector_names=[d.name for d in result.vertical_correctors],requested_kick_h_rad=result.requested_kicks_rad[:nh],requested_kick_v_rad=result.requested_kicks_rad[nh:],actual_kick_h_rad=result.effective_kicks_rad[:nh],actual_kick_v_rad=result.effective_kicks_rad[nh:],orbit_plus_m=result.raw_state_a_m,orbit_minus_m=result.raw_state_b_m,reference_before_m=result.raw_reference_before_m,reference_intermediate_m=result.raw_reference_intermediate_m,reference_final_m=result.raw_reference_final_m,scaled=result.scaled,direction=result.direction,original_setpoints_rad=result.original_setpoints_rad,requested_state_a_rad=result.requested_state_a_rad,requested_state_b_rad=result.requested_state_b_rad,actual_state_a_rad=result.actual_state_a_rad,actual_state_b_rad=result.actual_state_b_rad,intermediate_restored_setpoints_rad=result.intermediate_restored_setpoints_rad,intermediate_restoration_status=result.intermediate_restoration_status,final_setpoints_rad=result.final_setpoints_rad,timestamps_plus_s=result.timestamps_state_a_s,timestamps_minus_s=result.timestamps_state_b_s,restoration_status=result.restoration_status,metadata={**metadata,"orm_validation_convention":"historical_petra_bipolar_v3","kick_convention":"total bipolar delta_K; K+=K0+delta_K/2; restore/verify K0 and acquire diagnostic reference; K-=K0-delta_K/2; restore/verify K0 and acquire diagnostic reference","restored_orbit_role":"reference_before, reference_intermediate and reference_final are diagnostic-only and excluded from ORM calculation","subtraction_convention":"mean(positive)-mean(negative)","normalization_convention":"divide each column by actual K+ minus K- readback only when scaled","response_matrix_unit":"m/rad" if result.scaled else "m","row_order":"horizontal_bpms,vertical_bpms","column_order":"horizontal_correctors,vertical_correctors","selected_bpm_names":[d.name for d in result.bpms],"selected_horizontal_corrector_names":[d.name for d in result.horizontal_correctors],"selected_vertical_corrector_names":[d.name for d in result.vertical_correctors]})
+            nh=len(result.horizontal_correctors); diagnostics={}
+            if result.raw_state_a_m.ndim==3 and result.raw_state_a_m.shape[1]>1:
+                diagnostics={"state_a_first_sample_minus_later_mean_m":result.raw_state_a_m[:,0,:]-np.mean(result.raw_state_a_m[:,1:,:],axis=1),"state_b_first_sample_minus_later_mean_m":result.raw_state_b_m[:,0,:]-np.mean(result.raw_state_b_m[:,1:,:],axis=1)}
+            write_orm(measurement,response_matrix=result.response_matrix,bpm_names=[d.name for d in result.bpms],horizontal_corrector_names=[d.name for d in result.horizontal_correctors],vertical_corrector_names=[d.name for d in result.vertical_correctors],requested_kick_h_rad=result.requested_kicks_rad[:nh],requested_kick_v_rad=result.requested_kicks_rad[nh:],actual_kick_h_rad=result.effective_kicks_rad[:nh],actual_kick_v_rad=result.effective_kicks_rad[nh:],orbit_plus_m=result.raw_state_a_m,orbit_minus_m=result.raw_state_b_m,reference_before_m=result.raw_reference_before_m,reference_intermediate_m=result.raw_reference_intermediate_m,reference_final_m=result.raw_reference_final_m,scaled=result.scaled,direction=result.direction,original_setpoints_rad=result.original_setpoints_rad,requested_state_a_rad=result.requested_state_a_rad,requested_state_b_rad=result.requested_state_b_rad,actual_state_a_rad=result.actual_state_a_rad,actual_state_b_rad=result.actual_state_b_rad,intermediate_restored_setpoints_rad=result.intermediate_restored_setpoints_rad,intermediate_restoration_status=result.intermediate_restoration_status,final_setpoints_rad=result.final_setpoints_rad,timestamps_plus_s=result.timestamps_state_a_s,timestamps_minus_s=result.timestamps_state_b_s,restoration_status=result.restoration_status,diagnostics=diagnostics,metadata={**metadata,"orm_validation_convention":"historical_petra_bipolar_v3","kick_convention":"total bipolar delta_K; K+=K0+delta_K/2; restore/verify K0 and acquire diagnostic reference; K-=K0-delta_K/2; restore/verify K0 and acquire diagnostic reference","restored_orbit_role":"reference_before, reference_intermediate and reference_final are diagnostic-only and excluded from ORM calculation","subtraction_convention":"mean(positive)-mean(negative)","normalization_convention":"divide each column by actual K+ minus K- readback only when scaled","response_matrix_unit":"m/rad" if result.scaled else "m","row_order":"horizontal_bpms,vertical_bpms","column_order":"horizontal_correctors,vertical_correctors","transient_diagnostic":"first orbit sample minus mean of later samples for each applied corrector state; diagnostic only; no samples discarded","selected_bpm_names":[d.name for d in result.bpms],"selected_horizontal_corrector_names":[d.name for d in result.horizontal_correctors],"selected_vertical_corrector_names":[d.name for d in result.vertical_correctors]})
             model_matrix=getattr(self,"_model_orm_cache",None)
             if model_matrix is not None and self.reference_model is not None:
                 store_reference_model_arrays(measurement,{"orm":model_matrix,"orm_difference":result.response_matrix-model_matrix},units={"orm":"m/rad" if result.scaled else "m","orm_difference":"m/rad" if result.scaled else "m"},provenance=self.reference_model.provenance())
         elif is_dispersion:
-            automatic=self.rf_control_mode.currentData()=="automatic"; states=result.states; metadata.update({"rf_control_mode":"automatic" if automatic else "manual","nominal_rf_hz":result.nominal_rf_hz,"nominal_rf_source":"backend_readback" if automatic else "manual","requested_rf_offset_hz":result.requested_offset_hz,"direction":result.direction,"canonical_measured_eta_definition":"mean_orbit_negative - mean_orbit_positive; historical PETRA III pyLOCO RF-response convention; reference_before and reference_after are excluded","canonical_measured_eta_unit":"m","rf_difference_sign_convention":"negative_minus_positive","rf_normalized_response_unit":"m/Hz","actual_rf_available":automatic,"restoration_status":result.restoration_status,"settling_delay_seconds":self.settling_delay.value(),"dispersion_measurement_states":"reference_before,positive,negative","rf_restoration_is_measurement_state":False,"verify_restored_orbit":any(state.label=="reference_after" for state in states),"reference_after_role":"post-restoration diagnostic only; excluded from physical dispersion and RF orbit difference"})
+            automatic=self.rf_control_mode.currentData()=="automatic"; states=result.states; metadata.update({"rf_control_mode":"automatic" if automatic else "manual","nominal_rf_hz":result.nominal_rf_hz,"nominal_rf_source":"backend_readback" if automatic else self._manual_nominal_source,"requested_rf_offset_hz":result.requested_offset_hz,"direction":result.direction,"canonical_measured_eta_definition":"mean_orbit_negative - mean_orbit_positive; historical PETRA III pyLOCO RF-response convention; reference_before and reference_after are excluded","canonical_measured_eta_unit":"m","rf_difference_sign_convention":"negative_minus_positive","rf_normalized_response_unit":"m/Hz","actual_rf_available":bool(all(np.isfinite(s.actual_rf_hz) for s in states)),"rf_acquisition_order":[s.label for s in states],"rf_requested_frequencies_hz":[float(s.requested_rf_hz) for s in states],"rf_actual_frequencies_hz":[float(s.actual_rf_hz) for s in states],"rf_actual_frequency_sources":[s.actual_rf_source for s in states],"rf_readback_verified":[bool(s.rf_readback_verified) for s in states],"operator_confirmed_states":[bool(s.operator_confirmed) for s in states],"restoration_status":result.restoration_status,"rf_restoration_source":"backend_readback" if automatic else self._manual_restoration_source,"rf_restoration_readback_verified":True if automatic else self._manual_restoration_verified,"settling_delay_seconds":self.settling_delay.value(),"dispersion_measurement_states":"reference_before,positive,negative","rf_restoration_is_measurement_state":False,"verify_restored_orbit":any(state.label=="reference_after" for state in states),"reference_after_role":"post-restoration diagnostic only; excluded from physical dispersion and RF orbit difference"})
             state_rf={state.label:float(state.actual_rf_hz) for state in states}; restored=float(getattr(self,"_restored_rf_readback",np.nan)); metadata.update({"rf_original_hz":result.nominal_rf_hz,"rf_positive_hz":state_rf.get("positive",np.nan),"rf_negative_hz":state_rf.get("negative",np.nan),"rf_restored_hz":restored,"rf_restoration_difference_hz":restored-result.nominal_rf_hz if np.isfinite(restored) else np.nan})
             diagnostics={"raw_orbit_difference_x_m":result.measured_eta_x,"raw_orbit_difference_y_m":result.measured_eta_y}
+            if all(state.orbits_x_m.shape[0]>1 for state in states):
+                diagnostics.update({"state_first_sample_minus_later_mean_x_m":np.stack([state.orbits_x_m[0]-np.mean(state.orbits_x_m[1:],axis=0) for state in states]),"state_first_sample_minus_later_mean_y_m":np.stack([state.orbits_y_m[0]-np.mean(state.orbits_y_m[1:],axis=0) for state in states])})
+                metadata["state_transition_diagnostic"]="first orbit sample minus mean of later samples for each RF state; diagnostic only, raw data and fitting inputs unchanged"
             if any(state.label=="reference_after" for state in states):
                 before=result.state("reference"); after=result.state("reference_after")
                 diagnostics.update({"restored_orbit_difference_x_m":after.mean_x_m-before.mean_x_m,"restored_orbit_difference_y_m":after.mean_y_m-before.mean_y_m})
@@ -1932,14 +2396,14 @@ class MeasureMainWindow(QMainWindow):
                 metadata.update({"momentum_compaction_factor":lattice_metadata["alpha"],"relativistic_correction_inverse_gamma_squared":lattice_metadata["inverse_gamma_squared"],"at_slip_factor":lattice_metadata["at_slip_factor"],"slip_factor_eta":eta,"slip_factor_convention":"AT ring.get_slip_factor() = 1/gamma^2 - alpha_c; eta = alpha_c - 1/gamma^2 = -AT slip factor","momentum_relation":MOMENTUM_RELATION,"delta_negative":float(deltas[0]),"delta_positive":float(deltas[1]),"delta_span":float(span),"delta_span_definition":"delta_negative - delta_positive","physical_dispersion_definition":"(mean_orbit_negative - mean_orbit_positive) / (delta_negative - delta_positive)","physical_dispersion_unit":"m"})
                 diagnostics.update({"physical_dispersion_x_m":dx,"physical_dispersion_y_m":dy,"relative_momentum_deviation":deltas})
             saved_labels=["reference_before" if s.label=="reference" else s.label for s in states]
-            write_dispersion(measurement,measured_eta_x=result.measured_eta_x,measured_eta_y=result.measured_eta_y,bpm_names=[d.name for d in result.devices],rf_frequency_hz=[s.requested_rf_hz for s in states],rf_setpoint_hz=[s.requested_rf_hz for s in states],rf_readback_hz=[s.actual_rf_hz for s in states],raw_orbits_x_m=np.stack([s.orbits_x_m for s in states]),raw_orbits_y_m=np.stack([s.orbits_y_m for s in states]),rf_step_hz=result.canonical_rf_step_hz,bidirectional=result.direction=="bipolar",metadata=metadata,diagnostics=diagnostics,state_labels=saved_labels,operator_confirmed=[s.operator_confirmed for s in states],sample_timestamps_s=np.stack([s.timestamps_s for s in states]),restoration_status=result.restoration_status)
+            write_dispersion(measurement,measured_eta_x=result.measured_eta_x,measured_eta_y=result.measured_eta_y,bpm_names=[d.name for d in result.devices],rf_frequency_hz=[s.requested_rf_hz for s in states],rf_setpoint_hz=[s.requested_rf_hz for s in states],rf_readback_hz=[s.actual_rf_hz for s in states],raw_orbits_x_m=np.stack([s.orbits_x_m for s in states]),raw_orbits_y_m=np.stack([s.orbits_y_m for s in states]),rf_step_hz=result.canonical_rf_step_hz,bidirectional=result.direction=="bipolar",metadata=metadata,diagnostics=diagnostics,state_labels=saved_labels,operator_confirmed=[s.operator_confirmed for s in states],rf_actual_sources=[s.actual_rf_source for s in states],rf_readback_verified=[s.rf_readback_verified for s in states],sample_timestamps_s=np.stack([s.timestamps_s for s in states]),restoration_status=result.restoration_status)
             if self.reference_model is not None and self.compare_reference.isChecked():
                 try:
                     model_x,model_y=model_dispersion(self.reference_model,result.devices)
                     store_reference_model_arrays(measurement,{"dispersion_x_m":model_x,"dispersion_y_m":model_y},units={"dispersion_x_m":"m","dispersion_y_m":"m"},provenance=self.reference_model.provenance())
                 except Exception:pass
         else:
-            metadata["readings"]=self.readings.value(); write_bpm_noise(measurement,noise_x_m=result.noise_x_m,noise_y_m=result.noise_y_m,bpm_names=[d.name for d in result.devices],raw_orbits_x_m=result.orbits_x_m,raw_orbits_y_m=result.orbits_y_m,metadata=metadata)
+            convention="population" if result.ddof==0 else "sample"; metadata.update({"readings":self.readings.value(),"selected_bpm_names":[d.name for d in result.devices],"bpm_noise_statistic":f"{convention} standard deviation across readings per BPM","bpm_noise_ddof":result.ddof,"bpm_noise_unit":"m"}); write_bpm_noise(measurement,noise_x_m=result.noise_x_m,noise_y_m=result.noise_y_m,bpm_names=[d.name for d in result.devices],raw_orbits_x_m=result.orbits_x_m,raw_orbits_y_m=result.orbits_y_m,ddof=result.ddof,metadata=metadata)
         validate_measurement_file(measurement); manifest=output/"measurement-session.pyloco-session.json"
         entries=[]
         role="orm" if isinstance(result,ORMResult) else "dispersion" if is_dispersion else "bpm_noise"
@@ -1962,7 +2426,7 @@ class MeasureMainWindow(QMainWindow):
         # From this point onward this window owns the new manifest, so
         # Dispersion/ORM may accumulate alongside the first measurement.
         self._fresh_measurement_session = False
-        self.saved_measurement_path=measurement; self.saved_session_path=manifest; self.paths.setText(f"SAVED ✓\nMeasurement file: {measurement}\nSession manifest: {manifest}"); self.paths.setToolTip(str(measurement)); self.paths.setObjectName("savedPath"); self.paths.style().unpolish(self.paths); self.paths.style().polish(self.paths); self._refresh_review_page(); self.statusBar().showMessage(f"Saved: {measurement}")
+        self.saved_measurement_path=measurement; self.saved_session_path=manifest; self.paths.setText(f"SAVED ✓\nMeasurement file: {measurement}\nSession manifest: {manifest}"); self.paths.setToolTip(str(measurement)); self.paths.setObjectName("savedPath"); self.paths.style().unpolish(self.paths); self.paths.style().polish(self.paths); self.open_output_button.setEnabled(True); self._refresh_review_page(); self.statusBar().showMessage(f"Saved: {measurement}")
 
     def _stats(self,values):
         return {"Mean":np.mean(values),"RMS":np.sqrt(np.mean(values**2)),"Min":np.min(values),"Max":np.max(values)}
@@ -1984,39 +2448,370 @@ class MeasureMainWindow(QMainWindow):
         exponent=max(-12,min(0,exponent))
         return 10.0**(-exponent),{0:"m",-3:"mm",-6:"µm",-9:"nm",-12:"pm"}[exponent]
 
+    def _bpm_details_text(self, index):
+        result=getattr(self,"result",None)
+        if not isinstance(result,BpmNoiseResult) or not 0 <= index < len(result.devices):return ""
+        status=[]
+        review_status=self._bpm_review_statuses.get(index,"Unreviewed")
+        if review_status!="Unreviewed":status.append(review_status)
+        if index in self._threshold_flagged_bpm_indices:status.append("threshold flag")
+        suffix=f" · Status: {', '.join(status)}" if status else ""
+        return (f"{result.devices[index].name} · BPM index {index} (zero-based) · "
+                f"X noise {result.noise_x_m[index]*1e9:.3f} nm · "
+                f"Y noise {result.noise_y_m[index]*1e9:.3f} nm{suffix}")
+
+    def _bpm_tooltip_text(self,index):
+        result=getattr(self,"result",None)
+        if not isinstance(result,BpmNoiseResult) or not 0 <= index < len(result.devices):return ""
+        return (f"{result.devices[index].name}\n"
+                f"BPM index {index} (zero-based)\n"
+                f"X noise {result.noise_x_m[index]*1e9:.3f} nm   ·   Y noise {result.noise_y_m[index]*1e9:.3f} nm")
+
+    @staticmethod
+    def _place_plot_annotation(annotation,axis,x,y):
+        xmin,xmax=axis.get_xlim(); ymin,ymax=axis.get_ylim()
+        right=x > (xmin+xmax)/2; high=y > ymin+.72*(ymax-ymin)
+        annotation.xy=(x,y); annotation.set_position((-12,-14) if right and high else (-12,14) if right else (12,-14) if high else (12,14)); annotation.set_horizontalalignment("right" if right else "left"); annotation.set_verticalalignment("top" if high else "bottom")
+
+    def _populate_bpm_review_table(self,result):
+        self._selected_bpm_index=None; self._manual_bad_bpm_indices.clear(); self._threshold_flagged_bpm_indices.clear(); self._pinned_bpm_indices.clear(); self._bpm_review_notes.clear(); self._saved_bpm_review_notes.clear(); self._bpm_review_statuses.clear()
+        table=self.bpm_review_table; table.blockSignals(True); table.setSortingEnabled(False); table.setRowCount(len(result.devices))
+        for index,device in enumerate(result.devices):
+            short_name=device.name.rstrip("/").rsplit("/",1)[-1] or device.name
+            values=(f"{short_name}  [{index}]",float(result.noise_x_m[index]*1e9),float(result.noise_y_m[index]*1e9),"","Unreviewed","")
+            for column,value in enumerate(values):
+                item=QTableWidgetItem(); item.setData(Qt.DisplayRole,value); item.setData(Qt.UserRole,index)
+                if column==0:item.setData(Qt.UserRole+1,device.name); item.setToolTip(device.name)
+                if column==3:item.setFlags(item.flags()|Qt.ItemIsUserCheckable); item.setCheckState(Qt.Unchecked)
+                table.setItem(index,column,item)
+        table.setSortingEnabled(True); table.blockSignals(False)
+        self._refresh_bpm_review_table_states(); self.bpm_review_note.clear(); self.bpm_review_note.setEnabled(False); self.bpm_review_status.setEnabled(False); self.bpm_review_highlight.setEnabled(False); self._set_bpm_review_dirty(False)
+        self.bpm_review_details.setText("Hover or click a BPM point to identify it. Indices are zero-based.")
+        self._update_bpm_review_group_title()
+
+    def _selected_bpm_review_changed(self,*_):
+        if self._loading_bpm_review_panel:return
+        index=self._selected_bpm_index
+        if index is None:return
+        status=self.bpm_review_status.currentText()
+        if status=="Unreviewed":self._bpm_review_statuses.pop(index,None)
+        else:self._bpm_review_statuses[index]=status
+        self._manual_bad_bpm_indices={i for i,value in self._bpm_review_statuses.items() if value=="Bad"}
+        note=self.bpm_review_note.text().strip()
+        if note:self._bpm_review_notes[index]=note
+        else:self._bpm_review_notes.pop(index,None)
+        if self.bpm_review_highlight.isChecked():self._pinned_bpm_indices.add(index)
+        else:self._pinned_bpm_indices.discard(index)
+        self._refresh_bpm_pin_views(); self._update_bpm_review_group_title(); self.bpm_review_details.setText(self._bpm_details_text(index)); self._set_bpm_review_dirty(True)
+
+    def _toggle_selected_bpm_pin(self):
+        index=self._selected_bpm_index
+        if index is None:return
+        if index in self._pinned_bpm_indices:self._pinned_bpm_indices.remove(index)
+        else:self._pinned_bpm_indices.add(index)
+        self._refresh_bpm_pin_views(); self._set_bpm_review_dirty(True)
+
+    def _clear_bpm_pins(self):
+        if not self._pinned_bpm_indices:return
+        self._pinned_bpm_indices.clear(); self._refresh_bpm_pin_views(); self._set_bpm_review_dirty(True)
+
+    def _refresh_bpm_pin_views(self):
+        for state in self._bpm_plot_state.values():
+            for artist in state.get("pin_lines",[]):artist.remove()
+            state["pin_lines"]=[]
+            offsets=[]
+            for index in sorted(self._pinned_bpm_indices):
+                if index not in state["value_by_index"]:continue
+                line=state["axis"].axvline(index,color="#8B5CF6",linestyle="--",linewidth=1.0,alpha=.45,zorder=0)
+                state["pin_lines"].append(line); offsets.append([index,state["value_by_index"][index]])
+            state["pinned"].set_offsets(np.asarray(offsets) if offsets else np.empty((0,2))); state["canvas"].canvas.draw_idle()
+        self._refresh_bpm_review_table_states()
+
+    def _bpm_review_index_for_row(self,row):
+        item=self.bpm_review_table.item(row,0)
+        return None if item is None else int(item.data(Qt.UserRole))
+
+    def _filter_bpm_review_table(self,text):
+        self._apply_bpm_review_filter()
+
+    def _apply_bpm_review_filter(self,*_):
+        query=self.bpm_review_search.text().strip().casefold(); status_filter=self.bpm_review_status_filter.currentData() or "all"; matches=0; total=self.bpm_review_table.rowCount()
+        for row in range(self.bpm_review_table.rowCount()):
+            index=self._bpm_review_index_for_row(row); item=self.bpm_review_table.item(row,0); name=item.text().casefold(); full_name=str(item.data(Qt.UserRole+1) or "").casefold()
+            search_match=not query or query in name or query in full_name or query==str(index); status=self._bpm_review_statuses.get(index,"Unreviewed"); status_match=status_filter=="all" or status_filter=="bad_suspect" and status in {"Bad","Suspect"} or status==status_filter; visible=search_match and status_match; self.bpm_review_table.setRowHidden(row,not visible); matches+=int(visible)
+        self.bpm_review_match_count.setText(f"{matches} of {total} BPMs"); self.bpm_review_empty.setVisible(total>0 and matches==0)
+
+    def _bpm_review_table_selection_changed(self):
+        rows=self.bpm_review_table.selectionModel().selectedRows()
+        if rows:
+            index=self._bpm_review_index_for_row(rows[0].row())
+            if index is not None:self._select_bpm(index,source="table")
+
+    def _bpm_review_item_changed(self,item):
+        index=int(item.data(Qt.UserRole))
+        if item.column()==3:
+            if item.checkState()==Qt.Checked:self._pinned_bpm_indices.add(index)
+            else:self._pinned_bpm_indices.discard(index)
+            self._refresh_bpm_pin_views(); self._set_bpm_review_dirty(True)
+            if index==self._selected_bpm_index:
+                self._loading_bpm_review_panel=True; self.bpm_review_highlight.setChecked(index in self._pinned_bpm_indices); self._loading_bpm_review_panel=False
+
+    def _refresh_bpm_review_table_states(self):
+        table=self.bpm_review_table; table.blockSignals(True)
+        for row in range(table.rowCount()):
+            index=self._bpm_review_index_for_row(row)
+            table.item(row,3).setCheckState(Qt.Checked if index in self._pinned_bpm_indices else Qt.Unchecked)
+            name=table.item(row,0); result=getattr(self,"result",None)
+            if isinstance(result,BpmNoiseResult):
+                device_name=result.devices[index].name; short_name=device_name.rstrip("/").rsplit("/",1)[-1] or device_name; name.setText(f"{short_name}  [{index}]"); name.setToolTip(device_name); name.setData(Qt.UserRole+1,device_name)
+            status=table.item(row,4); status.setText(self._bpm_review_statuses.get(index,"Unreviewed")); status.setToolTip("Threshold flag also active" if index in self._threshold_flagged_bpm_indices else "")
+            note=self._bpm_review_notes.get(index,""); preview=note if len(note)<=32 else note[:31].rstrip()+"…"; note_item=table.item(row,5); note_item.setText(preview); note_item.setToolTip(note or "No review note")
+        table.blockSignals(False); self.bpm_clear_pins_button.setEnabled(bool(self._pinned_bpm_indices)); self._apply_bpm_review_filter()
+
+    def _threshold_review_changed(self,*_):
+        self._update_bpm_review_flags(); self._set_bpm_review_dirty(True)
+
+    def _update_bpm_review_flags(self,*_):
+        result=getattr(self,"result",None)
+        if not isinstance(result,BpmNoiseResult):return
+        tx=self.bpm_threshold_x.value(); ty=self.bpm_threshold_y.value()
+        self._threshold_flagged_bpm_indices={i for i in range(len(result.devices)) if (tx>0 and result.noise_x_m[i]*1e9>tx) or (ty>0 and result.noise_y_m[i]*1e9>ty)}
+        self._refresh_bpm_review_table_states(); self._update_bpm_review_group_title()
+        if self._selected_bpm_index is not None:self.bpm_review_details.setText(self._bpm_details_text(self._selected_bpm_index))
+
+    def _update_bpm_review_group_title(self):
+        count=len({index for index,status in self._bpm_review_statuses.items() if status in {"Suspect","Bad"}}|self._threshold_flagged_bpm_indices)
+        self.bpm_review_group.setTitle(f"BPM identification and review — {count} flagged, no automatic FIT exclusion")
+
+    def _set_bpm_review_dirty(self,dirty):
+        self._bpm_review_dirty=bool(dirty); self.bpm_review_save_state.setText("Unsaved review changes" if dirty else "All review changes saved"); self.bpm_review_save_state.setObjectName("validationMissing" if dirty else "validationOk"); self.bpm_review_save_state.style().unpolish(self.bpm_review_save_state); self.bpm_review_save_state.style().polish(self.bpm_review_save_state); self.bpm_save_review_button.setEnabled(bool(dirty))
+
+    def _save_bpm_review(self):
+        path=getattr(self,"saved_measurement_path",None)
+        if path is None or not Path(path).exists():
+            QMessageBox.critical(self,"Cannot save BPM review","The BPM-noise measurement file is not available. Review changes remain unsaved."); self._set_bpm_review_dirty(True); return False
+        try:write_bpm_noise_review_annotations(path,manual_bad_bpm_indices=sorted(self._manual_bad_bpm_indices),threshold_flagged_bpm_indices=sorted(self._threshold_flagged_bpm_indices),pinned_bpm_indices=sorted(self._pinned_bpm_indices),review_notes=self._bpm_review_notes,review_statuses=self._bpm_review_statuses,horizontal_threshold_nm=self.bpm_threshold_x.value() or None,vertical_threshold_nm=self.bpm_threshold_y.value() or None)
+        except Exception as exc:
+            QMessageBox.critical(self,"Cannot save BPM review",f"The review could not be written to:\n{path}\n\n{exc}\n\nReview changes remain unsaved."); self._set_bpm_review_dirty(True); return False
+        self._saved_bpm_review_notes=dict(self._bpm_review_notes); self._refresh_bpm_review_table_states(); self._set_bpm_review_dirty(False); self.statusBar().showMessage(f"BPM review saved: {path}"); return True
+
+    def _load_bpm_review(self,path):
+        data=read_bpm_noise_review_annotations(path); result=getattr(self,"result",None)
+        if not isinstance(result,BpmNoiseResult):return
+        if data["bpm_names"]!=[device.name for device in result.devices]:raise ValueError("Stored BPM review identity/order does not match the displayed measurement")
+        self._pinned_bpm_indices=set(data["pinned_bpm_indices"]); self._threshold_flagged_bpm_indices=set(data["threshold_flagged_bpm_indices"]); self._bpm_review_notes=dict(data["review_notes"]); self._saved_bpm_review_notes=dict(self._bpm_review_notes); self._bpm_review_statuses=dict(data["review_statuses"]); self._manual_bad_bpm_indices={i for i,status in self._bpm_review_statuses.items() if status=="Bad"}
+        self.bpm_threshold_x.blockSignals(True); self.bpm_threshold_y.blockSignals(True); self.bpm_threshold_x.setValue(data["horizontal_threshold_nm"] or 0); self.bpm_threshold_y.setValue(data["vertical_threshold_nm"] or 0); self.bpm_threshold_x.blockSignals(False); self.bpm_threshold_y.blockSignals(False)
+        self._refresh_bpm_pin_views(); self._refresh_bpm_review_table_states(); self._update_bpm_review_group_title(); self._set_bpm_review_dirty(False)
+
+    def _export_bpm_review_csv(self):
+        result=getattr(self,"result",None)
+        if not isinstance(result,BpmNoiseResult):return
+        path=QFileDialog.getSaveFileName(self,"Export BPM review","bpm-review.csv","CSV files (*.csv)")[0]
+        if not path:return
+        try:
+            with open(path,"w",newline="",encoding="utf-8") as stream:
+                writer=csv.writer(stream); writer.writerow(["bpm_name","original_zero_based_index","horizontal_noise_nm","vertical_noise_nm","highlighted","review_status","threshold_flagged","notes"])
+                for index,device in enumerate(result.devices):writer.writerow([device.name,index,f"{result.noise_x_m[index]*1e9:.9g}",f"{result.noise_y_m[index]*1e9:.9g}",index in self._pinned_bpm_indices,self._bpm_review_statuses.get(index,"Unreviewed"),index in self._threshold_flagged_bpm_indices,self._bpm_review_notes.get(index,"")])
+        except Exception as exc:QMessageBox.critical(self,"Cannot export BPM review",str(exc)); return
+        self.statusBar().showMessage(f"BPM review CSV exported: {path}")
+
+    def _bpm_index_from_event(self,plane,event):
+        state=self._bpm_plot_state.get(plane)
+        if state is None or event.inaxes is not state["axis"]:return None
+        contains,details=state["points"].contains(event)
+        if not contains or not details.get("ind"):return None
+        return int(state["indices"][int(details["ind"][0])])
+
+    def _on_bpm_plot_hover(self,plane,event):
+        state=self._bpm_plot_state.get(plane)
+        if state is None:return
+        index=self._bpm_index_from_event(plane,event); annotation=state["annotation"]
+        if index is None:
+            annotation.set_visible(False); state["canvas"].canvas.draw_idle(); return
+        value=state["value_by_index"][index]; self._place_plot_annotation(annotation,state["axis"],index,value); annotation.set_text(self._bpm_tooltip_text(index)); annotation.set_visible(True); state["canvas"].canvas.draw_idle()
+
+    def _on_bpm_plot_click(self,plane,event):
+        index=self._bpm_index_from_event(plane,event)
+        if index is not None:self._select_bpm(index,source="plot")
+
+    def _mean_details_text(self,index):
+        result=getattr(self,"result",None)
+        if not isinstance(result,BpmNoiseResult) or not 0 <= index < len(result.devices):return ""
+        return (f"{result.devices[index].name} · BPM index {index} (zero-based) · "
+                f"mean X orbit {result.mean_x_m[index]*1e6:.3f} µm · "
+                f"mean Y orbit {result.mean_y_m[index]*1e6:.3f} µm")
+
+    def _mean_index_from_event(self,plane,event):
+        state=self._mean_plot_state.get(plane)
+        if state is None or event.inaxes is not state["axis"]:return None
+        contains,details=state["points"].contains(event)
+        if not contains or not details.get("ind"):return None
+        return int(state["indices"][int(details["ind"][0])])
+
+    def _on_mean_plot_hover(self,plane,event):
+        state=self._mean_plot_state.get(plane)
+        if state is None:return
+        index=self._mean_index_from_event(plane,event); annotation=state["annotation"]
+        if index is None:annotation.set_visible(False)
+        else:
+            value=state["value_by_index"][index]; self._place_plot_annotation(annotation,state["axis"],index,value); annotation.set_text(self._mean_details_text(index).replace(" · ","\n",1).replace(" · mean Y","\nmean Y")); annotation.set_visible(True)
+        state["canvas"].canvas.draw_idle()
+
+    def _on_mean_plot_click(self,plane,event):
+        index=self._mean_index_from_event(plane,event)
+        if index is None:return
+        state=self._mean_plot_state[plane]; state["highlight"].set_offsets([[index,state["value_by_index"][index]]]); state["canvas"].canvas.draw_idle(); self.bpm_review_details.setText(self._mean_details_text(index)); self.bpm_review_group.setChecked(True)
+
+    def _dispersion_index_from_event(self,key,event):
+        state=self._dispersion_plot_state.get(key)
+        if state is None or event.inaxes is not state["axis"]:return None
+        series=state["series"] if "series" in state else ((state["label"],state["points"],state["value_by_index"]),)
+        for label,points,values in series:
+            contains,details=points.contains(event)
+            if contains and details.get("ind"):
+                index=int(state["indices"][int(details["ind"][0])]); state["active_label"]=label; state["active_values"]=values; return index
+        return None
+
+    def _dispersion_details_text(self,key,index):
+        result=getattr(self,"result",None); state=self._dispersion_plot_state.get(key)
+        if not isinstance(result,DispersionResult) or state is None:return ""
+        label=state.get("active_label",state["label"]); values=state.get("active_values",state.get("value_by_index",{}))
+        return f"{result.devices[index].name} · BPM index {index} (zero-based) · {label} {values[index]:.6g} {state['unit']}"
+
+    def _on_dispersion_plot_hover(self,key,event):
+        state=self._dispersion_plot_state.get(key)
+        if state is None:return
+        index=self._dispersion_index_from_event(key,event); annotation=state["annotation"]
+        if index is None:annotation.set_visible(False)
+        else:
+            values=state.get("active_values",state.get("value_by_index",{})); value=values[index]; self._place_plot_annotation(annotation,state["axis"],index,value); annotation.set_text(self._dispersion_details_text(key,index).replace(" · ","\n")); annotation.set_visible(True)
+        state["canvas"].canvas.draw_idle()
+
+    def _on_dispersion_plot_click(self,key,event):
+        index=self._dispersion_index_from_event(key,event)
+        if index is None:return
+        self._dispersion_selected_bpm_index=index; details=self._dispersion_details_text(key,index); self.live_dispersion_selection.setText(details); self.dispersion_selected_details.setText(details); self.live_dispersion_pin.setEnabled(True); self.dispersion_pin_button.setEnabled(True); label="Remove highlight" if index in self._dispersion_pinned_bpm_indices else "Keep highlighted"; self.live_dispersion_pin.setText(label); self.dispersion_pin_button.setText(label); self._refresh_dispersion_highlights(); self.statusBar().showMessage(details)
+
+    def _select_bpm(self,index,*,source):
+        result=getattr(self,"result",None)
+        if not isinstance(result,BpmNoiseResult) or not 0 <= index < len(result.devices):return
+        self._selected_bpm_index=index; self.bpm_review_details.setText(self._bpm_details_text(index)); self.bpm_review_group.setChecked(True)
+        for state in self._bpm_plot_state.values():
+            if index in state["value_by_index"]:state["highlight"].set_offsets([[index,state["value_by_index"][index]]])
+            else:state["highlight"].set_offsets(np.empty((0,2)))
+            state["canvas"].canvas.draw_idle()
+        self._loading_bpm_review_panel=True; self.bpm_review_status.setEnabled(True); self.bpm_review_highlight.setEnabled(True); self.bpm_review_note.setEnabled(True); self.bpm_review_status.setCurrentText(self._bpm_review_statuses.get(index,"Unreviewed")); self.bpm_review_highlight.setChecked(index in self._pinned_bpm_indices); self.bpm_review_note.setText(self._bpm_review_notes.get(index,"")); self._loading_bpm_review_panel=False
+        if source=="plot":
+            for row in range(self.bpm_review_table.rowCount()):
+                if self._bpm_review_index_for_row(row)==index and not self.bpm_review_table.isRowHidden(row):
+                    self.bpm_review_table.selectRow(row); self.bpm_review_table.scrollToItem(self.bpm_review_table.item(row,0)); break
+
     def _show_result(self,result):
         if isinstance(result,ORMResult): return self._show_orm_result(result)
         if isinstance(result,DispersionResult): return self._show_dispersion_result(result)
-        display={}
+        display={}; self._bpm_plot_state.clear(); self._mean_plot_state.clear()
         for plane,canvas,values,title,color in (("x",self.x_plot,result.noise_x_m,"Horizontal BPM noise σx","#11B7C1"),("y",self.y_plot,result.noise_y_m,"Vertical BPM noise σy","#F59E42")):
             configured=self._configured_bpm_noise(plane)
             scale,unit=self._noise_display_unit(values,configured); display[plane]=(scale,unit)
             canvas.clear(); ax=canvas.figure.add_subplot(111); positions=np.arange(len(values)); shown=np.asarray(values)*scale
             ax.plot(positions,shown,color=color,linewidth=.65,alpha=.45,zorder=1)
-            ax.scatter(positions,shown,color=color,s=13,alpha=.9,edgecolors="none",zorder=2,label=f"Measured σ{plane}")
+            points=ax.scatter(positions,shown,color=color,s=18,alpha=.9,edgecolors="none",zorder=2,label=f"Measured σ{plane}",picker=5)
+            highlight=ax.scatter([],[],s=90,facecolors="none",edgecolors="#D946EF",linewidths=2,zorder=4)
+            pinned=ax.scatter([],[],s=58,facecolors=color,edgecolors="#8B5CF6",linewidths=1.8,zorder=3)
             if configured is not None:
                 configured_shown=configured*scale; ax.axhline(configured_shown,color="#D946EF",linestyle="--",linewidth=1.4,label=f"σconfigured = {configured_shown:g} {unit}",zorder=0); ax.legend(loc="best")
-            ax.set_title(f"{title} [{unit}]"); ax.set_ylabel(f"Noise [{unit}]"); ax.set_xlabel("BPM index / selection position"); ax.grid(True,alpha=.25); canvas.apply_theme()
-        for canvas,values,title,color in ((self.mean_x_plot,result.mean_x_m,"Mean horizontal orbit","#11B7C1"),(self.mean_y_plot,result.mean_y_m,"Mean vertical orbit","#F59E42")):
-            canvas.clear(); ax=canvas.figure.add_subplot(111); ax.plot(np.asarray(values)*1e6,"o-",color=color); ax.set_title(title); ax.set_ylabel("Mean orbit [µm]"); ax.set_xlabel("BPM selection position"); ax.grid(True,alpha=.25); canvas.apply_theme()
+            ax.set_title(f"{title} [{unit}]"); ax.set_ylabel(f"Noise [{unit}]"); ax.set_xlabel("BPM index (zero-based)"); ax.grid(True,alpha=.25); canvas.apply_theme()
+            theme=canvas.theme(); annotation=ax.annotate("",xy=(0,0),xytext=(12,14),textcoords="offset points",bbox={"boxstyle":"round,pad=0.45","facecolor":theme["face"],"edgecolor":theme["spine"],"alpha":.97},color=theme["text"],fontsize=9,zorder=5); annotation.set_gid("bpm-identification-tooltip"); annotation.set_visible(False)
+            original_indices=np.arange(len(values),dtype=int)
+            self._bpm_plot_state[plane]={"axis":ax,"canvas":canvas,"points":points,"highlight":highlight,"pinned":pinned,"pin_lines":[],"annotation":annotation,"indices":original_indices,"values":shown,"value_by_index":dict(zip(original_indices.tolist(),shown.tolist()))}
+        for plane,canvas,values,title,color in (("x",self.mean_x_plot,result.mean_x_m,"Mean horizontal orbit","#11B7C1"),("y",self.mean_y_plot,result.mean_y_m,"Mean vertical orbit","#F59E42")):
+            canvas.clear(); ax=canvas.figure.add_subplot(111); positions=np.arange(len(values)); shown=np.asarray(values)*1e6; ax.plot(positions,shown,color=color,linewidth=.8,alpha=.6); points=ax.scatter(positions,shown,color=color,s=18,picker=5,zorder=2); highlight=ax.scatter([],[],s=90,facecolors="none",edgecolors="#D946EF",linewidths=2,zorder=4); ax.set_title(title); ax.set_ylabel("Mean orbit [µm]"); ax.set_xlabel("BPM index (zero-based)"); ax.grid(True,alpha=.25); canvas.apply_theme(); theme=canvas.theme(); annotation=ax.annotate("",xy=(0,0),xytext=(12,14),textcoords="offset points",bbox={"boxstyle":"round,pad=0.45","facecolor":theme["face"],"edgecolor":theme["spine"],"alpha":.97},color=theme["text"],fontsize=9,zorder=5); annotation.set_gid("bpm-identification-tooltip"); annotation.set_visible(False); indices=np.arange(len(values),dtype=int); self._mean_plot_state[plane]={"axis":ax,"canvas":canvas,"points":points,"highlight":highlight,"annotation":annotation,"indices":indices,"value_by_index":dict(zip(indices.tolist(),shown.tolist()))}
         def text(label,values,plane):
             scale,unit=display[plane]; return label+": "+", ".join(f"{k} {v*scale:.3f} {unit}" for k,v in self._stats(values).items())
         self.summary_x.setText(text("Horizontal",result.noise_x_m,"x")); self.summary_y.setText(text("Vertical",result.noise_y_m,"y"))
+        configured_values=[value for value in (self._configured_bpm_noise("x"),self._configured_bpm_noise("y")) if value is not None]
+        common_scale,common_unit=self._noise_display_unit(
+            np.concatenate((np.asarray(result.noise_x_m),np.asarray(result.noise_y_m))),
+            max(configured_values) if configured_values else None,
+        )
+        convention="population" if result.ddof==0 else "sample"; self.orm_measurement_summary.setText(f"{len(result.devices)} BPMs · {result.orbits_x_m.shape[0]} readings · σ is the per-BPM {convention} standard deviation across readings (ddof={result.ddof}). Mean and RMS summarize the BPM σ values.")
+        self.statistics_table.set_statistics((
+            ("Horizontal (X)",{key:value*common_scale for key,value in self._stats(result.noise_x_m).items()}),
+            ("Vertical (Y)",{key:value*common_scale for key,value in self._stats(result.noise_y_m).items()}),
+        ),common_unit)
         self.rf_diagnostics.clear()
         self.restoration_label.clear()
+        self._populate_bpm_review_table(result)
+        path=getattr(self,"saved_measurement_path",None)
+        if path is not None and Path(path).exists():
+            try:self._load_bpm_review(path)
+            except Exception as exc:self.bpm_review_save_state.setText(f"Review unavailable: {exc}"); self.bpm_review_save_state.setObjectName("validationMissing")
+        self.bpm_review_group.setVisible(True)
 
     @staticmethod
     def _fit_colormap():
         app=QApplication.instance(); theme=app.property("pyLOCOThemePlot") if app is not None else None
         return theme.get("colormap","viridis") if isinstance(theme,dict) else "viridis"
 
-    def _heatmap(self,canvas,data,title,unit):
-        values=np.asarray(data); canvas.clear(); surface=hasattr(self,"orm_view_mode") and self.orm_view_mode.currentData()=="3d"; ax=canvas.figure.add_subplot(111,projection="3d" if surface else None); cmap=self._fit_colormap()
+    def _orm_colormap(self):
+        return "RdBu_r" if self.orm_palette.currentData()=="red_blue" else "viridis"
+
+    def _heatmap(self,canvas,data,title,unit,*,row_devices=None,column_devices=None):
+        values=np.asarray(data); finite=np.abs(values[np.isfinite(values)]); limit=float(np.max(finite)) if finite.size else 1.0; limit=limit or 1.0; canvas.clear(); self._orm_plot_state.pop(canvas,None); surface=hasattr(self,"orm_view_mode") and self.orm_view_mode.currentData()=="3d"; ax=canvas.figure.add_subplot(111,projection="3d" if surface else None); cmap=self._orm_colormap()
+        signed_limits={"vmin":-limit,"vmax":limit} if self.orm_palette.currentData()=="red_blue" else {}
         if surface:
-            columns,rows=np.meshgrid(np.arange(values.shape[1]),np.arange(values.shape[0])); artist=ax.plot_surface(columns,rows,values,cmap=cmap,linewidth=0,antialiased=False,rcount=values.shape[0],ccount=values.shape[1]); ax.set_zlabel(f"Response [{unit}]")
-        else:artist=ax.imshow(values,aspect="auto",origin="lower",cmap=cmap)
-        ax.set_title(title); ax.set_xlabel("Corrector selection position"); ax.set_ylabel("BPM selection position"); canvas.figure.colorbar(artist,ax=ax,label=f"Response [{unit}]",shrink=.75); canvas.apply_theme()
+            columns,rows=np.meshgrid(np.arange(values.shape[1]),np.arange(values.shape[0])); artist=ax.plot_surface(columns,rows,values,cmap=cmap,linewidth=0,antialiased=False,rcount=values.shape[0],ccount=values.shape[1],**signed_limits); ax.set_zlabel(f"Response [{unit}]")
+        else:
+            artist=ax.imshow(values,aspect="auto",origin="upper",cmap=cmap,interpolation="nearest",**signed_limits)
+        ax.set_title(title); ax.set_xlabel("Corrector index"); ax.set_ylabel("BPM index")
+        colorbar=canvas.figure.colorbar(artist,ax=ax,label=f"Response [{unit}]",shrink=.9,pad=.018,fraction=.045)
+        # Keep zero explicitly identifiable for signed ORM data even when the
+        # FIT-compatible viridis view uses the data range instead of a
+        # zero-centred normalization.
+        vmin,vmax=artist.norm.vmin,artist.norm.vmax
+        if vmin is not None and vmax is not None and vmin<=0<=vmax:
+            ticks=list(colorbar.get_ticks())
+            if not any(np.isclose(tick,0.0) for tick in ticks):
+                colorbar.set_ticks(sorted((*ticks,0.0)))
+        canvas.apply_theme()
+        if not surface and row_devices is not None and column_devices is not None:
+            selected=ax.scatter([],[],s=115,facecolors="none",edgecolors="#D946EF",linewidths=2.2,zorder=5)
+            self._orm_plot_state[canvas]={"axis":ax,"canvas":canvas,"values":values,"rows":tuple(row_devices),"columns":tuple(column_devices),"unit":unit,"selected":selected,"guides":[]}
         return ax
+
+    def _orm_cell(self,canvas,event):
+        state=self._orm_plot_state.get(canvas)
+        if state is None or event.inaxes is not state["axis"] or event.xdata is None or event.ydata is None:return None
+        column=int(round(event.xdata)); row=int(round(event.ydata))
+        if not (0<=row<state["values"].shape[0] and 0<=column<state["values"].shape[1]):return None
+        if not np.isfinite(state["values"][row,column]):return "incomplete"
+        return state,row,column
+
+    @staticmethod
+    def _orm_cell_text(state,row,column):
+        bpm_plane,bpm_index,bpm_name=state["rows"][row]; cor_plane,cor_index,cor_name=state["columns"][column]
+        block=f"{cor_plane}→{bpm_plane}"
+        return (f"BPM: {bpm_name} · index {bpm_index} (zero-based) · plane {bpm_plane}<br>"
+                f"Corrector: {cor_name} · index {cor_index} (zero-based) · plane {cor_plane}<br>"
+                f"Block: {block} · Response: <b>{state['values'][row,column]:+.7g} {state['unit']}</b>")
+
+    def _on_orm_plot_hover(self,canvas,event):
+        hit=self._orm_cell(canvas,event); state=self._orm_plot_state.get(canvas)
+        if state is None:
+            if event.inaxes is not None:self.orm_element_info.setText("Identity mapping is unavailable for this plot.")
+            return
+        if hit=="incomplete":self.orm_element_info.setText("This ORM cell has not been acquired yet; no response value or device identity is inferred."); return
+        if hit is None:self.orm_element_info.setText(self._orm_selected_info or "Hover over an ORM cell or selected-column BPM point to identify it."); return
+        state,row,column=hit; self.orm_element_info.setText(self._orm_cell_text(state,row,column))
+
+    def _on_orm_plot_click(self,canvas,event):
+        if getattr(canvas.toolbar,"mode",""):return
+        hit=self._orm_cell(canvas,event)
+        if hit is None or hit=="incomplete":return
+        state,row,column=hit
+        for guide in state["guides"]:guide.remove()
+        state["guides"]=[state["axis"].axvline(column,color="#D946EF",linestyle="--",linewidth=.9,alpha=.65),state["axis"].axhline(row,color="#D946EF",linestyle="--",linewidth=.9,alpha=.65)]
+        state["selected"].set_offsets([[column,row]]); details=self._orm_cell_text(state,row,column); self._orm_selected_info=details; self.orm_element_info.setText(details); canvas.canvas.draw_idle(); self.statusBar().showMessage(re.sub("<[^>]+>"," ",details))
 
     def _redraw_orm_result(self,*_):
         result=getattr(self,"_displayed_orm_result",None)
@@ -2033,14 +2828,19 @@ class MeasureMainWindow(QMainWindow):
         self.stats_group.setVisible(False)
 
         finite = np.where(np.isfinite(matrix), matrix, np.nan)
+        bpms=tuple(("X",i,d.name) for i,d in enumerate(self.selected_devices))+tuple(("Y",i,d.name) for i,d in enumerate(self.selected_devices)); nh=len(self.selected_hcorrectors); correctors=tuple(("H",i,d.name) for i,d in enumerate(self.selected_hcorrectors))+tuple(("V",nh+i,d.name) for i,d in enumerate(self.selected_vcorrectors))
         self._heatmap(
             self.x_plot,
             finite,
             "Evolving ORM heatmap",
             "m",
+            row_devices=bpms,
+            column_devices=correctors,
         )
+        self.orm_element_info.setVisible(True)
 
         self.orm_column_plot.clear()
+        self._orm_column_state=None
         ax = self.orm_column_plot.figure.add_subplot(111)
         nb = len(self.selected_devices)
         ax.plot(
@@ -2063,13 +2863,19 @@ class MeasureMainWindow(QMainWindow):
             self.results_tabs.setCurrentIndex(index)
 
     def _show_orm_result(self,result):
-        matrix=result.response_matrix; nb=len(result.bpms); nh=len(result.horizontal_correctors); unit="m/rad" if result.scaled else "m"
-        full_ax=self._heatmap(self.x_plot,matrix,"Full orbit response matrix",unit); self._heatmap(self.y_plot,matrix[:nb,:nh],"H corrector → X BPM",unit); self._heatmap(self.mean_x_plot,matrix[:nb,nh:],"V corrector → X BPM (cross-plane)",unit); self._heatmap(self.mean_y_plot,matrix[nb:,:nh],"H corrector → Y BPM (cross-plane)",unit); self._heatmap(self.orm_vv_plot,matrix[nb:,nh:],"V corrector → Y BPM",unit)
+        if getattr(self,"_displayed_orm_result",None) is not result:self._orm_selected_info=""
+        stored_matrix=result.response_matrix; nb=len(result.bpms); nh=len(result.horizontal_correctors)
+        analysis=bool(self.orm_normalized_analysis.isChecked()) and not result.scaled
+        matrix=stored_matrix/result.effective_kicks_rad[np.newaxis,:] if analysis else stored_matrix; unit="m/rad" if result.scaled or analysis else "m"
+        self._displayed_orm_matrix=matrix; self._displayed_orm_unit=unit
+        bpm_rows=tuple(("X",i,d.name) for i,d in enumerate(result.bpms))+tuple(("Y",i,d.name) for i,d in enumerate(result.bpms)); corrector_columns=tuple(("H",i,d.name) for i,d in enumerate(result.horizontal_correctors))+tuple(("V",nh+i,d.name) for i,d in enumerate(result.vertical_correctors)); x_rows=bpm_rows[:nb]; y_rows=bpm_rows[nb:]; h_columns=corrector_columns[:nh]; v_columns=corrector_columns[nh:]
+        full_ax=self._heatmap(self.x_plot,matrix,"Full orbit response matrix",unit,row_devices=bpm_rows,column_devices=corrector_columns); self._heatmap(self.y_plot,matrix[:nb,:nh],"H corrector → X BPM",unit,row_devices=x_rows,column_devices=h_columns); self._heatmap(self.mean_x_plot,matrix[:nb,nh:],"V corrector → X BPM (cross-plane)",unit,row_devices=x_rows,column_devices=v_columns); self._heatmap(self.mean_y_plot,matrix[nb:,:nh],"H corrector → Y BPM (cross-plane)",unit,row_devices=y_rows,column_devices=h_columns); self._heatmap(self.orm_vv_plot,matrix[nb:,nh:],"V corrector → Y BPM",unit,row_devices=y_rows,column_devices=v_columns)
         if self.orm_view_mode.currentData()=="2d":
             if nh and len(result.vertical_correctors):full_ax.axvline(nh-.5,color="white",linewidth=2,linestyle="--")
             full_ax.axhline(nb-.5,color="white",linewidth=2,linestyle="--")
-        full_ax.set_xlabel(f"Corrector columns: H [0…{max(0,nh-1)}] | V [{nh}…{len(result.correctors)-1}]")
-        full_ax.set_ylabel(f"BPM rows: X [0…{nb-1}] | Y [{nb}…{2*nb-1}]"); self.x_plot.apply_theme()
+            for x,y,label in (((nh-1)/2,(nb-1)/2,"H → X"),(nh+(len(result.vertical_correctors)-1)/2,(nb-1)/2,"V → X"),((nh-1)/2,nb+(nb-1)/2,"H → Y"),(nh+(len(result.vertical_correctors)-1)/2,nb+(nb-1)/2,"V → Y")):
+                if x>=0:full_ax.text(x,y,label,ha="center",va="center",color="black",bbox={"facecolor":"white","edgecolor":"none","alpha":.7,"pad":2},fontsize=8,zorder=4)
+        full_ax.set_xlabel("Corrector index"); full_ax.set_ylabel("BPM index"); self.x_plot.apply_theme()
         self._displayed_orm_result=result; self.orm_column_selector.blockSignals(True); self.orm_column_selector.clear()
         for index,device in enumerate(result.correctors):self.orm_column_selector.addItem(f"{index}: {device.name} ({device.plane})",index)
         self.orm_column_selector.setCurrentIndex(len(result.correctors)-1); self.orm_column_selector.blockSignals(False); self._update_selected_orm_column()
@@ -2077,29 +2883,32 @@ class MeasureMainWindow(QMainWindow):
         values=np.asarray(matrix); display_scale,display_unit=(1e3,"mm") if unit=="m" else (1.0,unit); shown=values*display_scale
         self.summary_x.setText(f"<b>Measured ORM</b> &nbsp; Mean {np.mean(shown):.5g} &nbsp; RMS {np.sqrt(np.mean(shown**2)):.5g} &nbsp; Min {np.min(shown):.5g} &nbsp; Max {np.max(shown):.5g} {display_unit}")
         errors=(result.effective_kicks_rad-np.where(result.direction=="negative",-result.requested_kicks_rad,result.requested_kicks_rad))*1e6; self.summary_y.setText(f"<b>Kick error</b> &nbsp; RMS {np.sqrt(np.mean(errors**2)):.5g} &nbsp; Min {np.min(errors):.5g} &nbsp; Max {np.max(errors):.5g} µrad")
+        self.statistics_table.set_statistics((("Measured ORM",self._stats(shown)),),display_unit)
         intermediate_ok=result.direction!="bipolar" or (all(status=="restored" for status in result.intermediate_restoration_status) and np.allclose(result.intermediate_restored_setpoints_rad,result.original_setpoints_rad,rtol=0,atol=1e-12)); restored=intermediate_ok and all(status=="restored" for status in result.restoration_status) and np.allclose(result.final_setpoints_rad,result.original_setpoints_rad,rtol=0,atol=1e-12); self.orm_restoration_status.setText("✓ ALL CORRECTORS RESTORED" if restored else "✗ CORRECTOR RESTORATION FAILED"); kicks=result.requested_kicks_rad*1e6; kick_text=f"{kicks[0]:g} µrad" if np.allclose(kicks,kicks[0]) else f"{np.min(kicks):g}–{np.max(kicks):g} µrad"; identity,_=self._machine_identity(); readings=result.raw_state_a_m.shape[1] if result.raw_state_a_m.ndim==3 else 1
+        actual=np.abs(result.effective_kicks_rad)*1e6; actual_text=f"{actual[0]:g} µrad" if np.allclose(actual,actual[0]) else f"{np.min(actual):g}–{np.max(actual):g} µrad"
         summary_html=(f"<h3 style='color:#12BFC4;margin:0 0 8px 0'>Measurement summary</h3>"
                       f"<table cellspacing='0' cellpadding='4' width='100%'>"
                       f"<tr><td><b>Machine/profile</b></td><td colspan='3'>{escape(identity.replace(chr(10),' — '))}</td></tr>"
                       f"<tr><td>BPMs used: {nb}</td><td>H correctors used: {nh}</td><td>V correctors used: {len(result.vertical_correctors)}</td></tr>"
-                      f"<tr><td>Total bipolar kick: {kick_text}</td><td>Readings/state: {readings}</td><td>Matrix shape: {matrix.shape[0]} × {matrix.shape[1]}</td><td>Matrix unit: {unit}</td></tr></table>")
+                      f"<tr><td>Requested separation: {kick_text}</td><td>Actual separation: {actual_text}</td><td>Readings/state: {readings}</td><td>Matrix: {matrix.shape[0]} × {matrix.shape[1]} [{unit}]</td></tr>"
+                      f"<tr><td>Reading delay: {self.delay.value():g} s</td><td>Settling delay: {self.settling_delay.value():g} s</td><td colspan='2'>Storage: {'normalized response divided by actual separation' if result.scaled else 'orbit difference; not kick-normalized'}</td></tr></table>")
         self.orm_measurement_summary.setText(summary_html); self.restoration_label.setText("<b>Restore checks</b><br>"+" &nbsp; • &nbsp; ".join(f"{escape(device.name)}: {middle} / {final}" for device,middle,final in zip(result.correctors,result.intermediate_restoration_status,result.restoration_status)))
         if self.compare_reference.isChecked() and self.reference_model is not None:
             try:
                 model_matrix=getattr(self,"_model_orm_cache",None)
                 if model_matrix is None:model_matrix=model_orm(self.reference_model,result.bpms,result.horizontal_correctors,result.vertical_correctors,result.effective_kicks_rad[:nh],result.effective_kicks_rad[nh:],scaled=result.scaled)
-                difference=matrix-model_matrix; self._heatmap(self.orm_model_plot,model_matrix,"MODEL ORM — reference lattice",unit); self._heatmap(self.orm_difference_plot,difference,"Measured − MODEL ORM",unit)
+                shown_model=model_matrix/result.effective_kicks_rad[np.newaxis,:] if analysis else model_matrix; difference=matrix-shown_model; self._heatmap(self.orm_model_plot,shown_model,"MODEL ORM — reference lattice",unit,row_devices=bpm_rows,column_devices=corrector_columns); self._heatmap(self.orm_difference_plot,difference,"Measured − MODEL ORM",unit,row_devices=bpm_rows,column_devices=corrector_columns)
                 def comparison_row(label, measured_values, model_values):
                     metrics=comparison_metrics(measured_values,model_values)
                     def value(key):return f"{metrics[key]*display_scale:.5g}"
                     return (f"<tr><td><b>{label}</b></td><td>{value('rms_measured')}</td><td>{value('rms_model')}</td>"
                             f"<td>{value('rms_difference')}</td><td>{value('max_abs_difference')}</td></tr>")
                 comparisons=(
-                    comparison_row("Full ORM",matrix,model_matrix),
-                    comparison_row("Direct H→X",matrix[:nb,:nh],model_matrix[:nb,:nh]),
-                    comparison_row("Direct V→Y",matrix[nb:,nh:],model_matrix[nb:,nh:]),
-                    comparison_row("Coupling V→X",matrix[:nb,nh:],model_matrix[:nb,nh:]),
-                    comparison_row("Coupling H→Y",matrix[nb:,:nh],model_matrix[nb:,:nh]),
+                    comparison_row("Full ORM",matrix,shown_model),
+                    comparison_row("Direct H→X",matrix[:nb,:nh],shown_model[:nb,:nh]),
+                    comparison_row("Direct V→Y",matrix[nb:,nh:],shown_model[nb:,nh:]),
+                    comparison_row("Coupling V→X",matrix[:nb,nh:],shown_model[:nb,nh:]),
+                    comparison_row("Coupling H→Y",matrix[nb:,:nh],shown_model[nb:,:nh]),
                 )
                 comparison_html=(f"<br><h3 style='color:#12BFC4;margin:8px 0'>Measured vs reference model</h3>"
                                  f"<div style='margin-bottom:6px'>RMS and maximum values are shown in <b>{display_unit}</b>.</div>"
@@ -2133,10 +2942,39 @@ class MeasureMainWindow(QMainWindow):
     def _update_selected_orm_column(self,*_):
         result=getattr(self,"_displayed_orm_result",None); index=self.orm_column_selector.currentData()
         if result is None or index is None:return
-        index=int(index); nb=len(result.bpms); column=result.response_matrix[:,index]; scale,unit=(1.0,"m/rad") if result.scaled else (1e6,"µm raw orbit difference"); self.orm_column_plot.clear(); ax=self.orm_column_plot.figure.add_subplot(111); ax.plot(column[:nb]*scale,"o-",markersize=3,label="X BPM response"); ax.plot(column[nb:]*scale,"s-",markersize=3,label="Y BPM response"); device=result.correctors[index]; ax.set_title(f"{device.name} — {device.plane} corrector"); ax.set_xlabel("BPM selection position"); ax.set_ylabel(f"Response [{unit}]"); ax.legend(); ax.grid(True,alpha=.25); self.orm_column_plot.apply_theme()
+        index=int(index); nb=len(result.bpms); display_matrix=getattr(self,"_displayed_orm_matrix",result.response_matrix); display_unit=getattr(self,"_displayed_orm_unit","m/rad" if result.scaled else "m"); column=display_matrix[:,index]; scale,unit=(1.0,"m/rad") if display_unit=="m/rad" else (1e6,"µm"); self.orm_column_plot.clear(); ax=self.orm_column_plot.figure.add_subplot(111); x_values=column[:nb]*scale; y_values=column[nb:]*scale; x_line=ax.plot(x_values,"o-",markersize=3,label="X BPM response",picker=5)[0]; y_line=ax.plot(y_values,"s-",markersize=3,label="Y BPM response",picker=5)[0]; selected=ax.scatter([],[],s=105,facecolors="none",edgecolors="#D946EF",linewidths=2,zorder=5); device=result.correctors[index]; ax.set_title(f"Corrector {index} ({'H' if index<len(result.horizontal_correctors) else 'V'})"); ax.set_xlabel("BPM index"); ax.set_ylabel(f"Response [{unit}]"); ax.legend(); ax.grid(True,alpha=.25); self.orm_column_plot.apply_theme()
+        corrector_plane="H" if index<len(result.horizontal_correctors) else "V"; self.orm_column_corrector_info.setText(f"Corrector {index} (zero-based) · {corrector_plane} · {device.name}")
+        self._orm_column_state={"axis":ax,"corrector":device,"corrector_index":index,"corrector_plane":corrector_plane,"bpms":result.bpms,"series":(("X",x_line,np.asarray(x_values)),("Y",y_line,np.asarray(y_values))),"unit":unit,"selected":selected}
         self.rf_diagnostics.setText(self._orm_transaction_text(result,index))
 
+    def _orm_column_hit(self,event):
+        state=self._orm_column_state
+        if state is None or event.inaxes is not state["axis"] or event.xdata is None or event.ydata is None:return None
+        bpm_index=int(round(event.xdata))
+        if not 0<=bpm_index<len(state["bpms"]):return None
+        plane,line,values=min(state["series"],key=lambda item:abs(float(event.ydata)-item[2][bpm_index]))
+        return state,bpm_index,plane,float(values[bpm_index])
+
+    @staticmethod
+    def _orm_column_text(state,bpm_index,plane,value):
+        bpm=state["bpms"][bpm_index]; block=f"{state['corrector_plane']}→{plane}"
+        return (f"BPM: {bpm.name} · index {bpm_index} (zero-based) · plane {plane}<br>"
+                f"Corrector: {state['corrector'].name} · index {state['corrector_index']} (zero-based) · plane {state['corrector_plane']}<br>"
+                f"Block: {block} · Response: <b>{value:+.7g} {state['unit']}</b>")
+
+    def _on_orm_column_hover(self,event):
+        hit=self._orm_column_hit(event)
+        if hit is None:self.orm_element_info.setText(self._orm_selected_info or "Hover over an ORM cell or selected-column BPM point to identify it."); return
+        self.orm_element_info.setText(self._orm_column_text(*hit))
+
+    def _on_orm_column_click(self,event):
+        if getattr(self.orm_column_plot.toolbar,"mode",""):return
+        hit=self._orm_column_hit(event)
+        if hit is None:return
+        state,bpm_index,plane,value=hit; state["selected"].set_offsets([[bpm_index,value]]); details=self._orm_column_text(state,bpm_index,plane,value); self._orm_selected_info=details; self.orm_element_info.setText(details); self.orm_column_plot.canvas.draw_idle()
+
     def _show_dispersion_result(self,result):
+        self._dispersion_plot_state.clear()
         lattice_metadata=self._dispersion_lattice_metadata(); eta=None if lattice_metadata is None else lattice_metadata["eta"]
         deltas=None; physical_x=physical_y=None
         plus=result.state("positive") if result.direction in {"bipolar","positive"} else None
@@ -2155,7 +2993,10 @@ class MeasureMainWindow(QMainWindow):
             for canvas,title in ((self.x_plot,"Physical horizontal dispersion unavailable"),(self.y_plot,"Physical vertical dispersion unavailable")):
                 canvas.clear(); ax=canvas.figure.add_subplot(111); ax.set_title(title); ax.text(.5,.5,"Backend momentum compaction and bipolar RF readbacks are required.",ha="center",va="center",transform=ax.transAxes); ax.set_axis_off(); canvas.apply_theme()
         for canvas,values,title,scale,unit,color in plot_sets:
-            canvas.clear(); ax=canvas.figure.add_subplot(111); ax.plot(np.asarray(values)*scale,"o-",color=color,markersize=4); ax.set_title(f"{title} [{unit}]"); ax.set_ylabel(f"{'Physical dispersion' if title.startswith('Physical') else 'RF orbit difference'} [{unit}]"); ax.set_xlabel("BPM selection position"); ax.grid(True,alpha=.25); canvas.apply_theme()
+            canvas.clear(); ax=canvas.figure.add_subplot(111); positions=np.arange(len(values)); shown=np.asarray(values)*scale
+            if self.dispersion_connect_points.isChecked():ax.plot(positions,shown,color=color,linewidth=.75,alpha=.55,zorder=1)
+            points=ax.scatter(positions,shown,color=color,s=20,picker=5,zorder=2); highlight=ax.scatter([],[],s=90,facecolors="none",edgecolors="#D946EF",linewidths=2,zorder=4); pinned=ax.scatter([],[],s=55,facecolors=color,edgecolors="#8B5CF6",linewidths=1.8,zorder=3); ax.set_title(f"{title} [{unit}]"); label="Physical dispersion" if title.startswith("Physical") else "RF orbit difference"; ax.set_ylabel(f"{label} [{unit}]"); ax.set_xlabel("BPM index (zero-based)"); ax.grid(True,alpha=.25); canvas.apply_theme(); theme=canvas.theme(); annotation=ax.annotate("",xy=(0,0),xytext=(12,14),textcoords="offset points",bbox={"boxstyle":"round,pad=0.45","facecolor":theme["face"],"edgecolor":theme["spine"],"alpha":.97},color=theme["text"],fontsize=9,zorder=5); annotation.set_gid("bpm-identification-tooltip"); annotation.set_visible(False); indices=np.arange(len(values),dtype=int); key="raw_x" if canvas is self.raw_x_plot else "raw_y" if canvas is self.raw_y_plot else "physical_x" if canvas is self.x_plot else "physical_y"; self._dispersion_plot_state[key]={"axis":ax,"canvas":canvas,"points":points,"highlight":highlight,"pinned":pinned,"annotation":annotation,"indices":indices,"value_by_index":dict(zip(indices.tolist(),shown.tolist())),"label":label,"unit":unit,"pin_lines":[]}
+        self._refresh_dispersion_highlights()
         model_comparison=""
         model_comparison_html="<b>Not calculated.</b><br>Enable <i>Compare measurements with reference model</i> before or after the measurement."
         if physical_x is not None and self.compare_reference.isChecked() and self.reference_model is not None:
@@ -2191,34 +3032,45 @@ class MeasureMainWindow(QMainWindow):
             colors=("#64748B","#F59E42","#11B7C1","#D946EF")
             offset=result.requested_offset_hz
             display_labels={"reference":"Reference RF (0 Hz)","reference_after":"Restored RF (0 Hz)","positive":f"Positive RF (+{offset:g} Hz)","negative":f"Negative RF (−{offset:g} Hz)"}
+            series=[]; positions=np.arange(len(result.devices)); indices=np.arange(len(result.devices),dtype=int)
             for state,color in zip(result.states,colors):
                 raw=getattr(state,f"orbits_{plane}_m")*1e6
                 for sample in raw: ax.plot(sample,color=color,alpha=.10,linewidth=.7)
-                ax.plot(np.arange(len(result.devices)),getattr(state,f"mean_{plane}_m")*1e6,"o-",label=display_labels.get(state.label,state.label),color=color,markersize=3)
-            ax.set_title(title); ax.set_ylabel("Orbit [µm]"); ax.set_xlabel("BPM selection position"); ax.grid(True,alpha=.25); ax.legend(); canvas.apply_theme()
+                shown=getattr(state,f"mean_{plane}_m")*1e6; label=display_labels.get(state.label,state.label); points=ax.plot(positions,shown,"o-",label=label,color=color,markersize=3,picker=5)[0]; series.append((label,points,dict(zip(indices.tolist(),shown.tolist()))))
+            highlight=ax.scatter([],[],s=90,facecolors="none",edgecolors="#D946EF",linewidths=2,zorder=5); pinned=ax.scatter([],[],s=55,facecolors=colors[0],edgecolors="#8B5CF6",linewidths=1.8,zorder=4); ax.set_title(title); ax.set_ylabel("Orbit [µm]"); ax.set_xlabel("BPM index (zero-based)"); ax.grid(True,alpha=.25); ax.legend(); canvas.apply_theme(); theme=canvas.theme(); annotation=ax.annotate("",xy=(0,0),xytext=(12,14),textcoords="offset points",bbox={"boxstyle":"round,pad=0.45","facecolor":theme["face"],"edgecolor":theme["spine"],"alpha":.97},color=theme["text"],fontsize=9,zorder=6); annotation.set_gid("bpm-identification-tooltip"); annotation.set_visible(False); key=f"states_{plane}"; self._dispersion_plot_state[key]={"axis":ax,"canvas":canvas,"series":series,"points":series[0][1],"highlight":highlight,"pinned":pinned,"annotation":annotation,"indices":indices,"label":series[0][0],"unit":"µm","active_values":series[0][2],"pin_lines":[]}
         symmetry=[]
         if plus is not None and minus is not None:
             for canvas,plane,title in ((self.rf_shift_x_plot,"x","Horizontal RF-induced orbit shift"),(self.rf_shift_y_plot,"y","Vertical RF-induced orbit shift")):
                 shift_plus=getattr(plus,f"mean_{plane}_m")-getattr(reference,f"mean_{plane}_m")
                 shift_minus=getattr(minus,f"mean_{plane}_m")-getattr(reference,f"mean_{plane}_m")
                 canvas.clear(); ax=canvas.figure.add_subplot(111); positions=np.arange(len(result.devices))
-                ax.plot(positions,shift_plus*1e6,"o-",markersize=3,color="#F59E42",label=f"{plane}(f+) − {plane}(f₀)")
-                ax.plot(positions,shift_minus*1e6,"o-",markersize=3,color="#11B7C1",label=f"{plane}(f−) − {plane}(f₀)")
-                ax.axhline(0,color="#64748B",linewidth=.8); ax.set_title(title); ax.set_ylabel("Orbit shift [µm]"); ax.set_xlabel("BPM selection position"); ax.grid(True,alpha=.25); ax.legend(); canvas.apply_theme()
+                if self.dispersion_connect_points.isChecked():
+                    ax.plot(positions,shift_plus*1e6,linewidth=.75,alpha=.55,color="#F59E42")
+                    ax.plot(positions,shift_minus*1e6,linewidth=.75,alpha=.55,color="#11B7C1")
+                plus_label=f"{plane}(f+) − {plane}(f₀)"; minus_label=f"{plane}(f−) − {plane}(f₀)"; plus_values=shift_plus*1e6; minus_values=shift_minus*1e6; plus_points=ax.scatter(positions,plus_values,s=18,color="#F59E42",label=plus_label,picker=5); minus_points=ax.scatter(positions,minus_values,s=18,color="#11B7C1",label=minus_label,picker=5)
+                highlight=ax.scatter([],[],s=90,facecolors="none",edgecolors="#D946EF",linewidths=2,zorder=5); pinned=ax.scatter([],[],s=55,facecolors="#F59E42",edgecolors="#8B5CF6",linewidths=1.8,zorder=4); ax.axhline(0,color="#64748B",linewidth=.8); ax.set_title(title); ax.set_ylabel("Orbit shift [µm]"); ax.set_xlabel("BPM index (zero-based)"); ax.grid(True,alpha=.25); ax.legend(); canvas.apply_theme(); theme=canvas.theme(); annotation=ax.annotate("",xy=(0,0),xytext=(12,14),textcoords="offset points",bbox={"boxstyle":"round,pad=0.45","facecolor":theme["face"],"edgecolor":theme["spine"],"alpha":.97},color=theme["text"],fontsize=9,zorder=6); annotation.set_gid("bpm-identification-tooltip"); annotation.set_visible(False); indices=np.arange(len(result.devices),dtype=int); key=f"shift_{plane}"; plus_map=dict(zip(indices.tolist(),plus_values.tolist())); minus_map=dict(zip(indices.tolist(),minus_values.tolist())); self._dispersion_plot_state[key]={"axis":ax,"canvas":canvas,"series":((plus_label,plus_points,plus_map),(minus_label,minus_points,minus_map)),"points":plus_points,"highlight":highlight,"pinned":pinned,"annotation":annotation,"indices":indices,"label":plus_label,"unit":"µm","active_values":plus_map,"pin_lines":[]}
                 mismatch=(shift_plus+shift_minus)*1e6
                 correlation=float(np.corrcoef(shift_plus,-shift_minus)[0,1]) if np.std(shift_plus)>0 and np.std(shift_minus)>0 else float("nan")
                 symmetry.append(f"{plane.upper()} RMS mismatch {np.sqrt(np.mean(mismatch**2)):.3f} µm, correlation {correlation:.6f}")
         else:
             for canvas in (self.rf_shift_x_plot,self.rf_shift_y_plot):
                 canvas.clear(); ax=canvas.figure.add_subplot(111); ax.text(.5,.5,"Positive and negative RF states are required.",ha="center",va="center",transform=ax.transAxes); ax.set_axis_off(); canvas.apply_theme()
+        self._refresh_dispersion_highlights()
         display_physical=self.dispersion_display.currentData()=="physical" and physical_x is not None
         values_x,values_y=(physical_x,physical_y) if display_physical else (result.measured_eta_x,result.measured_eta_y)
         scale,unit=(1e3,"mm")
         titles=("Physical Dx","Physical Dy") if display_physical else ("RF orbit difference Δx_RF","RF orbit difference Δy_RF")
         def text(label,values): return label+": "+", ".join(f"{k} {v*scale:.3f} {unit}" for k,v in self._stats(values).items())
         self.summary_x.setText(text(titles[0],values_x)); self.summary_y.setText(text(titles[1],values_y))
-        self.rf_response_stats.setText(text("X",result.measured_eta_x)+"\n"+text("Y",result.measured_eta_y))
-        self.physical_stats.setText((text("Dₓ",physical_x)+"\n"+text("Dᵧ",physical_y)) if physical_x is not None else "Unavailable: a verified lattice slip factor and bipolar RF readbacks are required.")
+        self.statistics_table.set_statistics((
+            (titles[0],{key:value*scale for key,value in self._stats(values_x).items()}),
+            (titles[1],{key:value*scale for key,value in self._stats(values_y).items()}),
+        ),unit)
+        self.rf_response_stats.set_statistics((("Horizontal Δx_RF",{key:value*1e3 for key,value in self._stats(result.measured_eta_x).items()}),("Vertical Δy_RF",{key:value*1e3 for key,value in self._stats(result.measured_eta_y).items()})),"mm")
+        if physical_x is not None:
+            self.physical_stats.set_statistics((("Horizontal Dₓ",{key:value*1e3 for key,value in self._stats(physical_x).items()}),("Vertical Dᵧ",{key:value*1e3 for key,value in self._stats(physical_y).items()})),"mm"); self.physical_stats.setVisible(True); self.physical_unavailable.clear(); self.physical_unavailable.setVisible(False)
+        else:
+            self.physical_stats.clear_statistics(); self.physical_stats.setVisible(False); self.physical_unavailable.setText("Unavailable: a verified lattice slip factor and bipolar RF readbacks are required."); self.physical_unavailable.setVisible(True)
         readbacks={state.label:state.actual_rf_hz for state in result.states}; restored=getattr(self,"_restored_rf_readback",np.nan); difference=restored-result.nominal_rf_hz
         automatic=self.rf_control_mode.currentData()=="automatic"
         if automatic:self.restoration_label.setText(f"RF readbacks — original: {result.nominal_rf_hz:.6f} Hz; negative: {readbacks.get('negative',np.nan):.6f} Hz; positive: {readbacks.get('positive',np.nan):.6f} Hz; restored: {restored:.6f} Hz; restoration difference: {difference:+g} Hz ({result.restoration_status}).")
@@ -2228,6 +3080,12 @@ class MeasureMainWindow(QMainWindow):
         else:
             if deltas is None:deltas=relative_momentum_deviation([readbacks["negative"],readbacks["positive"]],result.nominal_rf_hz,eta); delta_span=float(deltas[0]-deltas[1])
             diagnostic=f"Momentum diagnostics — αc: {lattice_metadata['alpha']:.12g}; 1/γ²: {lattice_metadata['inverse_gamma_squared']:.12g}; η=αc−1/γ²: {eta:.12g}; AT get_slip_factor(): {lattice_metadata['at_slip_factor']:.12g}; δ−: {deltas[0]:+.12g}; δ+: {deltas[1]:+.12g}; δ− − δ+: {delta_span:+.12g}. Convention: {MOMENTUM_RELATION}."
+            transition=[]
+            for state in result.states:
+                if state.orbits_x_m.shape[0]>1:
+                    dx=(state.orbits_x_m[0]-np.mean(state.orbits_x_m[1:],axis=0))*1e6; dy=(state.orbits_y_m[0]-np.mean(state.orbits_y_m[1:],axis=0))*1e6
+                    transition.append(f"{state.label}: X RMS {np.sqrt(np.mean(dx**2)):.3f} µm / Y RMS {np.sqrt(np.mean(dy**2)):.3f} µm")
+            if transition:diagnostic+="\nRF-state transition diagnostic (first sample minus later-sample mean; no samples excluded): "+"; ".join(transition)+"."
             if any(state.label=="reference_after" for state in result.states):
                 before=result.state("reference"); after=result.state("reference_after"); dx=(after.mean_x_m-before.mean_x_m)*1e6; dy=(after.mean_y_m-before.mean_y_m)*1e6
                 diagnostic+=f"\nRestored-orbit diagnostic (excluded from dispersion): ΔX reference-after − reference-before: RMS {np.sqrt(np.mean(dx**2)):.3f} µm / max {np.max(np.abs(dx)):.3f} µm; ΔY: RMS {np.sqrt(np.mean(dy**2)):.3f} µm / max {np.max(np.abs(dy)):.3f} µm."
@@ -2318,7 +3176,7 @@ class MeasureMainWindow(QMainWindow):
         self._store_active_selection()
         h=self.corrector_selection_widgets["hcor"]; v=self.corrector_selection_widgets["vcor"]
         identity,profile=self._machine_identity(); profile_meta={} if profile is None else {"machine":profile.machine,"profile":profile.scenario,"profile_key":profile.key,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
-        return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),delay_seconds=self.delay.value(),settling_delay_seconds=self.settling_delay.value(),verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=self.orm_scaled.isChecked(),reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta})
+        return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),bpm_noise_ddof=int(self.bpm_noise_convention.currentData()),delay_seconds=self.delay.value(),settling_delay_seconds=self.settling_delay.value(),verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=False,reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta,"orm_normalized_analysis":self.orm_normalized_analysis.isChecked()})
 
     def _load_project_widgets(self):
         self.pyaml_magnet_writes.setChecked(True)
@@ -2329,7 +3187,7 @@ class MeasureMainWindow(QMainWindow):
         self.adapter_combo.setCurrentIndex(max(0,self.adapter_combo.findText(self.project.adapter)))
         if self.adapter_combo.currentData() == "pyaml":
             self._invalidate_pyaml()
-        p=self.project; self._selection_states=p.measurement_selections; self._active_selection_kind=p.measurement_type; self.measurement_type.blockSignals(True); self.measurement_type.setCurrentIndex(max(0,self.measurement_type.findData(p.measurement_type))); self.measurement_type.blockSignals(False); self._restore_selection(p.measurement_type); self.measurement_name.setText(p.measurement_name); self.measurement_label.setText(p.measurement_label); self.comments.setPlainText(p.operator_comments); self.readings.setValue(p.readings); self.delay.setValue(p.delay_seconds); self.settling_delay.setValue(p.settling_delay_seconds); self.verify_restored_orbit.setChecked(p.verify_restored_orbit); self.nominal_rf.setText("" if p.nominal_rf_hz is None else f"{p.nominal_rf_hz:g}"); self.rf_step.setValue(p.rf_step_hz); self.dispersion_direction.setCurrentIndex(max(0,self.dispersion_direction.findData(p.dispersion_direction))); self.orm_direction.setCurrentIndex(max(0,self.orm_direction.findData(p.orm_direction))); self.orm_kick_mode.setCurrentIndex(max(0,self.orm_kick_mode.findData(p.orm_kick_mode))); self.orm_hkick.setValue(p.orm_horizontal_kick_rad*1e6); self.orm_vkick.setValue(p.orm_vertical_kick_rad*1e6); self.orm_kick_file.setText(p.orm_kick_file); self.orm_scaled.setChecked(p.orm_scaled)
+        p=self.project; self._selection_states=p.measurement_selections; self._active_selection_kind=p.measurement_type; self.measurement_type.blockSignals(True); self.measurement_type.setCurrentIndex(max(0,self.measurement_type.findData(p.measurement_type))); self.measurement_type.blockSignals(False); self._restore_selection(p.measurement_type); self.measurement_name.setText(p.measurement_name); self.measurement_label.setText(p.measurement_label); self.comments.setPlainText(p.operator_comments); self.readings.setValue(p.readings); self.bpm_noise_convention.setCurrentIndex(max(0,self.bpm_noise_convention.findData(p.bpm_noise_ddof))); self.delay.setValue(p.delay_seconds); self.settling_delay.setValue(p.settling_delay_seconds); self.verify_restored_orbit.setChecked(p.verify_restored_orbit); self.nominal_rf.setText("" if p.nominal_rf_hz is None else f"{p.nominal_rf_hz:g}"); self.rf_step.setValue(p.rf_step_hz); self.dispersion_direction.setCurrentIndex(max(0,self.dispersion_direction.findData(p.dispersion_direction))); self.orm_direction.setCurrentIndex(max(0,self.orm_direction.findData(p.orm_direction))); self.orm_kick_mode.setCurrentIndex(max(0,self.orm_kick_mode.findData(p.orm_kick_mode))); self.orm_hkick.setValue(p.orm_horizontal_kick_rad*1e6); self.orm_vkick.setValue(p.orm_vertical_kick_rad*1e6); self.orm_kick_file.setText(p.orm_kick_file); self.orm_normalized_analysis.setChecked(bool(p.orm_scaled or p.metadata.get("orm_normalized_analysis",False)))
         self.reference_model_path.setText(p.reference_model_path); self.compare_reference.setChecked(p.compare_with_reference_model)
         if p.reference_model_path:self._load_reference_model(p.reference_model_path,"Project reference model")
         self.output_directory.setText(p.output_directory); self.apply_theme(p.theme); self.refresh_preview(); self._measurement_type_changed(); self._update_machine_identity()
@@ -2351,8 +3209,8 @@ class MeasureMainWindow(QMainWindow):
         self.project_path=Path(path).resolve(); self.save_project()
 
     def apply_theme(self,key):
-        self.project.theme=key; app=QApplication.instance(); apply_application_theme(app,theme_for_key(key),"purple")
-        self.setStyleSheet(TEAL_QSS); self.theme_button.setText("☀ Light" if key=="dark" else "🌙 Dark")
+        self.project.theme=key; app=QApplication.instance(); apply_application_theme(app,theme_for_key(key),"teal")
+        self.setStyleSheet(measure_stylesheet(key)); self.theme_button.setText("☀ Light" if key=="dark" else "🌙 Dark")
         for plot in (getattr(self,"live_plot",None),getattr(self,"x_plot",None),getattr(self,"y_plot",None),getattr(self,"mean_x_plot",None),getattr(self,"mean_y_plot",None),getattr(self,"rf_shift_x_plot",None),getattr(self,"rf_shift_y_plot",None),getattr(self,"orm_vv_plot",None),getattr(self,"orm_column_plot",None),getattr(self,"orm_kick_plot",None),getattr(self,"orm_model_plot",None),getattr(self,"orm_difference_plot",None)):
             if plot is not None: plot.apply_theme()
     def toggle_theme(self): self.apply_theme("light" if self.project.theme=="dark" else "dark")
