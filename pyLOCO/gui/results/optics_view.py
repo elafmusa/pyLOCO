@@ -4,8 +4,8 @@ from __future__ import annotations
 import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QAbstractItemView, QLabel, QTabWidget, QTableWidget, QTableWidgetItem,
-    QFrame, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QHBoxLayout, QLabel, QTabWidget, QTableWidget,
+    QTableWidgetItem, QFrame, QScrollArea, QSizePolicy, QVBoxLayout, QWidget,
 )
 from .plot_canvas import PlotCanvas
 
@@ -56,14 +56,17 @@ class OpticsView(QWidget):
         super().__init__(parent); self.loader = None; self.tabs = QTabWidget()
         self.beta_pages = {}; self.beta_messages = {}; self.beta_tables = {}; self.beta_plots = {}
         self.dispersion_pages = {}; self.dispersion_messages = {}; self.dispersion_tables = {}; self.dispersion_plots = {}
+        self.dispersion_quantity = {}
         for plane in ("x", "y"):
             page, message, table, plots = self._make_beta_page(plane)
             self.beta_pages[plane], self.beta_messages[plane], self.beta_tables[plane], self.beta_plots[plane] = page, message, table, plots
             self.tabs.addTab(page, f"β{plane}")
         for plane in ("x", "y"):
-            page, message, table, plots = self._make_dispersion_page(plane)
+            page, message, table, plots, quantity = self._make_dispersion_page(plane)
             self.dispersion_pages[plane], self.dispersion_messages[plane], self.dispersion_tables[plane], self.dispersion_plots[plane] = page, message, table, plots
-            self.tabs.addTab(page, f"η{plane}")
+            self.dispersion_quantity[plane] = quantity
+            quantity.currentIndexChanged.connect(lambda _index, p=plane: self.loader is not None and self._render_dispersion(self.loader, p))
+            self.tabs.addTab(page, f"Dispersion {plane.upper()}")
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(self.tabs, 1)
         self.beta_plot = self.beta_plots["x"]["beating"]
         self.dispersion_plot = self.dispersion_plots["x"]["comparison"]
@@ -89,13 +92,16 @@ class OpticsView(QWidget):
     def _make_dispersion_page(plane):
         page = QWidget(); layout = QVBoxLayout(page)
         message = QLabel(f"No η{plane} results loaded."); message.setWordWrap(True); message.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        quantity = QComboBox(); quantity.addItem("Physical dispersion D [m]", "physical"); quantity.addItem("RF orbit difference [m]", "rf_orbit_response")
+        quantity.setToolTip("Display either the notebook-compatible physical dispersion or the signed RF-induced orbit difference used by FIT.")
+        quantity_row = QHBoxLayout(); quantity_row.addWidget(QLabel("Displayed quantity:")); quantity_row.addWidget(quantity); quantity_row.addStretch(1)
         table = _table(["State", "Min [mm]", "Max [mm]", "Mean [mm]", "RMS [mm]", "Max |error| [mm]"])
         plot_tabs = QTabWidget(); plots = {}
         for key, label in (("comparison", "Comparison"), ("measured", "Measured"), ("initial", "Initial model"), ("fitted", "Fitted model"),
                            ("initial_residual", "Initial residual"), ("fitted_residual", "Fitted residual"), ("residuals", "Residual comparison")):
             plots[key] = PlotCanvas(show_toolbar=True, minimum_height=320); plot_tabs.addTab(plots[key], label)
-        layout.addWidget(message); layout.addWidget(table); layout.addWidget(plot_tabs, 1)
-        return _scrollable_page(page), message, table, plots
+        layout.addWidget(message); layout.addLayout(quantity_row); layout.addWidget(table); layout.addWidget(plot_tabs, 1)
+        return _scrollable_page(page), message, table, plots, quantity
 
     def set_loader(self, loader):
         self.loader = loader
@@ -163,10 +169,31 @@ class OpticsView(QWidget):
             )
             table.hide()
             return
-        quantity = data.get("display_quantity", "physical_dispersion")
-        quantity_label = "RF orbit response" if quantity == "rf_orbit_response" else "dispersion"
-        table.show(); message.setText(("Dispersion was included in the LOCO objective. " if loader.dispersion_included else "Dispersion was not included in the LOCO objective; this is an independent post-fit diagnostic. ") + f"Displayed {quantity_label} and model − measurement residuals use mm.")
-        values = data[plane]; axis = np.asarray(data.get("axis", np.arange(np.size(values["measured"]))), dtype=float); axis_label = data.get("axis_label", "BPM index in saved ordering")
+        selector = self.dispersion_quantity[plane]
+        physical_available = "physical" in data and plane in data["physical"]
+        selector.model().item(selector.findData("physical")).setEnabled(physical_available)
+        if not physical_available and selector.currentData() == "physical":
+            selector.blockSignals(True)
+            selector.setCurrentIndex(selector.findData("rf_orbit_response"))
+            selector.blockSignals(False)
+        quantity = selector.currentData()
+        values = data["physical"][plane] if quantity == "physical" and physical_available else data[plane]
+        table.show()
+        objective = "included in" if loader.dispersion_included else "not included in"
+        if quantity == "physical":
+            meta = data["physical"]
+            message.setText(
+                f"Physical dispersion is a derived diagnostic. The underlying RF orbit difference was {objective} the LOCO objective and remains unchanged. "
+                f"Measured D = ΔorbitRF × ηAT × fRF / Δf, with ηAT={meta['at_slip_factor']:.9g}, "
+                f"fRF={meta['rf_frequency_hz']:.9g} Hz and signed Δf={meta['signed_rf_step_hz']:.9g} Hz. "
+                "Residuals follow the Case C convention: measured physical dispersion − model physical dispersion."
+            )
+        else:
+            message.setText(
+                f"The signed RF orbit difference was {objective} the LOCO objective. Values are orbit differences in metres, displayed in millimetres; they are not absolute physical dispersion. "
+                "Residuals follow the Case C convention: measured RF orbit difference − model RF orbit difference."
+            )
+        axis = np.asarray(data.get("axis", np.arange(np.size(values["measured"]))), dtype=float); axis_label = data.get("axis_label", "BPM index in saved ordering")
         measured = np.asarray(values["measured"], dtype=float) * 1000.0; initial = np.asarray(values["initial"], dtype=float) * 1000.0; fitted = np.asarray(values["fitted"], dtype=float) * 1000.0
         comparison = plots["comparison"].figure.add_subplot(111)
         for curve, label, style in ((measured, "Measured", "-"), (initial, "Initial model", ":"), (fitted, "Fitted model", "--")):
@@ -175,17 +202,22 @@ class OpticsView(QWidget):
         for key, curve, label in (("measured", measured, "Measured"), ("initial", initial, "Initial model"), ("fitted", fitted, "Fitted model")):
             ax = plots[key].figure.add_subplot(111); ax.plot(axis, curve, linewidth=1.2, label=label); ax.legend()
         residual_axis = plots["residuals"].figure.add_subplot(111)
-        residual_axis.plot(axis, initial - measured, ":", label="Initial model − measurement", linewidth=1.2)
-        residual_axis.plot(axis, fitted - measured, "-", label="Fitted model − measurement", linewidth=1.2)
+        residual_axis.plot(axis, measured - initial, ":", label="Measured − initial model", linewidth=1.2)
+        residual_axis.plot(axis, measured - fitted, "-", label="Measured − fitted model", linewidth=1.2)
         residual_axis.axhline(0, color="#8d95a8", linewidth=.8); residual_axis.legend()
-        for key, residual, label in (("initial_residual", initial - measured, "Initial model − measurement"),
-                                     ("fitted_residual", fitted - measured, "Fitted model − measurement")):
+        for key, residual, label in (("initial_residual", measured - initial, "Measured − initial model"),
+                                     ("fitted_residual", measured - fitted, "Measured − fitted model")):
             ax = plots[key].figure.add_subplot(111); ax.plot(axis, residual, linewidth=1.2, label=label)
             ax.axhline(0, color="#8d95a8", linewidth=.8); ax.legend()
+        quantity_symbol = f"D{plane}" if quantity == "physical" else f"Δ{plane}_RF"
         for key, plot in plots.items():
-            ax = plot.figure.axes[0]; ax.set(xlabel=axis_label, ylabel=(f"η{plane} residual [mm]" if "residual" in key else f"η{plane} RF response [mm]" if quantity == "rf_orbit_response" else f"η{plane} [mm]")); ax.grid(True, alpha=.25)
-        stats = loader.dispersion_statistics.get(plane, {})
-        for state, suffix in (("Initial − measurement", "before"), ("Fit − measurement", "after")):
+            ax = plot.figure.axes[0]; ax.set(xlabel=axis_label, ylabel=(f"{quantity_symbol} difference [mm]" if "residual" in key else f"{quantity_symbol} [mm]")); ax.grid(True, alpha=.25)
+        def metrics(residual):
+            finite = residual[np.isfinite(residual)]
+            return {"min":float(np.min(finite)),"max":float(np.max(finite)),"mean":float(np.mean(finite)),"rms":float(np.sqrt(np.mean(finite**2))),"max_abs":float(np.max(np.abs(finite)))} if finite.size else {key:None for key in ("min","max","mean","rms","max_abs")}
+        stats = {**{f"{key}_before":value for key,value in metrics((measured-initial)/1000.0).items()},
+                 **{f"{key}_after":value for key,value in metrics((measured-fitted)/1000.0).items()}}
+        for state, suffix in (("Measured − initial model", "before"), ("Measured − fitted model", "after")):
             row = table.rowCount(); table.insertRow(row); table.setItem(row, 0, QTableWidgetItem(state))
             for column, key in enumerate(("min", "max", "mean", "rms", "max_abs"), 1):
                 value = stats.get(f"{key}_{suffix}"); table.setItem(row, column, QTableWidgetItem("—" if value is None else f"{1000.0 * value:.5g}"))

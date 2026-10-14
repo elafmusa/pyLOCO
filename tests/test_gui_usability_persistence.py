@@ -159,6 +159,24 @@ def test_spinbox_wheel_never_changes_values_while_scrolling(app):
         assert event.ignored
 
 
+def test_machine_element_and_exclusion_guidance_uses_selected_list_positions(app):
+    window = MainWindow()
+    assert "Edit/Select to check or uncheck individual elements" in window.machine_elements_help.text()
+    assert "Normal and skew quadrupoles" in window.machine_elements_help.toolTip()
+    assert "no separate quadrupole-exclusion field" in window.machine_elements_help.toolTip()
+    assert "zero-based positions" in window.exclusion_help.text()
+    assert "not AT lattice ordinals" in window.exclusion_help.text()
+    assert "BPM position 27 is the 28th BPM" in window.exclusion_help.text()
+    assert "keep the original selected device list unchanged" in window.exclusion_help.toolTip()
+    for editor in (
+        window.bad_bpm_positions_edit,
+        window.hcor_exclusions_edit,
+        window.vcor_exclusions_edit,
+    ):
+        assert "not AT lattice ordinals" in editor.toolTip()
+    window.close()
+
+
 def test_dispersion_weights_are_contextual_preserved_and_routed(app):
     window = MainWindow()
     window.show()
@@ -455,6 +473,26 @@ def test_complete_nondefault_gui_state_survives_save_close_and_reload(app, tmp_p
     assert second.bad_bpm_positions_edit.text() == "1"
     assert second.hcor_exclusions_edit.text() == "0"
     second.close()
+
+
+def test_element_selection_provenance_round_trips_without_changing_authoritative_ordinals(tmp_path):
+    project = ProjectMetadata(name="selection-provenance")
+    ordinals = [7, 11, 19]
+    project.loco_config.machine_elements.normal_quadrupole_ords = ordinals
+    project.loco_config.element_selection_state["normal_quadrupole_ords"] = {
+        "version": 1,
+        "method": "at_wildcard",
+        "patterns": "QD3[AE]*\nQF4[ABDE]*\nQD5[BD]*",
+        "generated_ords": [7, 11, 17, 19],
+        "resolved_ords": ordinals,
+        "manual_additions": [],
+        "manual_removals": [17],
+    }
+    restored = ProjectMetadata.load(project.save(tmp_path / "selection.pyloco.json"))
+    assert restored.loco_config.machine_elements.normal_quadrupole_ords == ordinals
+    assert restored.loco_config.element_selection_state["normal_quadrupole_ords"] == (
+        project.loco_config.element_selection_state["normal_quadrupole_ords"]
+    )
 
 
 def test_save_project_snapshots_live_widgets_and_overwrites_loaded_file(app, tmp_path):

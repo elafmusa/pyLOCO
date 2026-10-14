@@ -7,7 +7,10 @@ import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractItemView, QApplication, QDialog, QFileDialog, QMessageBox, QWidget
+from PySide6.QtWidgets import (
+    QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFileDialog,
+    QLabel, QMessageBox, QPlainTextEdit, QWidget,
+)
 
 import pyLOCO.gui.main_window as main_window_module
 from pyLOCO.gui.main_window import ElementSelectionDialog, MainWindow
@@ -176,6 +179,37 @@ def test_constraints_collapse_without_changing_values_and_init_literals_validate
     window.project.modified = False; window.close()
 
 
+def test_advanced_mode_uses_the_guided_initial_value_dialog_not_raw_storage_window(app, monkeypatch):
+    window = MainWindow()
+    window.project.mode = "Advanced"
+    window._apply_mode_visibility()
+    app.processEvents()
+
+    for raw_storage in (window.params_init, window.params_init_policy):
+        assert raw_storage.parent() is window
+        assert raw_storage.isHidden()
+        assert not raw_storage.isWindow()
+
+    captured = []
+    monkeypatch.setattr(QDialog, "exec", lambda dialog: captured.append(dialog) or QDialog.Rejected)
+    window._edit_explicit_initial_values()
+    assert len(captured) == 1
+    dialog = captured[0]
+    assert dialog.objectName() == "explicitInitialValuesDialog"
+    assert dialog.width() >= 560 and dialog.height() >= 300
+    editor = dialog.findChild(QPlainTextEdit, "explicitInitialValuesEditor")
+    assert editor is not None
+    assert editor.placeholderText() == "{'hbpm_gain': 1.0}"
+    help_label = dialog.findChild(QLabel, "explicitInitialValuesHelp")
+    assert help_label is not None and "override the initialization policy" in help_label.text()
+    buttons = dialog.findChild(QDialogButtonBox)
+    assert buttons is not None
+    assert buttons.button(QDialogButtonBox.Save) is not None
+    assert buttons.button(QDialogButtonBox.Cancel) is not None
+    window.project.modified = False
+    window.close()
+
+
 def test_fit_workflow_plain_language_and_fixed_circumference_control(app):
     window = MainWindow()
     assert window.fit_workflow_table.horizontalHeaderItem(2).text() == "Parameters fitted in this stage"
@@ -189,6 +223,26 @@ def test_fit_workflow_plain_language_and_fixed_circumference_control(app):
     window.rm_fixedpath.setChecked(False); app.processEvents()
     assert window._collect_loco_configuration().response_matrix.fixedpathlength is False
     window.project.modified = False; window.close()
+
+
+def test_reference_model_card_is_concise_but_retains_advanced_provenance(app):
+    window=MainWindow()
+    window.project.lattice.path=str(Path("Examples/EBS/multistage_fit/data/betamodel.mat").resolve())
+    window._refresh_reference_model_info(); app.processEvents()
+    text=window.reference_model_info.text()
+    assert "Number of lattice elements" in text and ">4432<" in text
+    assert "Slip factor η (pyAT convention)" in text
+    assert "RF momentum coefficient" not in text
+    assert "SHA-256" not in text and "Provenance" not in text
+    assert "RF–revolution frequency consistency [Hz]" in text
+    tooltip=window.reference_model_info.toolTip()
+    assert "not a measured accelerator RF error" in tooltip
+    assert "η_RF = αc − 1/γ² = −η_pyAT" in tooltip
+    assert "SHA-256:" in tooltip and len(tooltip.split("SHA-256: ",1)[1].splitlines()[0]) == 64
+    assert "Source / provenance: FIT reference lattice" in tooltip
+    visible_labels=[label.text() for label in window.findChildren(QLabel) if label.isVisible()]
+    assert "Elements" not in visible_labels
+    window.project.modified=False; window.close()
 
 
 def test_run_monitor_is_visible_when_run_preparation_fails(app, monkeypatch):
@@ -365,6 +419,12 @@ def test_manual_ordinals_populate_preview_for_every_component(app, role_key, cla
     lattice = [element_type(), element_type(), element_type()]
     for index, element in enumerate(lattice):
         element.FamName = f"E{index}"
+        if role_key in {"horizontal_corrector_ords", "vertical_corrector_ords"}:
+            element.KickAngle = np.zeros(2)
+        if role_key == "normal_quadrupole_ords":
+            element.PolynomB = np.zeros(2)
+        if role_key == "skew_quadrupole_ords":
+            element.PolynomA = np.zeros(2)
 
     class Parent(QWidget):
         def _load_current_lattice(self):
@@ -381,6 +441,247 @@ def test_manual_ordinals_populate_preview_for_every_component(app, role_key, cla
     assert dialog.table.item(0, 2).text() == "E2"
     assert dialog.table.item(0, 3).text() == class_name
     assert dialog.table.item(1, 1).text() == "0"
+    dialog.close(); parent.close()
+
+
+def test_case_c_at_wildcard_selects_steering_sextupoles_with_exact_notebook_order(app):
+    at = pytest.importorskip("at")
+    lattice = at.load_lattice("Examples/EBS/multistage_fit/data/betamodel.mat")
+    expected = np.asarray(at.get_refpts(lattice, "S[FIJ]2A*"), dtype=int).tolist()
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return lattice
+
+    parent = Parent()
+    dialog = ElementSelectionDialog(parent, "horizontal_corrector_ords", [])
+    dialog.pattern_radio.setChecked(True)
+    dialog.pattern_edit.setPlainText("S[FIJ]2A*")
+    assert dialog._preview()
+    assert dialog.selected_ords == expected
+    assert len(expected) == dialog.table.rowCount() == 32
+    assert dialog.selection_count.text() == "32 selected / 32 in preview"
+    assert dialog.table.item(0, 1).text() == str(expected[0]) == "38"
+    assert dialog.table.item(0, 2).text() == "SJ2A"
+    assert dialog.table.item(0, 3).text() == "Sextupole"
+    assert dialog.table.item(31, 2).text() == "SI2A"
+    dialog.close(); parent.close()
+
+
+def test_case_c_multiline_quad_wildcards_equal_notebook_combination(app):
+    at = pytest.importorskip("at")
+    lattice = at.load_lattice("Examples/EBS/multistage_fit/data/betamodel.mat")
+    patterns = ("QD3[AE]*", "QF4[ABDE]*", "QD5[BD]*")
+    expected = np.sort(np.concatenate([np.asarray(at.get_refpts(lattice, pattern), dtype=int) for pattern in patterns])).tolist()
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return lattice
+
+    parent = Parent()
+    dialog = ElementSelectionDialog(parent, "normal_quadrupole_ords", [])
+    dialog.pattern_radio.setChecked(True)
+    assert dialog.pattern_syntax.currentData() == "at_wildcard"
+    dialog.pattern_edit.setPlainText("\n".join(patterns))
+    assert dialog._preview()
+    assert dialog.selected_ords == expected
+    assert dialog.selected_ords == sorted(set(dialog.selected_ords))
+    assert len(expected) == 252
+    assert dialog.table.rowCount() == 252
+    summary = dialog.pattern_match_summary.text()
+    assert "QD3[AE]*: 62" in summary
+    assert "QF4[ABDE]*: 126" in summary
+    assert "QD5[BD]*: 64" in summary
+    assert "combined: 252 unique elements" in summary
+    dialog.close(); parent.close()
+
+
+def test_multiline_patterns_deduplicate_report_empty_and_reject_invalid(app, monkeypatch):
+    at = pytest.importorskip("at")
+    lattice = at.load_lattice("Examples/EBS/multistage_fit/data/betamodel.mat")
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return lattice
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    parent = Parent()
+    dialog = ElementSelectionDialog(parent, "normal_quadrupole_ords", [])
+    dialog.pattern_radio.setChecked(True)
+
+    dialog.pattern_edit.setPlainText("QD3[AE]*\nQD3[AE]*")
+    assert dialog._preview()
+    assert len(dialog.selected_ords) == len(set(dialog.selected_ords)) == 62
+    assert "QD3[AE]*: 62 · QD3[AE]*: 62 · combined: 62 unique elements" == dialog.pattern_match_summary.text()
+
+    dialog.pattern_edit.setPlainText("NO_SUCH_FAMILY*")
+    assert dialog._preview()
+    assert dialog.selected_ords == []
+    assert dialog.pattern_match_summary.text() == "NO_SUCH_FAMILY*: 0 · combined: 0 unique elements"
+
+    dialog.pattern_edit.setPlainText("QD3[AE*")
+    assert not dialog._preview()
+    assert "Invalid AT wildcard" in dialog.validation_message.text()
+
+    dialog.pattern_syntax.setCurrentIndex(dialog.pattern_syntax.findData("python_regex"))
+    dialog.pattern_edit.setPlainText(r"^QD3[AE].*$")
+    assert dialog._preview()
+    assert len(dialog.selected_ords) == 62
+    dialog.pattern_edit.setPlainText("[")
+    assert not dialog._preview()
+    assert "Invalid Python regular expression" in dialog.validation_message.text()
+    dialog.close(); parent.close()
+
+
+def test_case_c_skew_wildcard_accepts_multipole_hosts_with_polynoma_component(app, monkeypatch):
+    at = pytest.importorskip("at")
+    lattice = at.load_lattice("Examples/EBS/multistage_fit/data/betamodel.mat")
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return lattice
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    parent = Parent()
+    dialog = ElementSelectionDialog(parent, "skew_quadrupole_ords", [])
+    dialog.pattern_radio.setChecked(True)
+    dialog.pattern_edit.setPlainText("S[HFDIJ]*")
+
+    notebook_ordinals = np.asarray(at.get_refpts(lattice, "S[HFDIJ]*"), dtype=int)
+    assert dialog._preview()
+    np.testing.assert_array_equal(np.asarray(dialog.selected_ords), notebook_ordinals)
+    assert len(dialog.selected_ords) == 288
+    assert all(len(np.asarray(lattice[ordinal].PolynomA)) > 1 for ordinal in dialog.selected_ords)
+    assert "combined: 288 unique elements" in dialog.pattern_match_summary.text()
+    assert "multipole" in dialog.table.item(0, 3).text().lower()
+    dialog.close(); parent.close()
+
+
+def test_skew_selection_rejects_multipole_without_required_polynoma_component(app, monkeypatch):
+    class Multipole:
+        FamName = "NO_SKEW_COMPONENT"
+        PolynomA = np.asarray([0.0])
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return [Multipole()]
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    parent = Parent()
+    dialog = ElementSelectionDialog(parent, "skew_quadrupole_ords", [])
+    dialog.manual_edit.setPlainText("0")
+    assert not dialog._preview()
+    assert "requires PolynomA[1]" in dialog.validation_message.text()
+    assert "component is unavailable" in dialog.validation_message.text()
+    dialog.close(); parent.close()
+
+
+def test_element_selection_provenance_restores_patterns_and_manual_removal(app, monkeypatch):
+    at = pytest.importorskip("at")
+    lattice = at.load_lattice("Examples/EBS/multistage_fit/data/betamodel.mat")
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return lattice
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    parent = Parent()
+    patterns = "QD3[AE]*\nQF4[ABDE]*\nQD5[BD]*"
+    first = ElementSelectionDialog(parent, "normal_quadrupole_ords", [])
+    first.pattern_radio.setChecked(True)
+    first.pattern_edit.setPlainText(patterns)
+    assert first._preview()
+    removed_ordinal = int(first.table.item(0, 0).data(Qt.UserRole))
+    first.table.item(0, 0).setCheckState(Qt.Unchecked)
+    first._accept_if_valid()
+
+    assert first.selection_state["method"] == "at_wildcard"
+    assert first.selection_state["patterns"] == patterns
+    assert first.selection_state["manual_removals"] == [removed_ordinal]
+    assert len(first.selection_state["generated_ords"]) == 252
+    assert len(first.selected_ords) == 251
+
+    reopened = ElementSelectionDialog(
+        parent, "normal_quadrupole_ords", first.selected_ords, first.selection_state
+    )
+    assert reopened.pattern_radio.isChecked()
+    assert reopened.pattern_syntax.currentData() == "at_wildcard"
+    assert reopened.pattern_edit.toPlainText() == patterns
+    assert reopened.selected_ords == first.selected_ords
+    assert reopened.table.rowCount() == 252
+    removed_row = next(
+        row for row in range(reopened.table.rowCount())
+        if int(reopened.table.item(row, 0).data(Qt.UserRole)) == removed_ordinal
+    )
+    assert reopened.table.item(removed_row, 0).checkState() == Qt.Unchecked
+    assert "Manual removals: 1" in reopened.provenance_summary.text()
+    reopened.close(); first.close(); parent.close()
+
+
+def test_regex_provenance_and_lattice_mismatch_do_not_replace_stored_ordinals(app, monkeypatch):
+    at = pytest.importorskip("at")
+    lattice = at.load_lattice("Examples/EBS/multistage_fit/data/betamodel.mat")
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return lattice
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    parent = Parent()
+    stored = [int(value) for value in np.asarray(at.get_refpts(lattice, "QD3[AE]*"))]
+    state = {
+        "version": 1,
+        "method": "python_regex",
+        "patterns": r"^QD3[AE].*$",
+        "generated_ords": stored[:-1],  # Simulate a different lattice/version resolution.
+        "resolved_ords": stored[:-1],
+        "manual_additions": [],
+        "manual_removals": [],
+    }
+    dialog = ElementSelectionDialog(parent, "normal_quadrupole_ords", stored[:-1], state)
+    assert dialog.pattern_syntax.currentData() == "python_regex"
+    assert dialog.pattern_edit.toPlainText() == r"^QD3[AE].*$"
+    assert dialog.selected_ords == stored[:-1]
+    assert "Selection verification warning" in dialog.provenance_summary.text()
+    assert "now resolves to 62 elements instead of the stored 61" in dialog.provenance_summary.text()
+    dialog.close(); parent.close()
+
+
+def test_legacy_element_selection_is_not_given_invented_provenance(app):
+    class Quadrupole:
+        FamName = "Q1"
+        PolynomB = np.asarray([0.0, 1.0])
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return [Quadrupole()]
+
+    parent = Parent()
+    dialog = ElementSelectionDialog(parent, "normal_quadrupole_ords", [0], None)
+    assert "Selection method not recorded — imported lattice indices." in dialog.provenance_summary.text()
+    assert not any(button.isChecked() for button in (
+        dialog.type_radio, dialog.pattern_radio, dialog.name_file_radio,
+        dialog.file_radio, dialog.manual_radio,
+    ))
+    assert dialog.selected_ords == [0]
+    dialog.close(); parent.close()
+
+
+def test_corrector_selection_rejects_missing_steering_representation_with_actionable_error(app, monkeypatch):
+    at = pytest.importorskip("at")
+    lattice = at.Lattice([at.Drift("NOT_A_STEERER", 1.0)], energy=6.0e9)
+
+    class Parent(QWidget):
+        def _load_current_lattice(self):
+            return lattice
+
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: None)
+    parent = Parent()
+    dialog = ElementSelectionDialog(parent, "horizontal_corrector_ords", [])
+    dialog.manual_edit.setPlainText("0")
+    assert not dialog._preview()
+    assert "no supported horizontal steering representation" in dialog.validation_message.text()
+    assert "KickAngle or PolynomA/PolynomB" in dialog.validation_message.text()
     dialog.close(); parent.close()
 
 
@@ -453,8 +754,17 @@ def test_file_backed_dkick_survives_open_edit_save_and_reopen(
     assert '"dkick": [' in window.fit_summary.toPlainText()
 
     class AcceptedSelection:
-        def __init__(self, _parent, _role_key, _current):
+        def __init__(self, _parent, _role_key, _current, _selection_state=None):
             self.selected_ords = [4, 5]
+            self.selection_state = {
+                "version": 1,
+                "method": "manual_indices",
+                "manual_text": "4, 5",
+                "generated_ords": [4, 5],
+                "resolved_ords": [4, 5],
+                "manual_additions": [],
+                "manual_removals": [],
+            }
 
         def exec(self):
             return QDialog.Accepted

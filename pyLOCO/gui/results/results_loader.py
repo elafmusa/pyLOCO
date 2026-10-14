@@ -9,6 +9,18 @@ from pathlib import Path
 from typing import Any
 
 
+def notebook_physical_dispersion(rf_orbit_difference, *, at_slip_factor: float,
+                                 rf_frequency_hz: float, signed_rf_step_hz: float):
+    """Apply the historical AT-notebook conversion without changing FIT data."""
+    import numpy as np
+
+    values = np.asarray(rf_orbit_difference, dtype=float)
+    scalars = np.asarray((at_slip_factor, rf_frequency_hz, signed_rf_step_hz), dtype=float)
+    if not np.isfinite(scalars).all() or signed_rf_step_hz == 0:
+        raise ValueError("Slip factor, RF frequency and signed RF step must be finite and non-zero")
+    return values * float(at_slip_factor) * float(rf_frequency_hz) / float(signed_rf_step_hz)
+
+
 @dataclass(frozen=True)
 class OrmPartitions:
     n_hbpm: int
@@ -913,10 +925,78 @@ class ResultsLoader:
                 data["display_quantity"] = str(_scalar_value(
                     persisted.get("dispersion_display_quantity"), "physical_dispersion"
                 ))
+                physical = self._notebook_physical_dispersion_data(data, persisted)
+                if physical is not None:
+                    data["physical"] = physical
                 self._cache["dispersion_data"] = data
                 return data
-        self._cache["dispersion_data"] = self._legacy_dispersion_diagnostic()
+        legacy = self._legacy_dispersion_diagnostic()
+        if legacy is not None:
+            physical = self._notebook_physical_dispersion_data(legacy, persisted)
+            if physical is not None:
+                legacy["physical"] = physical
+        self._cache["dispersion_data"] = legacy
         return self._cache["dispersion_data"]
+
+    def _notebook_physical_dispersion_data(self, response, persisted):
+        """Return notebook-compatible measured/reference/fitted D arrays.
+
+        This is a results diagnostic only. The RF-response arrays supplied to
+        the LOCO objective are neither replaced nor rescaled.
+        """
+        import numpy as np
+
+        try:
+            import at
+
+            reference_path = self._resolve_reference(self.request.get("lattice_path", ""))
+            fitted_path = self.fitted_lattice_path
+            if reference_path is None or not fitted_path.exists():
+                return None
+            reference = at.load_lattice(reference_path)
+            fitted = at.load_lattice(fitted_path)
+            if getattr(reference, "is_6d", False): reference.disable_6d()
+            if getattr(fitted, "is_6d", False): fitted.disable_6d()
+
+            ords = persisted.get("dispersion_bpm_ords")
+            if ords is None:
+                mapping = self.request.get("backend_mapping", {})
+                machine = mapping.get("MachineElements", {})
+                rm = mapping.get("RMConfig", {})
+                ords = list(machine.get("bpm_ords") or rm.get("bpm_ords") or [])
+                bad = set(mapping.get("BadBPMPositions") or [])
+                ords = [value for index, value in enumerate(ords) if index not in bad]
+            ords = np.asarray(ords, dtype=np.uint32).ravel()
+            if not len(ords): return None
+
+            mapping = self.request.get("backend_mapping", {})
+            rm = mapping.get("RMConfig", {})
+            rf_step = _scalar_value(persisted.get("dispersion_rf_step_hz"), rm.get("rfStep"))
+            cavities = np.asarray(at.get_refpts(reference, at.elements.RFCavity), dtype=int)
+            if not len(cavities): return None
+            frequencies = np.asarray([float(reference[index].Frequency) for index in cavities], dtype=float)
+            if not np.isfinite(frequencies).all() or not np.allclose(frequencies, frequencies[0], rtol=1e-12, atol=1e-6):
+                return None
+            rf_frequency = float(frequencies[0])
+            at_slip = float(reference.get_slip_factor())
+            initial = np.asarray(reference.get_optics(refpts=ords)[2].dispersion, dtype=float)
+            final = np.asarray(fitted.get_optics(refpts=ords)[2].dispersion, dtype=float)
+            if initial.shape[0] != len(response["x"]["measured"]) or final.shape[0] != len(ords):
+                return None
+            return {
+                "x": {"measured": notebook_physical_dispersion(response["x"]["measured"], at_slip_factor=at_slip, rf_frequency_hz=rf_frequency, signed_rf_step_hz=float(rf_step)),
+                      "initial": initial[:, 0], "fitted": final[:, 0]},
+                "y": {"measured": notebook_physical_dispersion(response["y"]["measured"], at_slip_factor=at_slip, rf_frequency_hz=rf_frequency, signed_rf_step_hz=float(rf_step)),
+                      "initial": initial[:, 2], "fitted": final[:, 2]},
+                "at_slip_factor": at_slip,
+                "rf_momentum_coefficient": -at_slip,
+                "rf_frequency_hz": rf_frequency,
+                "signed_rf_step_hz": float(rf_step),
+                "definition": "D = RF orbit difference × eta_AT × f_RF / signed RF step",
+                "residual_definition": "measured physical dispersion minus model physical dispersion",
+            }
+        except (OSError, ValueError, TypeError, IndexError, AttributeError):
+            return None
 
     @property
     def dispersion_unavailable_reason(self) -> str | None:
@@ -933,9 +1013,9 @@ class ResultsLoader:
         for plane, values in (self.dispersion_data or {}).items():
             if plane not in {"x", "y"}: continue
             measured = np.asarray(values["measured"], dtype=float)
-            # Results convention requested by the GUI: model minus measurement.
-            before = np.asarray(values["initial"], dtype=float) - measured
-            after = np.asarray(values["fitted"], dtype=float) - measured
+            # Case C Results convention: measurement minus the selected model state.
+            before = measured - np.asarray(values["initial"], dtype=float)
+            after = measured - np.asarray(values["fitted"], dtype=float)
             def metrics(residual):
                 finite = residual[np.isfinite(residual)]
                 return {"rms": float(np.sqrt(np.mean(finite**2))), "mean": float(np.mean(finite)),

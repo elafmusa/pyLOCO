@@ -56,6 +56,33 @@ def _corrector_kick_component(corrector, plane):
     )
 
 
+def corrector_steering_compatibility(corrector, plane, *, calculator="Linear"):
+    """Describe whether an AT element can represent a physical steering kick.
+
+    The Linear and Analytical calculators apply an ideal integrated kick at
+    the selected lattice ordinal.  Numerical tracking mutates the element, so
+    it additionally requires the orthogonal component used by the coupling
+    path to be representable.  Element class names are deliberately not used:
+    EBS steering channels can be hosted by finite multipoles/sextupoles.
+    """
+    canonical = "Numerical" if str(calculator).strip().lower() == "tracking" else str(calculator)
+    if canonical not in {"Linear", "Analytical", "Numerical"}:
+        return False, f"unknown response-matrix calculator {calculator!r}"
+    try:
+        _corrector_kick_component(corrector, plane)
+        if canonical == "Numerical":
+            _corrector_kick_component(corrector, 1 - plane)
+    except (TypeError, ValueError, IndexError) as exc:
+        return False, str(exc)
+    if hasattr(corrector, "KickAngle"):
+        representation = "AT KickAngle"
+    else:
+        component = "PolynomB[0]" if plane == 0 else "PolynomA[0]"
+        length = float(getattr(corrector, "Length", 0.0) or 0.0)
+        representation = f"finite-length {component}" if length > 0.0 else f"integrated thin-multipole {component}"
+    return True, representation
+
+
 def calculate_rf_response(
         ring, bpm_ords, cav_ords, rf_step, *, calculator="Linear",
         bidirectional=True, frequency=None, harm_number=None,

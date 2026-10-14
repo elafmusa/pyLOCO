@@ -7,6 +7,7 @@ backend-compatible LOCO configuration, and responsive execution monitoring.
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import shutil
 import threading
@@ -479,7 +480,7 @@ class BrandToolButton(QToolButton):
 class ElementSelectionDialog(QDialog):
     """Select and preview lattice ordinals for one machine-element role."""
 
-    def __init__(self, parent, role_key: str, current: list[int]) -> None:
+    def __init__(self, parent, role_key: str, current: list[int], selection_state: dict | None = None) -> None:
         super().__init__(parent)
         self.role_key = role_key
         self.role_label, self.role_kind = ELEMENT_ROLES[role_key]
@@ -487,6 +488,9 @@ class ElementSelectionDialog(QDialog):
         self.resize(760, 560)
         self._lattice = parent._load_current_lattice()
         self.selected_ords = list(current)
+        self.selection_state = dict(selection_state or {})
+        self._generated_ords = list(self.selection_state.get("generated_ords", current))
+        self._restoring_selection = True
 
         layout = QVBoxLayout(self)
         mode_row = QHBoxLayout()
@@ -495,7 +499,6 @@ class ElementSelectionDialog(QDialog):
         self.name_file_radio = QRadioButton("Load name file")
         self.file_radio = QRadioButton("Load index file")
         self.manual_radio = QRadioButton("Manual indices")
-        self.manual_radio.setChecked(True)
         for button in (self.type_radio, self.pattern_radio, self.name_file_radio, self.file_radio, self.manual_radio):
             mode_row.addWidget(button)
         mode_row.addStretch()
@@ -503,7 +506,21 @@ class ElementSelectionDialog(QDialog):
 
         form = QFormLayout(); self._method_form=form
         self.type_edit = QLineEdit(self._default_type_name())
-        self.pattern_edit = QLineEdit(self._default_pattern())
+        self.pattern_syntax = QComboBox()
+        self.pattern_syntax.addItem("AT wildcard patterns", "at_wildcard")
+        self.pattern_syntax.addItem("Python regular expressions", "python_regex")
+        self.pattern_edit = QPlainTextEdit(self._default_pattern())
+        self.pattern_edit.setMaximumHeight(105)
+        self.pattern_edit.setPlaceholderText("One pattern per line, for example:\nQD3[AE]*\nQF4[ABDE]*\nQD5[BD]*")
+        self.pattern_match_summary = QLabel("Enter one pattern per line, then update the preview.")
+        self.pattern_match_summary.setObjectName("patternMatchSummary")
+        self.pattern_match_summary.setWordWrap(True)
+        self.pattern_widget = QWidget()
+        pattern_layout = QVBoxLayout(self.pattern_widget)
+        pattern_layout.setContentsMargins(0, 0, 0, 0)
+        pattern_layout.addWidget(self.pattern_syntax)
+        pattern_layout.addWidget(self.pattern_edit)
+        pattern_layout.addWidget(self.pattern_match_summary)
         self.file_edit = QLineEdit()
         self.file_button = QPushButton("Browse…")
         self.file_button.clicked.connect(self._browse_index_file)
@@ -519,12 +536,21 @@ class ElementSelectionDialog(QDialog):
         self.manual_edit.setMaximumHeight(105)
         self.manual_edit.setPlaceholderText("Enter integer lattice ordinals separated by commas, spaces, or new lines.")
         form.addRow("AT class/type contains", self.type_edit)
-        form.addRow("Family/name regex", self.pattern_edit)
+        form.addRow("Family/name patterns", self.pattern_widget)
+        self.pattern_edit.setToolTip(
+            "Enter one pattern per line. AT wildcard mode calls at.get_refpts() for every line. "
+            "Python regular-expression mode searches the displayed CommonName/FamName/Name text instead."
+        )
         form.addRow("Element-name file", self.name_file_row_widget)
         form.addRow("Name attribute", self.name_attribute)
         form.addRow("Index file", self.file_row_widget)
         form.addRow("Manual lattice ordinals", self.manual_edit)
         layout.addLayout(form)
+
+        self.provenance_summary = QLabel()
+        self.provenance_summary.setObjectName("elementSelectionProvenanceSummary")
+        self.provenance_summary.setWordWrap(True)
+        layout.addWidget(self.provenance_summary)
 
         preview_row=QHBoxLayout(); preview_button = QPushButton("Update preview"); preview_button.clicked.connect(self._preview)
         self.selection_count=QLabel(); self.selection_count.setStyleSheet("font-weight:700")
@@ -553,10 +579,162 @@ class ElementSelectionDialog(QDialog):
         buttons.accepted.connect(self._accept_if_valid)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
-        self._set_preview(current)
         for button in (self.type_radio, self.pattern_radio, self.name_file_radio, self.file_radio, self.manual_radio):
             button.toggled.connect(self._update_method_controls)
+        self._restore_selection_state(current)
+        self._set_preview_with_final(self._generated_ords, current)
+        self._verify_restored_selection()
+        self._restoring_selection = False
         self._update_method_controls()
+
+    def _restore_selection_state(self, current: list[int]) -> None:
+        method = self.selection_state.get("method")
+        if method == "manual":  # Early GUI provenance used this shorter name.
+            method = "manual_indices"
+            legacy_indices = self.selection_state.get("indices", current)
+            self.selection_state = {
+                "version": 1,
+                "method": method,
+                "manual_text": ", ".join(map(str, legacy_indices)),
+                "generated_ords": list(map(int, legacy_indices)),
+                "resolved_ords": list(current),
+            }
+            self._generated_ords = list(map(int, legacy_indices))
+        if not method:
+            if not current:
+                self.manual_radio.setChecked(True)
+                self._generated_ords = []
+                self.provenance_summary.setText(
+                    "Method: Manual indices · Source: — · Resolved: 0 · Manual additions: 0 · "
+                    "Manual removals: 0 · Final: 0"
+                )
+                return
+            for button in (self.type_radio, self.pattern_radio, self.name_file_radio, self.file_radio, self.manual_radio):
+                button.setAutoExclusive(False); button.setChecked(False); button.setAutoExclusive(True)
+            self._generated_ords = list(current)
+            self.provenance_summary.setText(
+                f"Selection method not recorded — imported lattice indices. Final selection: {len(current)} elements."
+            )
+            return
+        if method == "at_element_type":
+            self.type_radio.setChecked(True)
+            self.type_edit.setText(str(self.selection_state.get("type_name", "")))
+        elif method in {"at_wildcard", "python_regex"}:
+            self.pattern_radio.setChecked(True)
+            self.pattern_syntax.setCurrentIndex(self.pattern_syntax.findData(method))
+            self.pattern_edit.setPlainText(str(self.selection_state.get("patterns", "")))
+        elif method == "name_file":
+            self.name_file_radio.setChecked(True)
+            self.name_file_edit.setText(str(self.selection_state.get("path", "")))
+            index = self.name_attribute.findData(self.selection_state.get("name_attribute", "auto"))
+            self.name_attribute.setCurrentIndex(max(0, index))
+        elif method == "index_file":
+            self.file_radio.setChecked(True)
+            self.file_edit.setText(str(self.selection_state.get("path", "")))
+        elif method == "manual_indices":
+            self.manual_radio.setChecked(True)
+            self.manual_edit.setPlainText(str(self.selection_state.get("manual_text", ", ".join(map(str, current)))))
+        else:
+            self.selection_state = {}
+            self._restore_selection_state(current)
+            return
+        self._update_provenance_summary(current)
+
+    def _method_and_source(self) -> tuple[str, str]:
+        if self.type_radio.isChecked():
+            return "at_element_type", self.type_edit.text()
+        if self.pattern_radio.isChecked():
+            method = str(self.pattern_syntax.currentData())
+            return method, self.pattern_edit.toPlainText()
+        if self.name_file_radio.isChecked():
+            return "name_file", self.name_file_edit.text()
+        if self.file_radio.isChecked():
+            return "index_file", self.file_edit.text()
+        if self.manual_radio.isChecked():
+            return "manual_indices", self.manual_edit.toPlainText()
+        return "legacy", "Imported lattice indices"
+
+    def _lattice_identity(self) -> dict:
+        if self._lattice is None:
+            return {}
+        digest = hashlib.sha256()
+        for ordinal, element in self._iter_elements():
+            identity = (
+                ordinal,
+                self._element_class(element),
+                getattr(element, "CommonName", None),
+                getattr(element, "FamName", None),
+                getattr(element, "Name", None),
+                getattr(element, "name", None),
+            )
+            digest.update(repr(identity).encode("utf-8"))
+            digest.update(b"\0")
+        return {"element_count": len(self._lattice), "element_identity_sha256": digest.hexdigest()}
+
+    def _update_provenance_summary(self, final: list[int] | None = None, mismatch: str = "") -> None:
+        final_values = list(self.selected_ords if final is None else final)
+        generated = set(map(int, self._generated_ords))
+        final_set = set(map(int, final_values))
+        method, source = self._method_and_source()
+        labels = {
+            "at_element_type": "AT element type", "at_wildcard": "AT wildcard patterns",
+            "python_regex": "Python regular expressions", "name_file": "Loaded name file",
+            "index_file": "Loaded index file", "manual_indices": "Manual indices",
+            "legacy": "Not recorded",
+        }
+        source_text = " ".join(source.split()) or "—"
+        text = (
+            f"Method: {labels.get(method, method)} · Source: {source_text} · "
+            f"Resolved: {len(generated)} · Manual additions: {len(final_set - generated)} · "
+            f"Manual removals: {len(generated - final_set)} · Final: {len(final_set)}"
+        )
+        if mismatch:
+            text += f"\nSelection verification warning: {mismatch} Stored final ordinals remain unchanged."
+        self.provenance_summary.setText(text)
+
+    def _verify_restored_selection(self) -> None:
+        if not self.selection_state:
+            if self._lattice is not None:
+                invalid = [value for value in self.selected_ords if value < 0 or value >= len(self._lattice)]
+                if invalid:
+                    self._update_provenance_summary(self.selected_ords, f"{len(invalid)} stored ordinal(s) are outside the loaded lattice.")
+            return
+        try:
+            self._validate_array(self.selected_ords)
+        except Exception as exc:
+            self._update_provenance_summary(self.selected_ords, f"The stored final ordinals are invalid for this lattice: {exc}")
+            return
+        recorded_final = self.selection_state.get("resolved_ords")
+        if recorded_final is not None and list(map(int, recorded_final)) != list(map(int, self.selected_ords)):
+            self._update_provenance_summary(
+                self.selected_ords,
+                "The provenance record does not match the authoritative saved final ordinals.",
+            )
+            return
+        recorded_lattice = self.selection_state.get("lattice_identity") or {}
+        current_lattice = self._lattice_identity()
+        if recorded_lattice and recorded_lattice != current_lattice:
+            self._update_provenance_summary(
+                self.selected_ords,
+                "The loaded lattice identity differs from the lattice used to save this selection.",
+            )
+            return
+        stored_generated = list(map(int, self.selection_state.get("generated_ords", [])))
+        try:
+            resolved_now = self._candidate_indices()
+            self._validate_array(resolved_now)
+        except Exception as exc:
+            self._generated_ords = stored_generated
+            self._update_provenance_summary(self.selected_ords, f"The recorded method cannot be resolved on this lattice: {exc}")
+            return
+        self._generated_ords = stored_generated
+        if resolved_now != stored_generated:
+            self._update_provenance_summary(
+                self.selected_ords,
+                f"The recorded method now resolves to {len(resolved_now)} elements instead of the stored {len(stored_generated)}.",
+            )
+        else:
+            self._update_provenance_summary(self.selected_ords)
 
     def _update_method_controls(self) -> None:
         def show_field(field,visible):
@@ -564,7 +742,7 @@ class ElementSelectionDialog(QDialog):
             label=self._method_form.labelForField(field)
             if label is not None:label.setVisible(visible)
         show_field(self.type_edit,self.type_radio.isChecked())
-        show_field(self.pattern_edit,self.pattern_radio.isChecked())
+        show_field(self.pattern_widget,self.pattern_radio.isChecked())
         name_visible=self.name_file_radio.isChecked()
         show_field(self.name_file_row_widget,name_visible)
         show_field(self.name_attribute,name_visible)
@@ -578,7 +756,7 @@ class ElementSelectionDialog(QDialog):
         return {"bpm": "Monitor", "hcor": "Corrector", "vcor": "Corrector", "quad": "Quadrupole", "skew": "Quadrupole", "tilt": "Quadrupole", "cavity": "RFCavity"}[self.role_kind]
 
     def _default_pattern(self) -> str:
-        return {"bpm": "BPM|MON", "hcor": "HCM|HCOR|CH", "vcor": "VCM|VCOR|CV", "quad": "Q", "skew": "SQ|SKQ|SKEW", "tilt": "Q", "cavity": "RFCAV|CAV|RF"}[self.role_kind]
+        return {"bpm": "*BPM*", "hcor": "*HCM*", "vcor": "*VCM*", "quad": "Q*", "skew": "S*", "tilt": "Q*", "cavity": "*CAV*"}[self.role_kind]
 
     def _iter_elements(self):
         return list(enumerate(self._lattice or []))
@@ -609,8 +787,37 @@ class ElementSelectionDialog(QDialog):
             needle = self.type_edit.text().strip().lower()
             return [i for i, e in self._iter_elements() if needle and needle in self._element_class(e).lower()]
         if self.pattern_radio.isChecked():
-            pattern = re.compile(self.pattern_edit.text().strip(), re.I)
-            return [i for i, e in self._iter_elements() if pattern.search(self._element_name(e))]
+            patterns = [line.strip() for line in self.pattern_edit.toPlainText().splitlines() if line.strip()]
+            if not patterns:
+                self.pattern_match_summary.setText("No patterns entered · combined: 0 unique elements")
+                return []
+            matches_by_pattern = []
+            syntax = self.pattern_syntax.currentData()
+            if syntax == "at_wildcard":
+                import at
+                for pattern_text in patterns:
+                    if pattern_text.count("[") != pattern_text.count("]"):
+                        raise ValueError(f"Invalid AT wildcard {pattern_text!r}: unmatched '[' or ']'.")
+                    if pattern_text.startswith("re:"):
+                        raise ValueError("The 're:' prefix is not used in AT wildcard mode; select Python regular expressions instead.")
+                    refs = np.asarray(at.get_refpts(self._lattice, pattern_text))
+                    values = [int(value) for value in (np.flatnonzero(refs) if refs.dtype == np.bool_ else refs.ravel())]
+                    matches_by_pattern.append((pattern_text, values))
+            else:
+                for pattern_text in patterns:
+                    expression = pattern_text[3:] if pattern_text.startswith("re:") else pattern_text
+                    try:
+                        pattern = re.compile(expression, re.I)
+                    except re.error as exc:
+                        raise ValueError(f"Invalid Python regular expression {pattern_text!r}: {exc}") from exc
+                    values = [i for i, e in self._iter_elements() if pattern.search(self._element_name(e))]
+                    matches_by_pattern.append((pattern_text, values))
+            combined = sorted({ordinal for _pattern, values in matches_by_pattern for ordinal in values})
+            details = " · ".join(f"{pattern}: {len(values)}" for pattern, values in matches_by_pattern)
+            self.pattern_match_summary.setText(
+                f"{details} · combined: {len(combined)} unique element{'s' if len(combined) != 1 else ''}"
+            )
+            return combined
         if self.name_file_radio.isChecked():
             if not self._lattice:
                 raise ValueError("Load a lattice before selecting elements from a name file.")
@@ -668,6 +875,63 @@ class ElementSelectionDialog(QDialog):
     def _validate_compatible(self, values: list[int]) -> None:
         if self._lattice is None:
             return
+        if self.role_kind in {"hcor", "vcor"}:
+            from pyLOCO.response_matrix import corrector_steering_compatibility
+            calculator_widget = getattr(self.parent(), "rm_calculator", None)
+            calculator = calculator_widget.currentData() if calculator_widget is not None else "Linear"
+            plane = 0 if self.role_kind == "hcor" else 1
+            for ordinal in values:
+                element = self._lattice[ordinal]
+                compatible, detail = corrector_steering_compatibility(
+                    element, plane, calculator=calculator
+                )
+                if not compatible:
+                    name = self._element_name(element) or "unnamed element"
+                    raise ValueError(
+                        f"Ordinal {ordinal} ({name}, {self._element_class(element)}) has no supported "
+                        f"{'horizontal' if plane == 0 else 'vertical'} steering representation for the "
+                        f"{calculator} calculator: {detail}"
+                    )
+            return
+        if self.role_kind in {"quad", "skew"}:
+            default_attribute = "PolynomB" if self.role_kind == "quad" else "PolynomA"
+            attribute_widget = getattr(
+                self.parent(),
+                "params_quads_attr" if self.role_kind == "quad" else "params_skew_attr",
+                None,
+            )
+            index_widget = getattr(
+                self.parent(),
+                "params_quads_attr_index" if self.role_kind == "quad" else "params_skew_attr_index",
+                None,
+            )
+            attribute = attribute_widget.text().strip() if attribute_widget is not None else default_attribute
+            component = index_widget.value() if index_widget is not None else 1
+            if "[" in attribute and attribute.endswith("]"):
+                attribute, component_text = attribute[:-1].split("[", 1)
+                try:
+                    component = int(component_text)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"Invalid fitted component {attribute_widget.text()!r}; expected a name such as "
+                        f"{default_attribute}[1]."
+                    ) from exc
+            for ordinal in values:
+                element = self._lattice[ordinal]
+                coefficients = getattr(element, attribute, None)
+                try:
+                    compatible = coefficients is not None and 0 <= int(component) < len(coefficients)
+                except TypeError:
+                    compatible = coefficients is not None and int(component) == 0
+                if not compatible:
+                    name = self._element_name(element) or "unnamed element"
+                    raise ValueError(
+                        f"Ordinal {ordinal} ({name}, {self._element_class(element)}) cannot be used as "
+                        f"{self.role_label}: the selected FIT calculation requires {attribute}[{component}], "
+                        "but that component is unavailable. Multipole container elements are supported when "
+                        "they expose the required coefficient."
+                    )
+            return
         required = self._default_type_name().lower()
         for v in values:
             cls = self._element_class(self._lattice[v]).lower()
@@ -684,15 +948,25 @@ class ElementSelectionDialog(QDialog):
             return False
         self.validation_message.clear()
         self.validation_message.hide()
+        self._generated_ords = list(values)
         self.selected_ords = values
         self._set_preview(values)
+        self._update_provenance_summary(values)
         return True
 
     def _set_preview(self, values: list[int]) -> None:
+        self._set_preview_with_final(values, values)
+
+    def _set_preview_with_final(self, generated: list[int], final: list[int]) -> None:
+        final_set = set(map(int, final))
+        # Preserve explicit/manual and file ordering. Pattern resolution is
+        # already sorted by lattice ordinal in _candidate_indices().
+        values = list(dict.fromkeys(map(int, generated)))
+        values.extend(int(value) for value in final if int(value) not in set(values))
         self.table.setRowCount(len(values))
         for row, ordinal in enumerate(values):
             elem = self._lattice[ordinal] if self._lattice is not None and 0 <= ordinal < len(self._lattice) else None
-            use = QTableWidgetItem(str(row)); use.setCheckState(Qt.Checked); use.setData(Qt.UserRole, int(ordinal)); self.table.setItem(row, 0, use)
+            use = QTableWidgetItem(str(row)); use.setCheckState(Qt.Checked if ordinal in final_set else Qt.Unchecked); use.setData(Qt.UserRole, int(ordinal)); self.table.setItem(row, 0, use)
             name = str(
                 getattr(elem, "CommonName", None)
                 or getattr(elem, "Name", None)
@@ -708,8 +982,14 @@ class ElementSelectionDialog(QDialog):
 
     def _update_selection_count(self, *_args) -> None:
         if not hasattr(self,"selection_count"):return
-        selected=sum(self.table.item(row,0).checkState()==Qt.Checked for row in range(self.table.rowCount()) if self.table.item(row,0))
-        self.selection_count.setText(f"{selected} selected / {self.table.rowCount()} in preview")
+        selected_ordinals = [
+            int(self.table.item(row, 0).data(Qt.UserRole))
+            for row in range(self.table.rowCount())
+            if self.table.item(row, 0) and self.table.item(row, 0).checkState() == Qt.Checked
+        ]
+        self.selection_count.setText(f"{len(selected_ordinals)} selected / {self.table.rowCount()} in preview")
+        if hasattr(self, "provenance_summary") and not getattr(self, "_restoring_selection", False):
+            self._update_provenance_summary(selected_ordinals)
 
     def _current_value(self, elem) -> str:
         import numpy as np
@@ -744,7 +1024,33 @@ class ElementSelectionDialog(QDialog):
                     if self.table.item(row, 0).checkState() == Qt.Checked]
         if not selected:
             QMessageBox.warning(self, "No elements selected", "Select at least one element."); return
-        self.selected_ords = self._validate_array(selected); self.accept()
+        self.selected_ords = self._validate_array(selected)
+        generated = list(dict.fromkeys(map(int, self._generated_ords)))
+        final_set = set(self.selected_ords)
+        method, _source = self._method_and_source()
+        state = {
+            "version": 1,
+            "method": method,
+            "generated_ords": generated,
+            "resolved_ords": list(self.selected_ords),
+            "manual_additions": sorted(final_set - set(generated)),
+            "manual_removals": sorted(set(generated) - final_set),
+            "lattice_identity": self._lattice_identity(),
+        }
+        if method == "at_element_type":
+            state["type_name"] = self.type_edit.text()
+        elif method in {"at_wildcard", "python_regex"}:
+            state["patterns"] = self.pattern_edit.toPlainText()
+        elif method == "name_file":
+            state.update(path=self.name_file_edit.text(), name_attribute=self.name_attribute.currentData() or "auto")
+        elif method == "index_file":
+            state["path"] = self.file_edit.text()
+        elif method == "manual_indices":
+            state["manual_text"] = self.manual_edit.toPlainText()
+        else:
+            state = {}
+        self.selection_state = state
+        self.accept()
 
 
 class FamilyGroupDialog(QDialog):
@@ -1201,7 +1507,10 @@ class MainWindow(QMainWindow):
         self.lattice_path.setWordWrap(True)
         self.lattice_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lattice_type = QLabel("—")
-        self.lattice_elements = QLabel("Unknown")
+        # Retained as internal project-state compatibility; the authoritative
+        # AT-derived count is displayed once in the reference-model table.
+        self.lattice_elements = QLabel("Unknown", content)
+        self.lattice_elements.hide()
         choose = QPushButton("Select lattice/model file…")
         choose.setMaximumWidth(260)
         choose.clicked.connect(self.select_lattice)
@@ -1212,7 +1521,6 @@ class MainWindow(QMainWindow):
         form.addRow(selection_header)
         form.addRow("Path", self.lattice_path)
         form.addRow("Type", self.lattice_type)
-        form.addRow("Elements", self.lattice_elements)
         self.reference_model_info=QLabel("Not available"); self.reference_model_info.setObjectName("fitReferenceModelCard"); self.reference_model_info.setWordWrap(True); self.reference_model_info.setTextInteractionFlags(Qt.TextSelectableByMouse); self.reference_model_info.setMargin(14)
         form.addRow(self.reference_model_info)
         group = QGroupBox("Lattice selection and metadata")
@@ -1226,9 +1534,16 @@ class MainWindow(QMainWindow):
         elements_layout.setContentsMargins(16, 20, 16, 16)
         elements_layout.setSpacing(8)
         elements_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        machine_help = QLabel("Define BPMs, correctors, quadrupoles, and RF cavities after loading the lattice. Bad BPM positions are applied later as positions within the selected BPM list, not as lattice ordinals.")
-        machine_help.setWordWrap(True)
-        elements_layout.addWidget(machine_help)
+        self.machine_elements_help = QLabel(
+            "Define BPMs, correctors, quadrupoles and RF cavities after loading the lattice. "
+            "Open Edit/Select to check or uncheck individual elements."
+        )
+        self.machine_elements_help.setWordWrap(True)
+        self.machine_elements_help.setToolTip(
+            "Edit/Select changes the saved selected-element list. Normal and skew quadrupoles can be "
+            "included or excluded directly with those checkboxes; no separate quadrupole-exclusion field is needed."
+        )
+        elements_layout.addWidget(self.machine_elements_help)
         self.element_row_widgets = {}
         self.element_edit_buttons = {}
         self.element_group_buttons = {}
@@ -1278,11 +1593,25 @@ class MainWindow(QMainWindow):
         exclusion_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         exclusion_form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         exclusion_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.exclusion_help = QLabel(
+            "Enter zero-based positions within the selected BPM, H-corrector or V-corrector list — "
+            "not AT lattice ordinals. Example: BPM position 27 is the 28th BPM in the selected BPM list."
+        )
+        self.exclusion_help.setWordWrap(True)
+        self.exclusion_help.setToolTip(
+            "These exclusions keep the original selected device list unchanged, but omit the corresponding "
+            "measurement rows or columns from the fit. To change which devices are selected, use Edit/Select above."
+        )
+        exclusion_form.addRow(self.exclusion_help)
         self.bad_bpm_positions_edit = QLineEdit(); self.bad_bpm_positions_edit.setPlaceholderText("selected-list positions, e.g. 0, 4, 17")
         self.hcor_exclusions_edit = QLineEdit(); self.vcor_exclusions_edit = QLineEdit()
         self.exclusion_counts = QLabel(); self.exclusion_counts.setWordWrap(True); self.exclusion_counts.setMinimumHeight(36)
         for edit, label in ((self.bad_bpm_positions_edit, "Excluded BPM positions"), (self.hcor_exclusions_edit, "Excluded H-corrector positions"), (self.vcor_exclusions_edit, "Excluded V-corrector positions")):
             edit.setMinimumHeight(34)
+            edit.setToolTip(
+                "Enter zero-based positions in this selected device list, not AT lattice ordinals. "
+                "The selected device identities remain saved; matching measurement rows or columns are omitted from FIT."
+            )
             exclusion_form.addRow(label, edit); edit.editingFinished.connect(self._store_exclusions)
         exclusion_form.addRow("Counts", self.exclusion_counts)
         content_layout.addWidget(exclusion_group)
@@ -1695,7 +2024,9 @@ class MainWindow(QMainWindow):
         self.cmstep_mode = QComboBox()
         self.cmstep_mode.addItem("Uniform", "uniform")
         self.cmstep_mode.addItem("Load from file", "file")
-        self.params_init_policy = QLineEdit()
+        # Hidden compatibility storage.  This is edited through the structured
+        # policy dialog and must never become a parentless top-level window.
+        self.params_init_policy = QLineEdit(self)
         self.params_init_policy.setPlaceholderText("Uses DEFAULT_INIT_POLICY unless overridden")
         self.params_init_policy.setToolTip(
             "Advanced Python-literal dictionary. Supported values: ones, zeros, cmstep:h, cmstep:v, "
@@ -1740,7 +2071,9 @@ class MainWindow(QMainWindow):
         resolved_layout.addRow("Resolved horizontal values", self.params_cmstep_resolved_h)
         resolved_layout.addRow("Resolved vertical values", self.params_cmstep_resolved_v)
         self.params_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
-        self.params_init = QLineEdit()
+        # Hidden compatibility storage.  The user-facing editor is the modal
+        # dialog opened by ``params_init_edit`` below.
+        self.params_init = QLineEdit(self)
         self.params_init.setPlaceholderText("Optional dictionary, e.g. {'hbpm_gain': 1.0}")
         self.params_init.setToolTip(
             "Advanced Python-literal dictionary keyed by parameter block. A scalar is broadcast; "
@@ -2437,15 +2770,21 @@ class MainWindow(QMainWindow):
 
     def _edit_explicit_initial_values(self) -> None:
         dialog = QDialog(self); dialog.setWindowTitle("Explicit initial-value overrides — advanced")
+        dialog.setObjectName("explicitInitialValuesDialog")
+        dialog.setModal(True)
+        dialog.resize(720, 360)
+        dialog.setMinimumSize(560, 300)
         layout = QVBoxLayout(dialog)
         help_label = QLabel(
             "Optional. Values entered here override the initialization policy for the named parameter group. "
             "Use a Python-style dictionary; a scalar is broadcast and a list must match the group size. "
             "Example: {'hbpm_gain': 1.0, 'hcor_cal': [0.0001, 0.0001]}."
         )
+        help_label.setObjectName("explicitInitialValuesHelp")
         help_label.setWordWrap(True); layout.addWidget(help_label)
         editor = QPlainTextEdit(); editor.setPlainText(self.params_init.text()); editor.setPlaceholderText("{'hbpm_gain': 1.0}")
-        editor.setMinimumSize(620, 180); layout.addWidget(editor)
+        editor.setObjectName("explicitInitialValuesEditor")
+        editor.setMinimumHeight(150); layout.addWidget(editor, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         layout.addWidget(buttons); buttons.rejected.connect(dialog.reject)
 
@@ -3296,23 +3635,33 @@ class MainWindow(QMainWindow):
             residual=f"{model.rf_harmonic_residual_hz:.6g} Hz" if model.rf_harmonic_residual_hz is not None else "Not available"
             rows=(
                 ("Beam energy",f"{model.energy_ev/1e9:.6g} GeV","Reference lattice"),
+                ("Number of lattice elements",str(model.element_count),"Loaded AT lattice"),
                 ("Circumference",f"{model.circumference_m:.6f} m","AT lattice geometry"),
                 ("Revolution frequency f<sub>rev</sub>",f"{model.revolution_frequency_hz:.6f} Hz","c / circumference"),
                 ("Harmonic number h",harmonic,model.harmonic_number_source),
                 ("RF frequency f<sub>RF</sub>",rf,model.rf_source),
-                ("RF consistency residual",residual,"f<sub>RF</sub> − h·f<sub>rev</sub>"),
+                ("RF–revolution frequency consistency [Hz]",residual,"f<sub>RF</sub> − h·f<sub>rev</sub>; reference-lattice consistency, not a measured accelerator RF error"),
                 ("Fractional tunes Qx / Qy",f"{model.tune[0]:.6f} / {model.tune[1]:.6f}","AT linear optics"),
                 ("Chromaticity ξx / ξy",f"{model.chromaticity[0]:.6f} / {model.chromaticity[1]:.6f}","AT linear optics"),
                 ("Momentum compaction α<sub>c</sub>",f"{model.momentum_compaction:.9g}","AT model"),
                 ("Relativistic term 1/γ²",f"{model.inverse_gamma_squared:.9g}","Lattice energy"),
-                ("Slip factor η",f"{model.slip_factor:.9g}","α<sub>c</sub> − 1/γ²"),
+                ("Slip factor η (pyAT convention)",f"{model.at_slip_factor:.9g}","1/γ² − α<sub>c</sub>; ring.get_slip_factor()"),
             )
             body="".join(f"<tr><td><b>{name}</b></td><td>{value}</td><td style='color:#9CA3AF'>{source}</td></tr>" for name,value,source in rows)
             self.reference_model_info.setText(
                 "<h3 style='color:#A98BFF;margin:0 0 8px 0'>Reference model</h3>"
                 "<div style='margin-bottom:8px'>Calculated from the loaded lattice with Accelerator Toolbox (AT).</div>"
                 f"<table cellspacing='0' cellpadding='5' width='100%'><tr><th align='left'>Quantity</th><th align='left'>Value</th><th align='left'>Source</th></tr>{body}</table>"
-                f"<div style='margin-top:10px'><b>File:</b> {escape(model.path.name)} &nbsp; <b>SHA-256:</b> {escape(model.checksum_sha256[:12])}…<br><b>Provenance:</b> {escape(str(model.source))}</div>"
+            )
+            self.reference_model_info.setToolTip(
+                "RF–revolution frequency consistency is the reference cavity RF frequency minus "
+                "the harmonic-number multiple of c divided by the loaded lattice circumference. "
+                "Near zero indicates internally consistent reference-lattice RF settings; it is "
+                "not a measured accelerator RF error.\n\n"
+                f"Advanced RF calculation: η_RF = αc − 1/γ² = −η_pyAT = {model.rf_momentum_coefficient:.9g}. "
+                "This coefficient remains available to the signed RF-to-momentum conversion; it is not a second slip-factor result.\n\n"
+                f"Lattice details\nFile: {model.path.name}\nSHA-256: {model.checksum_sha256}\n"
+                f"Source / provenance: {model.source}"
             )
         except Exception as exc:self.reference_model_info.setText(f"Not available — {exc}")
 
@@ -3349,10 +3698,15 @@ class MainWindow(QMainWindow):
     def edit_element_selection(self, role_key: str) -> None:
         elements = self.project.loco_config.machine_elements
         current = list(getattr(elements, role_key))
-        dialog = ElementSelectionDialog(self, role_key, current)
+        selection_state = self.project.loco_config.element_selection_state.get(role_key)
+        dialog = ElementSelectionDialog(self, role_key, current, selection_state)
         if dialog.exec() != QDialog.Accepted:
             return
         setattr(elements, role_key, dialog.selected_ords)
+        if dialog.selection_state:
+            self.project.loco_config.element_selection_state[role_key] = dialog.selection_state
+        else:
+            self.project.loco_config.element_selection_state.pop(role_key, None)
         group_key={"normal_quadrupole_ords":"normal_quadrupole_groups","skew_quadrupole_ords":"skew_quadrupole_groups","quadrupole_tilt_ords":"quadrupole_tilt_groups"}.get(role_key)
         if group_key:setattr(elements,group_key,[])
         self.project.loco_config._sync_response_matrix_elements()
@@ -3527,13 +3881,18 @@ class MainWindow(QMainWindow):
         widgets = (
             self.rm_fixedpath, self.rm_log_info,
             self.loco_remove_coupling, self.loco_plot_fit_parameters,
-            self.params_init_policy, self.params_cmstep_h, self.params_cmstep_v, self.params_cmstep_file_row, self.params_rfstep,
-            self.params_init, self.params_quads_attr, self.params_quads_attr_index, self.params_skew_attr,
+            self.params_cmstep_h, self.params_cmstep_v, self.params_cmstep_file_row, self.params_rfstep,
+            self.params_quads_attr, self.params_quads_attr_index, self.params_skew_attr,
             self.params_skew_attr_index, self.params_tilt_attr_r1, self.params_tilt_attr_r2,
             self.params_tilt_method, self.fixed_group,
         )
         for widget in widgets:
             widget.setVisible(advanced)
+        # Raw Python-literal storage is intentionally never shown.  Showing a
+        # parentless QLineEdit made it appear as the blank macOS window seen in
+        # the bug report; users edit these values through the guided dialogs.
+        self.params_init_policy.hide()
+        self.params_init.hide()
         self.loco_fixedpath.setVisible(False)
         # Legacy configuration compatibility only: the generic Individuals
         # checkbox has been replaced by the three explicit parameterization

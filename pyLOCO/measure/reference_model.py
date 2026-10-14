@@ -35,11 +35,27 @@ class ReferenceModel:
     rf_harmonic_residual_hz: float | None = None
     chromaticity: tuple[float, float] = (float("nan"), float("nan"))
 
+    @property
+    def element_count(self) -> int:
+        return len(self.ring)
+
+    @property
+    def at_slip_factor(self) -> float:
+        """pyAT convention: 1/gamma^2 - alpha_c."""
+        return -self.slip_factor
+
+    @property
+    def rf_momentum_coefficient(self) -> float:
+        """RF-conversion convention: alpha_c - 1/gamma^2."""
+        return self.slip_factor
+
     def provenance(self) -> dict[str, object]:
         return {"reference_model_path":str(self.path),"reference_model_sha256":self.checksum_sha256,
                 "reference_model_source":self.source,"model_tune_qx":self.tune[0],"model_tune_qy":self.tune[1],
                 "model_momentum_compaction":self.momentum_compaction,"model_inverse_gamma_squared":self.inverse_gamma_squared,
-                "model_slip_factor":self.slip_factor,"model_nominal_rf_hz":self.nominal_rf_hz,
+                "model_slip_factor":self.slip_factor,"model_at_slip_factor":self.at_slip_factor,
+                "model_rf_momentum_coefficient":self.rf_momentum_coefficient,
+                "model_element_count":self.element_count,"model_nominal_rf_hz":self.nominal_rf_hz,
                 "model_energy_ev":self.energy_ev,"model_circumference_m":self.circumference_m,
                 "model_revolution_frequency_hz":self.revolution_frequency_hz,
                 "model_harmonic_number":self.harmonic_number,"model_harmonic_number_source":self.harmonic_number_source,
@@ -68,19 +84,20 @@ def load_reference_model(path: str | Path, *, source: str="User-selected referen
     at_slip=float(ring.get_slip_factor()); inverse=float(alpha+at_slip)
     slip=float(-at_slip)
     frequencies=[float(getattr(elem,"Frequency")) for elem in ring if hasattr(elem,"Frequency") and float(getattr(elem,"Frequency"))>0]
-    rf=float(np.median(frequencies)) if frequencies else None
+    frequency_consistent=bool(frequencies) and bool(np.allclose(frequencies,frequencies[0],rtol=1e-12,atol=1e-6))
+    rf=float(frequencies[0]) if frequency_consistent else None
     energy=float(ring.energy); circumference=float(ring.circumference)
     frev=float(at.constants.clight/circumference)
     cavities=[elem for elem in ring if hasattr(elem,"Frequency")]
     explicit=getattr(ring,"harmonic_number",None)
     cavity_harmonics=[int(elem.HarmNumber) for elem in cavities if getattr(elem,"HarmNumber",None)]
     harmonic=int(explicit) if explicit else (cavity_harmonics[0] if cavity_harmonics and len(set(cavity_harmonics))==1 else None)
-    harmonic_source="Reference lattice / AT" if explicit else ("Reference lattice cavities" if harmonic else "Not available")
+    harmonic_source="Reference lattice / AT" if explicit else ("Reference lattice cavities" if harmonic else "Inconsistent or unavailable cavity harmonics")
     residual=float(rf-harmonic*frev) if rf is not None and harmonic is not None else None
     chrom=tuple(float(v) for v in np.asarray(ringdata.chromaticity)[:2])
     return ReferenceModel(source_path,sha256(source_path.read_bytes()).hexdigest(),source,ring,tune,alpha,inverse,slip,rf,
                           energy,circumference,frev,harmonic,harmonic_source,
-                          "Reference lattice cavities" if rf is not None else "Not available",residual,chrom)
+                          "Reference lattice cavities" if rf is not None else ("Inconsistent cavity frequencies" if frequencies else "Not available"),residual,chrom)
 
 
 def reference_model_for_pysc(profile_key: str) -> ReferenceModel:

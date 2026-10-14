@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication
 from pyLOCO.gui.measurement_metadata import measurement_display_fields
 from pyLOCO.gui.themes import apply_application_theme, theme_for_key
 from pyLOCO.gui.appearance import select_suite_accent, suite_appearance_settings
-from pyLOCO.measure.reference_model import comparison_metrics, model_dispersion, model_orm, reference_model_for_pysc, resolve_device_ordinals, store_reference_model_arrays
+from pyLOCO.measure.reference_model import comparison_metrics, load_reference_model, model_dispersion, model_orm, reference_model_for_pysc, resolve_device_ordinals, store_reference_model_arrays
 
 @pytest.fixture(scope="module")
 def qapp():
@@ -62,6 +62,35 @@ def test_reference_profiles_and_selected_device_ordering():
     assert model.nominal_rf_hz == pytest.approx(model.harmonic_number*model.revolution_frequency_hz, abs=1e-6)
     assert model.rf_harmonic_residual_hz == pytest.approx(0.0, abs=1e-6)
     assert np.all(np.isfinite(model.chromaticity))
+
+
+def test_case_c_reference_model_exposes_both_slip_conventions_and_element_count():
+    path=Path("Examples/EBS/multistage_fit/data/betamodel.mat")
+    model=load_reference_model(path,source="historical Case C")
+    assert model.element_count==4432
+    assert model.at_slip_factor==pytest.approx(1.0/model.ring.gamma**2-model.momentum_compaction)
+    assert model.rf_momentum_coefficient==pytest.approx(model.momentum_compaction-1.0/model.ring.gamma**2)
+    assert model.at_slip_factor==pytest.approx(-model.rf_momentum_coefficient)
+    assert model.at_slip_factor<0<model.rf_momentum_coefficient
+
+
+def test_case_c_notebook_and_gui_physical_dispersion_conversion_match():
+    import at
+    from pyLOCO.gui.results.results_loader import notebook_physical_dispersion
+    base=Path("Examples/EBS/multistage_fit/data")
+    model=load_reference_model(base/"betamodel.mat",source="historical Case C")
+    cavities=at.get_refpts(model.ring,at.elements.RFCavity)
+    assert len(cavities)>0
+    frequency=float(model.ring[cavities[0]].Frequency)
+    with h5py.File(base/"measured_dispersion_loco_20260126_221103.h5","r") as handle:
+        for dataset in ("measured_eta_x","measured_eta_y"):
+            response=np.asarray(handle[dataset][:],dtype=float)
+            notebook=response*model.ring.get_slip_factor()*frequency/200.0
+            gui=notebook_physical_dispersion(response,at_slip_factor=model.at_slip_factor,
+                                              rf_frequency_hz=frequency,signed_rf_step_hz=200.0)
+            difference=gui-notebook
+            assert np.max(np.abs(difference))==0.0
+            assert np.sqrt(np.mean(difference**2))==0.0
 
 
 def test_petra_pysc_control_channels_resolve_to_reference_lattice():
