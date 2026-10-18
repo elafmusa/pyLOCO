@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize
-from PySide6.QtWidgets import QApplication, QCheckBox, QFileDialog, QHBoxLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QHBoxLayout, QPushButton, QSizePolicy, QVBoxLayout, QWidget
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 
 
 class PlotCanvas(QWidget):

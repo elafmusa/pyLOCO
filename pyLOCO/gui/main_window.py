@@ -23,7 +23,6 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
     QComboBox,
-    QFileDialog,
     QFrame,
     QDialog,
     QDialogButtonBox,
@@ -31,6 +30,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
     QProgressBar,
+    QProgressDialog,
     QStatusBar,
     QTabWidget,
     QTableWidget,
@@ -57,20 +58,35 @@ from PySide6.QtWidgets import (
     QWidget,
     QApplication,
 )
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
+from pyLOCO.gui.lattice_loader import (
+    NoMatLatticeError, load_project_lattice, mat_lattice_candidates,
+)
 
-from .fit_workflow import FitRecipe, FitStage, execute_workflow, file_sha256, preflight_recipe
+from .fit_workflow import (
+    FitRecipe, FitStage, execute_workflow, file_sha256, inspect_measurement_files, preflight_recipe,
+)
+from .measurement_mapping import (
+    find_exact_device_mappings, inventory_fingerprint as measurement_inventory_fingerprint,
+    load_document as load_measurement_mapping_document, mapping_counts as measurement_mapping_counts,
+    mapping_template as measurement_mapping_template, measurement_inventory,
+    ordered_ordinals as measurement_mapping_ordered_ordinals,
+    validate_mapping as validate_measurement_mapping,
+)
 
-from .backend import LocoRunError, LocoRunRequest, LocoRunResult, run_loco_request, _load_bad_bpm_positions
+from .backend import LocoRunError, LocoRunRequest, LocoRunResult, run_loco_request, _load_bad_bpm_positions, _load_measurements
 from .machine_detection import detect_machine_elements
 from .measurement_metadata import IMPORT_HINTS, inspect_measurement_metadata, measurement_display_fields
 from .branding import DISPLAY_ASSET, application_icon, set_asset, wordmark_html
 from .models.project import (
-    CompletedRunReference, ImportedDataset, LatticeSelection, LocoConfiguration, ProjectMetadata,
+    CompletedRunReference, ImportedDataset, LatticeSelection, LocoConfiguration, MachineElementsConfig, ProjectMetadata,
     json_safe, load_cmstep_npz, load_example_project_data, measurement_options_from_config, resolve_element_name_file,
     resolve_example_machine_elements,
 )
 from .widgets.project_explorer import ProjectExplorer
 from .widgets.orm_comparison import OrmComparisonWindow
+from .widgets.reference_comparison import ReferenceComparisonWindow
+from .reference_comparison import calculate_reference_comparison
 from .widgets.waiting_games import WaitingGamesDialog
 from .themes import ACCENTS, DEFAULT_ACCENT_KEY, THEMES, apply_application_theme, configure_item_view, theme_for_key
 from .results.results_workspace import ResultsWorkspace
@@ -120,6 +136,8 @@ QScrollBar:vertical, QScrollBar:horizontal { background: #1E1E2E; width: 12px; h
 QScrollBar::handle { background: #4A4F68; border-radius: 6px; }
 QScrollBar::handle:hover { background: #8A63D2; }
 """
+
+MACHINE_CONFIGURATION_SCHEMA = "pyloco-machine-configuration/v1"
 
 # Exact main logo preserved from the approved pre-resizing GUI version.
 # The toolbar intentionally uses the compact clickable wordmark instead.
@@ -354,6 +372,27 @@ class LocoRunWorker(QObject):
             import traceback
 
             self.failed.emit(LocoRunError(str(exc), traceback.format_exc(), self.cancel_requested))
+        else:
+            self.finished.emit(result)
+
+
+class ReferenceComparisonWorker(QObject):
+    """Calculate a reference response without entering the LOCO optimizer."""
+
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, request: LocoRunRequest) -> None:
+        super().__init__(); self.request = request; self.cancel_requested = False
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = calculate_reference_comparison(
+                self.request, cancelled=lambda: self.cancel_requested,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
         else:
             self.finished.emit(result)
 
@@ -1204,6 +1243,11 @@ class MainWindow(QMainWindow):
         self._waiting_games_dialog: WaitingGamesDialog | None = None
         self._run_cancel_requested = False
         self._orm_comparison_windows = []
+        self._reference_comparison_windows = []
+        self._reference_comparison_thread = None
+        self._reference_comparison_worker = None
+        self._reference_comparison_progress = None
+        self._reference_comparison_start_signature = ""
         self.fit_recipe = FitRecipe()
         self._active_fit_stage = -1
         self._resume_fit_session = None
@@ -1250,6 +1294,13 @@ class MainWindow(QMainWindow):
         if not self._confirm_discard_changes():
             event.ignore()
             return
+        if self._reference_comparison_worker is not None:
+            self._reference_comparison_worker.cancel_requested = True
+        if self._reference_comparison_thread is not None:
+            # response_matrix itself is not interruptible; wait for its next
+            # safe boundary so Qt never destroys a running worker thread.
+            self._reference_comparison_thread.quit()
+            self._reference_comparison_thread.wait()
         self._save_window_layout()
         self._settings.setValue("workflow/mode", self.project.mode)
         self._settings.sync()
@@ -1346,6 +1397,32 @@ class MainWindow(QMainWindow):
             return self.project.is_saved
         return True
 
+    def _confirm_open_with_unsaved_changes(self) -> bool:
+        """Offer an optional save before Open Project without discarding state."""
+        if not self.project.modified:
+            return True
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Unsaved changes — open FIT project")
+        dialog.setIcon(QMessageBox.Question)
+        dialog.setText("The current FIT project has unsaved changes.")
+        dialog.setInformativeText(
+            "Saving is optional. Continue without saving keeps the current project in memory until you choose "
+            "whether to retain its measurements in the next step. No project or measurement file is deleted."
+        )
+        save = dialog.addButton("Save current project…", QMessageBox.AcceptRole)
+        proceed = dialog.addButton("Continue without saving", QMessageBox.ActionRole)
+        cancel = dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(proceed)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked is save:
+            return self.save_project()
+        if clicked is proceed:
+            return True
+        if clicked is cancel:
+            return False
+        return False
+
     def _create_workspace(self) -> QTabWidget:
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
@@ -1378,6 +1455,7 @@ class MainWindow(QMainWindow):
         self.cancel_loco_button.clicked.connect(self.cancel_loco_run)
         self.results_workspace.waiting_games_button.clicked.connect(self._open_waiting_games)
         self.results_workspace.open_correct_requested.connect(self.open_correct_app)
+        self.results_workspace.orm.comparison_requested.connect(self.compare_orms)
         return self.results_workspace
 
     def _project_page(self) -> QWidget:
@@ -1436,12 +1514,44 @@ class MainWindow(QMainWindow):
         body.addWidget(group)
         body.addWidget(self.dashboard_summary)
         body.addWidget(QLabel("Recent projects"))
-        self.recent_list.setMinimumHeight(100); body.addWidget(self.recent_list)
+        self.recent_list.setMinimumHeight(100)
+        self.recent_list.setToolTip(
+            "Double-click to open a project. Select a path and press Command+C/Ctrl+C, "
+            "or use Copy selected path."
+        )
+        body.addWidget(self.recent_list)
+        recent_actions = QHBoxLayout()
+        self.copy_recent_path_button = QPushButton("Copy selected path")
+        self.copy_recent_path_button.setEnabled(False)
+        self.copy_recent_path_button.clicked.connect(self._copy_selected_recent_project_path)
+        recent_actions.addWidget(self.copy_recent_path_button)
+        recent_actions.addStretch(1)
+        body.addLayout(recent_actions)
         body.addStretch(1)
         self.recent_list.itemDoubleClicked.connect(
             lambda item: self.open_project(Path(item.text()))
         )
+        self.recent_list.currentItemChanged.connect(
+            lambda current, _previous: self.copy_recent_path_button.setEnabled(current is not None)
+        )
+        copy_recent_action = QAction("Copy project path", self.recent_list)
+        copy_recent_action.setShortcut(QKeySequence.Copy)
+        copy_recent_action.setShortcutContext(Qt.WidgetShortcut)
+        copy_recent_action.triggered.connect(self._copy_selected_recent_project_path)
+        self.recent_list.addAction(copy_recent_action)
+        self.recent_list.setContextMenuPolicy(Qt.ActionsContextMenu)
         return page
+
+    @Slot()
+    def _copy_selected_recent_project_path(self) -> bool:
+        item = self.recent_list.currentItem()
+        if item is None:
+            self.statusBar().showMessage("Select a recent project path to copy.", 4000)
+            return False
+        path = item.text()
+        QApplication.clipboard().setText(path)
+        self.statusBar().showMessage(f"Project path copied: {path}", 5000)
+        return True
 
     def _logo_block(self, maximum_width: int) -> QVBoxLayout:
         """Build a centered, aspect-ratio-preserving pyLOCO logo block."""
@@ -1503,17 +1613,24 @@ class MainWindow(QMainWindow):
         content_layout.setSizeConstraint(QLayout.SetMinimumSize)
         scroll.setWidget(content)
         page.layout().addWidget(scroll, 1)
+        self.machine_lattice_intro = QLabel(
+            "Load or select machine elements for LOCO. BPMs and correctors define the measured devices; "
+            "exclusions remove selected devices from fitting. Mapping links measured devices to AT lattice elements."
+        )
+        self.machine_lattice_intro.setWordWrap(True)
+        content_layout.addWidget(self.machine_lattice_intro)
         self.lattice_path = QLabel("No lattice selected")
         self.lattice_path.setWordWrap(True)
         self.lattice_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.lattice_type = QLabel("—")
-        # Retained as internal project-state compatibility; the authoritative
-        # AT-derived count is displayed once in the reference-model table.
+        self.lattice_variable = QLabel("Not applicable")
         self.lattice_elements = QLabel("Unknown", content)
-        self.lattice_elements.hide()
         choose = QPushButton("Select lattice/model file…")
         choose.setMaximumWidth(260)
         choose.clicked.connect(self.select_lattice)
+        self.change_mat_variable_button = QPushButton("Change MAT variable…")
+        self.change_mat_variable_button.setMaximumWidth(220)
+        self.change_mat_variable_button.clicked.connect(self.change_mat_variable)
         form = QFormLayout()
         selection_header=QWidget(); selection_layout=QHBoxLayout(selection_header); selection_layout.setContentsMargins(0,0,0,0)
         selection_title=QLabel("Reference lattice"); selection_title.setStyleSheet("font-weight:700")
@@ -1521,19 +1638,42 @@ class MainWindow(QMainWindow):
         form.addRow(selection_header)
         form.addRow("Path", self.lattice_path)
         form.addRow("Type", self.lattice_type)
+        variable_row = QWidget(); variable_layout = QHBoxLayout(variable_row); variable_layout.setContentsMargins(0, 0, 0, 0)
+        variable_layout.addWidget(self.lattice_variable, 1); variable_layout.addWidget(self.change_mat_variable_button)
+        form.addRow("MAT lattice variable", variable_row)
+        form.addRow("Number of lattice elements", self.lattice_elements)
         self.reference_model_info=QLabel("Not available"); self.reference_model_info.setObjectName("fitReferenceModelCard"); self.reference_model_info.setWordWrap(True); self.reference_model_info.setTextInteractionFlags(Qt.TextSelectableByMouse); self.reference_model_info.setMargin(14)
         form.addRow(self.reference_model_info)
         group = QGroupBox("Lattice selection and metadata")
         group.setLayout(form)
         content_layout.addWidget(group)
 
+        self.machine_config_group = QGroupBox("Reusable machine configuration")
+        machine_config_layout = QVBoxLayout(self.machine_config_group)
+        machine_config_help = QLabel(
+            "Save or load only lattice-validated element selections, selection provenance, family groups and "
+            "measurement exclusions. Measurements, FIT stages, solver settings and output paths are not changed."
+        )
+        machine_config_help.setWordWrap(True)
+        machine_config_layout.addWidget(machine_config_help)
+        machine_config_buttons = QHBoxLayout()
+        self.save_machine_configuration_button = QPushButton("Save machine configuration…")
+        self.load_machine_configuration_button = QPushButton("Load machine configuration…")
+        self.save_machine_configuration_button.clicked.connect(self.save_machine_configuration)
+        self.load_machine_configuration_button.clicked.connect(self.load_machine_configuration)
+        machine_config_buttons.addWidget(self.save_machine_configuration_button)
+        machine_config_buttons.addWidget(self.load_machine_configuration_button)
+        machine_config_buttons.addStretch(1)
+        machine_config_layout.addLayout(machine_config_buttons)
+        content_layout.addWidget(self.machine_config_group)
+
         self.element_count_labels = {}
         self.element_preview_tables = {}
-        elements_group = QGroupBox("Machine Elements")
-        elements_layout = QVBoxLayout(elements_group)
+        self.machine_elements_group = QGroupBox("Machine Elements")
+        elements_layout = QVBoxLayout(self.machine_elements_group)
         elements_layout.setContentsMargins(16, 20, 16, 16)
         elements_layout.setSpacing(8)
-        elements_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.machine_elements_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.machine_elements_help = QLabel(
             "Define BPMs, correctors, quadrupoles and RF cavities after loading the lattice. "
             "Open Edit/Select to check or uncheck individual elements."
@@ -1583,7 +1723,7 @@ class MainWindow(QMainWindow):
             table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.element_preview_tables[key] = table
             elements_layout.addWidget(table)
-        content_layout.addWidget(elements_group)
+        content_layout.addWidget(self.machine_elements_group)
         exclusion_group = QGroupBox("BPM and corrector exclusions")
         exclusion_form = QFormLayout(exclusion_group)
         exclusion_form.setContentsMargins(16, 22, 16, 16)
@@ -1615,6 +1755,83 @@ class MainWindow(QMainWindow):
             exclusion_form.addRow(label, edit); edit.editingFinished.connect(self._store_exclusions)
         exclusion_form.addRow("Counts", self.exclusion_counts)
         content_layout.addWidget(exclusion_group)
+        measurement_mapping_group = QGroupBox("Measurement-device mapping")
+        measurement_mapping_layout = QVBoxLayout(measurement_mapping_group)
+        mapping_intro = QLabel(
+            "Match the device identities stored by Measure to the selected AT lattice. Exact validated "
+            "identities are used; array position, similar names and matching dimensions are never treated as identity. "
+            "Find machine mappings verifies identities only — it does not change the FIT selections."
+        )
+        mapping_intro.setWordWrap(True); measurement_mapping_layout.addWidget(mapping_intro)
+        self.measurement_mapping_steps = QLabel(
+            "<b>Step 1 — Find device mappings</b><br>Match measured BPMs and correctors with the reference AT lattice.<br>"
+            "<b>Step 2 — Review results</b><br>Check matched devices and resolve unmatched or ambiguous entries.<br>"
+            "<b>Step 3 — Use mappings in FIT</b><br>Preview and confirm the BPM and corrector selections for the measured ORM.<br>"
+            "<b>Step 4 — Validate</b><br>Verify the complete configuration before running LOCO."
+        )
+        self.measurement_mapping_steps.setWordWrap(True)
+        self.measurement_mapping_steps.setObjectName("mappingHelpText")
+        measurement_mapping_layout.addWidget(self.measurement_mapping_steps)
+        mapping_actions = QHBoxLayout()
+        self.find_measurement_mappings_button = QPushButton("Find machine mappings")
+        self.create_measurement_mapping_template_button = QPushButton("Create mapping template…")
+        self.load_measurement_mapping_button = QPushButton("Load completed mapping…")
+        self.save_measurement_mapping_button = QPushButton("Save validated mapping…")
+        self.find_measurement_mappings_button.clicked.connect(self.find_measurement_mappings)
+        self.create_measurement_mapping_template_button.clicked.connect(self.create_measurement_mapping_template)
+        self.load_measurement_mapping_button.clicked.connect(self.load_measurement_mapping)
+        self.save_measurement_mapping_button.clicked.connect(self.save_validated_measurement_mapping)
+        for button in (self.find_measurement_mappings_button, self.create_measurement_mapping_template_button,
+                       self.load_measurement_mapping_button, self.save_measurement_mapping_button):
+            mapping_actions.addWidget(button)
+        mapping_actions.addStretch(1); measurement_mapping_layout.addLayout(mapping_actions)
+        self.measurement_mapping_feedback = QLabel("Not run yet — load modern Measure data and a reference lattice.")
+        self.measurement_mapping_feedback.setWordWrap(True); self.measurement_mapping_feedback.setObjectName("mappingHelpText")
+        measurement_mapping_layout.addWidget(self.measurement_mapping_feedback)
+        self.use_measurement_mappings_button = QPushButton("Use mapped devices in FIT…")
+        self.use_measurement_mappings_button.setEnabled(False)
+        self.use_measurement_mappings_button.clicked.connect(self.use_measurement_mappings_for_fit)
+        measurement_mapping_layout.addWidget(self.use_measurement_mappings_button, 0, Qt.AlignLeft)
+        mapping_filters = QHBoxLayout(); self.measurement_mapping_search = QLineEdit()
+        self.measurement_mapping_search.setPlaceholderText("Search measured device or AT element")
+        self.measurement_mapping_filter = QComboBox()
+        self.measurement_mapping_filter.addItem("Needs attention", "attention")
+        self.measurement_mapping_filter.addItem("All mappings", "all")
+        self.measurement_mapping_filter.addItem("Validated only", "validated")
+        self.measurement_mapping_search.textChanged.connect(self._refresh_measurement_mapping_table)
+        self.measurement_mapping_filter.currentIndexChanged.connect(self._refresh_measurement_mapping_table)
+        mapping_filters.addWidget(self.measurement_mapping_search, 1); mapping_filters.addWidget(self.measurement_mapping_filter)
+        measurement_mapping_layout.addLayout(mapping_filters)
+        self.measurement_mapping_table = QTableWidget(0, 7)
+        self.measurement_mapping_table.setHorizontalHeaderLabels(
+            ["Measured device", "Role / plane", "AT element", "AT ordinal", "Component", "Status", "Problem / evidence"]
+        )
+        self.measurement_mapping_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.measurement_mapping_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.measurement_mapping_table.setSortingEnabled(True)
+        self.measurement_mapping_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.measurement_mapping_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.measurement_mapping_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
+        self.measurement_mapping_table.setMinimumHeight(170)
+        measurement_mapping_layout.addWidget(self.measurement_mapping_table)
+        self.measurement_mapping_table_hint = QLabel(
+            "No mapping records yet. Select Find machine mappings after loading measurements and a reference lattice."
+        )
+        self.measurement_mapping_table_hint.setWordWrap(True)
+        self.measurement_mapping_table_hint.setObjectName("mappingHelpText")
+        measurement_mapping_layout.addWidget(self.measurement_mapping_table_hint)
+        mapping_help = QGroupBox("Mapping workflow and technical details"); mapping_help.setCheckable(True); mapping_help.setChecked(False)
+        mapping_help_layout = QVBoxLayout(mapping_help)
+        mapping_help_text = QLabel(
+            "Find machine mappings uses exact authoritative Device identities. Create writes JSON; Load accepts JSON, "
+            "YAML and YML. For unresolved entries, fill in only lattice_ordinal. Roles, AT identity, B1L/A1L "
+            "component, units and validation status are derived again when loaded. A typed ordinal is only a proposal. "
+            "Validated mappings are bound to the lattice checksum, machine configuration checksum and ordered inventory."
+        )
+        mapping_help_text.setWordWrap(True); mapping_help_layout.addWidget(mapping_help_text)
+        mapping_help_text.setVisible(False); mapping_help.toggled.connect(mapping_help_text.setVisible)
+        measurement_mapping_layout.addWidget(mapping_help)
+        content_layout.addWidget(measurement_mapping_group)
         content_layout.addStretch(1)
         return page
 
@@ -1627,10 +1844,18 @@ class MainWindow(QMainWindow):
         import_button = QPushButton("Import HDF5, MAT, NumPy…")
         import_button.clicked.connect(self.import_measurement)
         session_button=QPushButton("Open Measurement Session…"); session_button.clicked.connect(self.open_measurement_session)
-        self.measurement_list = QTableWidget(0, 5)
-        self.measurement_list.setHorizontalHeaderLabels(["File / Measurement", "Type", "Date", "Time", "Machine / Profile"])
-        self.measurement_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        for column in range(1, 5): self.measurement_list.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeToContents)
+        self.measurement_list = QTableWidget(0, 6)
+        self.measurement_list.setHorizontalHeaderLabels(
+            ["Measurement role", "Filename", "Date", "Time", "Status", "Details"]
+        )
+        self.measurement_list.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.measurement_list.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.measurement_list.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.measurement_list.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.measurement_list.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        self.measurement_list.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeToContents)
+        self.measurement_list.verticalHeader().setDefaultSectionSize(40)
+        self.measurement_list.verticalHeader().setMinimumSectionSize(40)
         configure_item_view(self.measurement_list)
         row = QHBoxLayout()
         row.addWidget(QLabel("Dataset role"))
@@ -1641,8 +1866,22 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(group)
         layout.addLayout(row)
         self.measurement_hint = QLabel(); self.measurement_hint.setWordWrap(True)
+        self.active_measurement_session_label = QLabel("Active measurement session: none")
+        self.active_measurement_session_label.setObjectName("activeMeasurementSession")
+        self.active_measurement_session_label.setWordWrap(True)
+        self.active_measurement_session_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.measurement_metadata_label = QLabel("No measurement metadata loaded."); self.measurement_metadata_label.setWordWrap(True)
-        layout.addWidget(self.measurement_hint); layout.addWidget(self.measurement_metadata_label)
+        self.measurement_file_status = QLabel("No measurement files imported.")
+        self.measurement_file_status.setObjectName("measurementFileStatus")
+        self.measurement_file_status.setWordWrap(True)
+        self.locate_missing_measurement_button = QPushButton("Locate missing measurement…")
+        self.locate_missing_measurement_button.clicked.connect(self.locate_missing_measurement)
+        self.locate_missing_measurement_button.setEnabled(False)
+        file_status_row = QHBoxLayout()
+        file_status_row.addWidget(self.measurement_file_status, 1)
+        file_status_row.addWidget(self.locate_missing_measurement_button)
+        layout.addWidget(self.measurement_hint); layout.addWidget(self.active_measurement_session_label); layout.addWidget(self.measurement_metadata_label)
+        layout.addLayout(file_status_row)
         layout.addWidget(self.measurement_list)
         page.layout().addWidget(group)
         self.measurement_role.currentTextChanged.connect(self._update_measurement_hint)
@@ -1654,8 +1893,51 @@ class MainWindow(QMainWindow):
         page = self._page("LOCO Configuration")
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        self.fit_scroll = scroll
         container = QWidget()
         layout = QVBoxLayout(container)
+
+        self.fit_configuration_actions = QGroupBox("Reusable FIT configuration")
+        action_layout = QVBoxLayout(self.fit_configuration_actions)
+        action_help = QLabel(
+            "Import an existing fitting configuration or export the current settings for reuse. "
+            "This action covers the current working stage's LOCO settings, not the multi-stage recipe. "
+            "Use Load fitting stages below for a complete stage sequence."
+        )
+        action_help.setWordWrap(True)
+        action_layout.addWidget(action_help)
+        action_row = QHBoxLayout()
+        self.import_configuration_button = QPushButton("Import configuration…")
+        self.import_configuration_button.clicked.connect(self.import_loco_configuration)
+        self.export_configuration_button = QPushButton("Export configuration…")
+        self.export_configuration_button.clicked.connect(self.export_loco_configuration)
+        self.review_configuration_button = QPushButton("Review configuration")
+        self.review_configuration_button.clicked.connect(self._scroll_to_fit_summary)
+        action_row.addWidget(self.import_configuration_button)
+        action_row.addWidget(self.export_configuration_button)
+        action_row.addStretch(1)
+        action_row.addWidget(self.review_configuration_button)
+        action_layout.addLayout(action_row)
+        layout.addWidget(self.fit_configuration_actions)
+
+        self.pre_fit_checks_group = QGroupBox("Pre-FIT measurement checks")
+        pre_fit_layout = QVBoxLayout(self.pre_fit_checks_group)
+        pre_fit_help = QLabel(
+            "Compare the imported measurements with the selected reference lattice before fitting. "
+            "This read-only FIT check does not acquire data, run the optimizer or change measurements. "
+            "After changing measurements, lattice, selections or exclusions, use Validate first. The "
+            "comparison also rechecks compatibility and refuses incompatible inputs."
+        )
+        pre_fit_help.setWordWrap(True)
+        pre_fit_layout.addWidget(pre_fit_help)
+        self.compare_reference_button = QPushButton("Compare imported measurements with initial model…")
+        self.compare_reference_button.clicked.connect(self.compare_measurements_with_reference)
+        self.compare_reference_button.setToolTip(
+            "Calculate a read-only reference ORM and RF response before fitting; no optimizer or machine writes."
+        )
+        pre_fit_row = QHBoxLayout(); pre_fit_row.addWidget(self.compare_reference_button); pre_fit_row.addStretch(1)
+        pre_fit_layout.addLayout(pre_fit_row)
+        layout.addWidget(self.pre_fit_checks_group)
 
         workflow_group = QGroupBox("Multi-stage fitting workflow")
         workflow_layout = QVBoxLayout(workflow_group)
@@ -1669,34 +1951,80 @@ class MainWindow(QMainWindow):
         self.fit_workflow_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.fit_workflow_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.fit_workflow_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        # Keep workflow rows compact.  The Starting-model editor is placed in
+        # a centred wrapper below rather than being stretched to the cell.
+        self.fit_workflow_table.verticalHeader().setMinimumSectionSize(38)
+        self.fit_workflow_table.verticalHeader().setDefaultSectionSize(38)
         self.fit_workflow_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.fit_workflow_table.setSelectionMode(QAbstractItemView.SingleSelection)
-        self.fit_workflow_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.fit_workflow_table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed
+        )
         self.fit_workflow_table.itemSelectionChanged.connect(self._select_fit_stage)
-        self.fit_workflow_table.itemDoubleClicked.connect(self._inspect_fit_stage_result)
+        self.fit_workflow_table.itemChanged.connect(self._on_fit_workflow_item_changed)
+        self.fit_workflow_table.itemDoubleClicked.connect(self._on_fit_workflow_item_double_clicked)
         workflow_layout.addWidget(self.fit_workflow_table)
+        self.fit_workflow_hint = QLabel(
+            "Selecting a stage edits its configuration; it does not limit execution. Run LOCO executes the entire "
+            "validated recipe automatically. Double-click a stage name or iteration count to edit it, use the "
+            "Starting model selector for inheritance, and hover a row for its full setting summary."
+        )
+        self.fit_workflow_hint.setWordWrap(True)
+        self.fit_workflow_hint.setObjectName("fitWorkflowExecutionHelp")
+        workflow_layout.addWidget(self.fit_workflow_hint)
         self.fit_stage_editor_label = QLabel()
         self.fit_stage_editor_label.setObjectName("dashboardCardTitle")
         self.fit_stage_editor_label.setWordWrap(True)
         workflow_layout.addWidget(self.fit_stage_editor_label)
+        self.fit_empty_state_label = QLabel(
+            "No fitting stages configured. Add the first FIT stage to begin. "
+            "A new stage uses pyLOCO's documented initial defaults and must be validated before running."
+        )
+        self.fit_empty_state_label.setWordWrap(True)
+        self.fit_empty_state_label.setObjectName("validationMissing")
+        self.fit_empty_state_label.setToolTip(
+            "Initial Stage 1 defaults: Levenberg–Marquardt; 1 outer and 10 inner iterations; "
+            "scaled solve; threshold SVD at 1e-7; outlier rejection at 10 sigma; normalization, "
+            "dispersion and constraints off. Default fitted groups are normal quadrupoles, H/V BPM gains, "
+            "H/V corrector calibration and horizontal-corrector energy shift. Validate and review these "
+            "choices before running."
+        )
+        self.fit_empty_state_label.setVisible(False)
+        workflow_layout.addWidget(self.fit_empty_state_label)
         stage_buttons = QHBoxLayout(); session_buttons = QHBoxLayout()
+        self.fit_stage_buttons = {}
         for text, slot in (("+ Add stage", self._add_fit_stage), ("Duplicate stage", self._duplicate_fit_stage),
                            ("Remove", self._remove_fit_stage), ("Move up", lambda: self._move_fit_stage(-1)),
                            ("Move down", lambda: self._move_fit_stage(1)),
                            ("Review fitting sequence", self.preview_fit_workflow)):
             button = QPushButton(text); button.clicked.connect(slot); stage_buttons.addWidget(button)
+            self.fit_stage_buttons[text] = button
+        self.clear_fit_configuration_button = QPushButton("Clear FIT configuration…")
+        self.clear_fit_configuration_button.clicked.connect(self.clear_fit_configuration)
+        stage_buttons.addWidget(self.clear_fit_configuration_button)
         stage_buttons.addStretch(1); workflow_layout.addLayout(stage_buttons)
         for text, slot in (("Save fitting stages…", self.save_fit_recipe),
                            ("Load fitting stages…", self.load_fit_recipe),
                            ("Save complete fitting session…", self.save_fit_run_session),
                            ("Resume previous fitting run…", self.resume_fit_run)):
             button = QPushButton(text); button.clicked.connect(slot); session_buttons.addWidget(button)
+            if text.startswith("Save fitting stages"):
+                self.save_fit_recipe_button = button
+            if text.startswith("Save complete"):
+                self.save_fit_run_session_button = button
+            if text.startswith("Resume previous"):
+                self.resume_fit_run_button = button
         session_buttons.addStretch(1); workflow_layout.addLayout(session_buttons)
         workflow_help = QLabel(
             "Fitting stages store the reusable sequence and settings. A complete fitting session also stores "
             "the selected lattice, measurements and completed-stage checkpoints."
         )
         workflow_help.setWordWrap(True); workflow_layout.addWidget(workflow_help)
+        self.compatibility_status_label = QLabel()
+        self.compatibility_status_label.setWordWrap(True)
+        self.compatibility_status_label.setObjectName("validationMissing")
+        self.compatibility_status_label.setVisible(False)
+        workflow_layout.addWidget(self.compatibility_status_label)
         layout.addWidget(workflow_group)
 
         self.rm_calculator = QComboBox()
@@ -1902,8 +2230,8 @@ class MainWindow(QMainWindow):
         )
         self.fixed_delta_skew = self._double_spin(-1.0, 1.0, 1e-3, 9)
         self.fixed_delta_q_tilt = self._double_spin(-1.0, 1.0, 1e-6, 9)
-        perturbation_group=QGroupBox("Numerical perturbation steps")
-        perturbation_form=QFormLayout(perturbation_group)
+        self.perturbation_group=QGroupBox("Numerical perturbation steps")
+        perturbation_form=QFormLayout(self.perturbation_group)
         for label, widget in (("Normal quadrupole step", self.fixed_dk), ("Skew strength step [lattice units]", self.fixed_delta_skew), ("Quadrupole tilt step [rad]", self.fixed_delta_q_tilt)):
             perturbation_form.addRow(label, widget)
         self.normal_step_resolution = QLabel()
@@ -1912,10 +2240,10 @@ class MainWindow(QMainWindow):
         self.skew_step_status = QLabel(); self.tilt_step_status = QLabel()
         perturbation_form.addRow("Skew step status", self.skew_step_status)
         perturbation_form.addRow("Tilt step status", self.tilt_step_status)
-        jacobian_form.addRow(perturbation_group)
-        jacobian_group = QGroupBox("Jacobian calculation")
-        jacobian_group.setLayout(jacobian_form)
-        layout.addWidget(jacobian_group)
+        jacobian_form.addRow(self.perturbation_group)
+        self.jacobian_group = QGroupBox("Jacobian calculation")
+        self.jacobian_group.setLayout(jacobian_form)
+        layout.addWidget(self.jacobian_group)
 
         self.outlier_enabled = QCheckBox("Reject outliers")
         self.outlier_sigma = self._double_spin(0.0, 1e6, 10.0, 3)
@@ -2003,8 +2331,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(constraint_group)
 
         self.parameter_checks = {}
-        param_group = QGroupBox("Parameter Selection")
-        param_layout = QVBoxLayout(param_group)
+        self.parameter_group = QGroupBox("Parameter Selection")
+        param_layout = QVBoxLayout(self.parameter_group)
         self.parameterization_radios = {}
         for key, label in (("quads", "Normal quadrupoles"), ("skew_quads", "Skew quadrupoles"), ("quads_tilt", "Quadrupole tilts")):
             box=QGroupBox(label); row=QHBoxLayout(box); check=QCheckBox("Fit"); individual=QRadioButton("Individually"); family=QRadioButton("By explicit family/group"); individual.setChecked(True)
@@ -2125,7 +2453,10 @@ class MainWindow(QMainWindow):
             (cm_form, self.params_cmstep_resolved),
             (cm_form, self.params_rfstep),
         )
-        layout.addWidget(param_group)
+        # Parameter choices determine which Jacobian controls are relevant, so
+        # present them before the calculation details without changing either
+        # the stored configuration or backend mapping.
+        layout.insertWidget(layout.indexOf(self.jacobian_group), self.parameter_group)
 
         output_group = QGroupBox("Output & Saving")
         output_form = QFormLayout(output_group)
@@ -2173,35 +2504,72 @@ class MainWindow(QMainWindow):
         self.fixed_harm_number = self._spin(1, 1000000, 3840)
         self.fixed_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
         self.mcf_source = QComboBox()
-        self.mcf_source.addItem("Automatic from lattice", "automatic")
-        self.mcf_source.addItem("User-defined value", "user")
+        self.mcf_source.addItem("Automatic — from reference lattice (AT/pyAT)", "automatic")
+        self.mcf_source.addItem("Manual — user-defined value", "user")
         self.mcf_user_value = QLineEdit()
-        for label, widget in (("RF frequency [Hz]", self.fixed_frequency), ("Harmonic number", self.fixed_harm_number), ("RF frequency attribute", self.rm_rf_attr), ("rfStep", self.fixed_rfstep), ("Momentum compaction source", self.mcf_source), ("Momentum compaction factor", self.mcf_user_value)):
+        self.mcf_user_value.setToolTip(
+            "Dimensionless momentum compaction factor αc. The existing backend accepts any finite value."
+        )
+        self.mcf_automatic_summary = QLabel()
+        self.mcf_automatic_summary.setWordWrap(True)
+        self.mcf_automatic_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        for label, widget in (("RF frequency [Hz]", self.fixed_frequency), ("Harmonic number", self.fixed_harm_number), ("RF frequency attribute", self.rm_rf_attr), ("rfStep", self.fixed_rfstep), ("Momentum compaction source", self.mcf_source)):
             fixed_form.addRow(label, widget)
+        self.mcf_automatic_label = QLabel("Automatic momentum compaction")
+        fixed_form.addRow(self.mcf_automatic_label, self.mcf_automatic_summary)
+        self.mcf_user_value_label = QLabel("Momentum compaction factor (αc)")
+        fixed_form.addRow(self.mcf_user_value_label, self.mcf_user_value)
         layout.addWidget(self.fixed_group)
 
-        button_row = QHBoxLayout()
-        import_button = QPushButton("Import configuration…")
-        import_button.clicked.connect(self.import_loco_configuration)
-        export_button = QPushButton("Export configuration…")
-        export_button.clicked.connect(self.export_loco_configuration)
-        button_row.addWidget(import_button)
-        button_row.addWidget(export_button)
-        button_row.addStretch(1)
-        layout.addLayout(button_row)
-
-        self.fit_summary = QTextEdit()
-        self.fit_summary.setReadOnly(True)
-        summary_group = QGroupBox("Configuration summary")
-        summary_layout = QVBoxLayout(summary_group)
-        summary_layout.addWidget(self.fit_summary)
-        layout.addWidget(summary_group)
+        self.summary_group = QGroupBox("Configuration summary")
+        summary_layout = QVBoxLayout(self.summary_group)
+        self.fit_current_stage_summary = QLabel()
+        self.fit_current_stage_summary.setWordWrap(True)
+        self.fit_current_stage_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.fit_all_stages_summary = QLabel()
+        self.fit_all_stages_summary.setWordWrap(True)
+        self.fit_all_stages_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.fit_scientific_summary = QLabel()
+        self.fit_scientific_summary.setWordWrap(True)
+        self.fit_scientific_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        summary_layout.addWidget(self.fit_current_stage_summary)
+        summary_layout.addWidget(self.fit_all_stages_summary)
+        summary_layout.addWidget(self.fit_scientific_summary)
+        self.fit_backend_group = QGroupBox("Backend options (technical)")
+        self.fit_backend_group.setCheckable(True)
+        self.fit_backend_group.setChecked(False)
+        backend_layout = QVBoxLayout(self.fit_backend_group)
+        backend_help = QLabel(
+            "Exact options passed to the backend. These names are retained for expert diagnostics and reproducibility."
+        )
+        backend_help.setWordWrap(True)
+        self.fit_backend_options = QPlainTextEdit()
+        self.fit_backend_options.setReadOnly(True)
+        self.fit_backend_options.setMinimumHeight(180)
+        # Compatibility alias for tests and downstream GUI helpers that read
+        # the former combined summary widget.
+        self.fit_summary = self.fit_backend_options
+        copy_backend = QPushButton("Copy backend options")
+        copy_backend.clicked.connect(
+            lambda: QApplication.clipboard().setText(self.fit_backend_options.toPlainText())
+        )
+        self.fit_backend_contents = QWidget()
+        backend_contents_layout = QVBoxLayout(self.fit_backend_contents)
+        backend_contents_layout.setContentsMargins(0, 0, 0, 0)
+        backend_contents_layout.addWidget(backend_help)
+        backend_contents_layout.addWidget(self.fit_backend_options)
+        backend_contents_layout.addWidget(copy_backend, 0, Qt.AlignLeft)
+        backend_layout.addWidget(self.fit_backend_contents)
+        self.fit_backend_contents.setVisible(False)
+        self.fit_backend_group.toggled.connect(self.fit_backend_contents.setVisible)
+        summary_layout.addWidget(self.fit_backend_group)
+        layout.addWidget(self.summary_group)
         layout.addStretch(1)
         scroll.setWidget(container)
         page.layout().addWidget(scroll, 1)
         self._load_config_to_widgets()
         self._connect_fit_controls()
-        self._add_fit_stage(name="Stage 1", start_from="original_model")
+        self._add_fit_stage(name="Stage 1", start_from="original_model", mark_modified=False)
         return page
 
     def _stage_configuration_snapshot(self) -> dict:
@@ -2212,6 +2580,21 @@ class MainWindow(QMainWindow):
     def _store_active_fit_stage(self) -> None:
         if 0 <= self._active_fit_stage < len(self.fit_recipe.stages) and not self._loading_config:
             self.fit_recipe.stages[self._active_fit_stage].configuration = self._stage_configuration_snapshot()
+
+    def _validate_active_stage_widget_consistency(self) -> None:
+        """Fail closed if visible fitted groups differ from the active recipe stage."""
+        if not (0 <= self._active_fit_stage < len(self.fit_recipe.stages)):
+            return
+        visible = self._collect_loco_configuration().parameters.fit_list()
+        stage = self.fit_recipe.stages[self._active_fit_stage]
+        mapping = stage.configuration.get("backend_mapping", stage.configuration)
+        stored = list(mapping.get("FitInitConfig", {}).get("fit_list", []))
+        if visible != stored:
+            raise ValueError(
+                "The visible Parameter Selection and active FIT stage disagree. "
+                f"Visible groups: {visible or ['none']}; stored stage groups: {stored or ['none']}. "
+                "Review the stage selection and edit a fitted-parameter checkbox before running again."
+            )
 
     def _configuration_for_fit_stage(self, stage: FitStage) -> LocoConfiguration:
         """Return an editable GUI configuration for new and legacy recipes.
@@ -2226,7 +2609,8 @@ class MainWindow(QMainWindow):
         stored = stage.configuration
         gui_data = stored.get("gui_config")
         if gui_data:
-            return LocoConfiguration.from_dict(gui_data)
+            config = LocoConfiguration.from_dict(gui_data)
+            return self._apply_machine_override_to_config(config)
 
         mapping = stored.get("backend_mapping", stored)
         data = json_safe(__import__("dataclasses").asdict(self.project.loco_config))
@@ -2274,13 +2658,92 @@ class MainWindow(QMainWindow):
             data["excluded_vertical_corrector_positions"] = list(excluded.get("vertical", []))
         if "Resume" in mapping:
             update_known("resume", dict(mapping["Resume"]))
-        return LocoConfiguration.from_dict(data)
+        return self._apply_machine_override_to_config(LocoConfiguration.from_dict(data))
+
+    @staticmethod
+    def _machine_override_from_config(config: LocoConfiguration) -> dict:
+        return {
+            "machine_elements": __import__("dataclasses").asdict(config.machine_elements),
+            "element_selection_state": deepcopy(config.element_selection_state),
+            "bad_bpm_positions": list(config.bad_bpm_positions),
+            "excluded_horizontal_corrector_positions": list(config.excluded_horizontal_corrector_positions),
+            "excluded_vertical_corrector_positions": list(config.excluded_vertical_corrector_positions),
+        }
+
+    def _apply_machine_override_to_config(self, config: LocoConfiguration) -> LocoConfiguration:
+        if self.project.recipe_machine_policy != "current" or not self.project.machine_configuration_override:
+            return config
+        override = self.project.machine_configuration_override
+        config.machine_elements = MachineElementsConfig(**deepcopy(override["machine_elements"]))
+        config.element_selection_state = deepcopy(override.get("element_selection_state", {}))
+        config.bad_bpm_positions = list(override.get("bad_bpm_positions", []))
+        config.excluded_horizontal_corrector_positions = list(override.get("excluded_horizontal_corrector_positions", []))
+        config.excluded_vertical_corrector_positions = list(override.get("excluded_vertical_corrector_positions", []))
+        config._sync_response_matrix_elements()
+        return config
+
+    def _apply_machine_override_to_recipe(self, recipe: FitRecipe, override: dict) -> None:
+        elements = deepcopy(override["machine_elements"])
+        excluded = {
+            "horizontal": list(override.get("excluded_horizontal_corrector_positions", [])),
+            "vertical": list(override.get("excluded_vertical_corrector_positions", [])),
+        }
+        for stage in recipe.stages:
+            stored = stage.configuration
+            gui_data = stored.get("gui_config")
+            if gui_data is not None:
+                config = LocoConfiguration.from_dict(gui_data)
+                config.machine_elements = MachineElementsConfig(**deepcopy(elements))
+                config.element_selection_state = deepcopy(override.get("element_selection_state", {}))
+                config.bad_bpm_positions = list(override.get("bad_bpm_positions", []))
+                config.excluded_horizontal_corrector_positions = list(excluded["horizontal"])
+                config.excluded_vertical_corrector_positions = list(excluded["vertical"])
+                config._sync_response_matrix_elements()
+                stored["gui_config"] = json_safe(__import__("dataclasses").asdict(config))
+            mapping = stored.get("backend_mapping", stored)
+            mapping["MachineElements"] = deepcopy(elements)
+            mapping["BadBPMPositions"] = list(override.get("bad_bpm_positions", []))
+            mapping["ExcludedCorrectorPositions"] = deepcopy(excluded)
+            rm = mapping.setdefault("RMConfig", {})
+            rm["bpm_ords"] = list(elements["bpm_ords"])
+            rm["cm_ords"] = [
+                list(elements["horizontal_corrector_ords"]),
+                list(elements["vertical_corrector_ords"]),
+            ]
+            rm["cav_ords"] = list(elements["cavity_ords"])
+
+    def _refresh_recipe_machine_override(self) -> None:
+        if self.project.recipe_machine_policy != "current":
+            return
+        override = self._machine_override_from_config(self.project.loco_config)
+        self.project.machine_configuration_override = deepcopy(override)
+        self._apply_machine_override_to_recipe(self.fit_recipe, override)
 
     def _refresh_fit_workflow_table(self, select: int | None = None) -> None:
         table = self.fit_workflow_table
         table.blockSignals(True); table.setRowCount(len(self.fit_recipe.stages))
         completed = int((self.project.fit_run_session or {}).get("completed_stages", 0))
         for row, stage in enumerate(self.fit_recipe.stages):
+            stage_config = self._configuration_for_fit_stage(stage)
+            detail_lines = stage_config.summary_lines()
+            detail_lines.append(
+                "Dispersion weights: "
+                f"horizontal={stage_config.rejection.hor_dispersion_weight:g}, "
+                f"vertical={stage_config.rejection.ver_dispersion_weight:g}"
+            )
+            detail_lines.append(
+                "Family groups: "
+                f"normal={len(stage_config.machine_elements.normal_quadrupole_groups)}, "
+                f"skew={len(stage_config.machine_elements.skew_quadrupole_groups)}, "
+                f"tilt={len(stage_config.machine_elements.quadrupole_tilt_groups)}"
+            )
+            detail_lines.append(
+                "Fitting exclusions: "
+                f"{len(stage_config.bad_bpm_positions)} BPM, "
+                f"{len(stage_config.excluded_horizontal_corrector_positions)} H corrector, "
+                f"{len(stage_config.excluded_vertical_corrector_positions)} V corrector"
+            )
+            stage_details = "\n".join(detail_lines)
             mapping = stage.configuration.get("backend_mapping", stage.configuration)
             options = mapping.get("LOCOOptions", {})
             fit_list = mapping.get("FitInitConfig", {}).get("fit_list") or options.get("fit_list") or []
@@ -2292,10 +2755,78 @@ class MainWindow(QMainWindow):
             values = (f"{'✓' if row < completed else '○'} {row + 1}", stage.name,
                       ", ".join(fit_list) if fit_list else "None",
                       options.get("nIter", 1), inheritance)
-            for column, value in enumerate(values): table.setItem(row, column, QTableWidgetItem(str(value)))
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                if column in (1, 3):
+                    item.setFlags(item.flags() | Qt.ItemIsEditable)
+                    edit_hint = (
+                        "Double-click to edit the stage name."
+                        if column == 1 else "Double-click to enter a positive outer-iteration count."
+                    )
+                    item.setToolTip(f"{edit_hint}\n\n{stage_details}")
+                else:
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    item.setToolTip(stage_details)
+                table.setItem(row, column, item)
+            starting_model = QComboBox(table)
+            starting_model.addItem("Start from reference lattice", "original_model")
+            if row > 0:
+                starting_model.addItem("Continue from previous stage", "previous_stage")
+            if stage.start_from == "saved_result":
+                starting_model.addItem("Continue from saved fitted result", "saved_result")
+            index = starting_model.findData(stage.start_from)
+            starting_model.setCurrentIndex(max(0, index))
+            starting_model.setEnabled(row > 0 or stage.start_from == "saved_result")
+            starting_model.setMinimumWidth(245)
+            starting_model.setMaximumWidth(310)
+            starting_model.setMinimumHeight(0)
+            starting_model.setMaximumHeight(28)
+            starting_model.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            starting_model.setStyleSheet("QComboBox { min-height: 0px; max-height: 28px; padding: 1px 8px; }")
+            starting_model.setObjectName("fitStageStartingModelEditor")
+            starting_model.setToolTip(
+                "Stage 1 must start from the reference lattice. Later stages may start from the reference "
+                "lattice or continue from the fitted state of the previous stage.\n\n" + stage_details
+            )
+            starting_model.currentIndexChanged.connect(
+                lambda _index, stage_row=row, editor=starting_model:
+                self._on_fit_stage_starting_model_changed(stage_row, str(editor.currentData()))
+            )
+            editor_container = QWidget(table)
+            editor_container.setObjectName("fitStageStartingModelCell")
+            editor_container.setFixedHeight(36)
+            editor_layout = QHBoxLayout(editor_container)
+            editor_layout.setContentsMargins(4, 3, 4, 3)
+            editor_layout.setSpacing(0)
+            editor_layout.addWidget(starting_model, 0, Qt.AlignVCenter)
+            table.setCellWidget(row, 4, editor_container)
+            table.setRowHeight(row, table.verticalHeader().defaultSectionSize())
         table.blockSignals(False)
         if select is not None and 0 <= select < table.rowCount(): table.selectRow(select)
         self._refresh_fit_stage_editor_label()
+        self._update_fit_stage_empty_state()
+
+    def _update_fit_stage_empty_state(self) -> None:
+        """Keep empty-workflow guidance and editing controls synchronized."""
+        if not hasattr(self, "fit_empty_state_label"):
+            return
+        has_stages = bool(self.fit_recipe.stages)
+        self.fit_empty_state_label.setVisible(not has_stages)
+        self.fit_stage_buttons["+ Add stage"].setText(
+            "+ Add stage" if has_stages else "+ Add first FIT stage"
+        )
+        for label in ("Duplicate stage", "Remove", "Review fitting sequence"):
+            self.fit_stage_buttons[label].setEnabled(has_stages)
+        for label in ("Move up", "Move down"):
+            self.fit_stage_buttons[label].setEnabled(len(self.fit_recipe.stages) > 1)
+        self.clear_fit_configuration_button.setEnabled(has_stages)
+        if hasattr(self, "save_fit_recipe_button"):
+            self.save_fit_recipe_button.setEnabled(has_stages)
+        if hasattr(self, "save_fit_run_session_button"):
+            self.save_fit_run_session_button.setEnabled(has_stages)
+        if hasattr(self, "_fit_configuration_widgets"):
+            for widget in self._fit_configuration_widgets:
+                widget.setEnabled(has_stages)
 
     def _refresh_fit_stage_editor_label(self) -> None:
         if not hasattr(self, "fit_stage_editor_label"):
@@ -2307,9 +2838,102 @@ class MainWindow(QMainWindow):
                 "the FIT controls below belong to this stage"
             )
         else:
-            self.fit_stage_editor_label.setText("Select a workflow row to edit that stage's FIT configuration")
+            self.fit_stage_editor_label.setText(
+                "No fitting stages configured — the FIT controls below are inactive"
+            )
 
-    def _add_fit_stage(self, checked=False, *, name: str | None = None, start_from: str | None = None) -> None:
+    def _record_fit_stage_edit(self, reason: str) -> None:
+        """Persist the edited stage and invalidate stale execution bindings."""
+        self.project.fit_recipe = self.fit_recipe.to_dict()
+        self.project.completed_run = CompletedRunReference()
+        self.project.fit_run_session = {}
+        self._resume_fit_session = None
+        self.project.compatibility_validation = {
+            "required": True,
+            "status": "validation_required",
+            "issues": [reason],
+        }
+        self.project.modified = True
+
+    @Slot(QTableWidgetItem)
+    def _on_fit_workflow_item_changed(self, item: QTableWidgetItem) -> None:
+        row, column = item.row(), item.column()
+        if not (0 <= row < len(self.fit_recipe.stages)) or column not in (1, 3):
+            return
+        if row != self._active_fit_stage:
+            self.fit_workflow_table.selectRow(row)
+        stage = self.fit_recipe.stages[row]
+        if column == 1:
+            value = item.text().strip()
+            if not value:
+                QMessageBox.warning(self, "Invalid stage name", "A FIT stage name cannot be empty.")
+                self._refresh_fit_workflow_table(row)
+                return
+            stage.name = value
+            reason = f"Stage {row + 1} name changed; validate before running."
+        else:
+            try:
+                value = int(item.text().strip())
+                if value < 1:
+                    raise ValueError
+            except ValueError:
+                QMessageBox.warning(
+                    self, "Invalid iteration count",
+                    "Iterations must be a positive whole number (1 or greater).",
+                )
+                self._refresh_fit_workflow_table(row)
+                return
+            stored = stage.configuration
+            gui_data = stored.get("gui_config")
+            if gui_data is not None:
+                gui_data.setdefault("solver", {})["nIter"] = value
+            mapping = stored.get("backend_mapping", stored)
+            mapping.setdefault("LOCOOptions", {})["nIter"] = value
+            if row == self._active_fit_stage:
+                self._loading_config = True
+                try:
+                    self.solver_n_iter.setValue(value)
+                    self.project.loco_config.solver.nIter = value
+                finally:
+                    self._loading_config = False
+            reason = f"Stage {row + 1} iteration count changed; validate before running."
+        self._record_fit_stage_edit(reason)
+        self._refresh_fit_workflow_table(row)
+        self._refresh_ui(reason)
+
+    def _on_fit_stage_starting_model_changed(self, row: int, start_from: str) -> None:
+        if not (0 <= row < len(self.fit_recipe.stages)):
+            return
+        if row == 0 and start_from != "original_model":
+            QMessageBox.warning(
+                self, "Invalid starting model",
+                "Stage 1 must start from the reference lattice because no previous fitted stage exists.",
+            )
+            self._refresh_fit_workflow_table(0)
+            return
+        if start_from not in {"original_model", "previous_stage", "saved_result"}:
+            return
+        if row != self._active_fit_stage:
+            self.fit_workflow_table.selectRow(row)
+        stage = self.fit_recipe.stages[row]
+        if stage.start_from == start_from:
+            return
+        stage.start_from = start_from
+        if start_from != "saved_result":
+            stage.saved_result = ""
+        reason = f"Stage {row + 1} starting model changed; validate before running."
+        self._record_fit_stage_edit(reason)
+        self._refresh_fit_workflow_table(row)
+        self._refresh_ui(reason)
+
+    def _on_fit_workflow_item_double_clicked(self, item: QTableWidgetItem) -> None:
+        # Editable columns are handled by the table editor. Retain the existing
+        # result-opening shortcut only on the stage-number/status column.
+        if item.column() == 0:
+            self._inspect_fit_stage_result(item)
+
+    def _add_fit_stage(self, checked=False, *, name: str | None = None,
+                       start_from: str | None = None, mark_modified: bool = True) -> None:
         if hasattr(self, "solver_n_iter"):
             configuration = self._stage_configuration_snapshot()
         else:
@@ -2317,7 +2941,14 @@ class MainWindow(QMainWindow):
         index = len(self.fit_recipe.stages)
         self.fit_recipe.stages.append(FitStage(name or f"Stage {index + 1}", configuration,
                                                start_from or ("original_model" if index == 0 else "previous_stage")))
-        self._active_fit_stage = index; self._refresh_fit_workflow_table(index)
+        self._active_fit_stage = index
+        if mark_modified:
+            self._record_fit_workflow_structure_change()
+        else:
+            self.project.fit_recipe = self.fit_recipe.to_dict()
+        self._refresh_fit_workflow_table(index)
+        if mark_modified:
+            self._refresh_ui(f"Added FIT stage {index + 1}; validate before running")
 
     def _select_fit_stage(self) -> None:
         rows = self.fit_workflow_table.selectionModel().selectedRows() if self.fit_workflow_table.selectionModel() else []
@@ -2337,22 +2968,159 @@ class MainWindow(QMainWindow):
         source = deepcopy(self.fit_recipe.stages[max(0, self._active_fit_stage)])
         source.name += " copy"; source.start_from = "previous_stage" if self.fit_recipe.stages else "original_model"
         self.fit_recipe.stages.insert(self._active_fit_stage + 1, source)
-        self._active_fit_stage += 1; self._refresh_fit_workflow_table(self._active_fit_stage)
+        self._active_fit_stage += 1
+        self._record_fit_workflow_structure_change()
+        self._refresh_fit_workflow_table(self._active_fit_stage)
+        self._refresh_ui(f"Duplicated FIT stage {self._active_fit_stage + 1}; validate before running")
+
+    def _record_fit_workflow_structure_change(self) -> None:
+        """Invalidate active run state after adding/removing/reordering stages."""
+        self.project.fit_recipe = self.fit_recipe.to_dict()
+        self.project.completed_run = CompletedRunReference()
+        self.project.fit_run_session = {}
+        self._resume_fit_session = None
+        self.project.compatibility_validation = {
+            "required": True,
+            "status": "validation_required",
+            "issues": ["Fitting stages changed; run compatibility validation again."],
+        }
+        self.project.modified = True
+
+    def _confirm_clear_fit_configuration(self, exclusions: dict[str, list[int]]) -> bool:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Clear FIT configuration?")
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setText("Clear every fitting stage and return the FIT editor to its initial state?")
+        exclusion_count = sum(len(values) for values in exclusions.values())
+        dialog.setInformativeText(
+            "Cleared:\n"
+            "• all FIT stages and stage-specific fitted parameters\n"
+            "• solver, SVD, weights, constraints, initialization and numerical-step settings\n"
+            "• active FIT results/checkpoint bindings\n"
+            f"• {exclusion_count} BPM/corrector fitting exclusion position(s)\n\n"
+            "Preserved:\n"
+            "• reference lattice and selected MAT variable\n"
+            "• complete machine-element selections and selection provenance\n"
+            "• validated measurement-device mapping evidence\n"
+            "• measurement files, arrays, identities, checksums and session provenance\n\n"
+            "The original project file is not changed unless you later save over it. "
+            "Use Save Project As… to keep an adapted copy."
+        )
+        if exclusion_count:
+            dialog.setDetailedText(
+                "Fitting exclusions use positions in the selected measured-device lists. "
+                "They will be cleared only after this confirmation and can be reviewed or re-entered later.\n\n"
+                f"BPM positions: {exclusions['bpm']}\n"
+                f"Horizontal-corrector positions: {exclusions['horizontal_corrector']}\n"
+                f"Vertical-corrector positions: {exclusions['vertical_corrector']}"
+            )
+        clear_button = dialog.addButton("Clear FIT configuration", QMessageBox.DestructiveRole)
+        cancel_button = dialog.addButton("Cancel — keep current configuration", QMessageBox.RejectRole)
+        dialog.setDefaultButton(cancel_button)
+        dialog.exec()
+        return dialog.clickedButton() is clear_button
+
+    def _initial_fit_configuration(self, current: LocoConfiguration) -> LocoConfiguration:
+        """Return documented FIT defaults while preserving machine identity state."""
+        initial = LocoConfiguration()
+        initial.machine_elements = deepcopy(current.machine_elements)
+        initial.element_selection_state = deepcopy(current.element_selection_state)
+        initial._sync_response_matrix_elements()
+
+        # Acquisition facts are not fitting choices. Restore them from the
+        # imported file metadata when available instead of inheriting a stage.
+        orm = (self.project.measurements.get("orm").options
+               if self.project.measurements.get("orm") else {})
+        for option, rm_field, cm_field in (
+            ("dkick_h", "dkick_h", "horizontal"),
+            ("dkick_v", "dkick_v", "vertical"),
+        ):
+            value = orm.get(option)
+            if value is not None:
+                numeric = float(value)
+                setattr(initial.response_matrix, rm_field, numeric)
+                setattr(initial.parameters.cmstep, cm_field, numeric)
+        if "bidirectional" in orm:
+            initial.response_matrix.bidirectional = bool(orm["bidirectional"])
+        dispersion = (self.project.measurements.get("dispersion").options
+                      if self.project.measurements.get("dispersion") else {})
+        if dispersion.get("rf_step_hz") is not None:
+            step = float(dispersion["rf_step_hz"])
+            initial.response_matrix.rfStep = step
+            initial.parameters.rfStep = step
+            initial.fixed_parameters.rfstep = step
+        return initial
+
+    @Slot()
+    def clear_fit_configuration(self) -> bool:
+        current = self._collect_loco_configuration()
+        exclusions = {
+            "bpm": list(current.bad_bpm_positions),
+            "horizontal_corrector": list(current.excluded_horizontal_corrector_positions),
+            "vertical_corrector": list(current.excluded_vertical_corrector_positions),
+        }
+        if not self._confirm_clear_fit_configuration(exclusions):
+            return False
+
+        old_recipe = self.fit_recipe
+        initial = self._initial_fit_configuration(current)
+        self.fit_recipe = FitRecipe(
+            name="FIT workflow",
+            machine_identity=old_recipe.machine_identity,
+            reference_model_checksum=old_recipe.reference_model_checksum,
+            element_identities=deepcopy(old_recipe.element_identities),
+            data_requirements=deepcopy(old_recipe.data_requirements),
+            stages=[],
+        )
+        self.project.loco_config = initial
+        self.project.fit_recipe = self.fit_recipe.to_dict()
+        self.project.recipe_machine_policy = "current"
+        self.project.machine_configuration_override = self._machine_override_from_config(initial)
+        self.project.completed_run = CompletedRunReference()
+        self.project.fit_run_session = {}
+        self._resume_fit_session = None
+        self._active_fit_stage = -1
+        self.project.compatibility_validation = {
+            "required": True,
+            "status": "validation_required",
+            "issues": ["No fitting stages are configured. Add and validate a FIT stage before running."],
+        }
+        self.project.modified = True
+        self._load_config_to_widgets()
+        self._refresh_fit_workflow_table()
+        self._refresh_ui("FIT configuration cleared; lattice, measurements and machine setup preserved")
+        return True
 
     def _remove_fit_stage(self) -> None:
-        if len(self.fit_recipe.stages) <= 1:
-            self.statusBar().showMessage("Add at least one FIT stage"); return
+        if not self.fit_recipe.stages:
+            self.statusBar().showMessage("No FIT stage is configured"); return
+        if len(self.fit_recipe.stages) == 1:
+            self.clear_fit_configuration()
+            return
         self.fit_recipe.stages.pop(self._active_fit_stage)
         self._active_fit_stage = min(self._active_fit_stage, len(self.fit_recipe.stages) - 1)
         self.fit_recipe.stages[0].start_from = "original_model"
+        # Selecting the same numeric row after deletion does not emit a stage
+        # change: the next stage has moved into that row.  Load that surviving
+        # stage explicitly so the editor cannot retain the deleted stage's
+        # controls.
+        surviving_stage = self.fit_recipe.stages[self._active_fit_stage]
+        self.project.loco_config = self._configuration_for_fit_stage(surviving_stage)
+        self._load_config_to_widgets()
+        self._record_fit_workflow_structure_change()
         self._refresh_fit_workflow_table(self._active_fit_stage)
+        self._refresh_ui(
+            f"Removed FIT stage; now editing stage {self._active_fit_stage + 1}: {surviving_stage.name}"
+        )
 
     def _move_fit_stage(self, delta: int) -> None:
         self._store_active_fit_stage(); old = self._active_fit_stage; new = old + delta
         if old < 0 or new < 0 or new >= len(self.fit_recipe.stages): return
         self.fit_recipe.stages[old], self.fit_recipe.stages[new] = self.fit_recipe.stages[new], self.fit_recipe.stages[old]
         self.fit_recipe.stages[0].start_from = "original_model"; self._active_fit_stage = new
+        self._record_fit_workflow_structure_change()
         self._refresh_fit_workflow_table(new)
+        self._refresh_ui(f"Moved FIT stage to position {new + 1}; validate before running")
 
     def save_fit_recipe(self) -> None:
         self._store_active_fit_stage()
@@ -2361,13 +3129,88 @@ class MainWindow(QMainWindow):
             try: self.fit_recipe.save(filename)
             except Exception as exc: QMessageBox.warning(self, "Cannot save FIT recipe", str(exc))
 
+    def _choose_recipe_machine_policy(self) -> str | None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Machine elements for imported fitting stages")
+        dialog.setIcon(QMessageBox.Question)
+        dialog.setText("Choose which machine-element selections the imported stages should use.")
+        dialog.setInformativeText(
+            "Use machine elements stored in the recipe restores each stage exactly as saved.\n\n"
+            "Keep current machine elements and exclusions applies the current BPM, corrector, quadrupole, "
+            "RF-cavity and exclusion selections to every imported stage. Stage-specific parameters, weights, "
+            "optimizer settings, constraints and handoff remain unchanged."
+        )
+        use_recipe = dialog.addButton("Use machine elements stored in the recipe", QMessageBox.AcceptRole)
+        keep_current = dialog.addButton("Keep current machine elements and exclusions", QMessageBox.ActionRole)
+        cancel = dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(keep_current)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked is use_recipe:
+            return "recipe"
+        if clicked is keep_current:
+            return "current"
+        if clicked is cancel:
+            return None
+        return None
+
+    def _preflight_imported_recipe(self, recipe: FitRecipe) -> list[str]:
+        lattice_path = self.project.resolve_path(self.project.lattice.path)
+        if not lattice_path.is_file():
+            return ["Select an existing reference lattice before loading fitting stages."]
+        lattice = self._load_current_lattice()
+        if lattice is None:
+            return ["The selected reference lattice could not be loaded."]
+        names = [self._element_identity(element)[0] for element in lattice]
+        measurements = {
+            role: str(self.project.resolve_path(dataset.path))
+            for role, dataset in self.project.measurements.items()
+        }
+        options = {role: deepcopy(dataset.options) for role, dataset in self.project.measurements.items()}
+        report = preflight_recipe(
+            recipe,
+            lattice_path=str(lattice_path),
+            measurement_identity=deepcopy(self.project.measurement_session),
+            lattice_element_names=names,
+            measurements=measurements,
+            measurement_options=options,
+            measurement_device_mapping=deepcopy(self.project.measurement_device_mapping),
+            lattice_mat_variable=self.project.lattice.mat_variable or None,
+        )
+        return list(report["errors"])
+
     def load_fit_recipe(self) -> None:
         filename = QFileDialog.getOpenFileName(self, "Load FIT recipe", "", "FIT recipe (*.json)")[0]
         if not filename: return
-        try: self.fit_recipe = FitRecipe.load(filename)
-        except Exception as exc: QMessageBox.warning(self, "Cannot load FIT recipe", str(exc)); return
+        try:
+            candidate = FitRecipe.load(filename)
+        except Exception as exc:
+            QMessageBox.warning(self, "Cannot load FIT recipe", str(exc)); return
+        policy = self._choose_recipe_machine_policy()
+        if policy is None:
+            return
+        current_config = self._collect_loco_configuration()
+        override = self._machine_override_from_config(current_config) if policy == "current" else {}
+        if policy == "current":
+            self._apply_machine_override_to_recipe(candidate, override)
+        errors = self._preflight_imported_recipe(candidate)
+        if errors:
+            QMessageBox.warning(
+                self, "Fitting stages are incompatible",
+                "The fitting stages were not loaded, and the existing project was left unchanged:\n\n"
+                + "\n".join(f"• {error}" for error in errors),
+            )
+            return
+        self.fit_recipe = candidate
+        self.project.recipe_machine_policy = policy
+        self.project.machine_configuration_override = deepcopy(override)
         self._resume_fit_session = None
         self._active_fit_stage = -1; self._refresh_fit_workflow_table(0); self._select_fit_stage()
+        # A recipe changes FIT settings only.  Measurement bindings remain part
+        # of the open project and are persisted again by the normal Save action.
+        self.project.modified = True
+        self._mark_compatibility_stale("Fitting stages changed; run compatibility validation again.")
+        self._refresh_ui(f"Loaded fitting stages from {Path(filename).name}; measurement bindings preserved")
 
     def preview_fit_workflow(self) -> None:
         """Show a compact, read-only recipe summary before execution."""
@@ -2412,6 +3255,12 @@ class MainWindow(QMainWindow):
 
     def resume_fit_run(self) -> None:
         from .fit_workflow import FitRunSession
+        if not self._compatibility_is_validated():
+            QMessageBox.information(
+                self, "Resume disabled",
+                "Validate the current measurements and FIT configuration before resuming a previous run.",
+            )
+            return
         filename = QFileDialog.getOpenFileName(self, "Resume FIT run", "", "FIT run session (*.json)")[0]
         if not filename: return
         try:
@@ -2419,6 +3268,11 @@ class MainWindow(QMainWindow):
             current_lattice = str(self.project.resolve_path(self.project.lattice.path)) if self.project.lattice.path else ""
             if current_lattice and session.lattice_checksum != file_sha256(current_lattice):
                 raise ValueError("The current reference lattice does not match this FIT run/session.")
+            current_variable = self.project.lattice.mat_variable or ""
+            if session.lattice_mat_variable and session.lattice_mat_variable != current_variable:
+                raise ValueError(
+                    "The selected MAT lattice variable does not match this FIT run/session."
+                )
             current_measurements = {key: str(self.project.resolve_path(value.path)) for key, value in self.project.measurements.items()}
             if current_measurements and current_measurements != session.measurements:
                 raise ValueError("The current measurement binding does not match this FIT run/session.")
@@ -2426,6 +3280,8 @@ class MainWindow(QMainWindow):
             if missing: raise ValueError("Incomplete continuation checkpoint: " + ", ".join(missing))
             recipe_data = deepcopy(session.recipe); recipe_data["stages"] = [FitStage(**item) for item in recipe_data.get("stages", [])]
             self.fit_recipe = FitRecipe(**recipe_data)
+            if self.project.recipe_machine_policy == "current" and self.project.machine_configuration_override:
+                self._apply_machine_override_to_recipe(self.fit_recipe, self.project.machine_configuration_override)
         except Exception as exc:
             QMessageBox.warning(self, "Cannot resume FIT run", str(exc)); return
         self.project.fit_run_session = {"path": str(Path(filename).resolve()), "completed_stages": len(session.checkpoints)}
@@ -2493,7 +3349,16 @@ class MainWindow(QMainWindow):
         self.validate_project_action.triggered.connect(self.validate_project)
         self.run_loco_action = QAction("▶ Run LOCO", self)
         self.run_loco_action.triggered.connect(self.run_loco)
-        self.compare_orms_action = QAction("Compare ORMs", self)
+        self.compare_reference_action = QAction("Compare imported measurements with initial model…", self)
+        self.compare_reference_action.setToolTip(
+            "Calculate a read-only reference ORM and RF response before fitting; no optimizer or machine writes."
+        )
+        self.compare_reference_action.triggered.connect(self.compare_measurements_with_reference)
+        self.compare_orms_action = QAction("Compare measurements with fitted model…", self)
+        self.compare_orms_action.setToolTip(
+            "Compare the measurements recorded by the selected FIT stage and iteration with that fitted model. "
+            "RF response is handled separately from corrector ORM columns."
+        )
         self.compare_orms_action.triggered.connect(self.compare_orms)
         self.exit_action = QAction("Exit", self)
         self.exit_action.setShortcut(QKeySequence.Quit)
@@ -2581,7 +3446,6 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.validate_project_action)
         toolbar.addAction(self.run_loco_action)
-        toolbar.addAction(self.compare_orms_action)
         toolbar.addSeparator()
         toolbar.addAction(self.basic_mode_action)
         toolbar.addAction(self.advanced_mode_action)
@@ -2653,6 +3517,7 @@ class MainWindow(QMainWindow):
             self.fixed_rfstep, self.fixed_dk, self.fixed_delta_skew, self.fixed_delta_q_tilt, self.mcf_source, self.mcf_user_value,
             self.output_directory_edit, self.run_name_edit, self.save_jacobian_check,
         ] + list(self.parameter_checks.values()) + [radio for pair in self.parameterization_radios.values() for radio in pair]
+        self._fit_configuration_widgets = list(dict.fromkeys(widgets))
         for widget in widgets:
             if isinstance(widget, QComboBox):
                 widget.currentTextChanged.connect(self._on_fit_config_changed)
@@ -2673,8 +3538,10 @@ class MainWindow(QMainWindow):
         self.fixed_dk.textChanged.connect(self._refresh_normal_step_resolution)
         self.auto_delta.toggled.connect(self._refresh_normal_step_resolution)
         self.parameter_checks["quads"].toggled.connect(self._refresh_normal_step_resolution)
+        self.parameter_checks["quads"].toggled.connect(self._update_jacobian_option_availability)
         self.quad_jacobian_calculator.currentTextChanged.connect(self._refresh_normal_step_resolution)
         self.parameter_checks["skew_quads"].toggled.connect(self._refresh_numerical_step_status)
+        self.parameter_checks["skew_quads"].toggled.connect(self._update_jacobian_option_availability)
         self.parameter_checks["quads_tilt"].toggled.connect(self._refresh_numerical_step_status)
         self.skew_jacobian_calculator.currentTextChanged.connect(self._refresh_numerical_step_status)
         self.quad_jacobian_calculator.currentTextChanged.connect(
@@ -2683,6 +3550,7 @@ class MainWindow(QMainWindow):
         self.skew_jacobian_calculator.currentTextChanged.connect(
             self._update_jacobian_option_availability
         )
+        self.mcf_source.currentIndexChanged.connect(self._update_mcf_source_visibility)
         self.constraint_quad_exceptions.changed.connect(self._on_fit_config_changed)
         self.constraint_skew_exceptions.changed.connect(self._on_fit_config_changed)
         self.rm_dispersion.toggled.connect(self._update_context_controls)
@@ -2861,12 +3729,73 @@ class MainWindow(QMainWindow):
 
     def _update_jacobian_option_availability(self) -> None:
         """Show analytical-only controls without changing their stored values."""
-        normal_analytical = self.quad_jacobian_calculator.currentText() == "Analytical"
-        skew_analytical = self.skew_jacobian_calculator.currentText() == "Analytical"
+        normal_used = self.parameter_checks["quads"].isChecked()
+        skew_used = self.parameter_checks["skew_quads"].isChecked()
+        self.quad_jacobian_calculator.setEnabled(normal_used)
+        self.skew_jacobian_calculator.setEnabled(skew_used)
+        self.quad_jacobian_calculator.setToolTip(
+            "" if normal_used else "Not used in this stage because normal quadrupoles are not fitted."
+        )
+        self.skew_jacobian_calculator.setToolTip(
+            "" if skew_used else "Not used in this stage because skew quadrupoles are not fitted."
+        )
+        normal_analytical = normal_used and self.quad_jacobian_calculator.currentText() == "Analytical"
+        skew_analytical = skew_used and self.skew_jacobian_calculator.currentText() == "Analytical"
         self.normal_analytical_options.setVisible(normal_analytical)
         self.normal_analytical_options.setEnabled(normal_analytical)
         self.skew_analytical_options.setVisible(skew_analytical)
         self.skew_analytical_options.setEnabled(skew_analytical)
+        self.fixed_dk.setEnabled(
+            normal_used and self.quad_jacobian_calculator.currentText() == "Numerical"
+        )
+        self._refresh_normal_step_resolution()
+        self._refresh_numerical_step_status()
+
+    def _automatic_momentum_compaction(self) -> tuple[float | None, str | None]:
+        """Return lattice-derived αc for display, without changing FIT inputs."""
+        if not self.project.lattice.path:
+            return None, None
+        signature = (self.project.lattice.path, self.project.lattice.mat_variable)
+        if getattr(self, "_mcf_model_cache_signature", None) == signature:
+            return self._mcf_model_cache_value
+        try:
+            from pyLOCO.reference_model import load_reference_model
+            model = load_reference_model(
+                self.project.resolve_path(self.project.lattice.path),
+                source="FIT reference lattice",
+                mat_key=self.project.lattice.mat_variable or None,
+            )
+            result = (float(model.momentum_compaction), None)
+        except Exception as exc:
+            result = (None, str(exc))
+        self._mcf_model_cache_signature = signature
+        self._mcf_model_cache_value = result
+        return result
+
+    def _update_mcf_source_visibility(self) -> None:
+        """Show either the model-derived explanation or the manual αc editor."""
+        automatic = (self.mcf_source.currentData() or "automatic") == "automatic"
+        self.mcf_automatic_label.setVisible(automatic)
+        self.mcf_automatic_summary.setVisible(automatic)
+        self.mcf_user_value_label.setVisible(not automatic)
+        self.mcf_user_value.setVisible(not automatic)
+        self.mcf_user_value.setEnabled(not automatic)
+        if automatic:
+            value, error = self._automatic_momentum_compaction()
+            self.mcf_automatic_summary.setToolTip(error or "")
+            if value is not None:
+                self.mcf_automatic_summary.setText(
+                    f"Calculated from the selected reference lattice using Accelerator Toolbox (pyAT): "
+                    f"αc = {value:.9g} (dimensionless)."
+                )
+            elif error:
+                self.mcf_automatic_summary.setText(
+                    "Automatic αc is unavailable because the selected reference lattice could not be evaluated."
+                )
+            else:
+                self.mcf_automatic_summary.setText(
+                    "Select a reference lattice to calculate the dimensionless momentum compaction factor αc using Accelerator Toolbox (pyAT)."
+                )
 
     def _set_solver_algorithm_value(self, algorithm: str) -> None:
         index = self.solver_algorithm.findData(algorithm)
@@ -2996,10 +3925,15 @@ class MainWindow(QMainWindow):
         return values
 
     def _update_resume_availability(self) -> None:
-        enabled = self.resume_previous.isChecked()
+        compatibility_ready = self._compatibility_is_validated()
+        self.resume_previous.setEnabled(compatibility_ready)
+        enabled = compatibility_ready and self.resume_previous.isChecked()
         for widget in (self.resume_directory, self.resume_browse, self.resume_ring_file,
                        self.resume_fit_dict_file, self.resume_fit_results_file):
             widget.setEnabled(enabled)
+        if not compatibility_ready:
+            self.resume_metadata.setText("Resume disabled until measurement compatibility validation passes.")
+            return
         if not enabled:
             self.resume_metadata.setText("Start from the currently selected lattice model.")
             return
@@ -3133,6 +4067,8 @@ class MainWindow(QMainWindow):
         self.params_cmstep_v.setValue(float(cfg.parameters.CMstep_v))
         self.params_cmstep_file.setText(cfg.parameters.CMstep_file)
         self.params_rfstep.setValue(cfg.parameters.rfStep)
+        self._refresh_measurement_mapping_table()
+        self._refresh_measurement_mapping_feedback()
         self.params_init.setText(cfg.parameters.init)
         self.params_quads_attr.setText(cfg.parameters.quads_attr)
         self.params_quads_attr_index.setValue(cfg.parameters.quads_attr_index)
@@ -3149,6 +4085,7 @@ class MainWindow(QMainWindow):
         self.fixed_delta_q_tilt.setValue(cfg.fixed_parameters.delta_q_tilt)
         self.mcf_source.setCurrentIndex(max(0, self.mcf_source.findData(cfg.mcf_source)))
         self.mcf_user_value.setText(cfg.mcf_user_value)
+        self._update_mcf_source_visibility()
         self.output_directory_edit.setText(cfg.output_directory)
         self.run_name_edit.setText(cfg.run_name)
         self.save_jacobian_check.setChecked(cfg.rejection.save_jacobians)
@@ -3164,6 +4101,7 @@ class MainWindow(QMainWindow):
         self._update_cmstep_input_availability()
         self._refresh_initialization_policy_summary()
         self._refresh_explicit_initial_values_summary()
+        self._update_jacobian_option_availability()
         self._refresh_normal_step_resolution()
         self._refresh_numerical_step_status()
         self._update_fit_summary()
@@ -3308,41 +4246,137 @@ class MainWindow(QMainWindow):
             self._validation_label.setText(f"Validation: {exc}")
             self._validation_label.setObjectName("validationMissing")
             return
-        self.project.modified = True
+        if 0 <= self._active_fit_stage < len(self.fit_recipe.stages):
+            self.fit_recipe.stages[self._active_fit_stage].configuration = {
+                "gui_config": json_safe(__import__("dataclasses").asdict(self.project.loco_config)),
+                "backend_mapping": json_safe(self.project.loco_config.to_backend_mapping()),
+            }
+            self._record_fit_stage_edit(
+                f"Stage {self._active_fit_stage + 1} FIT settings changed; validate before running."
+            )
+            self._refresh_fit_workflow_table(self._active_fit_stage)
+        else:
+            self.project.modified = True
         self._update_fit_summary()
         self._refresh_ui("LOCO configuration updated")
 
     def _update_fit_summary(self) -> None:
-        if not hasattr(self, "fit_summary"):
+        if not hasattr(self, "fit_backend_options"):
             return
         cfg = self.project.loco_config
         backend = json.dumps(json_safe(cfg.to_backend_mapping()), indent=2)
-        lines=cfg.summary_lines()
-        sections=(
-            ("Response and solver",lines[:3]),
-            ("Data handling and initialization",lines[3:6]),
-            ("Fitted parameters",lines[6:]),
-        )
-        blocks=[]
-        for title,values in sections:
-            rows=[]
-            for value in values:
-                label,separator,detail=str(value).partition(":")
-                rows.append(
-                    f"<tr><td width='190'><b>{escape(label)}</b></td>"
-                    f"<td>{escape(detail.strip() if separator else label)}</td></tr>"
-                )
-            blocks.append(
-                f"<h3 style='color:#A98BFF;margin:12px 0 4px 0'>{title}</h3>"
-                f"<table cellspacing='0' cellpadding='5' width='100%'>{''.join(rows)}</table>"
+        self.fit_backend_options.setPlainText(backend)
+
+        group_labels = {
+            "quads": "Normal quadrupole strengths",
+            "skew_quads": "Skew quadrupole strengths",
+            "quads_tilt": "Quadrupole tilts",
+            "hbpm_gain": "Horizontal BPM gains", "vbpm_gain": "Vertical BPM gains",
+            "hbpm_coupling": "Horizontal BPM coupling", "vbpm_coupling": "Vertical BPM coupling",
+            "hcor_cal": "Horizontal corrector calibration", "vcor_cal": "Vertical corrector calibration",
+            "hcor_coupling": "Horizontal corrector coupling", "vcor_coupling": "Vertical corrector coupling",
+            "HCMEnergyShift": "Horizontal corrector energy shifts",
+            "VCMEnergyShift": "Vertical corrector energy shifts", "delta_rf": "RF frequency shift",
+        }
+        fitted = [group_labels.get(key, key) for key in cfg.parameters.fit_list()]
+        if 0 <= self._active_fit_stage < len(self.fit_recipe.stages):
+            stage = self.fit_recipe.stages[self._active_fit_stage]
+            starting = {
+                "original_model": "Reference lattice",
+                "previous_stage": "Previous fitted stage",
+                "saved_result": "Saved fitted result",
+            }.get(stage.start_from, stage.start_from)
+            self.fit_current_stage_summary.setText(
+                f"<h3 style='color:#A98BFF;margin:4px 0'>Current stage overview</h3>"
+                f"<b>Stage {self._active_fit_stage + 1}: {escape(stage.name)}</b><br>"
+                f"Starting model: {escape(starting)} · Outer iterations: {cfg.solver.nIter}<br>"
+                f"Fitted groups: {escape(', '.join(fitted) if fitted else 'None selected')}"
             )
-        self.fit_summary.setHtml(
-            "<h2 style='margin:0 0 6px 0'>Current FIT configuration</h2>"
-            "<div>Readable scientific summary of the settings that will be passed to the LOCO backend.</div>"
-            +"".join(blocks)+
-            "<h3 style='color:#A98BFF;margin:14px 0 4px 0'>Backend mapping (technical)</h3>"
-            f"<pre>{escape(backend)}</pre>"
+        else:
+            self.fit_current_stage_summary.setText(
+                "<h3 style='color:#A98BFF;margin:4px 0'>Current stage overview</h3>"
+                "No fitting stage is currently configured."
+            )
+
+        stage_rows = []
+        for index, stage in enumerate(self.fit_recipe.stages):
+            stage_cfg = self._configuration_for_fit_stage(stage)
+            stage_groups = [group_labels.get(key, key) for key in stage_cfg.parameters.fit_list()]
+            starting = {
+                "original_model": "Reference lattice",
+                "previous_stage": "Previous stage",
+                "saved_result": "Saved result",
+            }.get(stage.start_from, stage.start_from)
+            differences = (
+                f"{stage_cfg.response_matrix.calculator} ORM; "
+                f"{stage_cfg.solver.algorithm.upper()} solver; "
+                f"SVD {stage_cfg.svd.svd_selection_method}"
+            )
+            stage_rows.append(
+                "<tr>"
+                f"<td>{index + 1}</td><td><b>{escape(stage.name)}</b></td>"
+                f"<td>{escape(', '.join(stage_groups) if stage_groups else 'None')}</td>"
+                f"<td>{stage_cfg.solver.nIter}</td><td>{escape(starting)}</td>"
+                f"<td>{escape(differences)}</td></tr>"
+            )
+        if stage_rows:
+            self.fit_all_stages_summary.setText(
+                "<h3 style='color:#A98BFF;margin:12px 0 4px'>All stages overview</h3>"
+                "<table cellspacing='0' cellpadding='5' width='100%'>"
+                "<tr><th>#</th><th align='left'>Stage</th><th align='left'>Fitted groups</th>"
+                "<th>Iterations</th><th align='left'>Starting model</th><th align='left'>Relevant settings</th></tr>"
+                + "".join(stage_rows) + "</table>"
+            )
+        else:
+            self.fit_all_stages_summary.setText(
+                "<h3 style='color:#A98BFF;margin:12px 0 4px'>All stages overview</h3>No stages configured."
+            )
+
+        magnet_rows = []
+        for label, enabled, ords, groups, individual in (
+            ("Normal quadrupoles", cfg.parameters.quads, cfg.machine_elements.normal_quadrupole_ords,
+             cfg.machine_elements.normal_quadrupole_groups, cfg.parameters.individuals),
+            ("Skew quadrupoles", cfg.parameters.skew_quads, cfg.machine_elements.skew_quadrupole_ords,
+             cfg.machine_elements.skew_quadrupole_groups, cfg.rejection.skew_individuals),
+            ("Quadrupole tilts", cfg.parameters.quads_tilt, cfg.machine_elements.quadrupole_tilt_ords,
+             cfg.machine_elements.quadrupole_tilt_groups, cfg.rejection.tilt_individuals),
+        ):
+            active_count = (len(ords) if individual else len(groups)) if enabled else 0
+            state = (
+                f"Fitted; {active_count} active fitting parameter{'s' if active_count != 1 else ''}"
+                if enabled else "Inactive; 0 active fitting parameters"
+            )
+            magnet_rows.append(
+                f"<tr><td><b>{label}</b></td><td>{state}; {len(ords)} physical magnets selected</td></tr>"
+            )
+        mcf_text = (
+            "Automatic from reference lattice (AT/pyAT)"
+            if cfg.mcf_source == "automatic" else f"Manual αc = {escape(cfg.mcf_user_value or 'not entered')} (dimensionless)"
         )
+        readable_rows = (
+            f"<tr><td><b>Response matrix</b></td><td>{escape(cfg.response_matrix.calculator)}; "
+            f"dispersion {'included' if cfg.response_matrix.includeDispersion else 'not included'}; "
+            f"coupling {'included' if cfg.response_matrix.coupling_orm else 'not included'}</td></tr>"
+            f"<tr><td><b>Solver</b></td><td>{escape(cfg.solver.algorithm.upper())}; "
+            f"{cfg.solver.nIter} outer iterations; {cfg.solver.nLMIter} LM inner iterations</td></tr>"
+            f"<tr><td><b>SVD selection</b></td><td>{escape(cfg.svd.svd_selection_method)}; "
+            f"threshold {cfg.svd.svd_threshold:g}; rank {cfg.svd.cut_}</td></tr>"
+            f"<tr><td><b>Momentum compaction αc</b></td><td>{mcf_text}</td></tr>"
+            f"<tr><td><b>Measurement exclusions</b></td><td>{len(cfg.bad_bpm_positions)} BPM positions; "
+            f"{len(cfg.excluded_horizontal_corrector_positions)} horizontal and "
+            f"{len(cfg.excluded_vertical_corrector_positions)} vertical corrector positions</td></tr>"
+            + "".join(magnet_rows)
+        )
+        self.fit_scientific_summary.setText(
+            "<h3 style='color:#A98BFF;margin:12px 0 4px'>Detailed scientific settings</h3>"
+            "<table cellspacing='0' cellpadding='5' width='100%'>" + readable_rows + "</table>"
+        )
+
+    @Slot()
+    def _scroll_to_fit_summary(self) -> None:
+        """Bring the final review section into view without changing settings."""
+        self.fit_scroll.ensureWidgetVisible(self.summary_group, 0, 12)
+        self.summary_group.setFocus(Qt.OtherFocusReason)
 
     @Slot()
     def import_loco_configuration(self) -> None:
@@ -3356,25 +4390,32 @@ class MainWindow(QMainWindow):
             return
         try:
             config, measurements, lattice = load_example_project_data(filename)
-            self.project.loco_config = config
+            candidate_lattice = None
             if lattice:
                 source = Path(lattice)
                 if not source.exists():
                     raise ValueError(f"Configured lattice file does not exist: {source}")
-                self.project.lattice = LatticeSelection(path=str(source), file_type=source.suffix.lower().lstrip("."))
-                loaded_lattice = self._load_current_lattice()
-                if loaded_lattice is None:
-                    raise ValueError(f"Unable to load configured lattice: {source}")
-                self.project.lattice.element_count = len(loaded_lattice)
+                mat_variable = ""
+                if source.suffix.lower() == ".mat" and Path(filename).suffix.lower() in {".yaml", ".yml"}:
+                    import yaml
+                    imported = yaml.safe_load(Path(filename).read_text(encoding="utf-8")) or {}
+                    lattice_spec = imported.get("lattice") or {}
+                    mat_variable = str(lattice_spec.get("use") or lattice_spec.get("mat_key") or "")
+                loaded_lattice = load_project_lattice(source, mat_variable or None)
+                candidate_lattice = LatticeSelection(
+                    path=str(source), file_type=source.suffix.lower().lstrip("."),
+                    mat_variable=mat_variable, element_count=len(loaded_lattice),
+                )
                 resolved = resolve_example_machine_elements(filename, loaded_lattice)
                 if any(getattr(resolved, key) for key in ELEMENT_ROLES):
-                    self.project.loco_config.machine_elements = resolved
-                    self.project.loco_config._sync_response_matrix_elements()
+                    config.machine_elements = resolved
+                    config._sync_response_matrix_elements()
+            candidate_measurements = {}
             for role, value in measurements.items():
                 source = Path(value)
                 if not source.exists():
                     raise ValueError(f"Configured {role.replace('_', ' ')} file does not exist: {source}")
-                self.project.measurements[role] = ImportedDataset(
+                candidate_measurements[role] = ImportedDataset(
                     role=role, path=str(source), file_type=source.suffix.lower().lstrip("."),
                     size_bytes=source.stat().st_size,
                     options=measurement_options_from_config(config.source_config).get(role, {}),
@@ -3382,8 +4423,43 @@ class MainWindow(QMainWindow):
         except (OSError, RuntimeError, ValueError, TypeError) as exc:
             QMessageBox.warning(self, "Import failed", str(exc))
             return
+        affected = [
+            "• Replace the current stage's LOCO, solver, parameter, weighting and exclusion settings.",
+            "• Keep the existing multi-stage recipe and stage order.",
+        ]
+        affected.append(
+            "• Replace the reference lattice declared by the imported file."
+            if candidate_lattice is not None else
+            "• Keep the current reference lattice (none is declared by the imported file)."
+        )
+        affected.append(
+            f"• Replace/add these measurement bindings: {', '.join(sorted(candidate_measurements))}."
+            if candidate_measurements else
+            "• Keep all current measurement bindings (none are declared by the imported file)."
+        )
+        if self.project.modified:
+            affected.insert(0, "The current project has unsaved changes.")
+        answer = QMessageBox.question(
+            self,
+            "Import FIT configuration?",
+            "This import does not load a multi-stage recipe. It will make the following changes:\n\n"
+            + "\n".join(affected)
+            + "\n\nContinue?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.project.loco_config = config
+        if candidate_lattice is not None:
+            self.project.lattice = candidate_lattice
+        self.project.measurements.update(candidate_measurements)
         self.project.modified = True
+        self._mark_compatibility_stale("Imported configuration changed; run compatibility validation again.")
         self._load_config_to_widgets()
+        if 0 <= self._active_fit_stage < len(self.fit_recipe.stages):
+            self.fit_recipe.stages[self._active_fit_stage].configuration = self._stage_configuration_snapshot()
+            self.project.fit_recipe = self.fit_recipe.to_dict()
         self._refresh_ui(f"Imported LOCO configuration {Path(filename).name}")
 
     @Slot()
@@ -3421,11 +4497,447 @@ class MainWindow(QMainWindow):
         self._workspace.setCurrentIndex(0)
         self._refresh_ui("New project created")
 
+    def _choose_open_project_measurement_policy(self, candidate: ProjectMetadata) -> str | None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Open FIT project — measurement selection")
+        dialog.setIcon(QMessageBox.Question)
+        dialog.setText("This FIT window already contains measurement data.")
+        dialog.setInformativeText(
+            "Keep current measurements (recommended) loads the selected project's lattice, machine elements, "
+            "exclusions and FIT configuration while retaining the active measurement files and session manifest.\n\n"
+            "Use measurements saved in the project opens the selected project exactly as saved."
+        )
+        keep = dialog.addButton("Keep current measurements (recommended)", QMessageBox.AcceptRole)
+        saved = dialog.addButton("Use measurements saved in the project", QMessageBox.ActionRole)
+        cancel = dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(keep)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked is keep:
+            return "keep"
+        if clicked is saved:
+            return "saved"
+        if clicked is cancel:
+            return None
+        return None
+
+    @staticmethod
+    def _measurement_binding_signature(project: ProjectMetadata) -> tuple:
+        return (
+            tuple((role, str(project.resolve_path(dataset.path))) for role, dataset in project.measurements.items()),
+            str((project.measurement_session or {}).get("session_id", "")),
+            str((project.measurement_session or {}).get("manifest", "")),
+        )
+
+    def _compatibility_is_validated(self, project: ProjectMetadata | None = None) -> bool:
+        state = (project or self.project).compatibility_validation or {}
+        return not state.get("required") or state.get("status") == "validated"
+
+    def _mark_compatibility_stale(self, reason: str) -> None:
+        state = self.project.compatibility_validation or {}
+        if not state.get("required"):
+            return
+        state = deepcopy(state)
+        state.update(status="validation_required", issues=[reason])
+        self.project.compatibility_validation = state
+
+    @staticmethod
+    def _stage_machine_signatures(recipe: FitRecipe) -> list[tuple]:
+        signatures = []
+        for stage in recipe.stages:
+            mapping = stage.configuration.get("backend_mapping", stage.configuration)
+            elements = mapping.get("MachineElements", {})
+            excluded = mapping.get("ExcludedCorrectorPositions", {})
+            signatures.append((
+                tuple(elements.get("bpm_ords") or []),
+                tuple(elements.get("horizontal_corrector_ords") or []),
+                tuple(elements.get("vertical_corrector_ords") or []),
+                tuple(elements.get("normal_quadrupole_ords") or []),
+                tuple(elements.get("skew_quadrupole_ords") or []),
+                tuple(elements.get("quadrupole_tilt_ords") or []),
+                tuple(mapping.get("BadBPMPositions") or []),
+                tuple(excluded.get("horizontal") or []),
+                tuple(excluded.get("vertical") or []),
+            ))
+        return signatures
+
+    def _choose_adapted_machine_policy(self, recipe: FitRecipe) -> str | None:
+        signatures = self._stage_machine_signatures(recipe)
+        if len(set(signatures)) <= 1:
+            return "current"
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Review stage-specific machine selections")
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setText("The saved fitting stages use different machine-element selections.")
+        dialog.setInformativeText(
+            "Preserve stage-specific selections keeps each stage exactly as saved. Applying a shared machine "
+            "configuration replaces those selections in every stage and requires explicit confirmation."
+        )
+        preserve = dialog.addButton("Preserve stage-specific selections", QMessageBox.AcceptRole)
+        shared = dialog.addButton("Apply shared project machine configuration", QMessageBox.ActionRole)
+        cancel = dialog.addButton(QMessageBox.Cancel)
+        dialog.setDefaultButton(preserve)
+        dialog.exec()
+        clicked = dialog.clickedButton()
+        if clicked is preserve:
+            return "recipe"
+        if clicked is shared:
+            return "current"
+        if clicked is cancel:
+            return None
+        return None
+
+    def _measurement_requirements_from_active_files(self, candidate: ProjectMetadata, recipe: FitRecipe) -> tuple[dict | None, list[str]]:
+        paths = {role: str(candidate.resolve_path(dataset.path)) for role, dataset in candidate.measurements.items()}
+        options = {role: deepcopy(dataset.options) for role, dataset in candidate.measurements.items()}
+        old = recipe.data_requirements or {}
+        payload = inspect_measurement_files(
+            paths, options,
+            trusted_hashes=old.get("measurement_sha256", {}),
+            trusted_identity=old,
+        )
+        if payload["errors"]:
+            return None, list(payload["errors"])
+        files = payload["files"]
+        orm = files.get("orm", {})
+        required = ("bpm_names", "horizontal_corrector_names", "vertical_corrector_names")
+        if any(not orm.get(key) for key in required):
+            return None, ["The active ORM does not provide verified BPM and corrector identities."]
+        requirements = deepcopy(old)
+        for key in required:
+            requirements[key] = list(orm[key])
+        requirements["measurement_sha256"] = {
+            role: entry.get("sha256", "") for role, entry in files.items() if entry.get("sha256")
+        }
+        requirements["units"] = {
+            **dict(old.get("units", {})),
+            **{role: entry.get("unit") for role, entry in files.items() if entry.get("unit")},
+        }
+        dispersion = files.get("dispersion", {})
+        if dispersion.get("rf_step_hz") is not None:
+            requirements["rf_step_hz"] = float(dispersion["rf_step_hz"])
+        return requirements, []
+
+    def _recipe_from_project(self, project: ProjectMetadata) -> FitRecipe | None:
+        raw = project.fit_recipe or {}
+        if not raw or not raw.get("stages"):
+            return None
+        data = deepcopy(raw)
+        data["stages"] = [FitStage(**item) for item in data.get("stages", [])]
+        return FitRecipe(**data)
+
+    def _fit_run_measurements_are_stale(self, project: ProjectMetadata) -> bool:
+        binding = project.fit_run_session or {}
+        raw_path = binding.get("path")
+        if not raw_path:
+            return False
+        session_path = project.resolve_path(raw_path)
+        if not session_path.is_file():
+            return True
+        try:
+            from .fit_workflow import FitRunSession
+            session = FitRunSession.load(session_path)
+        except Exception:
+            return True
+        expected_paths = {
+            role: str(project.resolve_path(dataset.path))
+            for role, dataset in project.measurements.items()
+        }
+        actual_paths = {}
+        for role, path in session.measurements.items():
+            value = Path(path).expanduser()
+            actual_paths[role] = str((value if value.is_absolute() else session_path.parent / value).resolve())
+        if actual_paths != expected_paths:
+            return True
+        project_session = str((project.measurement_session or {}).get("session_id", ""))
+        run_session = str((session.measurement_identity or {}).get("session_id", ""))
+        if project_session and run_session and project_session != run_session:
+            return True
+        for checkpoint in session.checkpoints:
+            checkpoint_session = str((checkpoint.measurement_identity or {}).get("session_id", ""))
+            if project_session and checkpoint_session and checkpoint_session != project_session:
+                return True
+        return False
+
+    def _validate_retained_measurements(self, candidate: ProjectMetadata, *,
+                                        comparison_only: bool = False) -> list[str]:
+        """Validate a candidate-project/current-measurement combination before activation."""
+
+        errors: list[str] = []
+        missing = [
+            f"{role}: {candidate.resolve_path(dataset.path)}"
+            for role, dataset in candidate.measurements.items()
+            if not candidate.resolve_path(dataset.path).is_file()
+        ]
+        if missing:
+            return ["Retained measurement file is missing: " + item for item in missing]
+        recipe = self._recipe_from_project(candidate)
+        lattice_path = candidate.resolve_path(candidate.lattice.path) if candidate.lattice.path else Path()
+        if not lattice_path.is_file():
+            return ["The selected project's reference lattice is unavailable."]
+        if recipe is not None:
+            recipe_errors = recipe.validate()
+            if recipe_errors:
+                return [
+                    "MALFORMED_PROJECT_CONFIGURATION: " + error
+                    for error in recipe_errors
+                ]
+            requirements = recipe.data_requirements or {}
+            required_identities = {
+                "BPM identities": requirements.get("bpm_names") or [],
+                "horizontal-corrector identities": requirements.get("horizontal_corrector_names") or [],
+                "vertical-corrector identities": requirements.get("vertical_corrector_names") or [],
+            }
+            missing_identity = [label for label, values in required_identities.items() if not values]
+            pinned_hashes = requirements.get("measurement_sha256") or {}
+            missing_hashes = [role for role in ("orm", "dispersion", "bpm_noise") if not pinned_hashes.get(role)]
+            if (missing_identity or missing_hashes) and not candidate.measurement_device_mapping:
+                stage_counts = []
+                for position, stage in enumerate(recipe.stages, 1):
+                    mapping = stage.configuration.get("backend_mapping", stage.configuration)
+                    elements = mapping.get("MachineElements", {})
+                    stage_counts.append(
+                        f"stage {position} ({stage.name}): "
+                        f"{len(elements.get('bpm_ords') or [])} BPMs, "
+                        f"{len(elements.get('horizontal_corrector_ords') or [])} H and "
+                        f"{len(elements.get('vertical_corrector_ords') or [])} V correctors"
+                    )
+                return [
+                    "MISSING_MEASUREMENT_PROVENANCE: The selected project's fitting recipe does not record "
+                    "the measurement identities and pinned file checksums required to validate replacement "
+                    "measurements. Missing: "
+                    + ", ".join(missing_identity + (["checksums for " + ", ".join(missing_hashes)] if missing_hashes else []))
+                    + ". Recorded stage selections: " + "; ".join(stage_counts)
+                ]
+            lattice = None
+            try:
+                lattice = load_project_lattice(lattice_path, candidate.lattice.mat_variable or None)
+                names = [self._element_identity(element)[0] for element in lattice]
+                report = preflight_recipe(
+                    recipe,
+                    lattice_path=str(lattice_path),
+                    measurement_identity=deepcopy(candidate.measurement_session),
+                    lattice_element_names=names,
+                    measurements={role: str(candidate.resolve_path(dataset.path)) for role, dataset in candidate.measurements.items()},
+                    measurement_options={role: deepcopy(dataset.options) for role, dataset in candidate.measurements.items()},
+                    measurement_device_mapping=deepcopy(candidate.measurement_device_mapping),
+                    lattice_mat_variable=candidate.lattice.mat_variable or None,
+                    comparison_only=comparison_only,
+                )
+                errors.extend(report["errors"])
+            except Exception as exc:
+                errors.append(f"Compatibility validation failed: {exc}")
+            return errors
+        try:
+            measured = _load_measurements(
+                {role: str(candidate.resolve_path(dataset.path)) for role, dataset in candidate.measurements.items()},
+                {role: deepcopy(dataset.options) for role, dataset in candidate.measurements.items()},
+            )
+        except Exception as exc:
+            return [f"Measurement files could not be validated: {exc}"]
+        elements = candidate.loco_config.machine_elements
+        nbpm = len(elements.bpm_ords)
+        nh = len(elements.horizontal_corrector_ords)
+        nv = len(elements.vertical_corrector_ords)
+        orm = np.asarray(measured.get("orm")) if measured.get("orm") is not None else None
+        if orm is not None and orm.shape != (2 * nbpm, nh + nv):
+            errors.append(
+                f"Retained ORM shape {orm.shape} does not match the selected {nbpm} BPMs and "
+                f"{nh} H/{nv} V correctors; expected {(2 * nbpm, nh + nv)}."
+            )
+        for key, label in (("noise_x", "horizontal BPM noise"), ("noise_y", "vertical BPM noise"),
+                           ("eta_x", "horizontal dispersion"), ("eta_y", "vertical dispersion")):
+            values = measured.get(key)
+            if values is not None and np.asarray(values).shape != (nbpm,):
+                errors.append(f"Retained {label} shape {np.asarray(values).shape} does not match {nbpm} selected BPMs.")
+        orm_options = candidate.measurements.get("orm")
+        if orm_options:
+            options = orm_options.options
+            if options.get("scaled") is True or options.get("response_matrix_unit") not in (None, "", "m"):
+                errors.append("Retained ORM is not the required unscaled orbit difference in metres [m].")
+        identity_sets = {
+            role: dataset.options.get("bpm_names")
+            for role, dataset in candidate.measurements.items()
+            if dataset.options.get("bpm_names")
+        }
+        if identity_sets:
+            first_role, first = next(iter(identity_sets.items()))
+            if len(first) != nbpm:
+                errors.append(f"Retained {first_role} contains {len(first)} BPM identities, expected {nbpm}.")
+            for role, names in identity_sets.items():
+                if names != first:
+                    errors.append(f"BPM identities/order differ between retained {first_role} and {role} files.")
+        return errors
+
+    def _project_open_diagnostics(self, candidate: ProjectMetadata, errors: list[str]) -> str:
+        recipe = self._recipe_from_project(candidate)
+        requirements = recipe.data_requirements if recipe is not None else {}
+        lines = [
+            f"Selected project: {candidate.path or 'Path not recorded'}",
+            f"Reference lattice: {candidate.resolve_path(candidate.lattice.path) if candidate.lattice.path else 'Not configured'}",
+            f"Fitting stages: {len(recipe.stages) if recipe is not None else 0}",
+            "Required identities: "
+            f"{len(requirements.get('bpm_names') or [])} BPMs, "
+            f"{len(requirements.get('horizontal_corrector_names') or [])} H correctors, "
+            f"{len(requirements.get('vertical_corrector_names') or [])} V correctors",
+            "",
+            "Active measurement files:",
+        ]
+        for role, dataset in self.project.measurements.items():
+            path = self.project.resolve_path(dataset.path)
+            lines.append(f"- {role}: {path} ({'available' if path.is_file() else 'missing'})")
+        lines.extend(("", "Validation failures:"))
+        lines.extend(
+            "- " + error.removeprefix("MALFORMED_PROJECT_CONFIGURATION: ").removeprefix(
+                "MISSING_MEASUREMENT_PROVENANCE: "
+            )
+            for error in errors
+        )
+        return "\n".join(lines)
+
+    def _project_open_error_content(self, candidate: ProjectMetadata, errors: list[str]) -> dict[str, str]:
+        malformed = any(error.startswith("MALFORMED_PROJECT_CONFIGURATION:") for error in errors)
+        missing_provenance = any(error.startswith("MISSING_MEASUREMENT_PROVENANCE:") for error in errors)
+        missing_file = any("missing" in error.lower() or "does not exist" in error.lower() for error in errors)
+        internal = any("validation failed" in error.lower() for error in errors)
+        if malformed:
+            title = "Unable to open FIT project"
+            summary = "The selected project contains an incomplete or invalid FIT-stage configuration."
+            action = "Correct the saved project configuration or select another FIT project."
+        elif missing_provenance:
+            title = "Measurements cannot be verified"
+            summary = "The project is editable, but it lacks the identities and checksums needed to verify these measurements."
+            action = "Open for editing to review the configuration, or use measurements saved in this project."
+        elif missing_file:
+            title = "Unable to open FIT project"
+            summary = "A required project, lattice or measurement file is unavailable."
+            action = "Locate the missing file or select another FIT project."
+        elif internal:
+            title = "Unable to open FIT project"
+            summary = "An internal error prevented measurement compatibility validation."
+            action = "Review the technical details and keep the current project open."
+        else:
+            title = "Measurements are incompatible"
+            summary = "The currently loaded measurements are not compatible with the selected FIT project."
+            action = "Select a compatible project or use the measurements saved in this project."
+        return {
+            "title": title,
+            "summary": summary,
+            "information": f"{action}\n\nThe current project and all measurement bindings remain unchanged.",
+            "details": self._project_open_diagnostics(candidate, errors),
+        }
+
+    def _show_project_open_validation_error(self, candidate: ProjectMetadata, errors: list[str]) -> None:
+        content = self._project_open_error_content(candidate, errors)
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(content["title"])
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setText(content["summary"])
+        dialog.setInformativeText(content["information"])
+        dialog.setDetailedText(content["details"])
+        dialog.setStandardButtons(QMessageBox.Ok)
+        for button in dialog.buttons():
+            if "detail" in button.text().lower():
+                button.setText("Show technical details…")
+        dialog.exec()
+
+    @staticmethod
+    def _compatibility_errors_are_editable(errors: list[str]) -> bool:
+        if any(error.startswith("MALFORMED_PROJECT_CONFIGURATION:") for error in errors):
+            return False
+        hard_markers = (
+            "reference lattice is unavailable",
+            "reference lattice could not be loaded",
+            "compatibility validation failed",
+            "unsupported recipe schema",
+            "configuration is incomplete",
+        )
+        return bool(errors) and not any(
+            marker in error.lower() for error in errors for marker in hard_markers
+        )
+
+    def _choose_open_for_editing(self, candidate: ProjectMetadata, errors: list[str]) -> bool:
+        content = self._project_open_error_content(candidate, errors)
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Measurements are incompatible")
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setText("The measurements and saved FIT configuration are not currently compatible.")
+        dialog.setInformativeText(
+            "Open an unsaved working copy to adjust machine selections and FIT settings. Fitting and resume "
+            "remain disabled until validation passes.\n\nCancel keeps the current project unchanged."
+        )
+        dialog.setDetailedText(content["details"])
+        edit = dialog.addButton("Open for editing — fitting disabled", QMessageBox.AcceptRole)
+        cancel = dialog.addButton("Cancel — keep everything unchanged", QMessageBox.RejectRole)
+        dialog.setDefaultButton(cancel)
+        dialog.exec()
+        return dialog.clickedButton() is edit
+
+    def _prepare_incompatible_working_copy(
+        self, candidate: ProjectMetadata, errors: list[str], source_filename: str
+    ) -> bool:
+        recipe = self._recipe_from_project(candidate)
+        if recipe is None:
+            return False
+        policy = self._choose_adapted_machine_policy(recipe)
+        if policy is None:
+            return False
+        requirements, inspection_errors = self._measurement_requirements_from_active_files(candidate, recipe)
+        if requirements is not None:
+            recipe.data_requirements = requirements
+        if policy == "current":
+            override = self._machine_override_from_config(candidate.loco_config)
+            self._apply_machine_override_to_recipe(recipe, override)
+            candidate.machine_configuration_override = deepcopy(override)
+        else:
+            candidate.machine_configuration_override = {}
+        candidate.recipe_machine_policy = policy
+        candidate.fit_recipe = recipe.to_dict()
+        updated_errors = self._validate_retained_measurements(candidate)
+        combined_errors = updated_errors or inspection_errors or errors
+        candidate.completed_run = CompletedRunReference()
+        candidate.fit_run_session = {}
+        candidate.compatibility_validation = {
+            "required": True,
+            "status": "incompatible",
+            "issues": list(combined_errors),
+            "source_project": str(Path(source_filename).expanduser().resolve()),
+            "measurement_signature": json_safe(self._measurement_binding_signature(candidate)),
+        }
+        # Detach the editable copy from the original filename while retaining
+        # its base directory for portable lattice and configuration references.
+        candidate.path = ""
+        candidate.modified = True
+        return True
+
+    @staticmethod
+    def _project_load_error_content(filename: str, exc: Exception) -> dict[str, str]:
+        return {
+            "title": "Unable to open FIT project",
+            "summary": "The selected file could not be read as a FIT project.",
+            "information": (
+                "Check that this is a valid pyLOCO FIT project. The current project and measurement bindings "
+                "remain unchanged."
+            ),
+            "details": f"Selected file: {filename}\nException type: {type(exc).__name__}\nException: {exc}",
+        }
+
+    def _show_project_load_error(self, filename: str, exc: Exception) -> None:
+        content = self._project_load_error_content(filename, exc)
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(content["title"])
+        dialog.setIcon(QMessageBox.Warning)
+        dialog.setText(content["summary"])
+        dialog.setInformativeText(content["information"])
+        dialog.setDetailedText(content["details"])
+        dialog.setStandardButtons(QMessageBox.Ok)
+        for button in dialog.buttons():
+            if "detail" in button.text().lower():
+                button.setText("Show technical details…")
+        dialog.exec()
+
     @Slot()
     def open_project(self, path: Path | None = None) -> None:
-        if not self._confirm_discard_changes():
-            return
-        existing_recent = list(self.project.recent_projects)
         filename = (
             str(path)
             if path
@@ -3439,14 +4951,83 @@ class MainWindow(QMainWindow):
         )
         if not filename:
             return
-        self.project = ProjectMetadata.load(filename)
+        try:
+            candidate = ProjectMetadata.load(filename)
+        except Exception as exc:
+            self._show_project_load_error(filename, exc)
+            return
+        if not self._confirm_open_with_unsaved_changes():
+            self.statusBar().showMessage("Open project cancelled; current project unchanged.", 5000)
+            return
+        existing_recent = list(self.project.recent_projects)
+        retained = bool(self.project.measurements)
+        policy = self._choose_open_project_measurement_policy(candidate) if retained else "saved"
+        if policy is None:
+            self.statusBar().showMessage("Open project cancelled; current project unchanged.", 5000)
+            return
+        measurements_changed = False
+        stale_run_binding = False
+        opened_for_editing = False
+        if policy == "keep":
+            current_signature = self._measurement_binding_signature(self.project)
+            saved_signature = self._measurement_binding_signature(candidate)
+            candidate.measurements = deepcopy(self.project.measurements)
+            candidate.measurement_session = deepcopy(self.project.measurement_session)
+            candidate.measurement_device_mapping = deepcopy(self.project.measurement_device_mapping)
+            measurements_changed = current_signature != saved_signature
+            try:
+                errors = self._validate_retained_measurements(candidate)
+            except Exception as exc:
+                self._show_project_load_error(filename, exc)
+                return
+            if errors:
+                if not self._compatibility_errors_are_editable(errors):
+                    self._show_project_open_validation_error(candidate, errors)
+                    return
+                if not self._choose_open_for_editing(candidate, errors):
+                    self.statusBar().showMessage("Open project cancelled; current project unchanged.", 5000)
+                    return
+                if not self._prepare_incompatible_working_copy(candidate, errors, filename):
+                    self.statusBar().showMessage("Open project cancelled; current project unchanged.", 5000)
+                    return
+                opened_for_editing = True
+            stale_run_binding = self._fit_run_measurements_are_stale(candidate) if not opened_for_editing else True
+            if (measurements_changed or stale_run_binding) and not opened_for_editing:
+                candidate.completed_run = CompletedRunReference()
+                candidate.fit_run_session = {}
+                candidate.modified = True
+        previous_project = self.project
+        previous_recipe = deepcopy(self.fit_recipe)
+        previous_stage = self._active_fit_stage
+        self.project = candidate
         for recent in reversed(existing_recent):
             self.project.add_recent_project(recent)
         self.project.add_recent_project(filename)
-        self.dashboard_name.setText(self.project.name)
-        self.dashboard_description.setText(self.project.description)
-        self._load_config_to_widgets()
-        self._load_project_fit_recipe()
+        try:
+            self.dashboard_name.setText(self.project.name)
+            self.dashboard_description.setText(self.project.description)
+            self._load_config_to_widgets()
+            self._load_project_fit_recipe()
+        except Exception as exc:
+            # Opening is transactional: a malformed persisted widget value
+            # must not leave a new project model behind an unchanged/empty UI.
+            self.project = previous_project
+            self.fit_recipe = previous_recipe
+            self._active_fit_stage = previous_stage
+            self.dashboard_name.setText(self.project.name)
+            self.dashboard_description.setText(self.project.description)
+            try:
+                self._load_config_to_widgets()
+                self._refresh_fit_workflow_table(
+                    previous_stage if 0 <= previous_stage < len(previous_recipe.stages) else None
+                )
+            except Exception:
+                pass
+            self._show_project_load_error(filename, exc)
+            self.statusBar().showMessage(
+                "Project could not be restored; current project remains unchanged.", 8000
+            )
+            return
         completed = self.project.completed_run
         fit_session = self.project.fit_run_session or {}
         session_path = fit_session.get("path")
@@ -3464,7 +5045,45 @@ class MainWindow(QMainWindow):
                     results_dir, runtime=completed.elapsed_seconds
                 )
                 self._workspace.setCurrentWidget(self.results_page)
-        self._refresh_ui(f"Opened {filename}")
+        suffix = (
+            " as an unsaved working copy; fitting disabled until compatibility validation passes"
+            if opened_for_editing else
+            " with current measurements; previous run/checkpoint bindings cleared"
+            if policy == "keep" and (measurements_changed or stale_run_binding) else
+            " with current measurements" if policy == "keep" else ""
+        )
+        elements = self.project.loco_config.machine_elements
+        summary = (
+            f"{len(self.fit_recipe.stages)} fitting stage(s) • {len(elements.bpm_ords)} BPMs • "
+            f"{len(elements.horizontal_corrector_ords)} H/{len(elements.vertical_corrector_ords)} V correctors"
+        )
+        if policy == "keep":
+            retained_detail = (
+                " • Opened as an unsaved working copy; fitting disabled until compatibility validation passes"
+                if opened_for_editing else
+                " • Previous run/checkpoint bindings cleared"
+                if measurements_changed or stale_run_binding else ""
+            )
+            status = (
+                f"Project configuration loaded: {Path(filename).name} • Current measurements preserved"
+                f"{retained_detail} • {summary}"
+            )
+        else:
+            status = f"Opened {filename}{suffix} • {summary}"
+        self._refresh_ui(status)
+        if policy == "keep":
+            # The operator opened this project specifically to reuse its
+            # lattice and machine/FIT configuration with the active data.
+            # Show the imported machine selections immediately instead of
+            # leaving the GUI on the previous Measurements page.
+            machine_index = next(
+                (index for index in range(self._workspace.count())
+                 if self._workspace.tabText(index) == "Machine Components"),
+                -1,
+            )
+            if machine_index >= 0:
+                self._workspace.setCurrentIndex(machine_index)
+            self.statusBar().showMessage(status, 8000)
 
     def _launch_suite(self,application,*arguments):
         try:ok,detail=launch_suite_application(application,*arguments)
@@ -3495,6 +5114,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:QMessageBox.warning(self,"Cannot import Measurement Session",str(exc)); return False
         self.project.measurements={role:ImportedDataset(role,str(source),source.suffix.lower().lstrip("."),source.stat().st_size,deepcopy(handoff.options[role])) for role,source in handoff.files.items()}
         self.project.measurement_session=deepcopy(handoff.provenance); self.project.measurement_session["manifest"]=str(handoff.manifest)
+        self._mark_compatibility_stale("Measurement session changed; validation is required.")
         orm=handoff.options.get("orm",{}); dispersion=handoff.options.get("dispersion",{})
         if orm:
             self.project.loco_config.response_matrix.bidirectional=bool(orm.get("bidirectional",False))
@@ -3523,9 +5143,11 @@ class MainWindow(QMainWindow):
         self.project.loco_config = self._collect_loco_configuration()
         self._store_active_fit_stage()
         self.project.fit_recipe = self.fit_recipe.to_dict()
+        self.project.fit_recipe = self.fit_recipe.to_dict()
 
     def _load_project_fit_recipe(self) -> None:
         raw = self.project.fit_recipe
+        explicit_empty = bool(raw) and "stages" in raw and not raw.get("stages")
         if raw:
             try:
                 data = deepcopy(raw); data["stages"] = [FitStage(**item) for item in data.get("stages", [])]
@@ -3534,40 +5156,57 @@ class MainWindow(QMainWindow):
                 self.fit_recipe = FitRecipe()
         else:
             self.fit_recipe = FitRecipe()
+        if (self.fit_recipe.stages and self.project.recipe_machine_policy == "current"
+                and self.project.machine_configuration_override):
+            self._apply_machine_override_to_recipe(self.fit_recipe, self.project.machine_configuration_override)
         if not self.fit_recipe.stages:
-            self._active_fit_stage = -1; self._add_fit_stage(name="Stage 1", start_from="original_model")
+            self._active_fit_stage = -1
+            if explicit_empty:
+                self._refresh_fit_workflow_table()
+            else:
+                self._add_fit_stage(name="Stage 1", start_from="original_model", mark_modified=False)
         else:
             self._active_fit_stage = -1; self._refresh_fit_workflow_table(0); self._select_fit_stage()
 
     @Slot()
-    def save_project(self) -> None:
+    def save_project(self) -> bool:
         if not self.project.path:
-            self.save_project_as()
-            return
+            return self.save_project_as()
+        return self._save_project_to(self.project.path)
+
+    def _save_project_to(self, filename: str | Path) -> bool:
         try:
             self._snapshot_project_from_widgets()
-            self.project.save()
-        except (OSError, TypeError, ValueError) as exc:
-            QMessageBox.warning(self, "Save failed", str(exc))
-            return
-        self._refresh_ui(f"Saved {self.project.path}")
+            saved_path = self.project.save(filename)
+        except Exception as exc:
+            message = f"Project could not be saved: {exc}"
+            self._last_save_status = message
+            QMessageBox.warning(self, "Project could not be saved", message)
+            self.statusBar().showMessage(message)
+            return False
+        incomplete = bool(self.project.validation_messages())
+        message = (
+            f"Project saved — FIT configuration incomplete: {saved_path}"
+            if incomplete else f"Project saved successfully: {saved_path}"
+        )
+        self._last_save_status = message
+        self._refresh_ui(message)
+        return True
 
     @Slot()
-    def save_project_as(self) -> None:
+    def save_project_as(self) -> bool:
         filename = QFileDialog.getSaveFileName(
             self,
             "Save pyLOCO project",
             self.project.path or f"{self.project.name}.pyloco.json",
             "pyLOCO Project (*.pyloco.json)",
+            options=QFileDialog.DontUseNativeDialog,
         )[0]
-        if filename:
-            try:
-                self._snapshot_project_from_widgets()
-                self.project.save(filename)
-            except (OSError, TypeError, ValueError) as exc:
-                QMessageBox.warning(self, "Save failed", str(exc))
-                return
-            self._refresh_ui(f"Saved {filename}")
+        if not filename:
+            self._last_save_status = "Project not saved — no filename selected."
+            self.statusBar().showMessage(self._last_save_status)
+            return False
+        return self._save_project_to(filename)
 
 
     def _load_current_lattice(self):
@@ -3576,8 +5215,14 @@ class MainWindow(QMainWindow):
         if not self.project.lattice.path:
             return None
         try:
-            import at
-            return at.load_lattice(self.project.resolve_path(self.project.lattice.path))
+            path = self.project.resolve_path(self.project.lattice.path)
+            ring = load_project_lattice(path, self.project.lattice.mat_variable or None)
+            if path.suffix.lower() == ".mat" and not self.project.lattice.mat_variable:
+                candidates = mat_lattice_candidates(path)
+                if len(candidates) == 1:
+                    self.project.lattice.mat_variable = candidates[0].variable
+                    self.project.lattice.element_count = candidates[0].element_count
+            return ring
         except Exception:
             return None
 
@@ -3599,6 +5244,7 @@ class MainWindow(QMainWindow):
         advanced = self.project.mode == "Advanced"
         signature = (
             self.project.lattice.path,
+            self.project.lattice.mat_variable,
             advanced,
             tuple((key, tuple(getattr(elements, key))) for key in ELEMENT_ROLES),
         )
@@ -3624,12 +5270,16 @@ class MainWindow(QMainWindow):
     def _refresh_reference_model_info(self) -> None:
         if not hasattr(self,"reference_model_info"):return
         path=self.project.lattice.path
-        if getattr(self,"_reference_model_info_path",None)==path:return
-        self._reference_model_info_path=path
+        signature=(path,self.project.lattice.mat_variable)
+        if getattr(self,"_reference_model_info_path",None)==signature:return
+        self._reference_model_info_path=signature
         if not path:self.reference_model_info.setText("Not available");return
         try:
             from pyLOCO.reference_model import load_reference_model
-            model=load_reference_model(path,source="FIT reference lattice")
+            model=load_reference_model(
+                self.project.resolve_path(path), source="FIT reference lattice",
+                mat_key=self.project.lattice.mat_variable or None,
+            )
             harmonic=str(model.harmonic_number) if model.harmonic_number is not None else "Not available"
             rf=f"{model.nominal_rf_hz/1e6:.9f} MHz" if model.nominal_rf_hz is not None else "Not available"
             residual=f"{model.rf_harmonic_residual_hz:.6g} Hz" if model.rf_harmonic_residual_hz is not None else "Not available"
@@ -3663,6 +5313,8 @@ class MainWindow(QMainWindow):
                 f"Lattice details\nFile: {model.path.name}\nSHA-256: {model.checksum_sha256}\n"
                 f"Source / provenance: {model.source}"
             )
+            if hasattr(self, "mcf_automatic_summary"):
+                self._update_mcf_source_visibility()
         except Exception as exc:self.reference_model_info.setText(f"Not available — {exc}")
 
     @staticmethod
@@ -3692,7 +5344,12 @@ class MainWindow(QMainWindow):
             cfg.excluded_vertical_corrector_positions = self._parse_position_text(self.vcor_exclusions_edit.text())
         except ValueError as exc:
             QMessageBox.warning(self, "Invalid exclusion", str(exc)); return
-        self.project.modified = True; self._update_exclusion_counts()
+        self._refresh_recipe_machine_override()
+        self._store_active_fit_stage()
+        self._record_fit_stage_edit("Measurement exclusions changed; validation is required.")
+        self._update_exclusion_counts()
+        self._refresh_fit_workflow_table(self._active_fit_stage)
+        self._refresh_ui("Measurement exclusions updated; validate before running")
 
     @Slot()
     def edit_element_selection(self, role_key: str) -> None:
@@ -3710,8 +5367,12 @@ class MainWindow(QMainWindow):
         group_key={"normal_quadrupole_ords":"normal_quadrupole_groups","skew_quadrupole_ords":"skew_quadrupole_groups","quadrupole_tilt_ords":"quadrupole_tilt_groups"}.get(role_key)
         if group_key:setattr(elements,group_key,[])
         self.project.loco_config._sync_response_matrix_elements()
+        self._refresh_recipe_machine_override()
+        self._mark_compatibility_stale("Machine-element selections changed; validation is required.")
         self.project.modified = True
         self._refresh_element_selection_ui()
+        self._refresh_measurement_mapping_table()
+        self._refresh_measurement_mapping_feedback()
         self._update_fit_summary()
         self._refresh_ui(f"Updated {ELEMENT_ROLES[role_key][0]} selection")
 
@@ -3721,7 +5382,602 @@ class MainWindow(QMainWindow):
         group_key={"normal_quadrupole_ords":"normal_quadrupole_groups","skew_quadrupole_ords":"skew_quadrupole_groups","quadrupole_tilt_ords":"quadrupole_tilt_groups"}[role_key]
         dialog=FamilyGroupDialog(self,role_key,list(getattr(elements,role_key)),list(getattr(elements,group_key)))
         if dialog.exec()!=QDialog.Accepted:return
-        setattr(elements,group_key,dialog.groups); self.project.modified=True; self._update_fit_summary(); self._refresh_ui(f"Updated {ELEMENT_ROLES[role_key][0]} family groups")
+        setattr(elements,group_key,dialog.groups)
+        self._refresh_recipe_machine_override()
+        self._store_active_fit_stage()
+        self._record_fit_stage_edit("Machine-element groups changed; validation is required.")
+        self._refresh_fit_workflow_table(self._active_fit_stage)
+        self._update_fit_summary()
+        self._refresh_ui(f"Updated {ELEMENT_ROLES[role_key][0]} family groups")
+
+    @staticmethod
+    def _element_identity(element) -> tuple[str, str]:
+        name = str(
+            getattr(element, "CommonName", None)
+            or getattr(element, "FamName", None)
+            or getattr(element, "Name", None)
+            or getattr(element, "name", "")
+        )
+        return name, type(element).__name__
+
+    def _machine_configuration_snapshot(self, config: LocoConfiguration | None = None) -> dict:
+        config = config or self._collect_loco_configuration()
+        lattice_path = self.project.resolve_path(self.project.lattice.path)
+        if not lattice_path.is_file():
+            raise ValueError("Select an existing reference lattice before saving a machine configuration.")
+        lattice = self._load_current_lattice()
+        if lattice is None:
+            raise ValueError("The selected reference lattice could not be loaded.")
+        elements = __import__("dataclasses").asdict(config.machine_elements)
+        identities = {}
+        for role_key in ELEMENT_ROLES:
+            values = list(getattr(config.machine_elements, role_key))
+            identities[role_key] = [
+                {"ordinal": ordinal, "name": self._element_identity(lattice[ordinal])[0],
+                 "element_class": self._element_identity(lattice[ordinal])[1]}
+                for ordinal in values
+            ]
+        return {
+            "schema": MACHINE_CONFIGURATION_SCHEMA,
+            "reference_lattice": {
+                "filename": lattice_path.name,
+                "sha256": file_sha256(lattice_path),
+                "element_count": len(lattice),
+                "mat_variable": self.project.lattice.mat_variable,
+            },
+            "machine_elements": elements,
+            "element_selection_state": deepcopy(config.element_selection_state),
+            "selected_element_identities": identities,
+            "measurement_exclusions": {
+                "bpm_positions": list(config.bad_bpm_positions),
+                "horizontal_corrector_positions": list(config.excluded_horizontal_corrector_positions),
+                "vertical_corrector_positions": list(config.excluded_vertical_corrector_positions),
+            },
+        }
+
+    @Slot()
+    def save_machine_configuration(self) -> bool:
+        filename = QFileDialog.getSaveFileName(
+            self, "Save machine configuration", "machine-configuration.pyloco-machine.json",
+            "pyLOCO machine configuration (*.pyloco-machine.json *.json)",
+            options=QFileDialog.DontUseNativeDialog,
+        )[0]
+        if not filename:
+            return False
+        try:
+            payload = self._machine_configuration_snapshot()
+            target = Path(filename).expanduser()
+            if not str(target).endswith(".json"):
+                target = target.with_suffix(".pyloco-machine.json")
+            target.resolve().write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception as exc:
+            QMessageBox.warning(self, "Machine configuration could not be saved", str(exc))
+            return False
+        self.statusBar().showMessage(f"Saved machine configuration: {target.name}", 5000)
+        return True
+
+    def _validated_machine_configuration(self, filename: str | Path) -> tuple[MachineElementsConfig, dict, dict]:
+        source = Path(filename).expanduser().resolve()
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        if payload.get("schema") != MACHINE_CONFIGURATION_SCHEMA:
+            raise ValueError(f"Unsupported machine-configuration schema: {payload.get('schema')!r}")
+        lattice_path = self.project.resolve_path(self.project.lattice.path)
+        if not lattice_path.is_file():
+            raise ValueError("Select the reference lattice before loading a machine configuration.")
+        lattice = self._load_current_lattice()
+        reference = payload.get("reference_lattice") or {}
+        if int(reference.get("element_count", -1)) != len(lattice):
+            raise ValueError(
+                f"Reference-lattice element count differs: configuration has {reference.get('element_count')}, "
+                f"loaded lattice has {len(lattice)}."
+            )
+        if str(reference.get("sha256", "")) != file_sha256(lattice_path):
+            raise ValueError("Reference-lattice checksum does not match the loaded lattice.")
+        recorded_variable = str(reference.get("mat_variable") or "")
+        if recorded_variable and recorded_variable != self.project.lattice.mat_variable:
+            raise ValueError(
+                f"Machine configuration uses MAT variable {recorded_variable!r}, but the active project uses "
+                f"{self.project.lattice.mat_variable!r}."
+            )
+        try:
+            elements = MachineElementsConfig(**dict(payload["machine_elements"]))
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"Invalid machine-elements payload: {exc}") from exc
+        selection_state = deepcopy(payload.get("element_selection_state") or {})
+        recorded = payload.get("selected_element_identities") or {}
+        for role_key in ELEMENT_ROLES:
+            values = list(getattr(elements, role_key))
+            dialog = ElementSelectionDialog(self, role_key, values, selection_state.get(role_key))
+            try:
+                dialog._validate_array(values)
+            finally:
+                dialog.close()
+            identities = recorded.get(role_key)
+            if identities is None or len(identities) != len(values):
+                raise ValueError(f"Stored identities are incomplete for {ELEMENT_ROLES[role_key][0]}.")
+            for expected, ordinal in zip(identities, values):
+                actual_name, actual_class = self._element_identity(lattice[ordinal])
+                if int(expected.get("ordinal", -1)) != ordinal or expected.get("name") != actual_name or expected.get("element_class") != actual_class:
+                    raise ValueError(
+                        f"Stored identity for {ELEMENT_ROLES[role_key][0]} ordinal {ordinal} does not match "
+                        "the loaded lattice."
+                    )
+        for selected_key, group_key in (
+            ("normal_quadrupole_ords", "normal_quadrupole_groups"),
+            ("skew_quadrupole_ords", "skew_quadrupole_groups"),
+            ("quadrupole_tilt_ords", "quadrupole_tilt_groups"),
+        ):
+            selected = set(getattr(elements, selected_key))
+            for group in getattr(elements, group_key):
+                if not group or not set(group).issubset(selected):
+                    raise ValueError(f"A stored {group_key.replace('_', ' ')} entry is empty or references an unselected element.")
+        exclusions = dict(payload.get("measurement_exclusions") or {})
+        normalized = {
+            "bpm_positions": [int(value) for value in exclusions.get("bpm_positions", [])],
+            "horizontal_corrector_positions": [int(value) for value in exclusions.get("horizontal_corrector_positions", [])],
+            "vertical_corrector_positions": [int(value) for value in exclusions.get("vertical_corrector_positions", [])],
+        }
+        for key, maximum in (
+            ("bpm_positions", len(elements.bpm_ords)),
+            ("horizontal_corrector_positions", len(elements.horizontal_corrector_ords)),
+            ("vertical_corrector_positions", len(elements.vertical_corrector_ords)),
+        ):
+            values = normalized[key]
+            if len(values) != len(set(values)) or any(value < 0 or value >= maximum for value in values):
+                raise ValueError(f"Stored {key.replace('_', ' ')} are duplicated or outside the selected-list range.")
+        return elements, selection_state, normalized
+
+    @Slot()
+    def load_machine_configuration(self) -> bool:
+        filename = QFileDialog.getOpenFileName(
+            self, "Load machine configuration", "",
+            "pyLOCO machine configuration (*.pyloco-machine.json *.json)",
+            options=QFileDialog.DontUseNativeDialog,
+        )[0]
+        if not filename:
+            return False
+        try:
+            elements, selection_state, exclusions = self._validated_machine_configuration(filename)
+        except Exception as exc:
+            QMessageBox.warning(self, "Machine configuration is incompatible", str(exc))
+            return False
+        counts = [f"{ELEMENT_ROLES[key][0]}: {len(getattr(elements, key))}" for key in ELEMENT_ROLES]
+        preview = (
+            "The following lattice-validated selections will replace the current machine selections:\n\n"
+            + "\n".join(counts)
+            + f"\n\nExcluded selected-list positions: {len(exclusions['bpm_positions'])} BPM, "
+              f"{len(exclusions['horizontal_corrector_positions'])} H corrector, "
+              f"{len(exclusions['vertical_corrector_positions'])} V corrector."
+            + "\n\nMeasurements, FIT settings, stages and output paths will remain unchanged."
+        )
+        if QMessageBox.question(
+            self, "Load machine configuration?", preview,
+            QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel,
+        ) != QMessageBox.Yes:
+            return False
+        self.project.loco_config.machine_elements = elements
+        self.project.loco_config.element_selection_state = selection_state
+        self.project.loco_config.bad_bpm_positions = exclusions["bpm_positions"]
+        self.project.loco_config.excluded_horizontal_corrector_positions = exclusions["horizontal_corrector_positions"]
+        self.project.loco_config.excluded_vertical_corrector_positions = exclusions["vertical_corrector_positions"]
+        self.project.loco_config._sync_response_matrix_elements()
+        self._refresh_recipe_machine_override()
+        self._mark_compatibility_stale("Machine configuration changed; validation is required.")
+        self.project.modified = True
+        self._load_config_to_widgets()
+        self._refresh_ui(f"Loaded machine configuration {Path(filename).name}")
+        return True
+
+    def _measurement_mapping_context(self):
+        lattice_path = self.project.resolve_path(self.project.lattice.path) if self.project.lattice.path else Path()
+        if not lattice_path.is_file():
+            raise ValueError("Select an existing reference lattice first.")
+        lattice = self._load_current_lattice()
+        if lattice is None:
+            raise ValueError("The selected reference lattice could not be loaded.")
+        paths = {role: str(self.project.resolve_path(dataset.path)) for role, dataset in self.project.measurements.items()}
+        options = {role: deepcopy(dataset.options) for role, dataset in self.project.measurements.items()}
+        payload = inspect_measurement_files(paths, options)
+        if payload["errors"]:
+            raise ValueError("\n".join(payload["errors"]))
+        inventory = measurement_inventory(payload)
+        if not all(inventory.values()):
+            raise ValueError("The current ORM does not contain ordered BPM and H/V-corrector identities.")
+        orm_options = options.get("orm", {})
+        metadata = orm_options.get("acquisition_metadata") or {}
+        pyaml_options = metadata.get("pyaml_options") or {}
+        raw_configuration = pyaml_options.get("config_path") or ""
+        configuration = Path(raw_configuration).expanduser() if raw_configuration else None
+        if configuration is not None and not configuration.is_absolute():
+            configuration = self.project.resolve_path(configuration)
+        if configuration is not None and not configuration.is_file():
+            configuration = None
+        return lattice, lattice_path, payload, inventory, configuration
+
+    @Slot()
+    def find_measurement_mappings(self) -> bool:
+        try:
+            lattice, lattice_path, _payload, inventory, configuration = self._measurement_mapping_context()
+            saved_mapping = self.project.measurement_device_mapping or {}
+            if saved_mapping.get("reference_lattice") and saved_mapping.get("inventory"):
+                try:
+                    mapping = validate_measurement_mapping(
+                        saved_mapping, lattice, inventory, lattice_path=lattice_path,
+                        configuration_path=configuration, require_provenance=True,
+                    )
+                    mapping["mapping_provenance"] = "saved project mapping revalidated against current inputs"
+                except ValueError:
+                    mapping = find_exact_device_mappings(
+                        lattice, inventory, lattice_path=lattice_path, configuration_path=configuration,
+                        provenance="exact AT Device identity from selected lattice and Measure inventory",
+                    )
+            else:
+                mapping = find_exact_device_mappings(
+                    lattice, inventory, lattice_path=lattice_path, configuration_path=configuration,
+                    provenance="exact AT Device identity from selected lattice and Measure inventory",
+                )
+        except Exception as exc:
+            self.measurement_mapping_feedback.setText(f"Mapping could not be completed — {exc}")
+            return False
+        self.project.measurement_device_mapping = mapping
+        self.project.modified = True
+        self.project.compatibility_validation = {
+            "required": True, "status": "validation_required",
+            "issues": ["Measurement-device mapping changed; validation is required."],
+        }
+        self._select_measurement_mapping_filter_after_operation(mapping)
+        self._refresh_measurement_mapping_table(); self._refresh_measurement_mapping_feedback()
+        self._refresh_ui("Measurement-device mapping changed; validate before running FIT")
+        return measurement_mapping_counts(mapping)["mapped"] == measurement_mapping_counts(mapping)["total"]
+
+    def _validated_mapping_fit_proposal(self) -> dict:
+        """Return an ordered, revalidated BPM/H/V selection proposal.
+
+        The order is the Measure HDF5 inventory order.  No ordinal sorting or
+        position-based identity inference is performed here.
+        """
+        lattice, lattice_path, payload, inventory, configuration = self._measurement_mapping_context()
+        mapping = self.project.measurement_device_mapping or {}
+        counts = measurement_mapping_counts(mapping)
+        if not counts["total"] or counts["mapped"] != counts["total"]:
+            raise ValueError("Every measured BPM and H/V corrector must be mapped and validated first.")
+        mapping = validate_measurement_mapping(
+            mapping, lattice, inventory, lattice_path=lattice_path,
+            configuration_path=configuration, require_provenance=True,
+        )
+        roles = {
+            "bpm_ords": "bpm",
+            "horizontal_corrector_ords": "horizontal_corrector",
+            "vertical_corrector_ords": "vertical_corrector",
+        }
+        proposed = {}
+        for field, role in roles.items():
+            values = measurement_mapping_ordered_ordinals(mapping, role)
+            if values is None:
+                raise ValueError(f"The {role.replace('_', ' ')} mapping is incomplete or invalid.")
+            proposed[field] = list(values)
+        expected_shape = (2 * len(proposed["bpm_ords"]),
+                          len(proposed["horizontal_corrector_ords"]) + len(proposed["vertical_corrector_ords"]))
+        measured_shape = tuple((payload.get("files", {}).get("orm", {}) or {}).get("shape", ()))
+        if measured_shape and measured_shape != expected_shape:
+            raise ValueError(
+                f"The measured ORM shape {measured_shape} does not match the mapped inventory; "
+                f"expected {expected_shape}."
+            )
+        current = self.project.loco_config.machine_elements
+        current_ords = {field: list(getattr(current, field)) for field in roles}
+        names_state = self.project.loco_config.element_selection_state.get("measurement_session_names", {})
+        inventory_matches = (
+            list(names_state.get("bpms", ())) == list(inventory["bpm"])
+            and list(names_state.get("horizontal_correctors", ())) == list(inventory["horizontal_corrector"])
+            and list(names_state.get("vertical_correctors", ())) == list(inventory["vertical_corrector"])
+        )
+        same_ordered_selection = all(current_ords[field] == proposed[field] for field in roles)
+        exclusions = {
+            "bpm": list(self.project.loco_config.bad_bpm_positions),
+            "horizontal_corrector": list(self.project.loco_config.excluded_horizontal_corrector_positions),
+            "vertical_corrector": list(self.project.loco_config.excluded_vertical_corrector_positions),
+        }
+        exclusions_present = any(exclusions.values())
+        preserve_exclusions = not exclusions_present or inventory_matches or same_ordered_selection
+        stage_selections = []
+        stage_exclusions = []
+        for stage in self.fit_recipe.stages:
+            config = self._configuration_for_fit_stage(stage)
+            stage_selections.append({field: list(getattr(config.machine_elements, field)) for field in roles})
+            stage_exclusions.append((
+                tuple(config.bad_bpm_positions),
+                tuple(config.excluded_horizontal_corrector_positions),
+                tuple(config.excluded_vertical_corrector_positions),
+            ))
+        distinct_stage_selections = len({
+            (tuple(item["bpm_ords"]), tuple(item["horizontal_corrector_ords"]),
+             tuple(item["vertical_corrector_ords"])) for item in stage_selections
+        })
+        return {
+            "mapping": mapping, "inventory": inventory, "current": current_ords, "proposed": proposed,
+            "expected_shape": expected_shape, "measured_shape": measured_shape or expected_shape,
+            "exclusions": exclusions, "preserve_exclusions": preserve_exclusions,
+            "stage_count": len(self.fit_recipe.stages), "distinct_stage_selections": distinct_stage_selections,
+            "distinct_stage_exclusions": len(set(stage_exclusions)),
+        }
+
+    def _confirm_mapping_fit_proposal(self, proposal: dict) -> bool:
+        labels = (("BPM", "bpm_ords"), ("H corrector", "horizontal_corrector_ords"),
+                  ("V corrector", "vertical_corrector_ords"))
+        comparisons = "\n".join(
+            f"{label}: {len(proposal['current'][field])} → {len(proposal['proposed'][field])}"
+            for label, field in labels
+        )
+        stage_text = (
+            f"All {proposal['stage_count']} FIT stages will receive the same measured-device selections."
+            if proposal["stage_count"] != 1 else "The FIT stage will receive the measured-device selections."
+        )
+        if proposal["distinct_stage_selections"] > 1:
+            stage_text += (
+                " The stages currently use different BPM/corrector selections; applying this proposal will "
+                "replace those differences. Review this explicitly before continuing."
+            )
+        if proposal["distinct_stage_exclusions"] > 1:
+            stage_text += (
+                " The stages also contain different BPM/corrector exclusions; applying this proposal will "
+                "replace those differences with the reviewed exclusions shown here."
+            )
+        exclusion_text = (
+            "Existing exclusions remain valid for the same ordered inventory and will be preserved."
+            if proposal["preserve_exclusions"] else
+            "Existing exclusions are tied to a different or unverified ordered inventory and will be reset."
+        )
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Use validated mappings in FIT?")
+        dialog.setIcon(QMessageBox.Question)
+        dialog.setText("Preview the measured-device selections before applying them.")
+        dialog.setInformativeText(
+            f"{comparisons}\n\nMeasured ORM: {proposal['measured_shape'][0]} × {proposal['measured_shape'][1]}\n"
+            f"Proposed model ORM: {proposal['expected_shape'][0]} × {proposal['expected_shape'][1]}\n\n"
+            f"{stage_text}\n\n{exclusion_text}\n\n"
+            "Normal/skew quadrupole and tilt selections remain unchanged; legacy magnet ordinals may still need "
+            "revalidation after a lattice-version change.\n\n"
+            "Measurement arrays and the original saved project remain unchanged. The adapted project will require validation."
+        )
+        details = []
+        for label, field in labels:
+            details.append(f"{label} current ordinals:\n{proposal['current'][field]}\n")
+            details.append(f"{label} proposed ordinals in measurement order:\n{proposal['proposed'][field]}\n")
+        if any(proposal["exclusions"].values()):
+            details.append(f"Current selected-list exclusions:\n{proposal['exclusions']}\n")
+        dialog.setDetailedText("\n".join(details))
+        apply_label = (
+            f"Apply to all {proposal['stage_count']} stages"
+            if proposal["stage_count"] > 1 else "Apply mapped selections"
+        )
+        apply_button = dialog.addButton(apply_label, QMessageBox.AcceptRole)
+        cancel_button = dialog.addButton("Cancel — make no changes", QMessageBox.RejectRole)
+        dialog.setDefaultButton(cancel_button)
+        dialog.exec()
+        return dialog.clickedButton() is apply_button
+
+    @Slot()
+    def use_measurement_mappings_for_fit(self) -> bool:
+        try:
+            proposal = self._validated_mapping_fit_proposal()
+        except Exception as exc:
+            QMessageBox.warning(self, "Mapped devices cannot be used", str(exc))
+            self._refresh_measurement_mapping_feedback()
+            return False
+        if not self._confirm_mapping_fit_proposal(proposal):
+            return False
+
+        # Build the complete replacement before mutating live state.
+        config = deepcopy(self.project.loco_config)
+        elements = deepcopy(config.machine_elements)
+        for field, values in proposal["proposed"].items():
+            setattr(elements, field, list(values))
+        config.machine_elements = elements
+        mapping = proposal["mapping"]
+        reference = mapping.get("reference_lattice") or {}
+        inventory_hash = (mapping.get("inventory") or {}).get("sha256", "")
+        role_names = {
+            "bpm_ords": "bpm", "horizontal_corrector_ords": "horizontal_corrector",
+            "vertical_corrector_ords": "vertical_corrector",
+        }
+        for field, role in role_names.items():
+            values = list(proposal["proposed"][field])
+            config.element_selection_state[field] = {
+                "version": 1, "method": "validated_measurement_mapping",
+                "mapping_schema": mapping.get("schema", ""),
+                "mapping_provenance": mapping.get("mapping_provenance", ""),
+                "inventory_sha256": inventory_hash,
+                "lattice_sha256": reference.get("sha256", ""),
+                "measured_role": role,
+                "measured_names": list(proposal["inventory"][role]),
+                "generated_ords": values, "resolved_ords": values,
+                "manual_additions": [], "manual_removals": [],
+            }
+        config.element_selection_state["measurement_session_names"] = {
+            "bpms": list(proposal["inventory"]["bpm"]),
+            "horizontal_correctors": list(proposal["inventory"]["horizontal_corrector"]),
+            "vertical_correctors": list(proposal["inventory"]["vertical_corrector"]),
+        }
+        if not proposal["preserve_exclusions"]:
+            config.bad_bpm_positions = []
+            config.excluded_horizontal_corrector_positions = []
+            config.excluded_vertical_corrector_positions = []
+        config._sync_response_matrix_elements()
+        override = self._machine_override_from_config(config)
+        recipe = deepcopy(self.fit_recipe)
+        self._apply_machine_override_to_recipe(recipe, override)
+
+        self.project.loco_config = config
+        self.fit_recipe = recipe
+        self.project.fit_recipe = recipe.to_dict()
+        self.project.recipe_machine_policy = "current"
+        self.project.machine_configuration_override = deepcopy(override)
+        self.project.completed_run = CompletedRunReference()
+        self.project.fit_run_session = {}
+        self.project.measurement_device_mapping = mapping
+        self.project.compatibility_validation = {
+            "required": True, "status": "validation_required",
+            "issues": ["Mapped measurement devices were applied to FIT selections; validation is required."],
+            "measurement_signature": json_safe(self._measurement_binding_signature(self.project)),
+        }
+        self.project.modified = True
+        self._load_config_to_widgets()
+        self._refresh_fit_workflow_table(self._active_fit_stage if self._active_fit_stage >= 0 else 0)
+        self._refresh_measurement_mapping_feedback()
+        self._refresh_ui("Mapped device selections applied. Next: Validate FIT configuration.")
+        self.statusBar().showMessage("Selections applied. Next: Validate FIT configuration.", 8000)
+        return True
+
+    @Slot()
+    def create_measurement_mapping_template(self) -> bool:
+        try:
+            _lattice, _lattice_path, _payload, inventory, _configuration = self._measurement_mapping_context()
+        except Exception as exc:
+            QMessageBox.warning(self, "Mapping template unavailable", str(exc)); return False
+        filename = QFileDialog.getSaveFileName(
+            self, "Create measurement-device mapping template", "measurement-device-mapping.json",
+            "JSON mapping (*.json)", options=QFileDialog.DontUseNativeDialog,
+        )[0]
+        if not filename: return False
+        target = Path(filename).expanduser()
+        if target.suffix.lower() != ".json": target = target.with_suffix(".json")
+        target.resolve().write_text(json.dumps(measurement_mapping_template(inventory), indent=2), encoding="utf-8")
+        self.measurement_mapping_feedback.setText(
+            f"Template saved — not validated: {target.name}. Fill in only lattice_ordinal for unresolved devices, then load it."
+        )
+        return True
+
+    @Slot()
+    def load_measurement_mapping(self) -> bool:
+        filename = QFileDialog.getOpenFileName(
+            self, "Load completed measurement-device mapping", "",
+            "Mapping files (*.json *.yaml *.yml)", options=QFileDialog.DontUseNativeDialog,
+        )[0]
+        if not filename: return False
+        try:
+            lattice, lattice_path, _payload, inventory, configuration = self._measurement_mapping_context()
+            document = load_measurement_mapping_document(filename)
+            strict = bool(document.get("reference_lattice") and document.get("inventory"))
+            mapping = validate_measurement_mapping(
+                document, lattice, inventory, lattice_path=lattice_path,
+                configuration_path=configuration, require_provenance=strict,
+            )
+            mapping["mapping_provenance"] = f"loaded and revalidated from {Path(filename).name}"
+        except Exception as exc:
+            QMessageBox.warning(self, "Measurement mapping is incompatible", str(exc)); return False
+        self.project.measurement_device_mapping = mapping
+        self.project.modified = True
+        self.project.compatibility_validation = {
+            "required": True, "status": "validation_required",
+            "issues": ["Measurement-device mapping changed; validation is required."],
+        }
+        self._select_measurement_mapping_filter_after_operation(mapping)
+        self._refresh_measurement_mapping_table(); self._refresh_measurement_mapping_feedback()
+        self._refresh_ui("Measurement-device mapping loaded; validate before running FIT")
+        return True
+
+    @Slot()
+    def save_validated_measurement_mapping(self) -> bool:
+        mapping = self.project.measurement_device_mapping or {}
+        counts = measurement_mapping_counts(mapping)
+        if not counts["total"] or counts["mapped"] != counts["total"]:
+            QMessageBox.warning(self, "Mapping is incomplete", "Resolve and validate every measured device before saving a reusable mapping.")
+            return False
+        try:
+            lattice, lattice_path, _payload, inventory, configuration = self._measurement_mapping_context()
+            mapping = validate_measurement_mapping(mapping, lattice, inventory, lattice_path=lattice_path,
+                                                  configuration_path=configuration, require_provenance=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "Mapping could not be revalidated", str(exc)); return False
+        filename = QFileDialog.getSaveFileName(
+            self, "Save validated measurement-device mapping", "measurement-device-mapping.validated.json",
+            "JSON mapping (*.json)", options=QFileDialog.DontUseNativeDialog,
+        )[0]
+        if not filename: return False
+        target = Path(filename).expanduser()
+        if target.suffix.lower() != ".json": target = target.with_suffix(".json")
+        target.resolve().write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+        self.project.measurement_device_mapping = mapping
+        self.measurement_mapping_feedback.setText(f"Validated reusable mapping saved — {counts['mapped']} devices: {target.name}")
+        return True
+
+    def _refresh_measurement_mapping_feedback(self) -> None:
+        if not hasattr(self, "measurement_mapping_feedback"): return
+        mapping = self.project.measurement_device_mapping or {}
+        counts = measurement_mapping_counts(mapping)
+        if not counts["total"]:
+            ready = bool(self.project.measurements.get("orm") and self.project.lattice.path)
+            self.measurement_mapping_feedback.setText(
+                "Ready. Step 1: Find device mappings."
+                if ready else "Load measurements and a reference lattice to begin."
+            )
+            self.save_measurement_mapping_button.setEnabled(False)
+            self.use_measurement_mappings_button.setEnabled(False)
+            return
+        unresolved = counts["total"] - counts["mapped"]
+        applied = all(
+            (self.project.loco_config.element_selection_state.get(field) or {}).get("method")
+            == "validated_measurement_mapping"
+            for field in ("bpm_ords", "horizontal_corrector_ords", "vertical_corrector_ords")
+        )
+        if unresolved:
+            text = (
+                f"Mapping incomplete — {counts['mapped']} mapped, {counts['unresolved']} unresolved, "
+                f"{counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate and {counts['invalid']} invalid. "
+                "Resolve the unmatched devices first."
+            )
+        elif applied:
+            text = (
+                f"{counts['mapped']}/{counts['total']} devices mapped and selections applied. "
+                "Next: Validate FIT configuration."
+            )
+        else:
+            text = f"{counts['mapped']}/{counts['total']} devices mapped. Next: Use mappings in FIT."
+        self.measurement_mapping_feedback.setText(text)
+        self.save_measurement_mapping_button.setEnabled(not unresolved)
+        self.use_measurement_mappings_button.setEnabled(not unresolved)
+
+    def _select_measurement_mapping_filter_after_operation(self, mapping: dict) -> None:
+        """Choose the useful post-operation view without disturbing later user choices."""
+        counts = measurement_mapping_counts(mapping)
+        mode = "all" if counts["total"] and counts["mapped"] == counts["total"] else "attention"
+        index = self.measurement_mapping_filter.findData(mode)
+        if index >= 0:
+            self.measurement_mapping_filter.setCurrentIndex(index)
+
+    def _refresh_measurement_mapping_table(self, *_args) -> None:
+        if not hasattr(self, "measurement_mapping_table"): return
+        query = self.measurement_mapping_search.text().strip().lower()
+        mode = self.measurement_mapping_filter.currentData()
+        rows = (self.project.measurement_device_mapping or {}).get("mappings", ())
+        table = self.measurement_mapping_table; table.setSortingEnabled(False); table.setRowCount(0)
+        role_labels = {"bpm": "BPM", "horizontal_corrector": "H corrector", "vertical_corrector": "V corrector"}
+        displayed = 0
+        for item in rows:
+            status = item.get("status", "unresolved")
+            if mode == "attention" and status == "mapped": continue
+            if mode == "validated" and status != "mapped": continue
+            searchable = " ".join(str(item.get(key, "")) for key in ("measured_name", "lattice_name", "lattice_device", "reason")).lower()
+            if query and query not in searchable: continue
+            values = (item.get("measured_name", ""), role_labels.get(item.get("role"), item.get("role", "")),
+                      item.get("lattice_name") or "—", item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "—",
+                      item.get("component") or "—", "Validated" if status == "mapped" else status.capitalize(), item.get("reason", ""))
+            row = table.rowCount(); table.insertRow(row)
+            for column, value in enumerate(values):
+                cell = QTableWidgetItem(str(value)); cell.setToolTip(str(value)); table.setItem(row, column, cell)
+            displayed += 1
+        table.setSortingEnabled(True)
+        if not rows:
+            self.measurement_mapping_table_hint.setText(
+                "No mapping records yet. Select Find machine mappings after loading measurements and a reference lattice."
+            )
+            self.measurement_mapping_table_hint.setVisible(True)
+        elif not displayed:
+            self.measurement_mapping_table_hint.setText("No mapping records match the current search and filter.")
+            self.measurement_mapping_table_hint.setVisible(True)
+        else:
+            self.measurement_mapping_table_hint.setVisible(False)
 
     @Slot()
     def select_lattice(self) -> None:
@@ -3731,17 +5987,90 @@ class MainWindow(QMainWindow):
             "",
             "Model files (*.mat *.h5 *.hdf5 *.npy *.npz *.json *.yaml *.yml);;All files (*)",
         )[0]
-        if filename:
-            path = Path(filename)
-            self.project.lattice = LatticeSelection(
-                path=str(path), file_type=path.suffix.lower().lstrip(".")
+        if not filename:
+            return
+        path = Path(filename).expanduser().resolve()
+        try:
+            variable = ""
+            if path.suffix.lower() == ".mat":
+                candidates = mat_lattice_candidates(path)
+                if not candidates:
+                    raise NoMatLatticeError(
+                        f"{path.name} contains no variable that Accelerator Toolbox can load as a valid lattice."
+                    )
+                if len(candidates) == 1:
+                    selected = candidates[0]
+                else:
+                    selected = self._choose_mat_lattice_candidate(candidates)
+                    if selected is None:
+                        return
+                variable = selected.variable
+            lattice = load_project_lattice(path, variable or None)
+            selection = LatticeSelection(
+                path=str(path), file_type=path.suffix.lower().lstrip("."),
+                element_count=len(lattice), mat_variable=variable,
             )
-            lattice = self._load_current_lattice()
-            if lattice is not None:
-                self.project.lattice.element_count = len(lattice)
-            self.project.modified = True
-            self._refresh_element_selection_ui()
-            self._refresh_ui(f"Selected lattice {path.name}")
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Unable to load reference lattice",
+                f"The selected file was not loaded and the active project is unchanged.\n\n{exc}",
+            )
+            return
+        self.project.lattice = selection
+        self.project.modified = True
+        self._mark_compatibility_stale("Reference lattice changed; validation is required.")
+        self._element_preview_signature = None
+        self._reference_model_info_path = None
+        self._refresh_element_selection_ui()
+        self._refresh_ui(f"Selected lattice {path.name}")
+
+    def _choose_mat_lattice_candidate(self, candidates, current: str = ""):
+        labels = [f"{candidate.variable} — {candidate.element_count} elements" for candidate in candidates]
+        current_index = next(
+            (index for index, candidate in enumerate(candidates) if candidate.variable == current), 0
+        )
+        choice, accepted = QInputDialog.getItem(
+            self, "Select MAT lattice variable",
+            "Valid Accelerator Toolbox lattice variables in this MAT file:",
+            labels, current_index, False,
+        )
+        if not accepted:
+            return None
+        return candidates[labels.index(choice)]
+
+    @Slot()
+    def change_mat_variable(self) -> None:
+        if not self.project.lattice.path:
+            return
+        path = self.project.resolve_path(self.project.lattice.path)
+        if path.suffix.lower() != ".mat":
+            return
+        try:
+            candidates = mat_lattice_candidates(path)
+            if not candidates:
+                raise NoMatLatticeError(
+                    f"{path.name} contains no valid Accelerator Toolbox lattice variables."
+                )
+            # Unlike initial automatic detection, this is an explicit advanced
+            # action.  Always show the selector—even when there is only one
+            # valid candidate—so clicking the button gives visible feedback
+            # and lets the operator confirm which MAT variable is in use.
+            selected = self._choose_mat_lattice_candidate(
+                candidates, self.project.lattice.mat_variable
+            )
+            if selected is None or selected.variable == self.project.lattice.mat_variable:
+                return
+            lattice = load_project_lattice(path, selected.variable)
+        except Exception as exc:
+            QMessageBox.warning(self, "Unable to change MAT variable", str(exc))
+            return
+        self.project.lattice.mat_variable = selected.variable
+        self.project.lattice.element_count = len(lattice)
+        self.project.modified = True
+        self._mark_compatibility_stale("Reference-lattice MAT variable changed; validation is required.")
+        self._element_preview_signature = None
+        self._reference_model_info_path = None
+        self._refresh_ui(f"Selected MAT variable {selected.variable}")
 
     @Slot()
     def import_measurement(self) -> None:
@@ -3764,8 +6093,62 @@ class MainWindow(QMainWindow):
                 options=metadata,
             )
             self._apply_measurement_metadata(role, metadata)
+            self._mark_compatibility_stale(f"{role.replace('_', ' ').title()} measurement changed; validation is required.")
             self.project.modified = True
             self._refresh_ui(f"Imported {role}: {path.name}")
+
+    def _missing_measurement_roles(self) -> list[tuple[str, ImportedDataset]]:
+        """Return missing external measurement references in stored role order."""
+
+        return [
+            (role, dataset)
+            for role, dataset in self.project.measurements.items()
+            if not self.project.resolve_path(dataset.path).is_file()
+        ]
+
+    @Slot()
+    def locate_missing_measurement(self) -> None:
+        """Replace one missing external reference without changing measurement data."""
+
+        missing = self._missing_measurement_roles()
+        if not missing:
+            self.measurement_file_status.setText("All imported measurement files are available.")
+            self.locate_missing_measurement_button.setEnabled(False)
+            return
+        role, dataset = missing[0]
+        filename = QFileDialog.getOpenFileName(
+            self,
+            f"Locate missing {role.replace('_', ' ')} measurement",
+            str(Path(dataset.path).expanduser().parent),
+            "Measurement files (*.h5 *.hdf5 *.mat *.npy *.npz);;All files (*)",
+            options=QFileDialog.DontUseNativeDialog,
+        )[0]
+        if not filename:
+            self.statusBar().showMessage("Measurement location unchanged — no file selected.", 4000)
+            return
+        replacement = Path(filename).expanduser().resolve()
+        try:
+            detected = inspect_measurement_metadata(replacement, role)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Measurement could not be loaded",
+                f"The selected file could not replace the missing {role} measurement: {exc}",
+            )
+            return
+        # Preserve project-specific options while refreshing facts that can be
+        # inspected from the replacement file.  The scientific arrays remain
+        # external and are never copied into the project JSON.
+        options = deepcopy(dataset.options)
+        options.update(detected)
+        dataset.path = str(replacement)
+        dataset.file_type = replacement.suffix.lower().lstrip(".")
+        dataset.size_bytes = replacement.stat().st_size
+        dataset.options = options
+        self._apply_measurement_metadata(role, detected)
+        self._mark_compatibility_stale(f"{role.replace('_', ' ').title()} measurement path changed; validation is required.")
+        self.project.modified = True
+        self._refresh_ui(f"Located {role} measurement: {replacement.name}")
 
     def _update_measurement_hint(self, role: str) -> None:
         self.measurement_hint.setText(IMPORT_HINTS.get(role, IMPORT_HINTS["other"]))
@@ -3782,7 +6165,9 @@ class MainWindow(QMainWindow):
             applied.append(f"RF step={value:g} Hz")
         if "bidirectional" in metadata:
             self.rm_bidirectional.setChecked(bool(metadata["bidirectional"])); applied.append(f"bidirectional={bool(metadata['bidirectional'])}")
-        datasets = metadata.get("datasets") or []
+        datasets = metadata.get("available_datasets") or metadata.get("datasets") or []
+        if isinstance(datasets, dict):
+            datasets = list(datasets.values())
         if datasets: applied.append("datasets=" + ", ".join(map(str, datasets)))
         self.measurement_metadata_label.setText(
             "Detected/applied measurement metadata: " + ", ".join(applied) if applied else
@@ -3804,17 +6189,50 @@ class MainWindow(QMainWindow):
         return target
 
     def validate_project(self) -> None:
-        messages = self.project.validation_messages()
-        QMessageBox.information(
-            self,
-            "Project Validation",
-            (
-                "Project is complete; Run LOCO is enabled."
-                if not messages
-                else "Missing required inputs:\n\n" + "\n".join(messages)
-            ),
-        )
-        self._refresh_ui("Validation complete")
+        self.project.loco_config = self._collect_loco_configuration()
+        self._store_active_fit_stage()
+        # Compatibility must be checked against the edits currently shown in
+        # the stage editor, not the recipe snapshot last loaded from disk.
+        self.project.fit_recipe = self.fit_recipe.to_dict()
+        structural = [
+            message for message in self.project.validation_messages()
+            if not message.startswith("Measurement compatibility must be validated")
+        ]
+        if structural:
+            if self.project.compatibility_validation.get("required"):
+                self.project.compatibility_validation.update(status="validation_required", issues=list(structural))
+            QMessageBox.information(
+                self, "FIT configuration is incomplete",
+                "Complete the required project settings before compatibility can be validated.\n\n"
+                + "\n".join(f"• {message}" for message in structural[:6]),
+            )
+            self._refresh_ui("Validation incomplete")
+            return
+        try:
+            errors = self._validate_retained_measurements(self.project)
+        except Exception as exc:
+            if self.project.compatibility_validation.get("required"):
+                self.project.compatibility_validation.update(
+                    status="internal_error", issues=[f"Compatibility validation failed: {exc}"]
+                )
+            self._show_project_load_error(self.project.path or "Unsaved adapted project", exc)
+            self._refresh_ui("Compatibility validation could not be completed")
+            return
+        if errors:
+            if self.project.compatibility_validation.get("required"):
+                self.project.compatibility_validation.update(status="incompatible", issues=list(errors))
+            self._show_project_open_validation_error(self.project, errors)
+            self._refresh_ui("Compatibility issues remain unresolved")
+            return
+        if self.project.compatibility_validation.get("required"):
+            self.project.compatibility_validation.update(
+                status="validated", issues=[],
+                measurement_signature=json_safe(self._measurement_binding_signature(self.project)),
+                lattice_checksum=file_sha256(self.project.resolve_path(self.project.lattice.path)),
+            )
+            self.project.modified = True
+        QMessageBox.information(self, "Project validation", "Compatibility validation passed. Run LOCO is enabled.")
+        self._refresh_ui("Compatibility validation passed")
 
     def _rename_project(self) -> None:
         value = self.dashboard_name.text().strip() or "Untitled LOCO Project"
@@ -3933,26 +6351,222 @@ class MainWindow(QMainWindow):
     def _on_tab_changed(self, index: int) -> None:
         self._workflow_label.setText(f"Workflow: {self._workspace.tabText(index)}")
 
+    def _measurement_table_details(self, role: str, dataset: ImportedDataset) -> str:
+        """Return a compact, read-only shape/unit summary for the import table."""
+        path = self.project.resolve_path(dataset.path)
+        if not path.is_file():
+            return "File unavailable"
+        if path.suffix.lower() not in {".h5", ".hdf5"}:
+            return f"{dataset.file_type.upper()} · {dataset.size_bytes:,} bytes"
+        try:
+            import h5py
+            with h5py.File(path, "r") as handle:
+                candidates: list[tuple[str, tuple[int, ...], str]] = []
+                def collect(name, obj):
+                    if isinstance(obj, h5py.Dataset):
+                        raw_unit = obj.attrs.get("unit", obj.attrs.get("units", ""))
+                        if isinstance(raw_unit, bytes):
+                            raw_unit = raw_unit.decode(errors="replace")
+                        candidates.append((name, tuple(obj.shape), str(raw_unit)))
+                handle.visititems(collect)
+                preferred = {
+                    "orm": ("response_matrix", "orm"),
+                    "dispersion": ("measured_eta_x", "eta_x", "measured_eta_y", "eta_y"),
+                    "bpm_noise": ("Noise_BPMx", "noise_x", "Noise_BPMy", "noise_y"),
+                }.get(role, ())
+                selected = [item for item in candidates if item[0].split("/")[-1] in preferred]
+                if not selected:
+                    selected = candidates[:2]
+                parts = []
+                for name, shape, unit in selected[:2]:
+                    dimensions = " × ".join(str(value) for value in shape) or "scalar"
+                    parts.append(f"{name.split('/')[-1]}: {dimensions}" + (f" [{unit}]" if unit else ""))
+                return " · ".join(parts) if parts else "No numeric datasets"
+        except Exception as exc:
+            return f"Details unavailable: {exc}"
+
+    @staticmethod
+    def _format_measurement_scalar(value: float) -> str:
+        return f"{float(value):g}".replace("-", "−")
+
+    def _active_measurement_metadata_summary(self) -> str:
+        """Summarize retained acquisition metadata without changing FIT settings."""
+        if not self.project.measurements:
+            return "No measurements loaded."
+        options = {
+            role: dataset.options or {}
+            for role, dataset in self.project.measurements.items()
+        }
+        parts: list[str] = []
+        identity_sources = [
+            value.get("bpm_names") or [] for value in options.values()
+            if value.get("bpm_names")
+        ]
+        if identity_sources:
+            bpm_count = len(identity_sources[0])
+            ordered = all(list(names) == list(identity_sources[0]) for names in identity_sources[1:])
+            parts.append(f"{bpm_count} ordered BPM identities" + ("" if ordered else " (order differs between files)"))
+
+        orm = options.get("orm", {})
+        if orm:
+            acquisition = orm.get("acquisition_metadata") or {}
+            h_names = orm.get("horizontal_corrector_names") or []
+            v_names = orm.get("vertical_corrector_names") or []
+            unit = orm.get("response_matrix_unit") or acquisition.get("response_matrix_unit") or "not recorded"
+            matrix_kind = "normalized" if orm.get("scaled") else "unscaled"
+            orm_text = f"ORM: {len(h_names)} H + {len(v_names)} V correctors, {matrix_kind} [{unit}]"
+            actual = np.concatenate((
+                np.asarray(orm.get("actual_kick_h_rad") or (), dtype=float).ravel(),
+                np.asarray(orm.get("actual_kick_v_rad") or (), dtype=float).ravel(),
+            ))
+            if actual.size:
+                magnitude = np.abs(actual) * 1e6
+                if np.allclose(magnitude, magnitude[0]):
+                    orm_text += f", actual bipolar separation {self._format_measurement_scalar(magnitude[0])} µrad"
+                else:
+                    orm_text += (
+                        f", actual bipolar separations {self._format_measurement_scalar(np.min(magnitude))}–"
+                        f"{self._format_measurement_scalar(np.max(magnitude))} µrad"
+                    )
+            parts.append(orm_text)
+
+        dispersion = options.get("dispersion", {})
+        if dispersion:
+            acquisition = dispersion.get("acquisition_metadata") or {}
+            unit = acquisition.get("canonical_measured_eta_unit") or "m"
+            step = dispersion.get("rf_step_hz")
+            definition = dispersion.get("measured_eta_definition") or acquisition.get("rf_difference_sign_convention")
+            text = "Dispersion RF orbit difference"
+            if step is not None:
+                text += f": signed RF step {self._format_measurement_scalar(step)} Hz"
+            if definition:
+                text += f", {str(definition).replace('_', ' ')}"
+            text += f" [{unit}]"
+            parts.append(text)
+
+        noise = options.get("bpm_noise", {})
+        if noise:
+            acquisition = noise.get("acquisition_metadata") or {}
+            datasets = noise.get("datasets") or {}
+            horizontal = noise.get("horizontal_dataset") or datasets.get("horizontal") or "horizontal dataset not recorded"
+            vertical = noise.get("vertical_dataset") or datasets.get("vertical") or "vertical dataset not recorded"
+            unit = acquisition.get("bpm_noise_unit") or ("m" if noise.get("units_convention") == "SI" else "not recorded")
+            parts.append(f"BPM noise: {horizontal} / {vertical} [{unit}]")
+
+        if not parts:
+            return (
+                "Measurement files are loaded, but no recognized acquisition metadata summary is available. "
+                "FIT compatibility validation remains required."
+            )
+        return "Measurement metadata available — " + "; ".join(parts) + "."
+
+    def _show_measurement_details(self, role: str) -> None:
+        dataset = self.project.measurements.get(role)
+        if dataset is None:
+            QMessageBox.information(self, "Measurement details", "This measurement is no longer loaded.")
+            return
+        resolved = self.project.resolve_path(dataset.path)
+        fields = measurement_display_fields(resolved, dataset.options)
+        details = self._measurement_table_details(role, dataset)
+        QMessageBox.information(
+            self,
+            f"{role.replace('_', ' ').title()} measurement details",
+            f"Filename: {Path(dataset.path).name}\n"
+            f"Directory: {resolved.parent}\n"
+            f"Full path: {resolved}\n"
+            f"Status: {'Loaded' if resolved.is_file() else 'Missing'}\n\n"
+            f"Datasets and dimensions: {details}\n"
+            f"Acquisition date: {fields['date']}\n"
+            f"Acquisition time: {fields['time']}\n"
+            f"Time source: {fields['timestamp_source']}\n"
+            f"Machine/profile: {fields['machine_profile']}",
+        )
+
+    def _invalidate_stale_reference_comparisons(self) -> None:
+        """Close comparison windows that no longer describe this project."""
+        if not getattr(self, "_reference_comparison_windows", None):
+            return
+        try:
+            signature = self._reference_request_signature(LocoRunRequest.from_project(self.project))
+        except Exception:
+            signature = ""
+        for window in list(self._reference_comparison_windows):
+            if getattr(window, "_project_signature", None) != signature:
+                window.close()
+
     def _refresh_ui(self, message: str) -> None:
+        self._invalidate_stale_reference_comparisons()
         suffix = " *" if self.project.modified else ""
-        self._project_label.setText(f"Project: {self.project.name}{suffix}")
+        filename = Path(self.project.path).name if self.project.path else "Not saved"
+        state = "Unsaved changes" if self.project.modified else ("Saved" if self.project.path else "New project")
+        self._project_label.setText(f"Project: {self.project.name} — {filename} · {state}")
+        self._project_label.setToolTip(
+            f"Project file: {self.project.path or 'No project file selected'}\nState: {state}"
+        )
         self.setWindowTitle(f"pyLOCO GUI — {self.project.name}{suffix}")
+        has_fit_stages = bool(self.fit_recipe.stages)
+        gui_complete = self.project.is_complete and has_fit_stages
         self._validation_label.setText(
             "Validation: complete"
-            if self.project.is_complete
+            if gui_complete
             else "Validation: incomplete"
         )
         self._validation_label.setObjectName(
-            "validationOk" if self.project.is_complete else "validationMissing"
+            "validationOk" if gui_complete else "validationMissing"
         )
         self.run_loco_action.setEnabled(
-            self.project.is_complete
+            gui_complete
             and self._run_thread is None
             and not self._run_preparing
         )
+        compatibility = self.project.compatibility_validation or {}
+        compatibility_ready = self._compatibility_is_validated()
+        if hasattr(self, "resume_fit_run_button"):
+            self.resume_fit_run_button.setEnabled(compatibility_ready and has_fit_stages)
+        if hasattr(self, "resume_previous"):
+            self.resume_previous.setEnabled(compatibility_ready and has_fit_stages)
+        if hasattr(self, "compatibility_status_label"):
+            if compatibility.get("required"):
+                status = compatibility.get("status", "validation_required")
+                issues = list(compatibility.get("issues") or [])
+                if status == "validated":
+                    self.compatibility_status_label.setObjectName("validationOk")
+                    self.compatibility_status_label.setText("Compatibility validated — fitting and resume are enabled.")
+                else:
+                    self.compatibility_status_label.setObjectName("validationMissing")
+                    first = (
+                        issues[0]
+                        .removeprefix("MISSING_MEASUREMENT_PROVENANCE: ")
+                        .removeprefix("MALFORMED_PROJECT_CONFIGURATION: ")
+                        if issues else "Validation is required."
+                    )
+                    remaining = f" · {len(issues) - 1} additional issue(s)" if len(issues) > 1 else ""
+                    self.compatibility_status_label.setText(
+                        f"Editing mode — fitting disabled. {first}{remaining} Use Validate after making changes."
+                    )
+                self.compatibility_status_label.setToolTip("\n".join(issues))
+                self.compatibility_status_label.setVisible(True)
+                self.compatibility_status_label.style().unpolish(self.compatibility_status_label)
+                self.compatibility_status_label.style().polish(self.compatibility_status_label)
+            else:
+                self.compatibility_status_label.setVisible(False)
         self.compare_orms_action.setEnabled(self._can_compare_orms())
+        if (
+            self.project.lattice.path
+            and self.project.lattice.file_type.lower() == "mat"
+            and not self.project.lattice.mat_variable
+        ):
+            # Backward-compatible upgrade for projects saved before MAT
+            # variable provenance existed. Only a unique valid candidate is
+            # accepted; ambiguous files still require explicit user choice.
+            self._load_current_lattice()
         self.lattice_path.setText(self.project.lattice.path or "No lattice selected")
         self.lattice_type.setText(self.project.lattice.file_type or "—")
+        is_mat = bool(self.project.lattice.path) and self.project.lattice.file_type.lower() == "mat"
+        self.lattice_variable.setText(
+            self.project.lattice.mat_variable or ("Not selected" if is_mat else "Not applicable")
+        )
+        self.change_mat_variable_button.setEnabled(is_mat)
         self.lattice_elements.setText(
             str(self.project.lattice.element_count)
             if self.project.lattice.element_count
@@ -3963,10 +6577,65 @@ class MainWindow(QMainWindow):
         self.measurement_list.clearContents()
         self.measurement_list.setRowCount(len(self.project.measurements))
         for row,(role, dataset) in enumerate(sorted(self.project.measurements.items())):
-            fields=measurement_display_fields(dataset.path,dataset.options)
-            values=(dataset.name,role,fields["date"],fields["time"],fields["machine_profile"])
+            resolved = self.project.resolve_path(dataset.path)
+            fields=measurement_display_fields(resolved,dataset.options)
+            available = resolved.is_file()
+            details = self._measurement_table_details(role, dataset)
+            values=(role.replace("_", " ").title(), Path(dataset.path).name,
+                    fields["date"], fields["time"], "Loaded" if available else "Missing")
             for column,value in enumerate(values):
-                item=QTableWidgetItem(str(value)); item.setToolTip(fields["tooltip"]); self.measurement_list.setItem(row,column,item)
+                item=QTableWidgetItem(str(value))
+                item.setToolTip(
+                    f"{resolved}\n{details}\n"
+                    f"Acquisition date/time: {fields['date']} {fields['time']}\n"
+                    f"Machine/profile: {fields['machine_profile']}"
+                )
+                self.measurement_list.setItem(row,column,item)
+            details_cell = QWidget()
+            details_layout = QHBoxLayout(details_cell)
+            details_layout.setContentsMargins(5, 3, 5, 3)
+            details_button = QToolButton()
+            details_button.setText("Details…")
+            details_button.setObjectName("measurementDetailsButton")
+            details_button.setFixedHeight(30)
+            details_button.setStyleSheet(
+                "QToolButton { min-height: 0px; max-height: 30px; padding: 2px 9px; }"
+            )
+            details_button.setToolTip("Show the full path, directory, dimensions, units and acquisition metadata.")
+            details_button.clicked.connect(
+                lambda checked=False, measurement_role=role: self._show_measurement_details(measurement_role)
+            )
+            details_layout.addWidget(details_button, 0, Qt.AlignCenter)
+            self.measurement_list.setCellWidget(row, 5, details_cell)
+        session = self.project.measurement_session or {}
+        session_name = str(session.get("session_id") or session.get("name") or "Not recorded")
+        manifest = str(session.get("manifest") or "Not recorded")
+        if self.project.measurements:
+            session_text = f"Active measurement session: {session_name}"
+            if manifest != "Not recorded":
+                session_text += f" · Manifest: {Path(manifest).name}"
+            self.active_measurement_session_label.setText(session_text)
+            self.active_measurement_session_label.setToolTip(
+                f"Session: {session_name}\nManifest: {manifest}"
+            )
+        else:
+            self.active_measurement_session_label.setText("Active measurement session: none")
+            self.active_measurement_session_label.setToolTip("")
+        self.measurement_metadata_label.setText(self._active_measurement_metadata_summary())
+        missing_measurements = self._missing_measurement_roles()
+        if missing_measurements:
+            details = "; ".join(f"{role}: {dataset.path}" for role, dataset in missing_measurements)
+            self.measurement_file_status.setText(
+                "Missing measurement file reference(s): " + details
+                + ". Locate each file to restore the saved binding; its contents will not be embedded in the project."
+            )
+            self.locate_missing_measurement_button.setEnabled(True)
+        elif self.project.measurements:
+            self.measurement_file_status.setText("All imported measurement files are available.")
+            self.locate_missing_measurement_button.setEnabled(False)
+        else:
+            self.measurement_file_status.setText("No measurement files imported.")
+            self.locate_missing_measurement_button.setEnabled(False)
         self.recent_list.clear()
         self.recent_list.addItems(self.project.recent_projects)
         self.recent_menu.clear()
@@ -3976,6 +6645,8 @@ class MainWindow(QMainWindow):
                 lambda checked=False, value=recent: self.open_project(Path(value))
             )
         missing = self.project.validation_messages()
+        if not has_fit_stages and not any("FIT stage" in item for item in missing):
+            missing.append("At least one FIT stage must be configured before running LOCO.")
         self.dashboard_summary.setText(
             "Project complete. Run LOCO is enabled."
             if not missing
@@ -4013,7 +6684,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def _prepare_and_start_loco(self) -> None:
         try:
+            self._validate_active_stage_widget_consistency()
             self._store_active_fit_stage()
+            if not self.fit_recipe.stages:
+                raise ValueError("No FIT stages are configured. Add and validate a FIT stage before running LOCO.")
             messages = self.project.validation_messages()
             if messages:
                 raise ValueError("Missing required inputs:\n\n" + "\n".join(messages))
@@ -4028,6 +6702,8 @@ class MainWindow(QMainWindow):
                     measurement_identity=request.measurement_session, lattice_element_names=names,
                     measurements=request.measurements,
                     measurement_options=request.measurement_options,
+                    measurement_device_mapping=deepcopy(self.project.measurement_device_mapping),
+                    lattice_mat_variable=request.lattice_mat_variable or None,
                 )
                 if not report["compatible"]:
                     raise ValueError("\n".join(report["errors"]))
@@ -4042,7 +6718,7 @@ class MainWindow(QMainWindow):
             self._elapsed_timer.stop()
             self.cancel_loco_button.setEnabled(False)
             self._set_waiting_game_status("failed")
-            self.run_loco_action.setEnabled(self.project.is_complete)
+            self.run_loco_action.setEnabled(self.project.is_complete and bool(self.fit_recipe.stages))
             self.statusBar().showMessage("LOCO run could not be prepared")
             QMessageBox.critical(self, "Cannot start LOCO", f"Run preparation failed:\n\n{exc}")
             return
@@ -4232,8 +6908,121 @@ class MainWindow(QMainWindow):
             self.run_elapsed_label.setText(self.results_workspace.format_elapsed(elapsed))
 
 
+    @staticmethod
+    def _reference_request_signature(request: LocoRunRequest) -> str:
+        payload = {
+            "lattice_path": request.lattice_path,
+            "lattice_mat_variable": request.lattice_mat_variable,
+            "measurements": request.measurements,
+            "measurement_options": request.measurement_options,
+            "measurement_session": request.measurement_session,
+            "backend_mapping": request.backend_mapping,
+        }
+        encoded = json.dumps(json_safe(payload), sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    @Slot()
+    def compare_measurements_with_reference(self) -> None:
+        """Start the read-only pre-FIT reference calculation in a worker."""
+        if self._reference_comparison_thread is not None:
+            self.statusBar().showMessage("Reference-model comparison is already running.", 4000)
+            return
+        try:
+            self._validate_active_stage_widget_consistency()
+            if self.fit_recipe.stages:
+                self._store_active_fit_stage()
+            self.project.loco_config = self._collect_loco_configuration()
+            if not self.project.lattice.path:
+                raise ValueError("Select a reference lattice first.")
+            if "orm" not in self.project.measurements:
+                raise ValueError("Import an ORM measurement first.")
+            errors = self._validate_retained_measurements(self.project, comparison_only=True)
+            if errors:
+                raise ValueError(
+                    "The imported measurements are not ready for comparison with the initial model.\n\n"
+                    + "\n".join(errors)
+                    + "\n\nThe FIT execution configuration was not evaluated by this check."
+                )
+            request = LocoRunRequest.from_project(self.project)
+        except Exception as exc:
+            QMessageBox.warning(self, "Pre-FIT comparison not ready", str(exc))
+            return
+
+        self._reference_comparison_start_signature = self._reference_request_signature(request)
+        self._reference_comparison_progress = QProgressDialog(
+            "Calculating the reference ORM and RF response…", "Cancel", 0, 0, self,
+        )
+        self._reference_comparison_progress.setWindowTitle("Reference-model comparison")
+        self._reference_comparison_progress.setWindowModality(Qt.NonModal)
+        self._reference_comparison_progress.setMinimumDuration(0)
+        self._reference_comparison_thread = QThread(self)
+        self._reference_comparison_worker = ReferenceComparisonWorker(request)
+        self._reference_comparison_worker.moveToThread(self._reference_comparison_thread)
+        self._reference_comparison_progress.canceled.connect(self._cancel_reference_comparison)
+        self._reference_comparison_worker.finished.connect(self._on_reference_comparison_finished)
+        self._reference_comparison_worker.failed.connect(self._on_reference_comparison_failed)
+        self._reference_comparison_worker.finished.connect(self._cleanup_reference_comparison)
+        self._reference_comparison_worker.failed.connect(self._cleanup_reference_comparison)
+        self._reference_comparison_thread.finished.connect(self._reference_comparison_worker.deleteLater)
+        self._reference_comparison_thread.finished.connect(self._reference_comparison_thread.deleteLater)
+        self._reference_comparison_thread.start()
+        QMetaObject.invokeMethod(self._reference_comparison_worker, "run", Qt.QueuedConnection)
+        self.compare_reference_action.setEnabled(False)
+        self.compare_reference_button.setEnabled(False)
+
+    @Slot()
+    def _cancel_reference_comparison(self) -> None:
+        if self._reference_comparison_worker is not None:
+            self._reference_comparison_worker.cancel_requested = True
+            self.statusBar().showMessage(
+                "Cancellation requested; the active AT calculation will finish at its next safe boundary.", 5000
+            )
+
+    @Slot(object)
+    def _on_reference_comparison_finished(self, result) -> None:
+        try:
+            current = LocoRunRequest.from_project(self.project)
+            if self._reference_request_signature(current) != self._reference_comparison_start_signature:
+                self.statusBar().showMessage(
+                    "Reference comparison discarded because the active project changed during calculation.", 6000
+                )
+                return
+        except Exception:
+            self.statusBar().showMessage("Reference comparison discarded because the active project changed.", 6000)
+            return
+        window = ReferenceComparisonWindow(result, self)
+        window._project_signature = self._reference_comparison_start_signature
+        self._reference_comparison_windows.append(window)
+        window.destroyed.connect(
+            lambda _obj=None, w=window: self._reference_comparison_windows.remove(w)
+            if w in self._reference_comparison_windows else None
+        )
+        window.show()
+        self.statusBar().showMessage("Reference-model comparison complete — measurements were unchanged.", 5000)
+
+    @Slot(str)
+    def _on_reference_comparison_failed(self, message: str) -> None:
+        if "cancelled" in message.lower():
+            self.statusBar().showMessage("Reference-model comparison cancelled.", 4000)
+        else:
+            QMessageBox.warning(self, "Reference comparison failed", message)
+
+    @Slot()
+    def _cleanup_reference_comparison(self) -> None:
+        if self._reference_comparison_progress is not None:
+            self._reference_comparison_progress.close()
+        if self._reference_comparison_thread is not None:
+            self._reference_comparison_thread.quit(); self._reference_comparison_thread.wait()
+        self._reference_comparison_progress = None
+        self._reference_comparison_worker = None
+        self._reference_comparison_thread = None
+        self.compare_reference_action.setEnabled(True)
+        self.compare_reference_button.setEnabled(True)
+
+
     def _can_compare_orms(self) -> bool:
-        return "orm" in self.project.measurements and self._latest_model_orm_path() is not None
+        loader = getattr(self.results_workspace, "loader", None)
+        return loader is not None and loader.fitted_orm is not None
 
     def _latest_model_orm_path(self) -> Path | None:
         names = ("loco_results.npz", "model_orm_initial.h5")
@@ -4324,11 +7113,20 @@ class MainWindow(QMainWindow):
     @Slot()
     def compare_orms(self) -> None:
         try:
-            measured_orm = self._load_measured_orm_for_comparison()
-            model_orm = self._load_model_orm_for_comparison()
-            window = OrmComparisonWindow(measured_orm, model_orm, self)
+            loader = getattr(self.results_workspace, "loader", None)
+            if loader is None:
+                raise ValueError(
+                    "Select a completed FIT stage and iteration in Results before opening this comparison."
+                )
+            measured_orm, model_orm, context = loader.orm_comparison_inputs()
+            if self.results_workspace.stage_selector.isVisible():
+                context["stage_name"] = self.results_workspace.stage_selector.currentText()
+            window = OrmComparisonWindow(measured_orm, model_orm, self, context=context)
         except (OSError, RuntimeError, ValueError, KeyError, ImportError) as exc:
-            QMessageBox.warning(self, "ORM Comparison unavailable", str(exc))
+            QMessageBox.warning(
+                self, "Fitted-model comparison unavailable",
+                f"{exc}\n\nThe selected result and current project were not modified."
+            )
             return
         self._orm_comparison_windows.append(window)
         window.destroyed.connect(lambda _obj=None, w=window: self._orm_comparison_windows.remove(w) if w in self._orm_comparison_windows else None)

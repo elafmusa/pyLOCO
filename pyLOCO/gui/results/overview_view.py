@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractItemView, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractItemView, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
 from .plot_canvas import PlotCanvas
 
@@ -27,12 +27,28 @@ class OverviewView(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.loader = None
+        self._stage_index = 0
+        self._stage_count = 1
         heading = QHBoxLayout()
         title = QLabel("LOCO Results"); title.setObjectName("resultsTitle")
         self.status = QLabel("No completed run"); self.status.setObjectName("resultsStatus")
         heading.addWidget(title); heading.addStretch(1); heading.addWidget(self.status)
+        comparison_row = QHBoxLayout()
+        comparison_row.addWidget(QLabel("Improvement relative to:"))
+        self.comparison_selector = QComboBox()
+        self.comparison_selector.setObjectName("resultsImprovementBaseline")
+        self.comparison_selector.addItem("Previous iteration", "iteration")
+        self.comparison_selector.addItem("Start of this stage", "stage")
+        self.comparison_selector.addItem("Original reference model", "reference")
+        self.comparison_selector.setCurrentIndex(1)
+        self.comparison_selector.currentIndexChanged.connect(self._update_comparison)
+        comparison_row.addWidget(self.comparison_selector)
+        comparison_row.addStretch(1)
+        self.comparison_definition = QLabel("Progress from the beginning of the current stage to the selected fitted state.")
+        self.comparison_definition.setObjectName("resultsComparisonDefinition")
+        self.comparison_definition.setWordWrap(True)
         self.metrics = {name: Metric(label) for name, label in (
-            ("initial", "Initial χ²"), ("final", "Final χ²"), ("reduction", "Reduction"),
+            ("initial", "Baseline χ²"), ("final", "Selected χ²"), ("reduction", "Improvement"),
             ("iterations", "Iterations"), ("runtime", "Runtime"), ("initialization", "Initialization"),
         )}
         self.metrics_row = QGridLayout()
@@ -44,7 +60,7 @@ class OverviewView(QWidget):
         chi_group = QGroupBox("χ² convergence"); chi_layout = QVBoxLayout(chi_group); chi_layout.addWidget(self.chi_plot)
         self.orm_summary = QLabel("ORM residual metrics are unavailable."); self.orm_summary.setObjectName("ormSummary")
         self.orm_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        orm_group = QGroupBox("Raw ORM residual RMS (not weighted χ²)"); orm_layout = QVBoxLayout(orm_group); orm_layout.addWidget(self.orm_summary)
+        orm_group = QGroupBox("Comparable residual RMS (not weighted χ²)"); orm_layout = QVBoxLayout(orm_group); orm_layout.addWidget(self.orm_summary)
         self.iteration_table = QTableWidget(0, 15)
         self.iteration_table.setHorizontalHeaderLabels([
             "Iteration", "χ²", "ORM RMS [m]", "H ORM RMS [m]", "V ORM RMS [m]",
@@ -57,9 +73,18 @@ class OverviewView(QWidget):
         timing_layout = QVBoxLayout(timing_group); timing_layout.addWidget(self.iteration_table)
         self.diagnostics = QLabel("No diagnostics available."); self.diagnostics.setWordWrap(True)
         diagnostics_group = QGroupBox("Diagnostics"); diagnostics_layout = QVBoxLayout(diagnostics_group); diagnostics_layout.addWidget(self.diagnostics)
+        self.technical_details = QGroupBox("Technical details")
+        self.technical_details.setCheckable(True); self.technical_details.setChecked(False)
+        technical_content = QWidget(); technical_layout = QVBoxLayout(technical_content)
+        technical_layout.setContentsMargins(0, 0, 0, 0)
+        technical_layout.addWidget(self.metadata); technical_layout.addWidget(timing_group); technical_layout.addWidget(diagnostics_group)
+        technical_group_layout = QVBoxLayout(self.technical_details); technical_group_layout.addWidget(technical_content)
+        technical_content.setVisible(False)
+        self.technical_details.toggled.connect(technical_content.setVisible)
         content = QWidget(); content_layout = QVBoxLayout(content)
-        content_layout.addLayout(heading); content_layout.addLayout(self.metrics_row); content_layout.addWidget(self.metadata)
-        content_layout.addWidget(chi_group); content_layout.addWidget(orm_group); content_layout.addWidget(timing_group); content_layout.addWidget(diagnostics_group); content_layout.addStretch(1)
+        content_layout.addLayout(heading); content_layout.addLayout(comparison_row); content_layout.addWidget(self.comparison_definition)
+        content_layout.addLayout(self.metrics_row)
+        content_layout.addWidget(chi_group); content_layout.addWidget(orm_group); content_layout.addWidget(self.technical_details); content_layout.addStretch(1)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setWidget(content)
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(scroll)
 
@@ -79,13 +104,10 @@ class OverviewView(QWidget):
         if loader.iteration is None:
             self.status.setText("✓ Final fitted state")
         elif loader.iteration == 0:
-            self.status.setText("Viewing Initial / Iteration 0")
+            self.status.setText("Viewing stage initial model (before fitting)")
         else:
             self.status.setText(f"Viewing completed Iteration {loader.iteration}")
-        self.metrics["initial"].value.setText(scientific(loader.initial_chi2, "Not persisted for this run"))
-        self.metrics["final"].value.setText(scientific(loader.final_chi2, "Unavailable"))
-        reduction = loader.chi2_reduction_percent
-        self.metrics["reduction"].value.setText("—" if reduction is None else f"{reduction:.1f}% {'↓' if reduction >= 0 else '↑'}")
+        self._update_comparison()
         requested = loader.requested_iterations
         self.metrics["iterations"].value.setText(f"{loader.completed_iterations}" + (f" / {requested}" if requested is not None else ""))
         self.metrics["runtime"].value.setText("Unavailable" if loader.runtime is None else f"{loader.runtime:.1f} s")
@@ -105,17 +127,103 @@ class OverviewView(QWidget):
         else:
             meta.append("Initialization: Current model")
         self.metadata.setText("   •   ".join(meta) if meta else "No run metadata available.")
-        before, after, improvement = loader.orm_rms_before, loader.orm_rms_after, loader.orm_improvement_percent
-        if before is None or after is None:
-            self.orm_summary.setText("Measured, initial-model, or fitted ORM is unavailable for this run.")
-        else:
-            text = f"Before fit: {before:.3e} m    After fit: {after:.3e} m"
-            if improvement is not None: text += f"    Improvement: {improvement:.1f}% {'↓' if improvement >= 0 else '↑'}"
-            self.orm_summary.setText(text)
         icons = {"success": "✓", "warning": "⚠", "info": "ℹ"}
         self.diagnostics.setText("\n".join(f"{icons.get(level, '•')} {message}" for level, message in loader.diagnostics))
         self._render_iteration_metrics()
         self._draw_chi2()
+
+    def set_comparison_context(self, *, stage_index: int = 0, stage_count: int = 1) -> None:
+        self._stage_index = max(0, int(stage_index))
+        self._stage_count = max(1, int(stage_count))
+        self._update_comparison()
+
+    @staticmethod
+    def _improvement(before, after):
+        if before is None or after is None or before == 0:
+            return None
+        return 100.0 * (before - after) / abs(before)
+
+    def _update_comparison(self) -> None:
+        if self.loader is None:
+            return
+        mode = self.comparison_selector.currentData()
+        loader = self.loader
+        if mode == "iteration":
+            before = None if loader.iteration == 0 else loader.selected_iteration_chi2_before
+            after = loader.stage_initial_chi2 if loader.iteration == 0 else loader.selected_iteration_chi2_after
+            definition = (
+                "Change during the selected optimizer iteration, using that iteration's recorded objective."
+                if loader.iteration != 0 else
+                "Stage initial model selected. Its recorded χ² is shown, but no previous optimizer iteration exists."
+            )
+            residual_text = self._iteration_residual_summary(loader)
+        elif mode == "reference" and self._stage_index > 0:
+            before = after = None
+            definition = (
+                "Not available: this run did not save a fixed-definition evaluation of the original reference "
+                "and selected models. Reduced χ² values from different stages are not compared."
+            )
+            residual_text = "Original-reference residual improvement is not available for this stage for the same reason."
+        else:
+            before = loader.stage_initial_chi2
+            after = loader.stage_initial_chi2 if loader.iteration == 0 else loader.selected_iteration_chi2_after
+            if after is None:
+                after = loader.final_chi2
+            if mode == "reference":
+                definition = "Original reference model to the selected fitted state, evaluated with this first stage's fixed objective definition."
+            else:
+                definition = "Beginning of the current stage to the selected fitted state, using the current stage objective."
+            residual_text = self._stage_residual_summary(loader)
+        improvement = self._improvement(before, after)
+        self.metrics["initial"].title.setText(
+            "Previous iteration χ²" if mode == "iteration" else
+            "Original reference χ²" if mode == "reference" else "Stage initial χ²"
+        )
+        self.metrics["final"].title.setText("Selected model χ²")
+        self.metrics["initial"].value.setText(scientific(before, "Not recorded" if mode == "iteration" else "Not available"))
+        self.metrics["final"].value.setText(scientific(after, "Not recorded" if mode == "iteration" else "Not available"))
+        self.metrics["reduction"].value.setText(
+            "Not available" if improvement is None else f"{improvement:.1f}% {'↓' if improvement >= 0 else '↑'}"
+        )
+        self.comparison_definition.setText(definition)
+        self.orm_summary.setText(residual_text)
+
+    def _iteration_residual_summary(self, loader) -> str:
+        record = loader.metrics_for_iteration() or loader.iteration_metadata
+        if not record:
+            return "Beginning- and end-of-iteration residual RMS were not recorded for this historical result."
+        orm = (record.get("orm_residual") or {}).get("rms")
+        dispersion = record.get("dispersion_residual_m") or {}
+        dx = (dispersion.get("x") or {}).get("rms")
+        dy = (dispersion.get("y") or {}).get("rms")
+        parts = ["Beginning-of-iteration residual RMS: Not recorded"]
+        if orm is not None:
+            parts.append(f"end ORM: {float(orm):.3e} m")
+        if dx is not None:
+            parts.append(f"end Dx: {float(dx):.3e} m")
+        if dy is not None:
+            parts.append(f"end Dy: {float(dy):.3e} m")
+        return "    ".join(parts)
+
+    def _stage_residual_summary(self, loader) -> str:
+        before, after = loader.orm_rms_before, loader.orm_rms_after
+        parts = []
+        if before is not None and after is not None:
+            improvement = self._improvement(before, after)
+            text = f"ORM: {before:.3e} → {after:.3e} m"
+            if improvement is not None:
+                text += f" ({improvement:.1f}% {'↓' if improvement >= 0 else '↑'})"
+            parts.append(text)
+        for plane, label in (("x", "Dx"), ("y", "Dy")):
+            values = loader.dispersion_statistics.get(plane, {})
+            start, end = values.get("rms_before"), values.get("rms_after")
+            if start is not None and end is not None:
+                text = f"{label}: {start:.3e} → {end:.3e} m"
+                if values.get("improvement") is not None:
+                    direction = "↓" if values["improvement"] >= 0 else "↑"
+                    text += f" ({values['improvement']:.1f}% {direction})"
+                parts.append(text)
+        return "    ".join(parts) if parts else "Comparable ORM/RF-dispersion residual RMS values are unavailable for this result."
 
     def _render_iteration_metrics(self) -> None:
         records = self.loader.iteration_metrics if self.loader else []

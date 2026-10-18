@@ -219,6 +219,61 @@ def test_orm_results_residual_arrays_and_plot_are_measured_minus_model(app, tmp_
     view.close()
 
 
+def test_results_separates_metadata_verified_rf_column_for_initial_and_fitted_orm(tmp_path):
+    measured = np.arange(24, dtype=float).reshape(6, 4) * 1e-6
+    initial = measured - 2e-7
+    fitted = measured - 5e-8
+    initial_rf = np.linspace(-3e-5, 3e-5, 6)
+    fitted_rf = np.linspace(-2e-5, 2e-5, 6)
+    measurement = tmp_path / "orm.h5"
+    with h5py.File(measurement, "w") as handle:
+        handle["response_matrix"] = measured
+    with h5py.File(tmp_path / "model_orm_initial.h5", "w") as handle:
+        handle["response_matrix"] = np.column_stack((initial, initial_rf))
+    np.savez_compressed(tmp_path / "loco_results.npz", orm_model=np.column_stack((fitted, fitted_rf)))
+    (tmp_path / "run_request.json").write_text(json.dumps({
+        "measurements": {"orm": str(measurement)},
+        "backend_mapping": {
+            "MachineElements": {"bpm_ords": [10, 20, 30], "horizontal_corrector_ords": [40, 50], "vertical_corrector_ords": [60, 70]},
+            "BadBPMPositions": [],
+            "ExcludedCorrectorPositions": {"horizontal": [], "vertical": []},
+            "LOCOOptions": {"includeDispersion": True},
+            "RMConfig": {"includeDispersion": True},
+        },
+    }), encoding="utf-8")
+
+    loader = ResultsLoader(tmp_path)
+    assert loader.measured_orm.shape == loader.initial_orm.shape == loader.fitted_orm.shape == (6, 4)
+    np.testing.assert_allclose(loader.initial_rf_response, initial_rf)
+    np.testing.assert_allclose(loader.fitted_rf_response, fitted_rf)
+    np.testing.assert_allclose(loader.residual_before, measured - initial)
+    np.testing.assert_allclose(loader.residual_after, measured - fitted)
+    assert loader.orm_rms_before == pytest.approx(np.sqrt(np.mean((measured - initial) ** 2)))
+    assert loader.orm_rms_after == pytest.approx(np.sqrt(np.mean((measured - fitted) ** 2)))
+
+
+def test_results_does_not_trim_unverified_extra_model_column(tmp_path):
+    measurement = tmp_path / "orm.h5"
+    with h5py.File(measurement, "w") as handle:
+        handle["response_matrix"] = np.zeros((4, 2))
+    with h5py.File(tmp_path / "model_orm_initial.h5", "w") as handle:
+        handle["response_matrix"] = np.zeros((4, 3))
+    np.savez_compressed(tmp_path / "loco_results.npz", orm_model=np.zeros((4, 3)))
+    (tmp_path / "run_request.json").write_text(json.dumps({
+        "measurements": {"orm": str(measurement)},
+        "backend_mapping": {
+            "MachineElements": {"bpm_ords": [10, 20], "horizontal_corrector_ords": [30], "vertical_corrector_ords": [40]},
+            "BadBPMPositions": [],
+            "ExcludedCorrectorPositions": {"horizontal": [], "vertical": []},
+            "LOCOOptions": {"includeDispersion": False},
+        },
+    }), encoding="utf-8")
+    loader = ResultsLoader(tmp_path)
+    assert loader.initial_orm is None
+    assert loader.fitted_orm is None
+    assert "requires 2 corrector columns" in loader.unavailable_reason("initial_orm")
+
+
 def test_restored_results_reproduce_optics_plots_and_statistics(app, tmp_path):
     _request(tmp_path / "run_request.json", included=True)
     _persisted(tmp_path, included=True)

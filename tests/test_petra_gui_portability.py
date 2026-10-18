@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from pyLOCO.gui.models.project import ProjectMetadata, json_safe
+from pyLOCO.gui.models.project import ImportedDataset, ProjectMetadata, json_safe
 from pyLOCO.gui.backend import LocoRunRequest
 
 
@@ -145,6 +145,27 @@ def test_save_as_rebases_portable_references_and_updates_project_location(tmp_pa
     assert project.base_directory == str(destination.parent.resolve())
     reopened = ProjectMetadata.load(destination)
     assert reopened.resolve_path(reopened.lattice.path) == lattice
+
+
+def test_new_project_uses_relative_local_measurements_and_absolute_external_measurements(tmp_path):
+    project_directory = tmp_path / "project"
+    project_directory.mkdir()
+    local = project_directory / "measurements" / "orm.h5"
+    local.parent.mkdir(); local.write_bytes(b"local")
+    external = tmp_path / "external-data" / "dispersion.h5"
+    external.parent.mkdir(); external.write_bytes(b"external")
+    project = ProjectMetadata(name="path policy")
+    project.measurements = {
+        "orm": ImportedDataset("orm", str(local), "h5"),
+        "dispersion": ImportedDataset("dispersion", str(external), "h5"),
+    }
+    target = project.save(project_directory / "paths.pyloco.json")
+    saved = json.loads(target.read_text())
+    assert saved["measurements"]["orm"]["path"] == "measurements/orm.h5"
+    assert Path(saved["measurements"]["dispersion"]["path"]).is_absolute()
+    reopened = ProjectMetadata.load(target)
+    assert reopened.measurements["orm"].path == str(local.resolve())
+    assert reopened.measurements["dispersion"].path == str(external.resolve())
 
 
 def test_project_json_safely_serializes_nested_numpy_configuration(tmp_path):

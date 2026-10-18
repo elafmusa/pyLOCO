@@ -142,7 +142,7 @@ def test_measure_labels_and_pre_orm_correctors(qapp):
     assert window.orm_corrector_group.isEnabled()
     assert window.rf_step_label.text()=="Total RF separation Δ"
     assert "f₀ +" in window.rf_states_explanation.text()
-    assert "K₀ + Δ/2" in window.orm_state_explanation.text()
+    assert "K₀ + ΔK/2" in window.orm_state_explanation.text()
     visible=" ".join(widget.text() for widget in window.findChildren(type(window.heading)) if hasattr(widget,"text"))
     assert "Operator" not in visible and "operator" not in visible
     window.close()

@@ -129,6 +129,58 @@ def test_preflight_rejects_stage_selection_incompatible_with_payload(tmp_path):
     assert any("selects 2 horizontal correctors" in error for error in report["errors"])
     assert any("fits quads but selects no lattice elements" in error for error in report["errors"])
 
+    comparison_report = preflight_recipe(
+        recipe, lattice_path=str(lattice), measurement_identity={},
+        measurements=paths, comparison_only=True,
+    )
+    # Reference-response readiness is independent of FIT stage parameter and
+    # magnet selections. Measurement identity/shape checks remain active.
+    assert not any("fits quads" in error for error in comparison_report["errors"])
+    assert not any("selects 2 horizontal correctors" in error for error in comparison_report["errors"])
+
+
+def test_preflight_accepts_different_names_only_through_validated_physical_mapping(tmp_path, monkeypatch):
+    from pyLOCO.gui.measurement_mapping import find_exact_device_mappings
+    import at
+
+    class Element:
+            def __init__(self, name, device):
+                self.FamName, self.Device = name, device
+                self.PolynomA, self.PolynomB = [0.0], [0.0]
+                self.Length, self.PassMethod = 1.0, "StrMPoleSymplectic4Pass"
+
+    ring = [Element("BPM_AT_1", "cs/bpm/1"), Element("BPM_AT_2", "cs/bpm/2"),
+            Element("HC_AT", "cs/h/1"), Element("VC_AT", "cs/v/1"), Element("Q", "cs/q")]
+    lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"mapped ring")
+    paths = _modern_measurements(
+        tmp_path, bpm_names=("cs/bpm/1", "cs/bpm/2"),
+        h_names=("cs/h/1-B1L",), v_names=("cs/v/1-A1L",),
+    )
+    inventory = {"bpm": ["cs/bpm/1", "cs/bpm/2"],
+                 "horizontal_corrector": ["cs/h/1-B1L"],
+                 "vertical_corrector": ["cs/v/1-A1L"]}
+    device_mapping = find_exact_device_mappings(ring, inventory, lattice_path=lattice)
+    stage = mapping("quads")
+    stage["MachineElements"] = {
+        "bpm_ords": [0, 1], "horizontal_corrector_ords": [2],
+        "vertical_corrector_ords": [3], "normal_quadrupole_ords": [4],
+    }
+    recipe = FitRecipe(data_requirements={
+        # Deliberately different historical control-system names.
+        "bpm_names": ["OLD1", "OLD2"], "horizontal_corrector_names": ["OLDH"],
+        "vertical_corrector_names": ["OLDV"], "rf_step_hz": 200.0,
+        "units": {"orm": "m", "dispersion": "m", "bpm_noise": "m"},
+    }, stages=[FitStage("mapped", stage, "original_model")])
+    monkeypatch.setattr(at, "load_lattice", lambda *_args, **_kwargs: ring)
+    report = preflight_recipe(recipe, lattice_path=str(lattice), measurement_identity={},
+                              measurements=paths, measurement_device_mapping=device_mapping)
+    assert report["compatible"], report["errors"]
+    wrong = json.loads(json.dumps(device_mapping)); wrong["mappings"][0]["lattice_ordinal"] = 1
+    report = preflight_recipe(recipe, lattice_path=str(lattice), measurement_identity={},
+                              measurements=paths, measurement_device_mapping=wrong)
+    assert not report["compatible"]
+    assert any("mapping is incomplete" in error.lower() for error in report["errors"])
+
 
 def test_legacy_identity_is_accepted_only_with_recipe_pinned_hashes(tmp_path):
     lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"ring")

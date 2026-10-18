@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
+import h5py
 import numpy as np
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QDialog, QDialogButtonBox, QFileDialog,
+    QAbstractItemView, QApplication, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QLabel, QMessageBox, QPlainTextEdit, QWidget,
 )
 
 import pyLOCO.gui.main_window as main_window_module
 from pyLOCO.gui.main_window import ElementSelectionDialog, MainWindow
-from pyLOCO.gui.models.project import ProjectMetadata, json_safe
+from pyLOCO.gui.fit_workflow import FitRecipe
+from pyLOCO.gui.models.project import CompletedRunReference, ImportedDataset, ProjectMetadata, json_safe
 
 
 @pytest.fixture(scope="module")
@@ -99,6 +102,267 @@ def test_fit_workflow_row_selection_loads_each_stage_configuration(app):
     assert "Editing stage 2" in window.fit_stage_editor_label.text()
     window.project.modified = False
     window.close()
+
+
+def test_removing_stages_loads_the_surviving_stage_configuration(app):
+    window = MainWindow()
+    parameter_pairs = [
+        ("hbpm_gain", "quads"),
+        ("vbpm_gain", "quads"),
+        ("quads", "skew_quads"),
+        ("skew_quads", "hbpm_coupling"),
+    ]
+
+    # Build four stages with deliberately distinct configurations.
+    first_on, first_off = parameter_pairs[0]
+    window.parameter_checks[first_on].setChecked(True)
+    window.parameter_checks[first_off].setChecked(False)
+    window._store_active_fit_stage()
+    for on_name, off_name in parameter_pairs[1:]:
+        window._duplicate_fit_stage()
+        for checkbox in window.parameter_checks.values():
+            checkbox.setChecked(False)
+        window.parameter_checks[on_name].setChecked(True)
+        window.parameter_checks[off_name].setChecked(False)
+        window._store_active_fit_stage()
+
+    # Reopen stage 1, then remove the first three stages. Each deletion must
+    # load the configuration of the stage that moved into row 1.
+    window.fit_workflow_table.selectRow(0)
+    app.processEvents()
+    for expected_on, _expected_off in parameter_pairs[1:]:
+        window._remove_fit_stage()
+        app.processEvents()
+        assert window.parameter_checks[expected_on].isChecked()
+        assert window.project.modified is True
+        assert "Unsaved changes" in window._project_label.text()
+        assert "Editing stage 1" in window.fit_stage_editor_label.text()
+        assert window.fit_stage_editor_label.text().endswith(
+            "the FIT controls below belong to this stage"
+        )
+
+    assert len(window.fit_recipe.stages) == 1
+    assert window.fit_recipe.stages[0].name == "Stage 1 copy copy copy"
+    window.project.modified = False
+    window.close()
+
+
+def test_clear_fit_configuration_supports_empty_save_reopen_and_clean_rebuild(app, tmp_path, monkeypatch):
+    lattice = tmp_path / "ring.mat"; lattice.write_bytes(b"lattice")
+    orm = tmp_path / "orm.h5"
+    with h5py.File(orm, "w") as handle:
+        handle.create_dataset("response_matrix", data=np.zeros((4, 2)))
+    original = tmp_path / "historical.pyloco.json"
+    adapted = tmp_path / "adapted-empty.pyloco.json"
+
+    window = MainWindow()
+    window.project.lattice.path = str(lattice)
+    window.project.lattice.file_type = "mat"
+    window.project.lattice.mat_variable = "betamodel"
+    window.project.measurements["orm"] = ImportedDataset("orm", str(orm), "h5", orm.stat().st_size)
+    elements = window.project.loco_config.machine_elements
+    elements.bpm_ords = [1, 2]
+    elements.horizontal_corrector_ords = [3]
+    elements.vertical_corrector_ords = [4]
+    elements.normal_quadrupole_ords = [5]
+    window.project.loco_config.element_selection_state = {
+        "bpm_ords": {"method": "validated_measurement_mapping", "resolved_ords": [1, 2]}
+    }
+    window.project.measurement_device_mapping = {
+        "schema": "pyloco-fit-measurement-mapping/v1", "mappings": [{"status": "mapped"}]
+    }
+    window.project.loco_config.bad_bpm_positions = [1]
+    window.project.loco_config.excluded_horizontal_corrector_positions = [0]
+    window.project.completed_run = CompletedRunReference(str(tmp_path / "old-results"), 1.0, "completed")
+    window.project.fit_run_session = {"path": str(tmp_path / "old-session.json"), "completed_stages": 1}
+
+    # The historical stage deliberately differs from initial defaults.
+    window.solver_n_iter.setValue(2)
+    for checkbox in window.parameter_checks.values():
+        checkbox.setChecked(False)
+    window.parameter_checks["skew_quads"].setChecked(True)
+    window.parameter_checks["hbpm_coupling"].setChecked(True)
+    window.parameter_checks["vbpm_coupling"].setChecked(True)
+    window._store_active_fit_stage()
+    window._snapshot_project_from_widgets()
+    window.project.save(original)
+    original_bytes = original.read_bytes()
+    measurement_bytes = orm.read_bytes()
+
+    monkeypatch.setattr(window, "_confirm_clear_fit_configuration", lambda exclusions: True)
+    assert window.clear_fit_configuration() is True
+    assert window.fit_recipe.stages == []
+    assert window._active_fit_stage == -1
+    assert not window.fit_empty_state_label.isHidden()
+    assert window.fit_stage_buttons["+ Add stage"].text() == "+ Add first FIT stage"
+    assert window.project.lattice.path == str(lattice)
+    assert window.project.lattice.mat_variable == "betamodel"
+    assert window.project.measurements["orm"].path == str(orm)
+    assert window.project.loco_config.machine_elements.bpm_ords == [1, 2]
+    assert window.project.loco_config.machine_elements.normal_quadrupole_ords == [5]
+    assert window.project.loco_config.element_selection_state["bpm_ords"]["method"] == "validated_measurement_mapping"
+    assert window.project.measurement_device_mapping["mappings"][0]["status"] == "mapped"
+    assert window.project.loco_config.bad_bpm_positions == []
+    assert window.project.loco_config.excluded_horizontal_corrector_positions == []
+    assert window.project.completed_run.results_dir == ""
+    assert window.project.fit_run_session == {}
+    assert not window.run_loco_action.isEnabled()
+    assert not window.resume_fit_run_button.isEnabled()
+    assert not window.save_fit_recipe_button.isEnabled()
+    assert not window.save_fit_run_session_button.isEnabled()
+    assert original.read_bytes() == original_bytes
+    assert orm.read_bytes() == measurement_bytes
+
+    assert window._save_project_to(adapted) is True
+    restored = ProjectMetadata.load(adapted)
+    assert restored.fit_recipe["stages"] == []
+    reopened = MainWindow()
+    reopened.project = restored
+    reopened._load_config_to_widgets()
+    reopened._load_project_fit_recipe()
+    reopened._refresh_ui("reopened")
+    assert reopened.fit_recipe.stages == []
+    assert not reopened.fit_empty_state_label.isHidden()
+    assert not reopened.run_loco_action.isEnabled()
+
+    # Adding and rebuilding starts from defaults, not the deleted skew stage.
+    reopened._add_fit_stage()
+    assert len(reopened.fit_recipe.stages) == 1
+    assert reopened.fit_recipe.stages[0].start_from == "original_model"
+    config = reopened._configuration_for_fit_stage(reopened.fit_recipe.stages[0])
+    assert config.solver.nIter == 1
+    assert config.parameters.skew_quads is False
+    assert config.parameters.hbpm_coupling is False
+    assert config.parameters.vbpm_coupling is False
+    for _ in range(3):
+        reopened._duplicate_fit_stage()
+    assert len(reopened.fit_recipe.stages) == 4
+    for stage in reopened.fit_recipe.stages:
+        stage_config = reopened._configuration_for_fit_stage(stage)
+        assert stage_config.solver.nIter == 1
+        assert stage_config.parameters.skew_quads is False
+        assert stage_config.parameters.hbpm_coupling is False
+        assert stage_config.parameters.vbpm_coupling is False
+    assert not reopened.run_loco_action.isEnabled()  # Full validation is still required.
+    window.project.modified = False; window.close()
+    reopened.project.modified = False; reopened.close()
+
+
+def test_removing_final_fit_stage_enters_confirmed_empty_state(app, monkeypatch):
+    window = MainWindow()
+    assert len(window.fit_recipe.stages) == 1
+    monkeypatch.setattr(window, "_confirm_clear_fit_configuration", lambda exclusions: True)
+    window._remove_fit_stage()
+    assert window.fit_recipe.stages == []
+    assert window.fit_workflow_table.rowCount() == 0
+    assert window._active_fit_stage == -1
+    assert not window.run_loco_action.isEnabled()
+    window.project.modified = False; window.close()
+
+
+def test_clear_fit_configuration_cancel_is_transactional(app, monkeypatch):
+    window = MainWindow()
+    window.solver_n_iter.setValue(7)
+    window._store_active_fit_stage()
+    before_project = window.project.to_dict()
+    before_recipe = window.fit_recipe.to_dict()
+    monkeypatch.setattr(window, "_confirm_clear_fit_configuration", lambda exclusions: False)
+    assert window.clear_fit_configuration() is False
+    assert window.project.to_dict() == before_project
+    assert window.fit_recipe.to_dict() == before_recipe
+    assert window.solver_n_iter.value() == 7
+    window.project.modified = False; window.close()
+
+
+def test_fit_workflow_table_edits_sync_controls_and_persist(app, tmp_path, monkeypatch):
+    window = MainWindow()
+    window.parameter_checks["hbpm_gain"].setChecked(True)
+    window.parameter_checks["skew_quads"].setChecked(False)
+    window._store_active_fit_stage()
+    window._duplicate_fit_stage()
+    window.parameter_checks["hbpm_gain"].setChecked(False)
+    window.parameter_checks["skew_quads"].setChecked(True)
+    window.solver_n_iter.setValue(2)
+
+    # Editable table cells update the FitStage source model and active controls.
+    window.fit_workflow_table.item(1, 1).setText("Coupling correction")
+    window.fit_workflow_table.item(1, 3).setText("5")
+    assert window.fit_recipe.stages[1].name == "Coupling correction"
+    assert window.solver_n_iter.value() == 5
+    assert window._configuration_for_fit_stage(window.fit_recipe.stages[1]).solver.nIter == 5
+
+    # Detailed controls update the table summary immediately.
+    window.parameter_checks["skew_quads"].setChecked(False)
+    window.parameter_checks["vbpm_coupling"].setChecked(True)
+    assert "vbpm_coupling" in window.fit_workflow_table.item(1, 2).text()
+    assert "skew_quads" not in window.fit_workflow_table.item(1, 2).text()
+    window.solver_n_iter.setValue(6)
+    assert window.fit_workflow_table.item(1, 3).text() == "6"
+    window.loco_hor_dispersion_weight.setValue(2.5)
+    assert "horizontal=2.5" in window.fit_workflow_table.item(1, 2).toolTip()
+    window.bad_bpm_positions_edit.setText("0")
+    window.bad_bpm_positions_edit.editingFinished.emit()
+    assert "1 BPM" in window.fit_workflow_table.item(1, 2).toolTip()
+
+    # Stage 1 cannot inherit; later stages expose the two valid choices.
+    first_cell = window.fit_workflow_table.cellWidget(0, 4)
+    second_cell = window.fit_workflow_table.cellWidget(1, 4)
+    first_start = first_cell.findChild(QComboBox, "fitStageStartingModelEditor")
+    second_start = second_cell.findChild(QComboBox, "fitStageStartingModelEditor")
+    assert first_start is not None and second_start is not None
+    assert window.fit_workflow_table.rowHeight(0) == 38
+    assert window.fit_workflow_table.rowHeight(1) == 38
+    assert first_start.maximumHeight() <= 32
+    assert second_start.maximumHeight() <= 32
+    assert first_cell.layout().contentsMargins().top() == 3
+    assert second_cell.layout().contentsMargins().bottom() == 3
+    assert first_start.minimumWidth() >= 245
+    assert second_start.minimumWidth() >= 245
+    assert first_start.currentData() == "original_model"
+    assert first_start.isEnabled() is False
+    assert [second_start.itemData(i) for i in range(second_start.count())] == [
+        "original_model", "previous_stage"
+    ]
+    second_start.setCurrentIndex(second_start.findData("original_model"))
+    assert window.fit_recipe.stages[1].start_from == "original_model"
+    second_start = window.fit_workflow_table.cellWidget(1, 4).findChild(
+        QComboBox, "fitStageStartingModelEditor"
+    )
+    second_start.setCurrentIndex(second_start.findData("previous_stage"))
+    assert window.fit_recipe.stages[1].start_from == "previous_stage"
+
+    # Invalid table edits are rejected without corrupting the model.
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append((args[1], args[2])))
+    window.fit_workflow_table.item(1, 1).setText("   ")
+    assert window.fit_recipe.stages[1].name == "Coupling correction"
+    assert window.fit_workflow_table.item(1, 1).text() == "Coupling correction"
+    window.fit_workflow_table.item(1, 3).setText("0")
+    assert window.fit_workflow_table.item(1, 3).text() == "6"
+    assert len(warnings) == 2
+
+    # Project and standalone recipe round trips retain table edits.
+    project_path = tmp_path / "table-edits.pyloco.json"
+    recipe_path = tmp_path / "table-edits.recipe.json"
+    window._snapshot_project_from_widgets()
+    window.project.save(project_path)
+    window.fit_recipe.save(recipe_path)
+    restored_project = ProjectMetadata.load(project_path)
+    restored_recipe = FitRecipe.load(recipe_path)
+    assert restored_project.fit_recipe["stages"][1]["name"] == "Coupling correction"
+    assert restored_project.fit_recipe["stages"][1]["configuration"]["backend_mapping"]["LOCOOptions"]["nIter"] == 6
+    assert restored_recipe.stages[1].start_from == "previous_stage"
+    assert restored_recipe.stages[1].name == "Coupling correction"
+
+    # Reordering preserves valid inheritance and invalidates stale checkpoints.
+    window.project.completed_run = CompletedRunReference(str(tmp_path / "old"), 1.0, "completed")
+    window.project.fit_run_session = {"path": str(tmp_path / "session.json"), "completed_stages": 1}
+    window._move_fit_stage(-1)
+    assert window.fit_recipe.stages[0].start_from == "original_model"
+    assert window.project.completed_run.results_dir == ""
+    assert window.project.fit_run_session == {}
+    assert window.project.compatibility_validation["status"] == "validation_required"
+    window.project.modified = False; window.close()
 
 
 def test_backend_only_fit_recipe_stages_are_editable_in_gui(app):
@@ -374,6 +638,8 @@ def test_open_project_does_not_prompt_for_unchanged_focused_dashboard_fields(app
 
 def test_numerical_jacobians_hide_analytical_options_and_restore_state(app, tmp_path):
     window = MainWindow()
+    window.parameter_checks["quads"].setChecked(True)
+    window.parameter_checks["skew_quads"].setChecked(True)
     window.analytical_thick_quadrupole.setChecked(True)
     window.analytical_skew_verbose.setChecked(True)
     window.quad_jacobian_calculator.setCurrentText("Numerical")
@@ -787,3 +1053,233 @@ def test_file_backed_dkick_survives_open_edit_save_and_reopen(
     np.testing.assert_array_equal(restored_h, horizontal)
     np.testing.assert_array_equal(restored_v, vertical)
     assert Path(restored.loco_config.parameters.cmstep.file) == steps
+
+
+def test_parameter_selection_precedes_context_aware_jacobian_controls(app):
+    window = MainWindow()
+    fit_layout = window.parameter_group.parentWidget().layout()
+    assert fit_layout.indexOf(window.parameter_group) < fit_layout.indexOf(window.jacobian_group)
+
+    window.fixed_dk.setText("0.000234")
+    window.fixed_delta_skew.setValue(0.000345)
+    window.fixed_delta_q_tilt.setValue(0.000456)
+    for key in ("quads", "skew_quads", "quads_tilt"):
+        window.parameter_checks[key].setChecked(False)
+    app.processEvents()
+    assert not window.quad_jacobian_calculator.isEnabled()
+    assert not window.skew_jacobian_calculator.isEnabled()
+    assert not window.fixed_dk.isEnabled()
+    assert not window.fixed_delta_skew.isEnabled()
+    assert not window.fixed_delta_q_tilt.isEnabled()
+    assert "Not used" in window.normal_step_resolution.text()
+    assert window.skew_step_status.text() == "Not used in this stage"
+    assert window.tilt_step_status.text() == "Not used in this stage"
+
+    for key in ("quads", "skew_quads", "quads_tilt"):
+        window.parameter_checks[key].setChecked(True)
+    window.quad_jacobian_calculator.setCurrentText("Numerical")
+    window.skew_jacobian_calculator.setCurrentText("Numerical")
+    app.processEvents()
+    assert window.quad_jacobian_calculator.isEnabled()
+    assert window.skew_jacobian_calculator.isEnabled()
+    assert window.fixed_dk.isEnabled()
+    assert window.fixed_delta_skew.isEnabled()
+    assert window.fixed_delta_q_tilt.isEnabled()
+    assert window.fixed_dk.text() == "0.000234"
+    assert window.fixed_delta_skew.value() == pytest.approx(0.000345)
+    assert window.fixed_delta_q_tilt.value() == pytest.approx(0.000456)
+    window.project.modified = False
+    window.close()
+
+
+def test_stage_switch_updates_parameter_and_jacobian_context(app):
+    window = MainWindow()
+    window.parameter_checks["quads"].setChecked(False)
+    window.parameter_checks["skew_quads"].setChecked(True)
+    window._store_active_fit_stage()
+    window._duplicate_fit_stage()
+    window.parameter_checks["quads"].setChecked(True)
+    window.parameter_checks["skew_quads"].setChecked(False)
+    window._store_active_fit_stage()
+
+    window.fit_workflow_table.selectRow(0)
+    app.processEvents()
+    assert not window.quad_jacobian_calculator.isEnabled()
+    assert window.skew_jacobian_calculator.isEnabled()
+    window.fit_workflow_table.selectRow(1)
+    app.processEvents()
+    assert window.quad_jacobian_calculator.isEnabled()
+    assert not window.skew_jacobian_calculator.isEnabled()
+    window.project.modified = False
+    window.close()
+
+
+def test_momentum_compaction_source_visibility_and_persistence(app, tmp_path, monkeypatch):
+    window = MainWindow()
+    monkeypatch.setattr(window, "_automatic_momentum_compaction", lambda: (8.62361468e-5, None))
+    window.mcf_source.setCurrentIndex(window.mcf_source.findData("automatic"))
+    window._update_mcf_source_visibility()
+    assert window.mcf_user_value.isHidden()
+    assert window.mcf_user_value_label.isHidden()
+    assert not window.mcf_automatic_summary.isHidden()
+    assert "αc = 8.62361468e-05" in window.mcf_automatic_summary.text()
+    assert "dimensionless" in window.mcf_automatic_summary.text()
+
+    window.mcf_source.setCurrentIndex(window.mcf_source.findData("user"))
+    window.mcf_user_value.setText("8.7e-5")
+    app.processEvents()
+    assert not window.mcf_user_value.isHidden()
+    assert window.mcf_automatic_summary.isHidden()
+    window.mcf_source.setCurrentIndex(window.mcf_source.findData("automatic"))
+    assert window.mcf_user_value.text() == "8.7e-5"
+    window.mcf_source.setCurrentIndex(window.mcf_source.findData("user"))
+    window.project.loco_config = window._collect_loco_configuration()
+    saved = window.project.save(tmp_path / "manual-mcf.pyloco.json")
+    restored = ProjectMetadata.load(saved)
+    assert restored.loco_config.mcf_source == "user"
+    assert restored.loco_config.mcf_user_value == "8.7e-5"
+    assert restored.loco_config.to_mcf_kwargs() == {"source": "user", "value": 8.7e-5}
+    window.project.modified = False
+    window.close()
+
+
+def test_fit_import_export_actions_are_at_top_and_summary_remains_last(app):
+    window = MainWindow()
+    layout = window.fit_configuration_actions.parentWidget().layout()
+    assert layout.indexOf(window.fit_configuration_actions) < layout.indexOf(
+        window.fit_workflow_table.parentWidget()
+    )
+    assert layout.indexOf(window.summary_group) < layout.count() - 1  # final stretch follows it
+    buttons = window.fit_configuration_actions.findChildren(main_window_module.QPushButton)
+    labels = [button.text() for button in buttons]
+    assert labels.count("Import configuration…") == 1
+    assert labels.count("Export configuration…") == 1
+    assert labels.count("Review configuration") == 1
+    window.project.modified = False
+    window.close()
+
+
+def test_fit_summary_separates_current_all_stages_and_backend_mapping(app):
+    window = MainWindow()
+    window.parameter_checks["quads"].setChecked(False)
+    window.parameter_checks["hbpm_gain"].setChecked(True)
+    window._store_active_fit_stage()
+    window._duplicate_fit_stage()
+    window.parameter_checks["hbpm_gain"].setChecked(False)
+    window.parameter_checks["skew_quads"].setChecked(True)
+    window._on_fit_config_changed()
+    app.processEvents()
+
+    assert "Current stage overview" in window.fit_current_stage_summary.text()
+    assert "Stage 2" in window.fit_current_stage_summary.text()
+    all_stages = window.fit_all_stages_summary.text()
+    assert "All stages overview" in all_stages
+    assert window.fit_recipe.stages[0].name in all_stages
+    assert window.fit_recipe.stages[1].name in all_stages
+    readable = window.fit_scientific_summary.text()
+    assert "Inactive; 0 active fitting parameters" in readable
+    assert "physical magnets selected" in readable
+    expected = json.dumps(
+        json_safe(window.project.loco_config.to_backend_mapping()), indent=2
+    )
+    assert window.fit_backend_options.toPlainText() == expected
+    assert not window.fit_backend_group.isChecked()
+    assert window.fit_backend_contents.isHidden()
+
+    window.fit_workflow_table.selectRow(0)
+    app.processEvents()
+    assert "Stage 1" in window.fit_current_stage_summary.text()
+    window.project.modified = False
+    window.close()
+
+
+def test_import_configuration_confirms_scope_and_preserves_recipe(app, tmp_path, monkeypatch):
+    window = MainWindow()
+    original_stage_names = [stage.name for stage in window.fit_recipe.stages]
+    imported = ProjectMetadata().loco_config
+    imported.solver.nIter = 7
+    source = imported.save(tmp_path / "fit-config.json")
+    monkeypatch.setattr(
+        QFileDialog, "getOpenFileName", staticmethod(lambda *_args, **_kwargs: (str(source), ""))
+    )
+    prompts = []
+
+    def cancel(_parent, title, message, *_args, **_kwargs):
+        prompts.append((title, message))
+        return QMessageBox.Cancel
+
+    monkeypatch.setattr(QMessageBox, "question", cancel)
+    window.import_loco_configuration()
+    assert window.solver_n_iter.value() != 7
+    assert "does not load a multi-stage recipe" in prompts[0][1]
+    assert "Keep the current reference lattice" in prompts[0][1]
+
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes)
+    window.import_loco_configuration()
+    assert window.solver_n_iter.value() == 7
+    assert [stage.name for stage in window.fit_recipe.stages] == original_stage_names
+    stage_mapping = window.fit_recipe.stages[window._active_fit_stage].configuration["backend_mapping"]
+    assert stage_mapping["LOCOOptions"]["nIter"] == 7
+    window.project.modified = False
+    window.close()
+
+
+def test_export_configuration_from_moved_action_preserves_backend_mapping(app, tmp_path, monkeypatch):
+    window = MainWindow()
+    window.solver_n_iter.setValue(4)
+    expected = window._collect_loco_configuration().to_backend_mapping()
+    target = tmp_path / "exported-fit-config.json"
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *_args, **_kwargs: (str(target), ""))
+    )
+    window.export_loco_configuration()
+    assert target.is_file()
+    exported, measurements, lattice = main_window_module.load_example_project_data(target)
+    assert measurements == {}
+    assert not lattice
+    assert exported.to_backend_mapping() == expected
+    window.project.modified = False
+    window.close()
+
+
+def test_remaining_case_c_stage_edits_match_table_recipe_project_and_request(app, tmp_path):
+    source = Path(__file__).resolve().parents[1] / "Examples/EBS/multistage_fit/EBS_case_C_multistage.pyloco.json"
+    project_copy = tmp_path / "case-c-copy.pyloco.json"
+    project_copy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    shutil.copytree(source.parent / "data", tmp_path / "data")
+    window = MainWindow()
+    window.open_project(project_copy)
+    app.processEvents()
+
+    while len(window.fit_recipe.stages) > 1:
+        window.fit_workflow_table.selectRow(0)
+        app.processEvents()
+        window._remove_fit_stage()
+        app.processEvents()
+    assert window.fit_recipe.stages[0].name == "Skew and coupling"
+
+    calibration = {"hbpm_gain", "vbpm_gain", "hcor_cal", "vcor_cal"}
+    for key, checkbox in window.parameter_checks.items():
+        checkbox.setChecked(key in calibration)
+    app.processEvents()
+    expected = ["hbpm_gain", "vbpm_gain", "hcor_cal", "vcor_cal"]
+    assert window.fit_workflow_table.item(0, 2).text() == ", ".join(expected)
+    stage_mapping = window.fit_recipe.stages[0].configuration["backend_mapping"]
+    assert stage_mapping["FitInitConfig"]["fit_list"] == expected
+    assert window.fit_recipe.to_dict()["stages"][0]["configuration"]["backend_mapping"]["FitInitConfig"]["fit_list"] == expected
+    assert window.project.loco_config.to_backend_mapping()["FitInitConfig"]["fit_list"] == expected
+    assert main_window_module.LocoRunRequest.from_project(window.project).backend_mapping["FitInitConfig"]["fit_list"] == expected
+    window._validate_active_stage_widget_consistency()
+
+    window.project.fit_recipe = window.fit_recipe.to_dict()
+    saved = window.project.save(tmp_path / "edited-case-c.pyloco.json")
+    reopened = ProjectMetadata.load(saved)
+    reopened_stage = reopened.fit_recipe["stages"][0]["configuration"]["backend_mapping"]
+    assert reopened_stage["FitInitConfig"]["fit_list"] == expected
+
+    # A synthetic divergence is rejected instead of being silently repaired at launch.
+    window.fit_recipe.stages[0].configuration["backend_mapping"]["FitInitConfig"]["fit_list"] = ["skew_quads"]
+    with pytest.raises(ValueError, match="visible Parameter Selection"):
+        window._validate_active_stage_widget_consistency()
+    window.project.modified = False
+    window.close()

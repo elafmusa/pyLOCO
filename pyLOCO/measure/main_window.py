@@ -15,7 +15,7 @@ import numpy as np
 from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
+    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox, QInputDialog,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter,
     QDoubleSpinBox, QSizePolicy, QTabWidget, QTableWidget, QTableWidgetItem, QToolBar,
@@ -31,6 +31,7 @@ from pyLOCO.data_schema import (
     write_dispersion, write_orm,
 )
 from pyLOCO.gui.branding import DISPLAY_ASSET, application_icon, set_asset
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from pyLOCO.gui.project_info import (
     PROJECT_ACKNOWLEDGEMENTS, PROJECT_CONTRIBUTORS, PROJECT_DOCUMENTATION,
     PROJECT_ISSUES, PROJECT_LICENSE, PROJECT_PAPER_TITLE, PROJECT_PAPER_URL,
@@ -39,6 +40,10 @@ from pyLOCO.gui.project_info import (
 from pyLOCO.gui import __version__ as PYLOCO_VERSION
 from pyLOCO.data_schema import SCHEMA_VERSION as MEASUREMENT_SCHEMA_VERSION
 from pyLOCO.gui.results.plot_canvas import PlotCanvas
+from pyLOCO.gui.measurement_mapping import (
+    find_exact_device_mappings, mapping_counts, ordered_ordinals, validate_mapping,
+)
+from pyLOCO.gui.lattice_loader import MultipleMatLatticesError, mat_lattice_candidates
 from pyLOCO.gui.themes import ACCENTS, accent_for_key, apply_application_theme, theme_for_key
 from pyLOCO.gui.suite import launch_suite_application,present_single_about_dialog
 from .acquisition import (
@@ -365,6 +370,7 @@ class MeasureMainWindow(QMainWindow):
         self.saved_measurement_path: Path | None = None
         self.saved_session_path: Path | None = None
         self.reference_model = None
+        self.measurement_device_alignment = None
 
         # Every newly opened Measure window starts a new logical
         # measurement session. Existing files on disk are preserved,
@@ -384,7 +390,14 @@ class MeasureMainWindow(QMainWindow):
         toolbar.addWidget(self.brand_title)
         toolbar.addSeparator()
         for text, handler in (("New", self.new_project), ("Open", self.open_project), ("Save Project", self.save_project), ("Save Project As…", self.save_project_as)):
-            button=QPushButton(text); button.clicked.connect(handler); toolbar.addWidget(button)
+            button=QPushButton(text); button.clicked.connect(handler)
+            if text.startswith("Save Project"):
+                button.setToolTip("Saves Measure application and acquisition settings only. Measurement HDF5 files and the session manifest are saved automatically after acquisition.")
+            toolbar.addWidget(button)
+        self.project_save_note=QLabel("Project = settings only")
+        self.project_save_note.setObjectName("statusCaption")
+        self.project_save_note.setToolTip("Save Project does not create or replace measurement HDF5 files or the automatically maintained measurement-session manifest.")
+        toolbar.addWidget(self.project_save_note)
         spacer=QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(spacer)
         self.theme_button=QPushButton("☀ Light"); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         logo_container=QFrame(); logo_container.setObjectName("measureLogoContainer"); logo_layout=QHBoxLayout(logo_container); logo_layout.setContentsMargins(4,2,4,2)
@@ -437,6 +450,10 @@ class MeasureMainWindow(QMainWindow):
         self.tabs.addTab(measurement,"Measurement")
         saved=QWidget(); saved_layout=QVBoxLayout(saved); saved_layout.setContentsMargins(28,28,28,28)
         saved_title=QLabel("Completed measurement"); saved_title.setObjectName("pageTitle"); saved_layout.addWidget(saved_title)
+        saved_explanation=QLabel(
+            "Measurements are saved automatically as individual HDF5 files. The session manifest links the available BPM-noise, dispersion and ORM files for FIT. Save Project stores Measure configuration settings only."
+        )
+        saved_explanation.setObjectName("infoText"); saved_explanation.setWordWrap(True); saved_layout.addWidget(saved_explanation)
         self.review_machine_identity=QLabel(); self.review_machine_identity.setObjectName("planValue"); self.review_machine_identity.setWordWrap(True); saved_layout.addWidget(self.review_machine_identity)
         review_group=QGroupBox("Review"); review_layout=QVBoxLayout(review_group)
         self.review_status=QLabel("No completed measurement yet."); self.review_status.setObjectName("runState"); self.review_status.setWordWrap(True)
@@ -619,20 +636,177 @@ class MeasureMainWindow(QMainWindow):
         self.reference_model_path=QLineEdit(); self.reference_model_path.setPlaceholderText("Automatic from pySC profile, or select an authoritative nominal .mat for LIVE")
         reference_row=QWidget(); rr=QHBoxLayout(reference_row); rr.setContentsMargins(0,0,0,0); rr.addWidget(self.reference_model_path,1); choose=QPushButton("Choose .mat…"); choose.clicked.connect(self._choose_reference_model); rr.addWidget(choose)
         self.reference_model_summary=QLabel("No reference model loaded."); self.reference_model_summary.setObjectName("referenceModelCard"); self.reference_model_summary.setWordWrap(True); self.reference_model_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.reference_model_variable=QLabel("Not applicable"); self.reference_model_variable.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.change_reference_variable_button=QPushButton("Change MAT variable…"); self.change_reference_variable_button.setEnabled(False); self.change_reference_variable_button.clicked.connect(self._change_reference_mat_variable)
+        variable_row=QWidget(); vrl=QHBoxLayout(variable_row); vrl.setContentsMargins(0,0,0,0); vrl.addWidget(self.reference_model_variable,1); vrl.addWidget(self.change_reference_variable_button)
         self.reference_model_requirement=QLabel("AT is installed — reference-model calculations are available." if find_spec("at") is not None else "AT is not installed — reference-model calculations and physical dispersion are unavailable."); self.reference_model_requirement.setWordWrap(True)
         self.compare_reference=QCheckBox("Compare measurements with reference model (diagnostic only)"); self.compare_reference.setChecked(True)
-        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("",self.compare_reference)
+        self.compare_reference.toggled.connect(self._reference_comparison_changed)
+        self.verify_alignment_button=QPushButton("Verify device alignment")
+        self.verify_alignment_button.clicked.connect(self._verify_device_alignment)
+        self.alignment_details_button=QPushButton("Details…"); self.alignment_details_button.setEnabled(False)
+        self.alignment_details_button.clicked.connect(self._show_alignment_details)
+        alignment_actions=QWidget(); aal=QHBoxLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button); aal.addWidget(self.alignment_details_button); aal.addStretch(1)
+        self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then verify device alignment."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Device alignment",alignment_actions); reference_layout.addRow("",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
         layout.addWidget(reference_group); return self._scroll_page(content)
 
     def _choose_reference_model(self):
         path=QFileDialog.getOpenFileName(self,"Select authoritative reference lattice","","AT lattice (*.mat);;All files (*)")[0]
-        if path:self.reference_model_path.setText(path); self._load_reference_model(path,"User-selected reference model")
+        if path:self._load_reference_model(path,"User-selected reference model")
+
+    def _choose_reference_mat_candidate(self,candidates,current=""):
+        labels=[f"{candidate.variable} — {candidate.element_count} elements" for candidate in candidates]
+        current_index=next((index for index,candidate in enumerate(candidates) if candidate.variable==current),0)
+        choice,accepted=QInputDialog.getItem(self,"Select MAT lattice variable","Valid Accelerator Toolbox lattice variables in this MAT file:",labels,current_index,False)
+        if not accepted:return None
+        return candidates[labels.index(choice)]
 
     def _load_reference_model(self,path,source,mat_key=None):
+        try:
+            candidate_model=load_reference_model(path,source=source,mat_key=mat_key)
+        except MultipleMatLatticesError as exc:
+            selected=self._choose_reference_mat_candidate(exc.candidates,mat_key or "")
+            if selected is None:return False
+            try:candidate_model=load_reference_model(path,source=source,mat_key=selected.variable)
+            except Exception as nested:
+                QMessageBox.warning(self,"Reference model unavailable",str(nested)); return False
+        except Exception as exc:
+            QMessageBox.warning(self,"Reference model unavailable",str(exc)); return False
         self._model_orm_cache=None
-        try:self.reference_model=load_reference_model(path,source=source,mat_key=mat_key)
-        except Exception as exc:self.reference_model=None; self.reference_model_summary.setText(f"Reference model unavailable: {exc}"); return
+        self._invalidate_device_alignment("Reference lattice or MAT variable changed — verify device alignment again.")
+        self.reference_model=candidate_model
+        self.reference_model_path.setText(str(candidate_model.path))
+        self.reference_model_variable.setText(candidate_model.mat_variable or "Not applicable")
+        self.change_reference_variable_button.setEnabled(candidate_model.path.suffix.lower()==".mat")
         self._display_reference_model()
+        self._refresh_completed_reference_comparison()
+        return True
+
+    def _change_reference_mat_variable(self):
+        if self.reference_model is None or self.reference_model.path.suffix.lower()!=".mat":return
+        try:candidates=mat_lattice_candidates(self.reference_model.path)
+        except Exception as exc:QMessageBox.warning(self,"Unable to inspect MAT variables",str(exc)); return
+        if not candidates:
+            QMessageBox.warning(self,"Unable to inspect MAT variables","The selected file contains no valid Accelerator Toolbox lattice variables."); return
+        selected=self._choose_reference_mat_candidate(candidates,self.reference_model.mat_variable or "")
+        if selected is None or selected.variable==self.reference_model.mat_variable:return
+        self._load_reference_model(self.reference_model.path,self.reference_model.source,selected.variable)
+
+    def _alignment_inventory(self):
+        return {
+            "bpm":[device.name for device in self.selected_devices],
+            "horizontal_corrector":[device.name for device in self.selected_hcorrectors],
+            "vertical_corrector":[device.name for device in self.selected_vcorrectors],
+        }
+
+    def _invalidate_device_alignment(self,reason="Device inventory changed — verify device alignment again."):
+        self.measurement_device_alignment=None; self._model_orm_cache=None
+        if hasattr(self,"device_alignment_status"):
+            self.device_alignment_status.setText(reason)
+            self.alignment_details_button.setEnabled(False)
+        self._update_reference_comparison_enabled()
+
+    def _update_reference_comparison_enabled(self):
+        if not hasattr(self,"compare_reference"):return
+        required=self.adapter_combo.currentData()=="pyaml"
+        counts=mapping_counts(self.measurement_device_alignment) if self.measurement_device_alignment else {}
+        ready=(not required or bool(counts) and counts["mapped"]==counts["total"])
+        self.compare_reference.setEnabled(ready)
+        if required and not ready:self.compare_reference.setToolTip("Verify exact pyAML device alignment before calculating a reference-model comparison.")
+        else:self.compare_reference.setToolTip("Read-only diagnostic comparison; acquisition and saved measurements are unchanged.")
+
+    def _verify_device_alignment(self):
+        if self.adapter_combo.currentData()!="pyaml":
+            self.device_alignment_status.setText("Built-in pySC profiles retain their profile-bound lattice/device resolver.")
+            self._update_reference_comparison_enabled(); return
+        if self.reference_model is None:
+            self._invalidate_device_alignment("Cannot verify: load the authoritative AT reference lattice first."); return
+        configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        if not configuration.is_file():
+            self._invalidate_device_alignment("Cannot verify: the active pyAML configuration file is unavailable."); return
+        inventory=self._alignment_inventory()
+        try:
+            document=find_exact_device_mappings(self.reference_model.ring,inventory,
+                lattice_path=self.reference_model.path,configuration_path=configuration,
+                provenance="Measure exact AT Device identity")
+            counts=mapping_counts(document)
+            if counts["mapped"]!=counts["total"]:
+                self.measurement_device_alignment=document
+                self.device_alignment_status.setText(
+                    f"Alignment incomplete — {counts['mapped']}/{counts['total']} mapped; "
+                    f"{counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, "
+                    f"{counts['duplicate']} duplicate, {counts['invalid']} invalid. Comparison remains disabled.")
+            else:
+                self.measurement_device_alignment=document
+                self.device_alignment_status.setText(
+                    f"Device alignment verified — {counts['mapped']}/{counts['total']} exact AT Device identities. "
+                    "Measured BPM/corrector order will be preserved in model calculations.")
+            self.alignment_details_button.setEnabled(True)
+        except Exception as exc:
+            self._invalidate_device_alignment(f"Device alignment unavailable: {exc}"); return
+        self._update_reference_comparison_enabled()
+        if self.compare_reference.isEnabled():self._refresh_completed_reference_comparison()
+
+    def _validated_alignment_ordinals(self):
+        if self.adapter_combo.currentData()!="pyaml":return None
+        if self.reference_model is None or self.measurement_device_alignment is None:
+            raise ValueError("Verify exact device alignment before comparing with the reference model")
+        configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        checked=validate_mapping(self.measurement_device_alignment,self.reference_model.ring,
+            self._alignment_inventory(),lattice_path=self.reference_model.path,
+            configuration_path=configuration,require_provenance=True)
+        counts=mapping_counts(checked)
+        if counts["mapped"]!=counts["total"]:
+            raise ValueError(f"Device alignment is incomplete: {counts['mapped']}/{counts['total']} mapped")
+        return {role:ordered_ordinals(checked,role) for role in ("bpm","horizontal_corrector","vertical_corrector")}
+
+    def _model_mapping_kwargs(self):
+        ordinals=self._validated_alignment_ordinals()
+        if ordinals is None:return {}
+        return {
+            "bpm_ordinals":ordinals["bpm"],
+            "horizontal_corrector_ordinals":ordinals["horizontal_corrector"],
+            "vertical_corrector_ordinals":ordinals["vertical_corrector"],
+        }
+
+    def _reference_model_provenance(self):
+        provenance=dict(self.reference_model.provenance())
+        if self.measurement_device_alignment:
+            counts=mapping_counts(self.measurement_device_alignment)
+            provenance.update({
+                "device_alignment_schema":self.measurement_device_alignment.get("schema"),
+                "device_alignment_lattice_sha256":self.measurement_device_alignment.get("lattice",{}).get("sha256"),
+                "device_alignment_configuration_sha256":self.measurement_device_alignment.get("configuration",{}).get("sha256"),
+                "device_alignment_inventory_sha256":self.measurement_device_alignment.get("inventory",{}).get("sha256"),
+                "device_alignment_mapped":counts.get("mapped",0),
+                "device_alignment_total":counts.get("total",0),
+            })
+        return provenance
+
+    def _show_alignment_details(self):
+        document=self.measurement_device_alignment
+        if not document:return
+        dialog=QDialog(self); dialog.setWindowTitle("Validated measurement-device alignment"); dialog.resize(1000,500)
+        layout=QVBoxLayout(dialog); table=QTableWidget(0,7); table.setHorizontalHeaderLabels(("Measured device","Role","AT element","AT ordinal","Component","Status","Problem / evidence")); table.setEditTriggers(QTableWidget.NoEditTriggers)
+        rows=document.get("mappings",()); table.setRowCount(len(rows))
+        for row,item in enumerate(rows):
+            values=(item.get("measured_name",""),item.get("role",""),item.get("lattice_name",""),item.get("lattice_ordinal","—"),item.get("component",""),item.get("status",""),item.get("reason",""))
+            for column,value in enumerate(values):table.setItem(row,column,QTableWidgetItem(str(value)))
+        table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch); layout.addWidget(table)
+        buttons=QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons); dialog.exec()
+
+    def _reference_comparison_changed(self,*_):
+        self._model_orm_cache=None
+        self._refresh_completed_reference_comparison()
+
+    def _refresh_completed_reference_comparison(self):
+        """Refresh diagnostic model plots when a model is loaded after acquisition."""
+        result=getattr(self,"result",None)
+        if isinstance(result,ORMResult):
+            self._show_orm_result(result)
+        elif isinstance(result,DispersionResult):
+            self._show_dispersion_result(result)
 
     def _display_reference_model(self):
         model=self.reference_model; self.reference_model_path.setText(str(model.path))
@@ -665,6 +839,9 @@ class MeasureMainWindow(QMainWindow):
         self._model_orm_cache=None
         try:self.reference_model=reference_model_for_pysc(self.pysc_profile_combo.currentData())
         except Exception as exc:self.reference_model=None; self.reference_model_summary.setText(f"Automatic profile reference model unavailable: {exc}"); return
+        self.reference_model_path.setText(str(self.reference_model.path))
+        self.reference_model_variable.setText(self.reference_model.mat_variable or "Not applicable")
+        self.change_reference_variable_button.setEnabled(False)
         self._display_reference_model()
 
     def _bpms_page(self):
@@ -707,7 +884,9 @@ class MeasureMainWindow(QMainWindow):
         key=self.adapter_combo.currentData(); petra=key=="petra"; pysc=key=="pysc"
         self.pyaml_group.setVisible(key == "pyaml")
         self.reference_model=None
-        if hasattr(self,"reference_model_path"):self.reference_model_path.clear(); self.reference_model_summary.setText("Not available — select an authoritative reference lattice." if petra else "No reference model loaded.")
+        if hasattr(self,"reference_model_path"):
+            self.reference_model_path.clear(); self.reference_model_variable.setText("Not applicable"); self.change_reference_variable_button.setEnabled(False)
+            self.reference_model_summary.setText("Not available — select an authoritative reference lattice." if petra else "No reference model loaded.")
         self._model_orm_cache=None
         for widget in self.pysc_profile_row: widget.setVisible(pysc)
         if key == "pyaml":
@@ -821,6 +1000,7 @@ class MeasureMainWindow(QMainWindow):
     def _invalidate_pyaml(self, *_):
         if self.adapter_combo.currentData() != "pyaml":
             return
+        self._invalidate_device_alignment("pyAML configuration changed — verify device alignment again.")
         self.adapter = MockAdapter()
         self.devices = self.horizontal_correctors = self.vertical_correctors = ()
         self.selected_devices = self.selected_hcorrectors = self.selected_vcorrectors = ()
@@ -971,7 +1151,10 @@ class MeasureMainWindow(QMainWindow):
         self.orm_output_format=QLabel("Orbit difference [m] — required for pyLOCO FIT"); self.orm_output_format.setObjectName("infoText"); self.orm_output_format.setWordWrap(True)
         self.orm_normalized_analysis=QCheckBox("Also calculate normalized response [m/rad] for analysis")
         self.orm_normalized_analysis.setToolTip("Display-only analysis: divide each measured column by its actual kick readback separation. The saved FIT matrix remains the orbit difference in metres.")
-        self.orm_state_explanation=QLabel("Applied states: K₀ + Δ/2 / K₀ − Δ/2\nTotal separation: Δ"); self.orm_state_explanation.setWordWrap(True)
+        self.orm_state_explanation=QLabel(
+            "Applied states: K₀ + ΔK/2 and K₀ − ΔK/2\n"
+            "Effective readback separation: K⁺ − K⁻ = +ΔK"
+        ); self.orm_state_explanation.setWordWrap(True)
         orm_form.addRow("ORM output format",self.orm_output_format); orm_form.addRow("Optional analysis",self.orm_normalized_analysis); orm_form.addRow("Measurement direction",self.orm_direction); orm_form.addRow("Corrector kick mode",self.orm_kick_mode); orm_form.addRow("Total horizontal bipolar kick Δ",self.orm_hkick); self.orm_hkick_label=orm_form.labelForField(self.orm_hkick); orm_form.addRow("Total vertical bipolar kick Δ",self.orm_vkick); self.orm_vkick_label=orm_form.labelForField(self.orm_vkick); orm_form.addRow("Applied corrector states",self.orm_state_explanation); orm_form.addRow("Kick arrays file",self.orm_kick_file_row); self.orm_kick_file_label=orm_form.labelForField(self.orm_kick_file_row)
         self.kick_preview=QTableWidget(0,5); self.kick_preview.setMinimumHeight(180); self.kick_preview.setHorizontalHeaderLabels(["Position","Plane","Corrector","Effective kick [µrad]","Source"]); self.kick_preview.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch); orm_form.addRow("Effective kicks",self.kick_preview)
         for widget in (self.orm_direction,self.orm_kick_mode,self.orm_hkick,self.orm_vkick,self.orm_kick_file,self.orm_normalized_analysis):
@@ -1036,11 +1219,12 @@ class MeasureMainWindow(QMainWindow):
         )
 
         result_tab_bar = self.results_tabs.tabBar()
-        result_tab_bar.setExpanding(False)
-        result_tab_bar.setUsesScrollButtons(True)
-        # Preserve complete scientific titles.  When all tabs do not fit, Qt's
-        # tab-bar scroll buttons expose the remaining full-width titles.
-        result_tab_bar.setElideMode(Qt.ElideNone)
+        # Native macOS tab-scroll arrows can overlap the first and last tabs,
+        # making scientific views inaccessible. Fit every tab into the bar and
+        # retain each complete title in its tooltip.
+        result_tab_bar.setExpanding(True)
+        result_tab_bar.setUsesScrollButtons(False)
+        result_tab_bar.setElideMode(Qt.ElideRight)
         self.x_plot=PlotCanvas(minimum_height=260); self.y_plot=PlotCanvas(minimum_height=260)
         self.raw_x_plot=PlotCanvas(minimum_height=260); self.raw_y_plot=PlotCanvas(minimum_height=260)
         self.mean_x_plot=PlotCanvas(minimum_height=260); self.mean_y_plot=PlotCanvas(minimum_height=260)
@@ -1283,6 +1467,9 @@ class MeasureMainWindow(QMainWindow):
         data=self.corrector_selection_widgets[key]
         try:selected=self._resolve_correctors(key)
         except Exception as exc:data["table"].setRowCount(0); data["table"].setToolTip(str(exc)); return
+        previous=self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors
+        if tuple(device.name for device in previous)!=tuple(device.name for device in selected):
+            self._invalidate_device_alignment("Corrector inventory changed — verify device alignment again.")
         if key=="hcor":self.selected_hcorrectors=selected
         else:self.selected_vcorrectors=selected
         table=data["table"]; table.setRowCount(len(selected)); table.setToolTip(f"{len(selected)} retained")
@@ -1508,9 +1695,9 @@ class MeasureMainWindow(QMainWindow):
         ready=self.result is not None and self.saved_measurement_path is not None and self.saved_session_path is not None
         self.review_validate_button.setEnabled(ready); self.review_open_button.setEnabled(ready)
         if not ready:
-            self.review_status.setText("No completed measurement yet.")
-            self.review_details.setText("Complete a measurement to review its saved data and validation status.")
-            self.review_paths.setText("Measurement file: —\nSession manifest: —")
+            self.review_status.setText("No measurement session is available yet.")
+            self.review_details.setText("<b>BPM noise</b> &nbsp; Missing<br><b>Dispersion</b> &nbsp; Missing<br><b>ORM</b> &nbsp; Missing<br><b>FIT readiness</b> &nbsp; Incomplete")
+            self.review_paths.setText("Latest measurement HDF5: —\nAutomatically saved session manifest: —")
             return
         kind="ORM" if isinstance(self.result,ORMResult) else "Dispersion" if isinstance(self.result,DispersionResult) else "BPM noise"
         restoration="Not applicable"
@@ -1518,15 +1705,26 @@ class MeasureMainWindow(QMainWindow):
         elif isinstance(self.result,ORMResult):
             statuses=tuple(self.result.restoration_status)
             restoration="All correctors restored" if statuses and all(status in {"restored","confirmed_by_operator"} for status in statuses) else "Check restoration status"
+        complete=False
         try:
             session=load_session(self.saved_session_path,validate_files=False)
-            roles={entry.role for entry in session.files}; available=", ".join(label for role,label in (("bpm_noise","BPM noise"),("dispersion","Dispersion"),("orm","ORM")) if role in roles)
+            roles={entry.role for entry in session.files}
+            complete=session.is_complete_for_loco
             completeness="Complete for FIT" if session.is_complete_for_loco else "Missing for FIT: "+", ".join(session.missing_roles)
         except Exception as exc:
-            available="Unavailable"; completeness=f"Session could not be read: {exc}"
-        self.review_status.setText(f"✓ {kind} saved and schema-validated")
-        self.review_details.setText(f"<b>Measurement</b> &nbsp; {kind}<br><b>Restoration</b> &nbsp; {restoration}<br><b>Session contains</b> &nbsp; {available}<br><b>FIT readiness</b> &nbsp; {completeness}")
-        self.review_paths.setText(f"Measurement file: {self.saved_measurement_path}\nSession manifest: {self.saved_session_path}")
+            roles=set(); completeness=f"Session could not be read: {exc}"
+        role_rows="".join(
+            f"<tr><td><b>{label}</b></td><td>{'Present ✓' if role in roles else 'Missing —'}</td></tr>"
+            for role,label in (("bpm_noise","BPM noise"),("dispersion","Dispersion"),("orm","ORM"))
+        )
+        self.review_status.setText("✓ Measurement session complete for FIT" if complete else f"✓ {kind} saved — measurement session incomplete")
+        self.review_details.setText(
+            f"<table cellspacing='0' cellpadding='3'>{role_rows}</table>"
+            f"<br><b>Latest measurement</b> &nbsp; {kind} — schema validated"
+            f"<br><b>Restoration</b> &nbsp; {restoration}"
+            f"<br><b>FIT readiness</b> &nbsp; {completeness}"
+        )
+        self.review_paths.setText(f"Latest measurement HDF5: {self.saved_measurement_path}\nAutomatically saved session manifest: {self.saved_session_path}")
 
     def _measurement_type_changed(self, *_):
         if not hasattr(self,"measurement_type"): return
@@ -1765,6 +1963,28 @@ class MeasureMainWindow(QMainWindow):
     def _orm_config_changed(self,*_):
         file_mode=self.orm_kick_mode.currentData()=="file"; self.orm_kick_file_row.setVisible(file_mode); self.orm_kick_file_label.setVisible(file_mode)
         for widget in (self.orm_hkick,self.orm_vkick,self.orm_hkick_label,self.orm_vkick_label):widget.setVisible(not file_mode)
+        direction=self.orm_direction.currentData()
+        if direction=="bipolar":
+            self.orm_hkick_label.setText("Total horizontal bipolar separation ΔK")
+            self.orm_vkick_label.setText("Total vertical bipolar separation ΔK")
+            self.orm_state_explanation.setText(
+                "Applied states: K₀ + ΔK/2 and K₀ − ΔK/2\n"
+                "Effective readback separation: K⁺ − K⁻ = +ΔK"
+            )
+        elif direction=="positive":
+            self.orm_hkick_label.setText("Horizontal one-sided kick +ΔK")
+            self.orm_vkick_label.setText("Vertical one-sided kick +ΔK")
+            self.orm_state_explanation.setText(
+                "Applied states: K₀ + ΔK and reference K₀\n"
+                "Effective readback separation: K⁺ − K₀ = +ΔK"
+            )
+        else:
+            self.orm_hkick_label.setText("Horizontal one-sided kick −ΔK")
+            self.orm_vkick_label.setText("Vertical one-sided kick −ΔK")
+            self.orm_state_explanation.setText(
+                "Applied states: K₀ − ΔK and reference K₀\n"
+                "Effective readback separation: K⁻ − K₀ = −ΔK"
+            )
         self._update_kick_preview(); self._update_measurement_help(); self.refresh_plan()
         if getattr(self,"_displayed_orm_result",None) is not None:self._show_orm_result(self._displayed_orm_result)
 
@@ -1772,7 +1992,8 @@ class MeasureMainWindow(QMainWindow):
         if not hasattr(self,"kick_preview"):return
         try:h,v=self._load_kick_arrays(); error=""
         except Exception as exc:h=np.array([]); v=np.array([]); error=str(exc)
-        rows=list(zip(("Horizontal",)*len(h),self.selected_hcorrectors,h))+list(zip(("Vertical",)*len(v),self.selected_vcorrectors,v)); self.kick_preview.setRowCount(len(rows)); self.kick_preview.setToolTip(error)
+        sign=-1.0 if self.orm_direction.currentData()=="negative" else 1.0
+        rows=list(zip(("Horizontal",)*len(h),self.selected_hcorrectors,sign*h))+list(zip(("Vertical",)*len(v),self.selected_vcorrectors,sign*v)); self.kick_preview.setRowCount(len(rows)); self.kick_preview.setToolTip(error)
         for row,(plane,device,kick) in enumerate(rows):
             for col,value in enumerate((row,plane,device.name,f"{kick*1e6:.6g}","File" if self.orm_kick_mode.currentData()=="file" else "Common")):self.kick_preview.setItem(row,col,QTableWidgetItem(str(value)))
 
@@ -1936,6 +2157,8 @@ class MeasureMainWindow(QMainWindow):
         self._model_orm_cache=None
         try: selected=self._resolve_selection()
         except Exception as exc: self.selected_devices=(); self.preview_table.setRowCount(0); self.selection_message.setText(str(exc)); self.refresh_plan(); self._update_workflow_tabs(); return
+        if tuple(device.name for device in self.selected_devices)!=tuple(device.name for device in selected):
+            self._invalidate_device_alignment("BPM inventory changed — verify device alignment again.")
         self.selected_devices=tuple(selected); self.preview_table.setRowCount(len(selected))
         for row,device in enumerate(selected):
             for column,value in enumerate((row,device.name,device.identifier)): self.preview_table.setItem(row,column,QTableWidgetItem(str(value)))
@@ -2024,7 +2247,7 @@ class MeasureMainWindow(QMainWindow):
         self._model_orm_cache=None
         if self.compare_reference.isChecked() and self.reference_model is not None:
             try:
-                self._model_orm_cache=model_orm(self.reference_model,self.selected_devices,self.selected_hcorrectors,self.selected_vcorrectors,kick_h,kick_v,scaled=False)
+                self._model_orm_cache=model_orm(self.reference_model,self.selected_devices,self.selected_hcorrectors,self.selected_vcorrectors,kick_h,kick_v,scaled=False,**self._model_mapping_kwargs())
             except Exception as exc:self.statusBar().showMessage(f"Reference-model ORM unavailable: {exc}")
         self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat("Preparing ORM"); self.reading_status.setText("Preparing first corrector…"); self.log.clear(); self.log.appendPlainText(f"Starting ORM through {self.status_badge.text()}; each original setpoint will be restored.")
         options={"direction":self.orm_direction.currentData(),"scaled":False,"readings":self.readings.value(),"delay_seconds":self.delay.value(),"settling_delay_seconds":self.settling_delay.value()}
@@ -2367,17 +2590,30 @@ class MeasureMainWindow(QMainWindow):
                                 "corrector_unit_source": "pyAML strength.unit converted to SI rad by Measure" if AdapterCapability.WRITE in self.adapter.capabilities else "not verified"}
         if profile is not None:
             profile_metadata={"machine":profile.machine,"profile_key":profile.key,"profile":profile.scenario,"profile_label":profile.label,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"lattice_provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
-        model_metadata=self.reference_model.provenance() if self.reference_model is not None else {"reference_model_available":False}
+        model_metadata=self._reference_model_provenance() if self.reference_model is not None else {"reference_model_available":False}
         actual_readings=(result.raw_state_a_m.shape[1] if isinstance(result,ORMResult) and result.raw_state_a_m.ndim==3 else self.readings.value())
         metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"acquisition_timestamp":datetime.now().astimezone().isoformat(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"machine_identity":identity,**profile_metadata,**model_metadata,"compare_with_reference_model":self.compare_reference.isChecked(),"pysc_machine_profile":self.pysc_profile_combo.currentData() if descriptor.key=="pysc" else None,"readings_per_state":actual_readings,"delay_seconds":self.delay.value(),"settling_delay_seconds":self.settling_delay.value() if isinstance(result,(ORMResult,DispersionResult)) else 0.0,"elapsed_seconds":result.elapsed_seconds}
         if isinstance(result,ORMResult):
             nh=len(result.horizontal_correctors); diagnostics={}
             if result.raw_state_a_m.ndim==3 and result.raw_state_a_m.shape[1]>1:
                 diagnostics={"state_a_first_sample_minus_later_mean_m":result.raw_state_a_m[:,0,:]-np.mean(result.raw_state_a_m[:,1:,:],axis=1),"state_b_first_sample_minus_later_mean_m":result.raw_state_b_m[:,0,:]-np.mean(result.raw_state_b_m[:,1:,:],axis=1)}
-            write_orm(measurement,response_matrix=result.response_matrix,bpm_names=[d.name for d in result.bpms],horizontal_corrector_names=[d.name for d in result.horizontal_correctors],vertical_corrector_names=[d.name for d in result.vertical_correctors],requested_kick_h_rad=result.requested_kicks_rad[:nh],requested_kick_v_rad=result.requested_kicks_rad[nh:],actual_kick_h_rad=result.effective_kicks_rad[:nh],actual_kick_v_rad=result.effective_kicks_rad[nh:],orbit_plus_m=result.raw_state_a_m,orbit_minus_m=result.raw_state_b_m,reference_before_m=result.raw_reference_before_m,reference_intermediate_m=result.raw_reference_intermediate_m,reference_final_m=result.raw_reference_final_m,scaled=result.scaled,direction=result.direction,original_setpoints_rad=result.original_setpoints_rad,requested_state_a_rad=result.requested_state_a_rad,requested_state_b_rad=result.requested_state_b_rad,actual_state_a_rad=result.actual_state_a_rad,actual_state_b_rad=result.actual_state_b_rad,intermediate_restored_setpoints_rad=result.intermediate_restored_setpoints_rad,intermediate_restoration_status=result.intermediate_restoration_status,final_setpoints_rad=result.final_setpoints_rad,timestamps_plus_s=result.timestamps_state_a_s,timestamps_minus_s=result.timestamps_state_b_s,restoration_status=result.restoration_status,diagnostics=diagnostics,metadata={**metadata,"orm_validation_convention":"historical_petra_bipolar_v3","kick_convention":"total bipolar delta_K; K+=K0+delta_K/2; restore/verify K0 and acquire diagnostic reference; K-=K0-delta_K/2; restore/verify K0 and acquire diagnostic reference","restored_orbit_role":"reference_before, reference_intermediate and reference_final are diagnostic-only and excluded from ORM calculation","subtraction_convention":"mean(positive)-mean(negative)","normalization_convention":"divide each column by actual K+ minus K- readback only when scaled","response_matrix_unit":"m/rad" if result.scaled else "m","row_order":"horizontal_bpms,vertical_bpms","column_order":"horizontal_correctors,vertical_correctors","transient_diagnostic":"first orbit sample minus mean of later samples for each applied corrector state; diagnostic only; no samples discarded","selected_bpm_names":[d.name for d in result.bpms],"selected_horizontal_corrector_names":[d.name for d in result.horizontal_correctors],"selected_vertical_corrector_names":[d.name for d in result.vertical_correctors]})
+            bipolar=result.direction=="bipolar"
+            if bipolar:
+                validation_convention="historical_petra_bipolar_v3"
+                kick_convention="total bipolar delta_K; K+=K0+delta_K/2; restore/verify K0 and acquire diagnostic reference; K-=K0-delta_K/2; restore/verify K0 and acquire diagnostic reference"
+                restored_orbit_role="reference_before, reference_intermediate and reference_final are diagnostic-only and excluded from ORM calculation"
+                subtraction_convention="mean(positive)-mean(negative)"
+            else:
+                sign="+" if result.direction=="positive" else "-"
+                state_name="positive" if result.direction=="positive" else "negative"
+                validation_convention="pyloco_one_sided_v1"
+                kick_convention=f"one-sided delta_K; applied state K=K0{sign}delta_K; reference state K0; final restore/verify K0"
+                restored_orbit_role="reference_before and reference_final are diagnostic-only and excluded from ORM calculation; no intermediate reference is acquired in one-sided mode"
+                subtraction_convention=f"mean({state_name})-mean(reference)"
+            write_orm(measurement,response_matrix=result.response_matrix,bpm_names=[d.name for d in result.bpms],horizontal_corrector_names=[d.name for d in result.horizontal_correctors],vertical_corrector_names=[d.name for d in result.vertical_correctors],requested_kick_h_rad=result.requested_kicks_rad[:nh],requested_kick_v_rad=result.requested_kicks_rad[nh:],actual_kick_h_rad=result.effective_kicks_rad[:nh],actual_kick_v_rad=result.effective_kicks_rad[nh:],orbit_plus_m=result.raw_state_a_m,orbit_minus_m=result.raw_state_b_m,reference_before_m=result.raw_reference_before_m,reference_intermediate_m=result.raw_reference_intermediate_m if bipolar else None,reference_final_m=result.raw_reference_final_m,scaled=result.scaled,direction=result.direction,original_setpoints_rad=result.original_setpoints_rad,requested_state_a_rad=result.requested_state_a_rad,requested_state_b_rad=result.requested_state_b_rad,actual_state_a_rad=result.actual_state_a_rad,actual_state_b_rad=result.actual_state_b_rad,intermediate_restored_setpoints_rad=result.intermediate_restored_setpoints_rad if bipolar else None,intermediate_restoration_status=result.intermediate_restoration_status,final_setpoints_rad=result.final_setpoints_rad,timestamps_plus_s=result.timestamps_state_a_s,timestamps_minus_s=result.timestamps_state_b_s,restoration_status=result.restoration_status,diagnostics=diagnostics,metadata={**metadata,"orm_validation_convention":validation_convention,"kick_convention":kick_convention,"restored_orbit_role":restored_orbit_role,"subtraction_convention":subtraction_convention,"normalization_convention":"divide each column by actual applied-state minus reference-state readback" if not bipolar else "divide each column by actual K+ minus K- readback only when scaled","response_matrix_unit":"m/rad" if result.scaled else "m","row_order":"horizontal_bpms,vertical_bpms","column_order":"horizontal_correctors,vertical_correctors","transient_diagnostic":"first orbit sample minus mean of later samples for each applied corrector state; diagnostic only; no samples discarded","selected_bpm_names":[d.name for d in result.bpms],"selected_horizontal_corrector_names":[d.name for d in result.horizontal_correctors],"selected_vertical_corrector_names":[d.name for d in result.vertical_correctors]})
             model_matrix=getattr(self,"_model_orm_cache",None)
             if model_matrix is not None and self.reference_model is not None:
-                store_reference_model_arrays(measurement,{"orm":model_matrix,"orm_difference":result.response_matrix-model_matrix},units={"orm":"m/rad" if result.scaled else "m","orm_difference":"m/rad" if result.scaled else "m"},provenance=self.reference_model.provenance())
+                store_reference_model_arrays(measurement,{"orm":model_matrix,"orm_difference":result.response_matrix-model_matrix},units={"orm":"m/rad" if result.scaled else "m","orm_difference":"m/rad" if result.scaled else "m"},provenance=self._reference_model_provenance())
         elif is_dispersion:
             automatic=self.rf_control_mode.currentData()=="automatic"; states=result.states; metadata.update({"rf_control_mode":"automatic" if automatic else "manual","nominal_rf_hz":result.nominal_rf_hz,"nominal_rf_source":"backend_readback" if automatic else self._manual_nominal_source,"requested_rf_offset_hz":result.requested_offset_hz,"direction":result.direction,"canonical_measured_eta_definition":"mean_orbit_negative - mean_orbit_positive; historical PETRA III pyLOCO RF-response convention; reference_before and reference_after are excluded","canonical_measured_eta_unit":"m","rf_difference_sign_convention":"negative_minus_positive","rf_normalized_response_unit":"m/Hz","actual_rf_available":bool(all(np.isfinite(s.actual_rf_hz) for s in states)),"rf_acquisition_order":[s.label for s in states],"rf_requested_frequencies_hz":[float(s.requested_rf_hz) for s in states],"rf_actual_frequencies_hz":[float(s.actual_rf_hz) for s in states],"rf_actual_frequency_sources":[s.actual_rf_source for s in states],"rf_readback_verified":[bool(s.rf_readback_verified) for s in states],"operator_confirmed_states":[bool(s.operator_confirmed) for s in states],"restoration_status":result.restoration_status,"rf_restoration_source":"backend_readback" if automatic else self._manual_restoration_source,"rf_restoration_readback_verified":True if automatic else self._manual_restoration_verified,"settling_delay_seconds":self.settling_delay.value(),"dispersion_measurement_states":"reference_before,positive,negative","rf_restoration_is_measurement_state":False,"verify_restored_orbit":any(state.label=="reference_after" for state in states),"reference_after_role":"post-restoration diagnostic only; excluded from physical dispersion and RF orbit difference"})
             state_rf={state.label:float(state.actual_rf_hz) for state in states}; restored=float(getattr(self,"_restored_rf_readback",np.nan)); metadata.update({"rf_original_hz":result.nominal_rf_hz,"rf_positive_hz":state_rf.get("positive",np.nan),"rf_negative_hz":state_rf.get("negative",np.nan),"rf_restored_hz":restored,"rf_restoration_difference_hz":restored-result.nominal_rf_hz if np.isfinite(restored) else np.nan})
@@ -2399,8 +2635,9 @@ class MeasureMainWindow(QMainWindow):
             write_dispersion(measurement,measured_eta_x=result.measured_eta_x,measured_eta_y=result.measured_eta_y,bpm_names=[d.name for d in result.devices],rf_frequency_hz=[s.requested_rf_hz for s in states],rf_setpoint_hz=[s.requested_rf_hz for s in states],rf_readback_hz=[s.actual_rf_hz for s in states],raw_orbits_x_m=np.stack([s.orbits_x_m for s in states]),raw_orbits_y_m=np.stack([s.orbits_y_m for s in states]),rf_step_hz=result.canonical_rf_step_hz,bidirectional=result.direction=="bipolar",metadata=metadata,diagnostics=diagnostics,state_labels=saved_labels,operator_confirmed=[s.operator_confirmed for s in states],rf_actual_sources=[s.actual_rf_source for s in states],rf_readback_verified=[s.rf_readback_verified for s in states],sample_timestamps_s=np.stack([s.timestamps_s for s in states]),restoration_status=result.restoration_status)
             if self.reference_model is not None and self.compare_reference.isChecked():
                 try:
-                    model_x,model_y=model_dispersion(self.reference_model,result.devices)
-                    store_reference_model_arrays(measurement,{"dispersion_x_m":model_x,"dispersion_y_m":model_y},units={"dispersion_x_m":"m","dispersion_y_m":"m"},provenance=self.reference_model.provenance())
+                    mapping=self._model_mapping_kwargs()
+                    model_x,model_y=model_dispersion(self.reference_model,result.devices,bpm_ordinals=mapping.get("bpm_ordinals"))
+                    store_reference_model_arrays(measurement,{"dispersion_x_m":model_x,"dispersion_y_m":model_y},units={"dispersion_x_m":"m","dispersion_y_m":"m"},provenance=self._reference_model_provenance())
                 except Exception:pass
         else:
             convention="population" if result.ddof==0 else "sample"; metadata.update({"readings":self.readings.value(),"selected_bpm_names":[d.name for d in result.devices],"bpm_noise_statistic":f"{convention} standard deviation across readings per BPM","bpm_noise_ddof":result.ddof,"bpm_noise_unit":"m"}); write_bpm_noise(measurement,noise_x_m=result.noise_x_m,noise_y_m=result.noise_y_m,bpm_names=[d.name for d in result.devices],raw_orbits_x_m=result.orbits_x_m,raw_orbits_y_m=result.orbits_y_m,ddof=result.ddof,metadata=metadata)
@@ -2896,7 +3133,7 @@ class MeasureMainWindow(QMainWindow):
         if self.compare_reference.isChecked() and self.reference_model is not None:
             try:
                 model_matrix=getattr(self,"_model_orm_cache",None)
-                if model_matrix is None:model_matrix=model_orm(self.reference_model,result.bpms,result.horizontal_correctors,result.vertical_correctors,result.effective_kicks_rad[:nh],result.effective_kicks_rad[nh:],scaled=result.scaled)
+                if model_matrix is None:model_matrix=model_orm(self.reference_model,result.bpms,result.horizontal_correctors,result.vertical_correctors,result.effective_kicks_rad[:nh],result.effective_kicks_rad[nh:],scaled=result.scaled,**self._model_mapping_kwargs())
                 shown_model=model_matrix/result.effective_kicks_rad[np.newaxis,:] if analysis else model_matrix; difference=matrix-shown_model; self._heatmap(self.orm_model_plot,shown_model,"MODEL ORM — reference lattice",unit,row_devices=bpm_rows,column_devices=corrector_columns); self._heatmap(self.orm_difference_plot,difference,"Measured − MODEL ORM",unit,row_devices=bpm_rows,column_devices=corrector_columns)
                 def comparison_row(label, measured_values, model_values):
                     metrics=comparison_metrics(measured_values,model_values)
@@ -3001,7 +3238,8 @@ class MeasureMainWindow(QMainWindow):
         model_comparison_html="<b>Not calculated.</b><br>Enable <i>Compare measurements with reference model</i> before or after the measurement."
         if physical_x is not None and self.compare_reference.isChecked() and self.reference_model is not None:
             try:
-                model_x,model_y=model_dispersion(self.reference_model,result.devices)
+                mapping=self._model_mapping_kwargs()
+                model_x,model_y=model_dispersion(self.reference_model,result.devices,bpm_ordinals=mapping.get("bpm_ordinals"))
                 for canvas,measured,model_values,plane in ((self.x_plot,physical_x,model_x,"X"),(self.y_plot,physical_y,model_y,"Y")):
                     ax=canvas.figure.axes[0]; ax.plot(model_values*1e3,"--",linewidth=1.5,label=f"MODEL D{plane.lower()} — reference lattice"); ax.plot((measured-model_values)*1e3,":",linewidth=1.2,label="Measured − MODEL"); ax.legend(); canvas.apply_theme()
                 mx=comparison_metrics(physical_x,model_x); my=comparison_metrics(physical_y,model_y)
@@ -3176,7 +3414,7 @@ class MeasureMainWindow(QMainWindow):
         self._store_active_selection()
         h=self.corrector_selection_widgets["hcor"]; v=self.corrector_selection_widgets["vcor"]
         identity,profile=self._machine_identity(); profile_meta={} if profile is None else {"machine":profile.machine,"profile":profile.scenario,"profile_key":profile.key,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
-        return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),bpm_noise_ddof=int(self.bpm_noise_convention.currentData()),delay_seconds=self.delay.value(),settling_delay_seconds=self.settling_delay.value(),verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=False,reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta,"orm_normalized_analysis":self.orm_normalized_analysis.isChecked()})
+        return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),bpm_noise_ddof=int(self.bpm_noise_convention.currentData()),delay_seconds=self.delay.value(),settling_delay_seconds=self.settling_delay.value(),verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=False,reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",reference_model_mat_variable=self.reference_model.mat_variable if self.reference_model is not None and self.reference_model.mat_variable else "",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta,"orm_normalized_analysis":self.orm_normalized_analysis.isChecked()})
 
     def _load_project_widgets(self):
         self.pyaml_magnet_writes.setChecked(True)
@@ -3189,7 +3427,7 @@ class MeasureMainWindow(QMainWindow):
             self._invalidate_pyaml()
         p=self.project; self._selection_states=p.measurement_selections; self._active_selection_kind=p.measurement_type; self.measurement_type.blockSignals(True); self.measurement_type.setCurrentIndex(max(0,self.measurement_type.findData(p.measurement_type))); self.measurement_type.blockSignals(False); self._restore_selection(p.measurement_type); self.measurement_name.setText(p.measurement_name); self.measurement_label.setText(p.measurement_label); self.comments.setPlainText(p.operator_comments); self.readings.setValue(p.readings); self.bpm_noise_convention.setCurrentIndex(max(0,self.bpm_noise_convention.findData(p.bpm_noise_ddof))); self.delay.setValue(p.delay_seconds); self.settling_delay.setValue(p.settling_delay_seconds); self.verify_restored_orbit.setChecked(p.verify_restored_orbit); self.nominal_rf.setText("" if p.nominal_rf_hz is None else f"{p.nominal_rf_hz:g}"); self.rf_step.setValue(p.rf_step_hz); self.dispersion_direction.setCurrentIndex(max(0,self.dispersion_direction.findData(p.dispersion_direction))); self.orm_direction.setCurrentIndex(max(0,self.orm_direction.findData(p.orm_direction))); self.orm_kick_mode.setCurrentIndex(max(0,self.orm_kick_mode.findData(p.orm_kick_mode))); self.orm_hkick.setValue(p.orm_horizontal_kick_rad*1e6); self.orm_vkick.setValue(p.orm_vertical_kick_rad*1e6); self.orm_kick_file.setText(p.orm_kick_file); self.orm_normalized_analysis.setChecked(bool(p.orm_scaled or p.metadata.get("orm_normalized_analysis",False)))
         self.reference_model_path.setText(p.reference_model_path); self.compare_reference.setChecked(p.compare_with_reference_model)
-        if p.reference_model_path:self._load_reference_model(p.reference_model_path,"Project reference model")
+        if p.reference_model_path:self._load_reference_model(p.reference_model_path,"Project reference model",p.reference_model_mat_variable or None)
         self.output_directory.setText(p.output_directory); self.apply_theme(p.theme); self.refresh_preview(); self._measurement_type_changed(); self._update_machine_identity()
 
     def new_project(self):

@@ -6,8 +6,9 @@ import csv
 import json
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox, QFileDialog, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget
 
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from .plot_canvas import PlotCanvas
 
 

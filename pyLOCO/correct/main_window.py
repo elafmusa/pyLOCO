@@ -6,9 +6,10 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, QSettings, QSize, Qt, Signal, Slot, QThread, QUrl, QEvent
 from PySide6.QtGui import QColor, QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFileDialog,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QMainWindow,QMessageBox,QPlainTextEdit,QPushButton,QScrollArea,QSizePolicy,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
+from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QMainWindow,QMessageBox,QPlainTextEdit,QPushButton,QScrollArea,QSizePolicy,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
 
 from pyLOCO.gui import __version__ as PYLOCO_VERSION
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from pyLOCO.gui.branding import DISPLAY_ASSET,set_asset,application_icon
 from pyLOCO.gui.project_info import (PROJECT_ACKNOWLEDGEMENTS,PROJECT_CONTRIBUTORS,PROJECT_DOCUMENTATION,PROJECT_ISSUES,PROJECT_LICENSE,PROJECT_PAPER_TITLE,PROJECT_PAPER_URL,PROJECT_REPOSITORY,bibtex_text,citation_text)
 from pyLOCO.gui.suite import present_single_about_dialog

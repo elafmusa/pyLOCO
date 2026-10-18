@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import math
 from html import escape
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QTextEdit, QVBoxLayout, QWidget
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 
 
 class RunSummaryView(QWidget):

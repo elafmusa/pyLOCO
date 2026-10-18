@@ -37,6 +37,7 @@ class LocoRunRequest:
     lattice_path: str
     measurements: dict[str, str]
     backend_mapping: dict[str, Any]
+    lattice_mat_variable: str = ""
     measurement_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     measurement_session: dict[str, Any] = field(default_factory=dict)
 
@@ -62,6 +63,7 @@ class LocoRunRequest:
             project_name=project.name,
             project_path=project.path,
             lattice_path=str(project.resolve_path(project.lattice.path)),
+            lattice_mat_variable=project.lattice.mat_variable,
             measurements={
                 key: str(project.resolve_path(dataset.path))
                 for key, dataset in project.measurements.items()
@@ -150,9 +152,13 @@ def run_loco_request(
     try:
         import at
         from pyLOCO.pyloco import pyloco, remove_bad_bpms, save_fit_dict
+        from .lattice_loader import load_project_lattice
 
-        ring = _prepare_loco_lattice(at.load_lattice(request.lattice_path))
-        log(f"Loaded lattice: {request.lattice_path}")
+        ring = _prepare_loco_lattice(
+            load_project_lattice(request.lattice_path, request.lattice_mat_variable or None)
+        )
+        variable_note = f" (MAT variable {request.lattice_mat_variable})" if request.lattice_mat_variable else ""
+        log(f"Loaded lattice: {request.lattice_path}{variable_note}")
         if not bool(getattr(ring, "is_6d", False)):
             log("Prepared 4D lattice for LOCO optics and orbit calculations.")
         measured = _load_measurements(request.measurements, request.measurement_options)
@@ -489,6 +495,8 @@ def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]]
         arrays = _load_array_mapping(paths["dispersion"])
         dispersion_options = options.get("dispersion", {})
         names = dispersion_options.get("datasets", {})
+        if not isinstance(names, dict):
+            names = {}
         data["eta_x"] = np.ravel(_pick_array(arrays, str(names.get("horizontal") or "measured_eta_x"), "eta_x", fallback_index=0)).astype(float) * float(dispersion_options.get("horizontal_scale", 1.0))
         data["eta_y"] = np.ravel(_pick_array(arrays, str(names.get("vertical") or "measured_eta_y"), "eta_y", fallback_index=1)).astype(float) * float(dispersion_options.get("vertical_scale", 1.0))
     else:
@@ -499,6 +507,8 @@ def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]]
         arrays = _load_array_mapping(paths["bpm_noise"])
         noise_options = options.get("bpm_noise", {})
         names = noise_options.get("datasets", {})
+        if not isinstance(names, dict):
+            names = {}
         data["noise_x"] = np.ravel(_pick_array(arrays, str(names.get("horizontal") or "Noise_BPMx"), "noise_x", fallback_index=0)).astype(float) * float(noise_options.get("horizontal_scale", 1.0))
         data["noise_y"] = np.ravel(_pick_array(arrays, str(names.get("vertical") or "Noise_BPMy"), "noise_y", fallback_index=1)).astype(float) * float(noise_options.get("vertical_scale", 1.0))
     else:
@@ -986,14 +996,15 @@ def _save_initial_model_orm(results_dir: Path, orm_model) -> Path:
     return path
 
 
-def _save_optics(results_dir, initial_lattice_path, final_ring, indices):
+def _save_optics(results_dir, initial_lattice_path, final_ring, indices, lattice_mat_variable=None):
     """Compatibility helper used by GUI regression tests and external callers."""
     if not initial_lattice_path or not indices:
         return None
     try:
         import at
         import numpy as np
-        initial_ring = at.load_lattice(initial_lattice_path)
+        from .lattice_loader import load_project_lattice
+        initial_ring = load_project_lattice(initial_lattice_path, lattice_mat_variable)
         bpm_ords = np.asarray(indices["used_bpms_ords"], dtype=int)
         _, initial_ringdata, initial_data = at.get_optics(initial_ring, refpts=bpm_ords)
         _, fitted_ringdata, fitted_data = at.get_optics(final_ring, refpts=bpm_ords)

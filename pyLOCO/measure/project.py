@@ -62,6 +62,7 @@ class MeasureProject:
     orm_scaled: bool = False
     reference_model_path: str = ""
     reference_model_source: str = "automatic"
+    reference_model_mat_variable: str = ""
     compare_with_reference_model: bool = True
     output_directory: str = "measurements"
     theme: str = "dark"

@@ -66,6 +66,7 @@ class LatticeSelection:
     path: str = ""
     file_type: str = ""
     element_count: int | None = None
+    mat_variable: str = ""
 
     @property
     def name(self) -> str:
@@ -806,6 +807,12 @@ class LocoConfiguration:
             machine_data["quadrupole_tilt_ords"] = list(
                 machine_data.get("normal_quadrupole_ords", [])
             )
+        fixed_parameters = dict(data.get("fixed_parameters", {}))
+        if "HarmNumber" in fixed_parameters:
+            try:
+                fixed_parameters["HarmNumber"] = int(fixed_parameters["HarmNumber"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Harmonic number must be an integer") from exc
         return cls(
             machine_elements=MachineElementsConfig(**machine_data),
             response_matrix=ResponseMatrixConfig(**response_matrix),
@@ -814,7 +821,7 @@ class LocoConfiguration:
             rejection=RejectionConfig(**rejection),
             constraints=ConstraintConfigState(**_known_kwargs(ConstraintConfigState, data.get("constraints", {}))),
             parameters=ParameterSelectionConfig(**parameters),
-            fixed_parameters=FixedParameterConfig(**data.get("fixed_parameters", {})),
+            fixed_parameters=FixedParameterConfig(**fixed_parameters),
             mcf_source=data.get("mcf_source", "automatic"),
             mcf_user_value=data.get("mcf_user_value", ""),
             output_directory=data.get("output_directory", ""),
@@ -857,6 +864,10 @@ class ProjectMetadata:
     measurement_session: dict[str, Any] = field(default_factory=dict)
     fit_recipe: dict[str, Any] = field(default_factory=dict)
     fit_run_session: dict[str, Any] = field(default_factory=dict)
+    recipe_machine_policy: str = "recipe"
+    machine_configuration_override: dict[str, Any] = field(default_factory=dict)
+    compatibility_validation: dict[str, Any] = field(default_factory=dict)
+    measurement_device_mapping: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_saved(self) -> bool:
@@ -866,8 +877,13 @@ class ProjectMetadata:
         """Return missing required inputs for enabling LOCO execution."""
 
         messages: list[str] = []
+        compatibility = self.compatibility_validation or {}
+        if compatibility.get("required") and compatibility.get("status") != "validated":
+            messages.append("Measurement compatibility must be validated before running or resuming FIT.")
         if not self.name.strip():
             messages.append("Project name is required.")
+        if self.fit_recipe and "stages" in self.fit_recipe and not self.fit_recipe.get("stages"):
+            messages.append("At least one FIT stage must be configured before running LOCO.")
         if not self.lattice.path:
             messages.append("A lattice/model file is required.")
         elif not Path(self.lattice.path).expanduser().exists():
@@ -957,15 +973,25 @@ class ProjectMetadata:
                 break
         return primary
 
-    @staticmethod
-    def _portable_reference(value: str, target_directory: Path) -> str:
+    def _portable_reference(self, value: str, target_directory: Path) -> str:
         if not value:
             return ""
         candidate = Path(value).expanduser()
         if not candidate.is_absolute():
             return value
+        candidate = candidate.resolve()
+        # Keep project-local assets portable.  When using Save As, also retain
+        # portability for assets that belonged to the original project bundle.
+        # Unrelated external measurements stay absolute instead of becoming a
+        # fragile chain of ../../.. components.
+        portable_roots = [target_directory.resolve()]
+        if self.base_directory:
+            source_directory = Path(self.base_directory).expanduser().resolve()
+            portable_roots.extend((source_directory, source_directory.parent))
+        if not any(candidate == root or root in candidate.parents for root in portable_roots):
+            return str(candidate)
         try:
-            return Path(os.path.relpath(candidate.resolve(), target_directory.resolve())).as_posix()
+            return Path(os.path.relpath(candidate, target_directory.resolve())).as_posix()
         except (OSError, ValueError):
             return str(candidate)
 
@@ -1011,6 +1037,13 @@ class ProjectMetadata:
         if data.get("measurement_session"):
             data["measurement_session"]["manifest"] = portable(data["measurement_session"].get("manifest", ""))
             data["measurement_session"]["measurement_files"] = {key:portable(value) for key,value in data["measurement_session"].get("measurement_files",{}).items()}
+        mapping = data.get("measurement_device_mapping") or {}
+        reference = mapping.get("reference_lattice") or {}
+        profile = mapping.get("machine_profile") or {}
+        if reference.get("path"):
+            reference["path"] = portable(reference["path"])
+        if profile.get("configuration_path"):
+            profile["configuration_path"] = portable(profile["configuration_path"])
         return data
 
     @classmethod
@@ -1034,6 +1067,10 @@ class ProjectMetadata:
             measurement_session=deepcopy(data.get("measurement_session", {})),
             fit_recipe=deepcopy(data.get("fit_recipe", {})),
             fit_run_session=deepcopy(data.get("fit_run_session", {})),
+            recipe_machine_policy=str(data.get("recipe_machine_policy", "recipe")),
+            machine_configuration_override=deepcopy(data.get("machine_configuration_override", {})),
+            compatibility_validation=deepcopy(data.get("compatibility_validation", {})),
+            measurement_device_mapping=deepcopy(data.get("measurement_device_mapping", {})),
         )
         return project
 
@@ -1087,6 +1124,13 @@ class ProjectMetadata:
         if project.measurement_session:
             if project.measurement_session.get("manifest"):project.measurement_session["manifest"]=resolve_project_path(project.measurement_session["manifest"])
             project.measurement_session["measurement_files"]={key:resolve_project_path(value) for key,value in project.measurement_session.get("measurement_files",{}).items()}
+        mapping = project.measurement_device_mapping or {}
+        reference = mapping.get("reference_lattice") or {}
+        profile = mapping.get("machine_profile") or {}
+        if reference.get("path"):
+            reference["path"] = resolve_project_path(reference["path"])
+        if profile.get("configuration_path"):
+            profile["configuration_path"] = resolve_project_path(profile["configuration_path"])
         project.path = str(source)
         project.base_directory = str(source.parent)
         project.modified = False

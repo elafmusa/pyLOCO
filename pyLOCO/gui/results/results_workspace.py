@@ -27,6 +27,8 @@ class ResultsWorkspace(QWidget):
         super().__init__(parent)
         self.loader = None
         self.base_loader = None
+        self._workflow_stage_index = 0
+        self._workflow_stage_count = 1
         title = QLabel("Results Workspace"); title.setObjectName("pageTitle")
         self.run_status_label = QLabel("No LOCO run has been started.")
         self.run_status_label.setWordWrap(True)
@@ -225,6 +227,8 @@ class ResultsWorkspace(QWidget):
 
     def load_results(self, results_dir, *, runtime=None, workflow_stage: bool = False) -> None:
         if not workflow_stage:
+            self._workflow_stage_index = 0
+            self._workflow_stage_count = 1
             self.stage_selector.blockSignals(True)
             self.stage_selector.clear()
             self.stage_selector.blockSignals(False)
@@ -269,6 +273,7 @@ class ResultsWorkspace(QWidget):
         if not checkpoints:
             raise ValueError("The FIT workflow session contains no complete stage checkpoints.")
         preferred = str(Path(preferred_result).resolve()) if preferred_result else ""
+        self._workflow_stage_count = len(checkpoints)
         selected = len(checkpoints) - 1
         self.stage_selector.blockSignals(True)
         self.stage_selector.clear()
@@ -289,6 +294,7 @@ class ResultsWorkspace(QWidget):
             return
         results_dir = self.stage_selector.itemData(index)
         if results_dir:
+            self._workflow_stage_index = index
             self.load_results(results_dir, workflow_stage=True)
 
     def _select_iteration(self, index: int) -> None:
@@ -296,6 +302,10 @@ class ResultsWorkspace(QWidget):
             return
         iteration = self.iteration_selector.itemData(index)
         self.loader = self.base_loader.for_iteration(iteration)
+        self.overview.set_comparison_context(
+            stage_index=self._workflow_stage_index,
+            stage_count=self._workflow_stage_count,
+        )
         for view in (self.overview, self.orm, self.optics, self.parameters, self.summary, self.svd, self.files):
             view.set_loader(self.loader)
 

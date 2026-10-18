@@ -2,7 +2,8 @@
 
 import json
 import shutil
-from PySide6.QtWidgets import QFileDialog, QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from .plot_canvas import PlotCanvas
 
 

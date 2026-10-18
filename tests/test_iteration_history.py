@@ -106,6 +106,98 @@ def test_old_final_only_results_remain_loadable(tmp_path):
     np.testing.assert_allclose(loader.parameter_vector, [1.0, 2.0])
 
 
+def test_results_loader_uses_recorded_iteration_start_without_inference(tmp_path):
+    records = [
+        {"iteration": 1, "chi2_before": 100.0, "chi2_after": 80.0},
+        # Deliberately differs from iteration 1's end: the GUI must not infer 80.
+        {"iteration": 2, "chi2_before": 75.0, "chi2_after": 50.0},
+    ]
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "initial_chi2": 100.0,
+        "chi2_history": [80.0, 50.0],
+        "iteration_metrics": records,
+    }))
+
+    final = ResultsLoader(tmp_path)
+    iteration_1 = ResultsLoader(tmp_path, iteration=1)
+    assert final.stage_initial_chi2 == 100.0
+    assert final.selected_iteration_chi2_before == 75.0
+    assert final.selected_iteration_chi2_after == 50.0
+    assert iteration_1.selected_iteration_chi2_before == 100.0
+    assert iteration_1.selected_iteration_chi2_after == 80.0
+
+
+def test_results_overview_comparison_levels_and_missing_historical_start(tmp_path):
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "initial_chi2": 100.0,
+        "chi2_history": [80.0, 50.0],
+        "iteration_metrics": [
+            {"iteration": 1, "chi2_before": 100.0, "chi2_after": 80.0},
+            {"iteration": 2, "chi2_before": 75.0, "chi2_after": 50.0},
+        ],
+    }))
+    from pyLOCO.gui.results.overview_view import OverviewView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    view = OverviewView()
+    view.set_loader(ResultsLoader(tmp_path))
+
+    # Current stage is the default: 100 -> 50.
+    assert view.comparison_selector.currentData() == "stage"
+    assert view.metrics["initial"].value.text() == "1.000e+02"
+    assert view.metrics["final"].value.text() == "5.000e+01"
+
+    view.comparison_selector.setCurrentIndex(0)
+    assert view.metrics["initial"].value.text() == "7.500e+01"
+    assert view.metrics["final"].value.text() == "5.000e+01"
+
+    # Cross-stage original-reference comparison is deliberately unavailable.
+    view.set_comparison_context(stage_index=1, stage_count=2)
+    view.comparison_selector.setCurrentIndex(2)
+    assert view.metrics["initial"].value.text() == "Not available"
+    assert "fixed-definition" in view.comparison_definition.text()
+
+    # Historical metrics lacking chi2_before must remain explicit.
+    legacy = tmp_path / "legacy-metrics"
+    legacy.mkdir()
+    (legacy / "summary.json").write_text(json.dumps({
+        "chi2_history": [4.0],
+        "iteration_metrics": [{"iteration": 1, "chi2_after": 4.0}],
+    }))
+    view.set_comparison_context(stage_index=0, stage_count=1)
+    view.set_loader(ResultsLoader(legacy))
+    view.comparison_selector.setCurrentIndex(0)
+    assert view.metrics["initial"].value.text() == "Not recorded"
+    view.close()
+
+
+def test_stage_initial_selection_uses_recorded_initial_chi2(tmp_path):
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "initial_chi2": 123.0,
+        "chi2_history": [80.0],
+        "iteration_metrics": [{"iteration": 1, "chi2_before": 123.0, "chi2_after": 80.0}],
+    }))
+    iterations = tmp_path / "iterations"
+    (iterations / "iteration_000").mkdir(parents=True)
+    (iterations / "manifest.json").write_text(json.dumps({
+        "iterations": [{"iteration": 0, "directory": "iteration_000"}],
+        "run_status": "completed",
+    }))
+    from pyLOCO.gui.results.overview_view import OverviewView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    loader = ResultsLoader(tmp_path).for_iteration(0)
+    view = OverviewView(); view.set_loader(loader)
+    assert view.status.text() == "Viewing stage initial model (before fitting)"
+    assert view.metrics["initial"].value.text() == "1.230e+02"
+    assert view.metrics["final"].value.text() == "1.230e+02"
+    view.comparison_selector.setCurrentIndex(0)
+    assert view.metrics["initial"].value.text() == "Not recorded"
+    assert view.metrics["final"].value.text() == "1.230e+02"
+    assert "no previous optimizer iteration" in view.comparison_definition.text().lower()
+    view.close()
+
+
 def test_results_workspace_selector_switches_all_views(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "at", types.SimpleNamespace(
         save_lattice=lambda ring, path: Path(path).write_text(str(ring.scale))))
@@ -178,9 +270,15 @@ def test_results_workspace_switches_workflow_stages_and_their_iterations(tmp_pat
     assert workspace.stage_selector.currentText() == "Stage 2 — Normal optics"
     assert workspace.iteration_selector.count() == 3
     assert workspace.iteration_selector.currentText() == "Iteration 2 / Final"
+    assert workspace.overview.comparison_selector.currentData() == "stage"
+    assert workspace.overview.metrics["initial"].value.text() == "1.000e+01"
+    workspace.overview.comparison_selector.setCurrentIndex(2)
+    assert workspace.overview.metrics["initial"].value.text() == "Not available"
     workspace.stage_selector.setCurrentIndex(0)
     assert workspace.iteration_selector.count() == 2
     assert workspace.iteration_selector.currentText() == "Iteration 1 / Final"
+    assert workspace.overview.metrics["initial"].value.text() == "1.000e+01"
+    assert workspace.overview.metrics["final"].value.text() == "5.000e+00"
     workspace.iteration_selector.setCurrentIndex(0)
     assert workspace.loader.iteration == 0
     workspace.close()

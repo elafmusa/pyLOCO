@@ -17,7 +17,7 @@ from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication
 
 from pyLOCO.control_system import AdapterCapability, MockAdapter
-from pyLOCO.data_schema import load_session, validate_measurement_file, write_bpm_noise
+from pyLOCO.data_schema import MeasurementSession, SessionFile, load_session, save_session, validate_measurement_file, write_bpm_noise
 from pyLOCO.gui.backend import _load_measurements
 from pyLOCO.measure.acquisition import AcquisitionCancelled, BpmDevice, BpmNoiseAcquirer, BpmNoiseResult
 from pyLOCO.measure.app import build_application
@@ -155,11 +155,33 @@ def test_saved_measurement_session_and_existing_importer(app, tmp_path):
     loaded = _load_measurements({"orm": str(orm), "bpm_noise": str(window.saved_measurement_path)})
     np.testing.assert_allclose(loaded["noise_x"], result.noise_x_m)
     window.tabs.setCurrentIndex(3); app.processEvents()
-    assert window.review_status.text() == "✓ BPM noise saved and schema-validated"
+    assert window.review_status.text() == "✓ BPM noise saved — measurement session incomplete"
+    assert "<b>BPM noise</b>" in window.review_details.text() and "Present" in window.review_details.text()
+    assert "<b>Dispersion</b>" in window.review_details.text() and "<b>ORM</b>" in window.review_details.text()
     assert "Missing for FIT: orm, dispersion" in window.review_details.text()
     assert str(window.saved_measurement_path) in window.review_paths.text()
+    assert "Automatically saved session manifest" in window.review_paths.text()
+    assert window.project_save_note.text()=="Project = settings only"
+    assert "does not create or replace measurement HDF5 files" in window.project_save_note.toolTip()
     assert window.review_validate_button.isEnabled() and window.review_open_button.isEnabled()
     assert window.open_output_button.isEnabled()
+    window.close()
+
+
+def test_review_page_reports_complete_automatic_session_without_extra_save_action(app,tmp_path):
+    devices=default_mock_devices(2); adapter=build_mock_adapter(devices,readings=3)
+    result=BpmNoiseAcquirer(adapter,devices).acquire(3,0,sleeper=lambda _:None)
+    files=tuple(SessionFile(role,f"{role}.h5") for role in ("bpm_noise","dispersion","orm"))
+    manifest=tmp_path/"measurement-session.pyloco-session.json"
+    save_session(manifest,MeasurementSession("complete",files),validate_files=False)
+    window=MeasureMainWindow(devices=devices,adapter=adapter)
+    window.result=result; window.saved_measurement_path=tmp_path/"bpm_noise.h5"; window.saved_session_path=manifest
+    window._refresh_review_page()
+    assert window.review_status.text()=="✓ Measurement session complete for FIT"
+    assert window.review_details.text().count("Present ✓")==3
+    assert "Complete for FIT" in window.review_details.text()
+    assert str(manifest) in window.review_paths.text()
+    assert window.review_open_button.text()=="Open session in pyLOCO Fit"
     window.close()
 
 

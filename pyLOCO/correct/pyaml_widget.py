@@ -6,8 +6,9 @@ from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Signal, Slot
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFormLayout,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 
 from .pyaml_connection import (PyAMLCorrectionConnection, load_mapping,
     resolve_mapping, approved_mapping_candidates, find_reference_lattice,

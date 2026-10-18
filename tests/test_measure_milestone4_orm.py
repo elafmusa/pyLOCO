@@ -156,15 +156,58 @@ def test_schema_session_and_main_importer(app,tmp_path):
     # merge an unrelated manifest merely because the output directory matches.
     session=load_session(manifest,validate_files=False); assert {entry.role for entry in session.files}=={"orm"}; assert set(session.missing_roles)=={"bpm_noise","dispersion"}; window.close()
 
+@pytest.mark.parametrize("direction",["positive","negative"])
+def test_one_sided_orm_save_omits_non_applicable_intermediate_reference(app,tmp_path,direction):
+    bpms,h,v,_,adapter=setup()
+    result=ORMAcquirer(adapter,bpms,h,v).acquire(
+        [80e-6,100e-6,130e-6],[90e-6,120e-6],direction=direction,
+        scaled=True,readings=3,delay_seconds=0,settling_delay_seconds=0,
+    )
+    assert not np.isfinite(result.raw_reference_intermediate_m).any()
+    window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v)
+    window.measurement_type.setCurrentIndex(2)
+    window.output_directory.setText(str(tmp_path))
+    window.measurement_name.setText(f"orm-{direction}")
+    window._save_result(result)
+
+    info=validate_measurement_file(window.saved_measurement_path)
+    assert info["kind"]=="orm"
+    with h5py.File(window.saved_measurement_path,"r") as f:
+        assert f.attrs["direction"]==direction
+        assert "raw/reference_before_m" in f
+        assert "raw/reference_final_m" in f
+        assert "raw/reference_intermediate_m" not in f
+        assert "setpoints/intermediate_restored" not in f
+        metadata=json.loads(f["metadata/json"][()].decode() if isinstance(f["metadata/json"][()],bytes) else f["metadata/json"][()])
+        assert metadata["orm_validation_convention"]=="pyloco_one_sided_v1"
+        assert "no intermediate reference" in metadata["restored_orbit_role"]
+        state="positive" if direction=="positive" else "negative"
+        assert metadata["subtraction_convention"]==f"mean({state})-mean(reference)"
+    loaded=_load_measurements({"orm":str(window.saved_measurement_path)})
+    np.testing.assert_allclose(loaded["orm"],result.response_matrix)
+    window.close()
+
 def test_orm_gui_context_preview_kicks_and_project_roundtrip(app,tmp_path):
     window=MeasureMainWindow(); window.measurement_type.setCurrentIndex(2); app.processEvents()
     assert window.readings.value()==10 and window.delay.value()==pytest.approx(.1) and window.settling_delay.value()==pytest.approx(1.0)
     assert window.orm_output_format.text()=="Orbit difference [m] — required for pyLOCO FIT"
+    assert "K₀ + ΔK/2" in window.orm_state_explanation.text()
+    window.orm_direction.setCurrentIndex(window.orm_direction.findData("positive")); app.processEvents()
+    assert window.orm_hkick_label.text()=="Horizontal one-sided kick +ΔK"
+    assert "K₀ + ΔK and reference K₀" in window.orm_state_explanation.text()
+    assert "/2" not in window.orm_state_explanation.text()
+    assert float(window.kick_preview.item(0,3).text()) > 0
+    window.orm_direction.setCurrentIndex(window.orm_direction.findData("negative")); app.processEvents()
+    assert window.orm_hkick_label.text()=="Horizontal one-sided kick −ΔK"
+    assert "K₀ − ΔK and reference K₀" in window.orm_state_explanation.text()
+    assert float(window.kick_preview.item(0,3).text()) < 0
+    window.orm_direction.setCurrentIndex(window.orm_direction.findData("bipolar")); app.processEvents()
     assert not window.orm_normalized_analysis.isChecked()
     assert not window.orm_config_group.isHidden() and not window.orm_corrector_group.isHidden(); assert window.start_button.text()=="Start ORM measurement"; assert window.kick_preview.rowCount()==12
     assert window.results_tabs.tabText(0)=="Full ORM" and window.results_tabs.currentIndex()==0
     assert [window.results_tabs.tabText(index) for index in range(5)]==["Full ORM","Direct H→X","Direct V→Y","Coupling V→X","Coupling H→Y"]
-    assert window.results_tabs.tabBar().elideMode()==Qt.ElideNone
+    assert window.results_tabs.tabBar().elideMode()==Qt.ElideRight
+    assert not window.results_tabs.tabBar().usesScrollButtons()
     assert window.results_tabs.tabToolTip(6)=="Measured − Model"
     window.corrector_selection_widgets["hcor"]["exclusion"].setText("1"); window._refresh_corrector_preview("hcor"); assert len(window.selected_hcorrectors)==5
     kicks=tmp_path/"kicks.npz"; np.savez(kicks,horizontal=np.arange(1,6)*10e-6,vertical=np.arange(1,7)*20e-6); window.orm_kick_mode.setCurrentIndex(1); window.orm_kick_file.setText(str(kicks)); window._update_kick_preview(); assert window.kick_preview.rowCount()==11
@@ -213,6 +256,26 @@ def test_all_orm_views_keep_titles_and_exact_identity_mapping_after_interaction(
     for canvas,*_ in cases:
         assert callback_counts[canvas]==(len(canvas.canvas.callbacks.callbacks.get("motion_notify_event",{})),len(canvas.canvas.callbacks.callbacks.get("button_press_event",{})))
         assert window._orm_plot_state[canvas]["axis"].get_title()
+    window.close()
+
+def test_loading_reference_model_after_completed_orm_refreshes_comparison(app,monkeypatch):
+    bpms,h,v,known,adapter=setup()
+    result=ORMAcquirer(adapter,bpms,h,v).acquire(
+        [80e-6,100e-6,130e-6],[90e-6,120e-6],readings=2,delay_seconds=0,
+    )
+    window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v)
+    window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm"))
+    window.result=result
+    window._show_result(result)
+    assert not window.orm_model_plot.figure.axes
+
+    monkeypatch.setattr("pyLOCO.measure.main_window.model_orm",lambda *_args,**_kwargs:known*np.asarray(result.effective_kicks_rad)[None,:])
+    window.reference_model=object()
+    window._refresh_completed_reference_comparison()
+    assert window.orm_model_plot.figure.axes[0].get_title()=="MODEL ORM — reference lattice"
+    assert window.orm_difference_plot.figure.axes[0].get_title()=="Measured − MODEL ORM"
+    assert window.orm_model_plot.figure.axes[0].images
+    assert window.orm_difference_plot.figure.axes[0].images
     window.close()
 
 def test_evolving_orm_does_not_invent_identity_for_unacquired_cells(app):
