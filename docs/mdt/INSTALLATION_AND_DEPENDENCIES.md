@@ -1,18 +1,14 @@
-# pyLOCO MDT installation and dependency audit
+# Installing pyLOCO for the ESRF MDT
 
-Audit date: 18 October 2026. This document records observed installations; it is not a promise that every dependency is available from public PyPI.
+**Status: environment audit dated 18 October 2026.** These are **observed local versions**, not a validated clean-room installation or an approved ESRF hardware environment. For the exact GUI procedure and filenames, see [ESRF_MDT_RUNBOOK.md](ESRF_MDT_RUNBOOK.md).
 
-## Status labels
+## 1. Identify the checkout
 
-- **Simulator-tested:** exercised with the modern EBS pyAML/pySC simulator artifacts.
-- **Code-verified:** source and entry points were inspected, but the integration was not exercised against ESRF hardware.
-- **ESRF verification required:** machine configuration, units, permissions, or readbacks must be confirmed on site.
+Use branch `integration/pyaml-gui-mdt`. The tested application-code revision is `6081c0aee5c0efd0c9ccdd4469571bfe5c8b1bc6`. A later documentation-only commit may be branch HEAD; record that HEAD as the documentation revision and confirm that `6081c0a` is its ancestor.
 
-## Supported installation layers
+## 2. Standard pyLOCO GUI installation
 
-### Core GUI installation
-
-From a pyLOCO checkout:
+From the correct checkout:
 
 ```bash
 python3 -m venv .venv
@@ -22,122 +18,82 @@ python -m pip install -e '.[gui]'
 python -m pip check
 ```
 
-The repository metadata declares Python 3.10 or newer and these runtime dependencies: `accelerator-toolbox`, `h5py`, `matplotlib`, `numpy`, `PyYAML`, and `tomli` on Python older than 3.11. The `gui` extra adds `PySide6` and `matplotlib`.
+Launch applications separately with `pyloco-measure`, `pyloco-gui`, and `pyloco-correct`.
 
-### pySC demo installation
+**If a command fails:** save the console output, check `which python` and `python -c 'import pyLOCO; print(pyLOCO.__file__)'`. Do not use an unrelated active virtual environment.
 
-`pyproject.toml` currently defines:
+## 3. Local simulator integration: observed versions
 
-```bash
-python -m pip install -e '.[gui,pysc-demo]'
-```
+| Package | Observed on local simulator | What this means |
+|---|---|---|
+| Python | **3.14.0** | pyLOCO metadata says Python >= 3.10; only this integration environment was tested here |
+| pyLOCO | **0.4.0**, tested application commit `6081c0aee5c0efd0c9ccdd4469571bfe5c8b1bc6` | Published MDT application-code revision; later documentation-only HEAD does not change it |
+| Accelerator Toolbox (`accelerator-toolbox`) | **0.8.0** | Tested locally |
+| pyAML (`accelerator-middle-layer`) | **0.3.1**, source revision `c7cf416deb2b5f4856ca857f644b521f3c83b88d` | Source-based integration; package metadata pins pySC 1.5.3 |
+| pySC (`accelerator-commissioning`) | **1.5.6** | Used in modern realistic EBS demo |
+| pySC2pyaml | **0.1.0**, source revision `cdce2131681b840dddecd1b365723c628872d83d` | External editable checkout, not included automatically |
+| PySide6 | **6.12.0** | GUI environment |
+| NumPy / h5py / Matplotlib | **2.5.3 / 3.16.0 / 3.11.2** | Observed versions |
+| PyYAML | **6.0.3** | Observed version |
+| Tango client | **Not verified** | ESRF expert must confirm supported environment |
 
-The `pysc-demo` extra pins `accelerator-commissioning==1.5.2`. This supports the repository demo profile, but it is **not** the same dependency set as the demonstrated modern EBS pyAML simulator environment below.
+**Known blocker for a clean recommended simulator install:** pyAML 0.3.1 declares `accelerator-commissioning==1.5.3`, while the demonstrated environment installed pySC 1.5.6. Also the repository `.[pysc-demo]` extra pins pySC 1.5.2. Thus the working local simulator environment **fails `python -m pip check`**. Do not present this combination as officially compatible or hide the conflict. Resolve it with Kostas and test from a new virtual environment before publishing a unified installation extra.
 
-### Modern EBS pyAML/pySC integration
+The audited source revisions:
+- pyAML: `c7cf416deb2b5f4856ca857f644b521f3c83b88d`
+- pySC2pyaml: `cdce2131681b840dddecd1b365723c628872d83d`
 
-The demonstrated local integration used private/local artifacts in addition to pyLOCO. They must not be assumed to exist on a new workstation:
+Verify availability and licensing of those source repositories and the EBS simulator bundle. A local editable checkout is not proof of a publicly reproducible install.
 
-- pySC2pyaml source checkout, commit `cdce2131681b840dddecd1b365723c628872d83d`
-- pyAML source checkout, commit `c7cf416deb2b5f4856ca857f644b521f3c83b88d`
-- modern EBS simulator bundle containing `betamodel.mat`, `betamodel_conf_pyaml_test.yaml`, and `run_pysc_realistic.py`
-
-The observed working environment contained:
-
-| Component | Observed version | Evidence/status | Publication guidance |
-|---|---:|---|---|
-| Python | 3.14.0 | Simulator-tested locally | Public metadata requires Python >=3.10; do not narrow it based only on this workstation. |
-| pyLOCO | 0.4.0, source commit `2b6623246eec8bb87e8702b04c9fa0eb08ceda2e` | Simulator-tested integration worktree | Publish the final branch name and commit separately after approval. |
-| Accelerator Toolbox (`accelerator-toolbox`) | 0.8.0 | Simulator-tested | Installed through pyLOCO dependency metadata. |
-| pySC (`accelerator-commissioning`) | 1.5.6 | Simulator-tested with the external realistic launcher | Conflicts with pyLOCO's `pysc-demo` 1.5.2 pin and pyAML 0.3.1 metadata's 1.5.3 pin; resolve before declaring a clean public extra. |
-| pyAML (`accelerator-middle-layer`) | 0.3.1 | Simulator-tested | Current source revision includes the diagnostic-device API used by pyLOCO; package metadata requests pySC 1.5.3. |
-| pySC2pyaml | 0.1.0, editable local source | Simulator-tested | Treat as an external source checkout until a redistributable release/source URL is agreed. |
-| PySide6 | 6.12.0 | Simulator-tested | Installed by `gui` extra. |
-| NumPy | 2.5.3 | Simulator-tested | No tighter pyLOCO constraint was verified. |
-| h5py | 3.16.0 | Simulator-tested | No tighter pyLOCO constraint was verified. |
-| Matplotlib | 3.11.2 | Simulator-tested | No tighter pyLOCO constraint was verified. |
-| PyYAML | 6.0.3 | Simulator-tested | Required for project and machine YAML. |
-| Tango client | Not verified in this audit | ESRF verification required | Install through the ESRF-supported environment; confirm the exact package and version with Kostas. |
-
-The local integration environment fails `python -m pip check` because `accelerator-middle-layer 0.3.1` declares `accelerator-commissioning==1.5.3` while 1.5.6 is installed. It was retained only as evidence of the demonstrated simulator setup. Do not publish this mismatch as a recommended clean installation.
-
-For source-based pyAML evaluation, the inspected revision can be installed with:
+## 4. Check the installed environment
 
 ```bash
-python -m pip install \
-  'accelerator-middle-layer[tango-pyaml] @ git+https://github.com/python-accelerator-middle-layer/pyaml.git@c7cf416deb2b5f4856ca857f644b521f3c83b88d'
-```
-
-This command has **not** been validated as a complete clean-room MDT install in this audit. It may require ESRF-provided Tango dependencies and still declares pySC 1.5.3.
-
-## Version and import verification
-
-Run after activating the intended environment:
-
-```bash
+which python
 python - <<'PY'
 from importlib.metadata import version
-from pathlib import Path
-import at, pyLOCO
-
-for package in (
-    'pyLOCO', 'accelerator-toolbox', 'accelerator-middle-layer',
-    'accelerator-commissioning', 'pySC2pyaml', 'PySide6',
-    'numpy', 'h5py', 'matplotlib', 'PyYAML',
-):
-    try:
-        print(f'{package}: {version(package)}')
-    except Exception as exc:
-        print(f'{package}: unavailable ({exc})')
-print('pyLOCO import:', Path(pyLOCO.__file__).resolve())
-print('pyAT import:', Path(at.__file__).resolve())
+import pyLOCO, at
+for name in ['pyLOCO','accelerator-toolbox','accelerator-middle-layer',
+             'accelerator-commissioning','pySC2pyaml','PySide6','numpy','h5py','matplotlib','PyYAML']:
+    try: print(f'{name}: {version(name)}')
+    except Exception as exc: print(f'{name}: NOT AVAILABLE ({exc})')
+print('pyLOCO location:', pyLOCO.__file__)
+print('pyAT location:', at.__file__)
 PY
 python -m pip check
 ```
 
-Record the output in the shift log. An unexpected import path is a release-blocking environment issue.
+Save the output and `python -m pip freeze` with shift evidence. If dependencies conflict, ask the integration owners for a supported combination before using ESRF hardware.
 
-## Proposed public dependency work
+## 5. Where the extra files are
 
-No dependency metadata change is made by this documentation task. Before publishing a combined pyAML/pySC extra:
+| Item | Location or acquisition |
+|---|---|
+| pyLOCO example projects and guide | `<PYLOCO_CHECKOUT>/mdt_smoke/` and `docs/mdt/` |
+| Modern realistic EBS simulator | **External** `<EBS_PYSC_BUNDLE>`; not stored in GitHub |
+| Modern lattice | `<EBS_PYSC_BUNDLE>/betamodel.mat` |
+| pyAML simulator config | `<EBS_PYSC_BUNDLE>/betamodel_conf_pyaml_test.yaml` |
+| Simulator runner | `<EBS_PYSC_BUNDLE>/run_pysc_realistic.py` |
+| Trusted live ESRF YAML / Tango | **ESRF-supplied**; not bundled or verified here |
+| Package content list | `<PYLOCO_CHECKOUT>/mdt_smoke/PACKAGE_MANIFEST.md` |
 
-1. Agree one compatible pySC version across pyLOCO, pyAML, and pySC2pyaml.
-2. Confirm a redistributable pySC2pyaml source or package.
-3. Test a clean virtual environment with `pip check` passing.
-4. Test the EBS simulator, one read-only Measure connection, FIT project relocation/open, and Correct read-only preview.
-5. Add an optional extra only after those commands are reproducible.
+Do not assume that external simulator/lattice files come with `git clone`. Verify paths before launching.
 
-## Public versus internal material
+## 6. What belongs in the online repository?
 
-Suitable for the public README or installation guide:
+**Public documentation:** core GUI installation; three app launch commands; optionally supported pyAML integration described as external; sanitized example projects/mapping schemas; portable paths; read-only safeguards.
 
-- core `.[gui]` installation and the three console commands;
-- generic simulator instructions using repository-owned profiles;
-- portable `mdt_smoke` layout and relative-path project behavior;
-- safety principles: explicit authorization, preview, journaling, and restoration checks;
-- machine-neutral guidance for supplying a trusted YAML configuration.
+**Only after compatibility/licensing review:** pinned optional pyAML/pySC dependencies, redistributable pySC2pyaml checkout, simulator and EBS data.
 
-Suitable for a public MDT example only after licensing and redistribution review:
+**Internal/ESRF-controlled:** production Tango hosts and credentials, machine YAML and permissions, live setpoint limits, operational journals, personal absolute paths, unapproved control-unit calibrations.
 
-- sanitized FIT projects and selection provenance;
-- small, non-sensitive measurement examples;
-- mapping schemas without private endpoints or personal paths;
-- documented external-input placeholders for lattice and machine YAML files.
+**Before recommending a new public optional extra:** agree compatible pyAML/pySC/pySC2pyaml versions, prove `pip check` passes in a clean venv, verify simulator connection and read-only Correct preview, and obtain approval for redistribution.
 
-Keep internal to ESRF/local operations:
+## 7. Questions for Kostas / ESRF
 
-- Tango hosts, credentials, access-control details, and operator identities;
-- production device endpoints and write permissions;
-- nonredistributable lattice/simulator data;
-- personal absolute paths;
-- live correction limits and calibration decisions not yet approved;
-- transaction journals and measurement/run artifacts containing operational provenance.
+1. Which Python, pyAML, pySC, pySC2pyaml and Tango versions are approved for the machine environment?
+2. Where is the official real-machine YAML, and who may distribute it?
+3. What are the definitive BPM, kick, signed RF and B2L/A2L units and calibration/readback conventions?
+4. What are the approved hardware-write procedures, limits, interlocks and restoration rules?
+5. Which later documentation HEAD has been approved for the meeting, while retaining application revision `6081c0a`?
 
-## Items requiring confirmation from Kostas
-
-1. Supported Python, Tango client, pyAML, pySC, and pySC2pyaml versions for the ESRF control environment.
-2. The authoritative real-machine YAML and whether it may be redistributed.
-3. Corrector kick, RF frequency, BPM orbit, and quadrupole integrated-strength units and signs at the pyAML boundary.
-4. Whether `B2L`/`A2L` readbacks and setpoints use the exact signed integrated-strength convention expected by Correct.
-5. Production write authorization, limits, interlocks, ownership, and restoration procedure.
-6. The approved public MDT branch name and immutable commit.
+**Until these are answered, simulator verification does not authorize live machine correction.**

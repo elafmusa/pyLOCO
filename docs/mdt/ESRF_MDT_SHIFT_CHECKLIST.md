@@ -1,59 +1,62 @@
-# ESRF pyLOCO MDT shift checklist
+# ESRF pyLOCO MDT — one-page shift checklist
 
-Print this page and mark each item. Detailed recovery steps are in `ESRF_MDT_RUNBOOK.md`.
+**Target:** ☐ Local pySC simulator  ☐ Real ESRF machine (**expert approval required**)
 
-## Environment and target
+**Date / shift:** __________  **Operator:** __________  **Documentation HEAD:** ______________________
 
-- [ ] Published branch and expected commit recorded and matched.
-- [ ] Correct virtual environment active; import paths and package versions saved.
-- [ ] `pip check` result reviewed; any known exception explicitly accepted by the team.
-- [ ] Target clearly identified: modern EBS simulator or real ESRF machine.
-- [ ] Trusted lattice/YAML selected; automatic MAT detection shows 4434 elements and variable `betamodel` (or the intended variable was selected explicitly).
-- [ ] Real-machine units, signs, permissions, limits, and interlocks confirmed with Kostas.
+**Tested application revision present:** ☐ `6081c0aee5c0efd0c9ccdd4469571bfe5c8b1bc6`
 
-## Measure
+**STOP / NO-GO:** wrong machine, missing mapping, changed file/checksum, unknown unit/sign, nonfinite data, failed restoration, unresolved safety warning, or unapproved writes. **No Apply is authorized by this checklist.**
 
-- [ ] Connection and readback inventory pass with writes disabled.
-- [ ] Ordered BPM/H/V-corrector identities reviewed.
-- [ ] For full pyAML Measure comparison, **Verify device alignment** reports 896/896; for the restricted FIT inventory it reports 330/330. Details show exact AT Device identities and B1L/A1L components.
-- [ ] Changing the lattice, YAML, or device selection is understood to invalidate alignment; comparison stays disabled until reverified.
-- [ ] BPM noise saved and metadata valid.
-- [ ] RF dispersion saved; signed RF step recorded; RF restored and read back.
-- [ ] ORM saved; kick direction/value recorded; all correctors restored and read back.
-- [ ] Review & Save shows BPM noise, dispersion, and ORM present.
-- [ ] Session manifest path recorded and **Validate for pyLOCO** passes.
-- [ ] Remember: Save Project saves Measure configuration, not the measurement session.
+## A. Before connecting
 
-## FIT
+- [ ] Branch `integration/pyaml-gui-mdt` checked out; documentation HEAD recorded; `6081c0a` is an ancestor; working tree clean.
+- [ ] Virtual environment active; Python/pyAT/pyAML/pySC versions and import paths recorded. `pip check` reviewed (known version conflict not silently ignored).
+- [ ] Correct modern EBS `betamodel.mat` selected: **4,434** elements, MAT key `betamodel`.
+- [ ] Target YAML verified: simulator file for local test or ESRF-approved machine file for hardware.
+- [ ] Start with **writes disabled**; confirm target, units, permissions, interlocks with ESRF expert.
 
-- [ ] `EBS_pyaml_MDT_smoke.pyloco.json` opens with lattice, all three measurements, mappings, selections, and one stage.
-- [ ] 320 BPM + 5 H + 5 V identities map 330/330 to the active lattice.
-- [ ] Smoke selections include only approved quadrupoles 27, 36, and 51.
-- [ ] Pre-FIT measured versus initial-model ORM and X/Y RF-response comparisons reviewed.
-- [ ] RMS, units, sign conventions, exclusions, kicks, RF step, calculator, and provenance recorded.
-- [ ] Full FIT **Validate** passes before Run.
-- [ ] Selecting a stage is understood to edit it; **Run LOCO runs the entire validated recipe**.
-- [ ] Restricted smoke result, run request, checkpoints, logs, and project snapshot preserved.
-- [ ] Saved restricted smoke evidence shows both configured iterations completed; no new fit is required for publication testing.
-- [ ] Four-stage review project is not run with the restricted 5H/5V ORM as though fully constrained.
+## B. Measure → save
 
-## Correct — read-only MDT scope
+- [ ] **Measure → Machine:** Test connection and confirm BPM/H/V corrector and RF readbacks.
+- [ ] **Devices:** Review exact device order.
+- [ ] Reference lattice shows MAT variable `betamodel`, **4,434** elements. Click **Verify device alignment**; full simulator inventory expects **896/896** exact mappings. Any lattice/YAML/inventory change requires revalidation.
+- [ ] **Measurement:** BPM noise saved to `.h5`.
+- [ ] RF dispersion saved to `.h5`; RF returned to nominal by **readback**.
+- [ ] ORM saved to `.h5`; corrector kicks/signs recorded and **all correctors restored by readback**.
+- [ ] **Review & Save:** All three measurement types shown, **Validate for pyLOCO** passes.
+- [ ] Record **measurement session** `*.pyloco-session.json` path: __________________________
 
-- [ ] Exact FIT result and lattice provenance confirmed.
-- [ ] pyAML connection established with writes disabled.
-- [ ] Magnet mappings, component, ordinal, checksum, length, and readbacks validate.
-- [ ] Correction preview reviewed in explicit physical/control units.
-- [ ] Offline-preview warning recorded: live strengths, readbacks, calibration and limits were not verified; B2L/A2L unit/sign calibration remains an ESRF decision.
-- [ ] No Apply action performed; zero writes confirmed.
-- [ ] Preview/journal evidence preserved.
+**Reminder:** *Save Project* stores Measure settings, not HDF5 data; the session manifest references the HDF5 files.
 
-## Shutdown and handover
+## C. FIT → review → run
 
-- [ ] No acquisition or restoration remains active.
-- [ ] RF and corrector readbacks equal recorded references within tolerance.
-- [ ] Write authorizations disabled; GUIs disconnected.
-- [ ] Simulator stopped; port 13131 no longer listening.
-- [ ] HDF5 files, session manifest, projects, mappings, results, checkpoints, journals, screenshots, package list, and logs archived.
-- [ ] Outstanding warnings and ESRF-specific assumptions entered in the shift log.
+- [ ] Obtain the external ESRF MDT data package; open `configs/EBS_pyaml_MDT_smoke.pyloco.json` with **Use measurements saved in project**. This project and its HDF5/lattice/YAML inputs are not in GitHub.
+- [ ] Modern lattice + three HDF5 inputs restored; expect **320 BPM + 5 H + 5 V**, 330/330 mappings for the documented smoke session.
+- [ ] Stage fits **QD3J, QF4J, QD5B only**, not the four-stage REVIEW REQUIRED proposal.
+- [ ] **Pre-FIT measurement checks:** ORM + X/Y RF dispersion Measured/Model/Residual and RMS reviewed; units and signs clear.
+- [ ] **Validate** passes; save working copy; **Run LOCO** only for the approved restricted test.
+- [ ] Results χ², 3 fitted parameter identities, ORM and output artifacts reviewed; model corrector ORM is 640×10 and RF response is shown separately.
+- [ ] Save run directory / project path: ___________________________________________
 
-**NO-GO:** unknown target, missing identity mapping, non-finite data, unit/sign ambiguity, failed restoration, stale checksum, incomplete provenance, or unapproved write permission.
+## D. Correct — READ ONLY
+
+- [ ] **Open in pyLOCO Correct**; trusted pyAML connected with writes disabled.
+- [ ] Correct mapping **3/3**, correct B2L component/identity, current readbacks and lengths.
+- [ ] **Review & Validate → Preview machine changes** succeeds; record proposed targets and units.
+- [ ] **Read and resolve every warning**. Simulator smoke previously had 1 warning.
+- [ ] Confirm **NO Apply**, **NO machine writes**, and no pending transaction.
+- [ ] Preview evidence path: ___________________________________________________
+
+## E. Finish and hand over
+
+- [ ] Check actual RF/corrector restoration readbacks; disable writes and disconnect.
+- [ ] Stop simulator with `Ctrl-C` (if used). Verify port 13131 is no longer listening.
+- [ ] Archive `.h5`, session manifest, project copies, mappings, results/checkpoints, logs, screenshots, warning text and `pip freeze` **outside public Git**.
+- [ ] Write down unresolved issues and confirm handover to ESRF expert.
+
+**Full instructions:** `docs/mdt/ESRF_MDT_RUNBOOK.md`
+
+**Versions:** `docs/mdt/INSTALLATION_AND_DEPENDENCIES.md`
+
+**Files:** `mdt_smoke/PACKAGE_MANIFEST.md` and `mdt_smoke/README.md`

@@ -1,36 +1,42 @@
-# ESRF pyLOCO MDT runbook
+# pyLOCO at ESRF — step-by-step MDT runbook
 
-Purpose: a reproducible Measure -> FIT -> Correct shift procedure for the modern 4434-element EBS model. This runbook does not authorize machine writes. Read it together with [INSTALLATION_AND_DEPENDENCIES.md](INSTALLATION_AND_DEPENDENCIES.md) and the package-local `mdt_smoke/README.md`.
+**Scope:** modern EBS (4,434 AT elements), from **Measure → FIT → Correct**. The documented smoke test was exercised with the **pyAML/pySC simulator**. **Real ESRF machine operation has not been verified by these tests. Do not apply corrections under this runbook.**
 
-Status key:
+Use the [one-page shift checklist](ESRF_MDT_SHIFT_CHECKLIST.md) during the shift and [installation notes](INSTALLATION_AND_DEPENDENCIES.md) for versions. The package also contains `mdt_smoke/README.md`, `CHECKLIST.md`, and `PACKAGE_MANIFEST.md`.
 
-- **Simulator-tested**: exercised with the modern EBS pyAML/pySC simulator.
-- **Code-verified**: implementation and UI path inspected, but not exercised against ESRF hardware.
-- **ESRF verification required**: confirm with the machine expert before use.
+## 0. Find the files you need
 
-## 1. Obtain the exact MDT revision
+Set these two locations first. Paths starting with `<...>` are placeholders, **not literal Terminal commands**.
 
-The final public MDT branch has not yet been approved or published. Replace `<PUBLISHED_MDT_BRANCH>` and `<EXPECTED_COMMIT>` only with the identifiers announced for the shift.
+| Name | Where to find it | Used for |
+|---|---|---|
+| pyLOCO checkout | `<PYLOCO_CHECKOUT>` | Source, GUIs and publishable MDT instructions |
+| MDT package guide | `<PYLOCO_CHECKOUT>/mdt_smoke/` | Builder, checklist, manifest and portable selection audit |
+| **Smoke FIT project** | External ESRF package: `configs/EBS_pyaml_MDT_smoke.pyloco.json` | Tested *three-quadrupole* software smoke setup; not stored in GitHub |
+| **Four-stage REVIEW project** | External ESRF package: `configs/EBS_pyaml_MDT_four_stage_REVIEW_REQUIRED.pyloco.json` | Review only; **do not run with the limited 5H/5V ORM** |
+| Selection audit | `mdt_smoke/configs/EBS_modern_selection_provenance.json` | Names, AT ordinals, selection patterns |
+| Simulator/MAT lattice | `<EBS_PYSC_BUNDLE>/betamodel.mat` | External modern EBS model, MAT variable `betamodel`; not stored in GitHub |
+| Simulator pyAML YAML | `<EBS_PYSC_BUNDLE>/betamodel_conf_pyaml_test.yaml` | External simulator configuration; not stored in GitHub |
+| Simulator launcher | `<EBS_PYSC_BUNDLE>/run_pysc_realistic.py` | pySC simulator on port 13131 |
+| Saved session manifest | **Open its actual path from Measure → Review & Save**; local session example: `measurements/measurement-session.pyloco-session.json` | References BPM-noise, RF-dispersion and ORM HDF5 files |
+| October 18 sample ORM | External ESRF package: `measurements/pyloco-orm-20261018-170011.h5` | ORM only, **not the complete session and not stored in GitHub** |
+| FIT outputs | Results → Files / selected run's results directory | `run_request.json`, summary, fitted model, checkpoints |
+| Correct mapping | External ESRF package if approved; otherwise Correct → Machine / Mapping | Verified control identities for preview; not stored in GitHub |
+
+**Before relying on a packaged path**, read `mdt_smoke/PACKAGE_MANIFEST.md` and confirm that the file exists after checkout. Some simulator/lattice files are external and must be supplied separately. Do not publish machine-specific YAML, access information, operational journals, or nonredistributable lattice data.
+
+## 1. Install and identify the correct version
+
+The tested application-code revision is `6081c0aee5c0efd0c9ccdd4469571bfe5c8b1bc6` on `integration/pyaml-gui-mdt`. A later documentation-only commit may become branch HEAD; that changes the documentation revision, not the tested application-code revision. Record both hashes.
 
 ```bash
 git clone https://github.com/elafmusa/pyLOCO.git pyloco-mdt
 cd pyloco-mdt
 git fetch origin
-git switch --track -c mdt-local origin/<PUBLISHED_MDT_BRANCH>
-test "$(git rev-parse HEAD)" = "<EXPECTED_COMMIT>"
-git status --short
-```
-
-Expected: the commit matches and the status is empty. If the branch is missing, the hash differs, or files are modified, stop and obtain the published identifiers. Do not substitute the development worktree.
-
-For the current unpublished integration snapshot only, the audited commit is `2b6623246eec8bb87e8702b04c9fa0eb08ceda2e` on local branch `integration/pyaml-gui-review`; the worktree contains uncommitted development changes and is not a publication identifier.
-
-## 2. Create the environment
-
-### 2.1 Core Measure/FIT/Correct GUI
-
-```bash
-cd <PYLOCO_CHECKOUT>
+git switch --track -c mdt-local origin/integration/pyaml-gui-mdt
+git log --oneline -3
+# Confirm the history contains the tested application revision:
+git merge-base --is-ancestor 6081c0aee5c0efd0c9ccdd4469571bfe5c8b1bc6 HEAD
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
@@ -38,336 +44,146 @@ python -m pip install -e '.[gui]'
 python -m pip check
 ```
 
-Expected: installation completes and `pip check` reports no broken requirements. If it fails, save the full output and do not mix packages from another environment.
+**Pass:** branch HEAD and tested application revision are recorded, the checkout is clean, and GUI dependencies install. **If not:** stop and save the error log. The demonstrated pyAML/pySC environment has an unresolved `pip check` version conflict; do not claim a clean compatible integration install until resolved with Kostas.
 
-### 2.2 Simulator/control-system integrations
-
-The modern EBS simulator currently depends on external pyAML, pySC2pyaml, and EBS bundle inputs. Follow the version decision recorded in `INSTALLATION_AND_DEPENDENCIES.md`; do not combine `.[pysc-demo]` with the demonstrated pySC 1.5.6 environment and assume compatibility.
-
-Verify imports and record versions:
+To see versions and paths:
 
 ```bash
-python -c "import at, h5py, numpy, PySide6, pyLOCO; print(pyLOCO.__file__)"
-python -m pip list | grep -E 'accelerator|pySC|PySide6|numpy|h5py|matplotlib|PyYAML|pyLOCO'
+which python
+python -c 'import pyLOCO,at; print(pyLOCO.__file__); print(at.__file__)'
+python -m pip list | grep -E 'accelerator|pySC|PySide6|numpy|h5py|pyLOCO'
 ```
 
-If the source path is not inside `<PYLOCO_CHECKOUT>`, reactivate the intended environment or reinstall editable pyLOCO.
+## 2. Simulator preparation (skip for real-machine studies)
 
-## 3. Launch applications
-
-Use separate terminals with the same activated environment:
+**Simulator-only.** The external bundle must contain `betamodel.mat`, `betamodel_conf_pyaml_test.yaml`, and `run_pysc_realistic.py`; `validate_realistic_ebs.py` and `test_realistic_ebs.py` are the documented preflight tests.
 
 ```bash
-source <PYLOCO_CHECKOUT>/.venv/bin/activate
-pyloco-measure
-```
-
-```bash
-source <PYLOCO_CHECKOUT>/.venv/bin/activate
-pyloco-gui
-```
-
-```bash
-source <PYLOCO_CHECKOUT>/.venv/bin/activate
-pyloco-correct
-```
-
-Expected: each main window opens without a traceback. If a console command is missing, run `python -m pip install -e '.[gui]'` from the checkout and recheck the active interpreter with `which python`.
-
-## 4. Start and stop the modern EBS simulator
-
-### 4.1 Preflight
-
-The modern package expects an external bundle containing at least:
-
-- `<EBS_PYSC_BUNDLE>/betamodel.mat`
-- `<EBS_PYSC_BUNDLE>/betamodel_conf_pyaml_test.yaml`
-- `<EBS_PYSC_BUNDLE>/run_pysc_realistic.py`
-- `<EBS_PYSC_BUNDLE>/validate_realistic_ebs.py`
-- `<EBS_PYSC_BUNDLE>/test_realistic_ebs.py`
-
-Run offline validation before starting a server:
-
-```bash
-cd <EBS_PYSC_BUNDLE>
+cd "<EBS_PYSC_BUNDLE>"
 <SIMULATOR_PYTHON> validate_realistic_ebs.py
 <SIMULATOR_PYTHON> -m pytest -q test_realistic_ebs.py
-```
-
-Expected: validation and tests pass. If they fail, do not start the server or edit the lattice to suppress the failure; preserve the logs.
-
-### 4.2 Start
-
-```bash
-cd <EBS_PYSC_BUNDLE>
 <SIMULATOR_PYTHON> run_pysc_realistic.py --serve --port 13131
 ```
 
-Expected: the script validates the configuration, starts on loopback port 13131, and remains in the foreground. Keep this terminal visible. Only one simulator may own the port.
+Keep its Terminal running. **Pass:** simulator starts on loopback port 13131. **If not:** check the YAML, imports, terminal output and whether the port is already occupied. Do not terminate an unidentified process.
 
-The repository also provides `python Examples/Demo/start_pysc_server.py --profile ebs`; that is a generic repository profile and must not be confused with the external modern realistic EBS bundle used by the MDT package.
+## 3. Start the GUIs
 
-### 4.3 Stop
-
-Use `Ctrl-C` in the simulator terminal, then verify the listener is gone:
+Open separate Terminal windows using the correct environment:
 
 ```bash
-lsof -nP -iTCP:13131 -sTCP:LISTEN
+source "<PYLOCO_CHECKOUT>/.venv/bin/activate"
+pyloco-measure
+# separate terminal: pyloco-gui
+# separate terminal: pyloco-correct
 ```
 
-Expected: no output. Do not kill an unknown process solely because it uses the expected port; identify it first.
+**Pass:** all windows open without tracebacks. **If not:** verify `which python`, the selected checkout, and the installation output.
 
-## 5. Connect Measure to the simulator
+## 4. Connect Measure and verify the target
 
-Status: **Simulator-tested**.
+1. **Measure → Machine:** choose **pyAML** and the trusted YAML (simulator YAML for the local test; ESRF-approved YAML for hardware).
+2. Start with **writes disabled**. Press **Test connection**.
+3. Check target/mode, BPM/H/V corrector inventories, RF readback, backend permissions and output directory.
+4. **Only for approved acquisition**, enable the minimum necessary corrector or RF write capability after confirming the target.
 
-1. Open pyLOCO Measure and select the **Machine** tab.
-2. Select the pyAML/live backend and choose `<EBS_PYSC_BUNDLE>/betamodel_conf_pyaml_test.yaml`, or the package-local YAML when following its relocation instructions.
-3. Confirm the displayed configuration path, machine/profile, available capabilities, and output directory.
-4. For the first connection, disable corrector and RF writes. Select **Test connection**.
-5. Confirm BPM, horizontal-corrector, vertical-corrector, RF, and readback inventories. Resolve missing devices before continuing.
-6. Enable only the capability required by the next acquisition and only after the simulator identity is confirmed.
+For Measure's model comparison, select the reference lattice. MAT files are inspected for valid AT lattices: the modern EBS file selects `betamodel` and must show **4,434 elements**. If more than one valid lattice exists, choose it explicitly. Then select the BPM/H/V inventory and click **Verify device alignment**. The shared FIT/Measure mapper requires exact AT `Device` identities, unique ordinals and the correct `B1L`/`A1L` steering components; it preserves measurement order and fails closed. The full simulator inventory was verified at **896/896**. Changing the lattice, MAT variable, YAML or device inventory invalidates alignment.
 
-Expected: status is connected and inventories match the intended modern EBS profile. If connection fails, confirm the server terminal, port 13131, selected YAML, active Python environment, and pyAML imports. Never switch on writes to diagnose a read failure.
+**Pass:** correct identity and expected readbacks. **If not:** do not enable writes; check connection/YAML and consult the ESRF expert. Simulator success does not authorize real-machine writes.
 
-## 6. Switch between simulator and real ESRF configurations
+## 5. Measure and save
 
-Status: simulator path **Simulator-tested**; real machine **ESRF verification required**.
+Navigate **Machine → Devices → Measurement → Review & Save**. **Keep the BPM and corrector order**; it determines ORM row/column identity.
 
-1. Finish or cancel any acquisition and verify restoration.
-2. Save the current Measure project if its application settings are needed.
-3. Start a new Measure project or disconnect before selecting another YAML.
-4. Select the trusted YAML for the intended target. Do not edit a simulator YAML in place to point at production.
-5. Keep all writes disabled and perform a connection/readback inventory first.
-6. Confirm the target name, endpoints, selected devices, units, signs, permissions, and output directory with the shift expert.
-7. Enable a write capability only for its explicitly approved measurement.
+| Measurement | What to do | Evidence of success |
+|---|---|---|
+| **BPM noise** | Select the BPM inventory; choose BPM noise; configure readings and delay; start read-only acquisition | Samples finite; HDF5 saved with BPM names and units |
+| **RF dispersion** | Review signed RF separation and orbit readings; authorize RF writes only for approved target; start automatic dispersion | RF restored to original reference and verified by readback; HDF5 records sign and RF state |
+| **ORM** | Review ordered H/V correctors, kick size and bipolar/one-sided mode; authorize corrector writes only as approved; start ORM | All correctors restored and verified; ORM HDF5 saved with names and kick metadata |
 
-Failure rule: an unknown endpoint, unexpected device count, missing readback, unit ambiguity, or permission ambiguity blocks acquisition. Save diagnostics and consult Kostas.
+**Stop on failed restoration.** Disable writes; retain logs and the session. Restarting the GUI is not proof of restoration.
 
-## 7. Acquire the three measurements
+### Three different saved artifacts
 
-Use the tabs **Machine -> Devices -> Measurement -> Review & Save**. Device ordering is scientific metadata: do not reorder lists merely to make dimensions match.
+- **Individual measurements:** separate `.h5` files with numerical data and acquisition metadata.
+- **Measurement session:** `*.pyloco-session.json` manifest that points to the measurement files. The manifest **does not embed their arrays**.
+- **Measure project:** `*.pyloco-measure.json` with application/backend setup. **Save Project** is *not* Save Measurement Session.
 
-### 7.0 Verify Measure reference-model alignment (required for pyAML comparisons)
+In **Review & Save**, check that BPM noise, dispersion and ORM are listed; click **Validate for pyLOCO** and record the exact manifest path. Use **Open session in pyLOCO Fit** to hand off, or load in FIT through **Measurements → Open Measurement Session…**. If a role is missing, the session is partial; never substitute invented arrays.
 
-This check is read-only and is separate from acquisition. After connecting pyAML, selecting the authoritative `.mat` reference lattice, and choosing the BPM/H/V-corrector inventories, confirm the displayed MAT variable and element count. Measure detects valid AT lattice variables structurally; the modern EBS file must show `betamodel` and 4434 elements. If several valid lattices exist, select one explicitly. The selected variable is saved in the Measure project and restored on reopen.
+## 6. Open the complete FIT smoke project
 
-1. In **Machine -> Optional reference model**, select **Verify device alignment**.
-2. Require `mapped/total` to be complete. The interactive full pyAML inventory check mapped **896/896** devices (320 BPM, 288 H correctors, 288 V correctors). The restricted 18 October FIT session maps **330/330** devices (320 BPM, 5 H, 5 V).
-3. Use **Details...** to review measured identity, role, AT element, zero-based ordinal, steering component, and status.
-4. Only then enable **Compare measurements with reference model (diagnostic only)**.
+1. Start **FIT** (`pyloco-gui`), click **Open**.
+2. Choose `<ESRF_MDT_PACKAGE>/configs/EBS_pyaml_MDT_smoke.pyloco.json`. This local-only project is not included in GitHub; obtain the package through the approved ESRF transfer route.
+3. If FIT is empty, choose **Use measurements saved in this project**. **Keep current measurements** is only appropriate when a deliberately imported session should replace saved bindings.
+4. In **Machine Components**, verify modern `betamodel` lattice, **4,434 elements**.
+5. In **Measurements**, verify BPM noise, dispersion and ORM from the intended session.
+6. In **Machine Components → Machine Lattice**, click **Find machine mappings**. For the documented smoke inventory expect **320 BPM + 5H + 5V = 330/330** mapped. If adapting new data, use **Use mapped devices in FIT…**, inspect the ordered proposal, and confirm.
+7. In **FIT**, ensure the restricted single stage fits only normal quadrupoles `QD3J`, `QF4J`, `QD5B` (modern zero-based AT ordinals **27, 36, 51**, identity-confirmed). Two LM iterations were used for the documented smoke.
+8. Use **Save As** for your working copy. Do not overwrite packaged or historical baseline files.
 
-Measure reuses FIT's exact AT `Device` mapping and validates the lattice checksum, pyAML configuration checksum, ordered inventory fingerprint, unique ordinals, and `B1L`/`A1L` steering capability. It does not infer ordinals from numeric name fragments. Changing the lattice, YAML, or selected inventory invalidates alignment and disables comparison until it is verified again. Acquisition and automatic HDF5/session saving remain available if alignment is incomplete; only the model comparison is blocked.
+**Pass:** project title changes, lattice/measured files/selections appear, mappings validate. **If empty:** capture the open-dialog message and console traceback; never silently build an unrelated configuration. The previous failure involved string-valued `HarmNumber` and project restoration; use the fixed build.
 
-Expected: the model ORM and RF-dispersion response use the same ordered BPM/corrector inventory as the measurement. Missing, duplicate, ambiguous, wrong-plane, wrong-component, or stale-provenance entries fail closed. Built-in verified pySC profiles retain their profile-bound device resolver.
+## 7. Compare measurements with the initial model
 
-### 7.1 BPM noise
+In **FIT → Pre-FIT measurement checks**, choose **Compare imported measurements with initial model…**.
 
-1. On **Devices**, select the ordered BPM inventory and review exclusions.
-2. On **Measurement**, choose BPM noise, set readings and delay, and inspect the plan.
-3. Confirm the status says read-only.
-4. Select **Start BPM-noise measurement**.
+- This is **read-only**, before optimizer execution.
+- Inspect **ORM comparison**: Measured, Model and Residual (**Measured − Model**), including block RMS.
+- Inspect **RF dispersion**: horizontal and vertical independently, measured/model/residual RMS, **RF orbit response [m]** versus optional **physical dispersion D [m]**.
+- Inspect **Inputs and provenance**: active lattice, MAT variable, measurement files, calculator, device order, kick/RF conventions and exclusions.
 
-Expected: orbit samples complete, an HDF5 file is written, and BPM identities/dataset names/units appear in Review & Save. A non-finite sample or identity mismatch is a failure; do not discard entries silently.
+**Pass:** dimensions/identities compatible, plots and RMS render, no control writes. **If comparison complains about missing fitted quadrupoles:** that is a version/validation problem; comparison readiness should not require selected fit magnets.
 
-### 7.2 RF dispersion
+## 8. Validate and run the restricted FIT
 
-1. Choose dispersion and review the signed RF step, number of readings, and live orbit mode.
-2. Authorize RF writes only for the confirmed simulator or approved real-machine procedure.
-3. Select **Start automatic dispersion measurement**.
-4. Observe the reference, positive/negative RF states as configured, and final restoration.
+1. In **FIT**, review parameter groups, optimizer/weights, corrector counts, response calculator and exclusions.
+2. Click **Validate**. Resolve errors before proceeding.
+3. Click **Run LOCO**; this executes **every configured stage automatically**, not just the highlighted table row.
+4. In **Results**, inspect χ² history, **Parameters**, ORM and Optics, run request and output paths. Preserve the saved results.
 
-Expected: the original RF value is restored and independently read back; an HDF5 file records ordered BPM identities, RF step/sign convention, orbit datasets, and units. If restoration is incomplete, stop all further writes and preserve the evidence.
+**Documented simulator smoke observation (18 Oct 2026):** two iterations completed in about 19 seconds; reduced χ² decreased approximately `1.653e9 → 1.628e9` (~1.5%). This verifies the restricted software execution path, **not satisfactory EBS optics recovery**. At the tested application revision, Results separates the metadata-verified appended RF-response column before comparing the measured and model corrector ORMs; RF response remains a separate dispersion quantity.
 
-### 7.3 ORM
+## 9. Correct: mapping and **preview only**
 
-1. Select the ordered H and V correctors on **Devices**. Inspect the effective kick table and exclusions.
-2. Choose ORM, then confirm one-sided or bipolar direction, common/per-device kick values, and units.
-3. Authorize corrector writes only for the intended target.
-4. Select **Start ORM measurement**.
-5. Monitor each corrector state and the final restored-reference display.
+1. From FIT **Results**, click **Open in pyLOCO Correct…**, or load the exact result in Correct.
+2. In **Correct → Machine / Mapping**, connect to the trusted pyAML target **with writes disabled**, then find and validate mappings. For the smoke test verify **3/3** exact QD3J/QF4J/QD5B mappings and their `B2L` components. Operational device endpoints remain in the ESRF-controlled mapping, not this public guide.
+3. In **Correction Plan**, check included devices, correction fraction, current/fitted values, magnetic length and ΔK/Δ(KL) representation.
+4. In **Review & Validate**, click **Preview machine changes**. Inspect current strength, requested change, proposed target, readback, units and warnings.
+5. **Stop here. Do not click Apply.** Export/store preview evidence if needed.
 
-Expected: every corrector returns to its recorded reference and an HDF5 file is written with ordered BPM/H/V identities, kick metadata, matrices, and units. If a reference or intermediate array contains non-finite values, treat it as an acquisition failure; do not save or fit a fabricated replacement.
+**Documented simulator observation:** 3/3 mapped; read-only preview verified with no writes; 0 current-limit violations, **1 warning requiring inspection**; the screenshot showed **100% correction fraction**, which is a preview example, *not an approved hardware application value*. **Real B2L/A2L units/signs remain ESRF verification required.**
 
-### 7.4 Restoration check
+## 10. Review the full four-stage proposal — do not run with smoke data
 
-For RF and correctors, require all of the following:
+Open `<ESRF_MDT_PACKAGE>/configs/EBS_pyaml_MDT_four_stage_REVIEW_REQUIRED.pyloco.json` **for review only**. It is an external local package input, not a GitHub file. It proposes:
 
-- the acquisition reports restoration complete;
-- final readbacks equal the recorded references within the configured tolerance;
-- no pending transaction/restoration warning remains;
-- the simulator or control-system log contains no failed set/readback;
-- the HDF5 metadata describes the actual direction and kick/RF separation.
+1. Calibration: BPM gains and corrector calibration H/V.
+2. BPM coupling: BPM coupling H/V.
+3. Normal optics: **252** modern-lattice normal quads selected by historical family patterns.
+4. Skew/coupling: **288** modern skew candidates and BPM coupling.
 
-On any failure: stop acquisition, disable writes, keep logs and HDF5/session files, and escalate. Restarting the GUI is not evidence of restoration.
+Stages 2–4 inherit prior checkpoints; **Run LOCO runs the complete validated recipe automatically.** A safe pause/review/continue mode is **deferred until after MDT**. Today's 5H/5V ORM is **not** established as sufficient for the full fit. Acquire an adequate new ORM, verify new device mappings/exclusions and operator-review conditions first.
 
-## 8. Understand what is saved
+## 11. Keep evidence and shut down safely
 
-Measure distinguishes three artifacts:
+Create an operational evidence directory **outside the source checkout** and retain: measurement HDF5, session manifest, project copies, lattice/mapping provenance, run request, results/checkpoints, correction preview, warnings, screenshots, console logs and package versions. **Do not commit operational data or transaction journals to a public branch.**
 
-1. **Individual HDF5 measurement files**: numerical BPM noise, dispersion, or ORM data plus acquisition metadata.
-2. **Measurement-session manifest**: links the available HDF5 files and session provenance for FIT.
-3. **Measure Project**: application/configuration settings. **Save Project** and **Save Project As** do not replace the HDF5 files or session manifest.
+At the end: verify RF/corrector readbacks restored; confirm no pending Correct transaction; disable writes; disconnect GUIs; `Ctrl-C` to stop the simulator; verify `lsof -nP -iTCP:13131 -sTCP:LISTEN` has no listener.
 
-In **Review & Save**, confirm BPM noise, dispersion, and ORM each show present, note any missing role, and copy the displayed session-manifest path. Use **Validate for pyLOCO**. A session is complete for the intended FIT only when all required roles and compatible identity/units metadata pass validation.
+## Quick troubleshooting: where to look first
 
-FIT reopens a session using **Measurements -> Open Measurement Session...**. Individual HDF5 files may also be imported by role, but the manifest is the preferred portable handoff.
-
-## 9. Open the prepared modern EBS FIT project
-
-Status: **Simulator-tested GUI path** after the project-loading fix.
-
-Project:
-
-```text
-<PYLOCO_CHECKOUT>/mdt_smoke/configs/EBS_pyaml_MDT_smoke.pyloco.json
-```
-
-1. Keep the complete `mdt_smoke` directory structure together; the project uses portable relative references.
-2. Start FIT with `pyloco-gui` and select **Open**.
-3. Select the project above.
-4. When FIT is empty, choose **Use measurements saved in this project**. Choose **Keep current measurements** only when a deliberately imported, validated session should replace the saved bindings.
-5. Confirm the title/project name changes and the GUI restores:
-   - `betamodel` from the 4434-element MAT lattice;
-   - BPM noise, dispersion, and ORM from 18 October;
-   - 320 BPMs, 5 H correctors, and 5 V correctors;
-   - 330 validated device mappings;
-   - normal quadrupoles at zero-based AT ordinals 27, 36, and 51;
-   - one restricted FIT stage.
-6. If files are missing, use the explicit locate/relocation workflow; never select similarly shaped unrelated files.
-7. Use **Save As** for an adapted copy. Do not overwrite the packaged baseline.
-
-Expected: lattice, measurements, mappings, selections, and FIT recipe are visible. An empty-looking project is a failure, not a successful open. Capture the dialog technical details and console traceback.
-
-The original bug was a string-valued harmonic number during GUI activation plus fragile nested relative measurement references. Current project loading normalizes numeric configuration values, resolves package-relative paths, and rolls back activation transactionally on failure.
-
-## 10. Inspect mappings and FIT selections
-
-1. Open **Machine Components**.
-2. Confirm the reference lattice path, MAT variable `betamodel`, 4434 elements, and checksum.
-3. In measurement-device mapping, select **Find machine mappings**.
-4. Require 330/330 validated mappings. Review measured device, role, AT element, zero-based AT ordinal, and `B1L`/`A1L` component.
-5. Remember: finding mappings verifies identities; it does not silently change FIT selections.
-6. If adapting another project, use **Use mapped devices in FIT...**, inspect ordered current/proposed selections and ORM shape, then explicitly confirm.
-7. Revalidate exclusions whenever the ordered inventory changes.
-
-Expected for the smoke package: model/measured ORM inventory is 640 rows by 10 corrector columns before exclusions. Missing, ambiguous, duplicate, wrong-plane, wrong-component, or stale-checksum mappings block use.
-
-## 11. Compare imported measurements with the initial model
-
-1. In FIT, open **Pre-FIT measurement checks**.
-2. Select **Compare imported measurements with initial model...**.
-3. This requires comparison readiness—lattice, measurements, mappings, exclusions, kick/RF conventions, and response calculator—but not fitted quadrupole selections or optimizer readiness.
-4. Inspect measured, model, and residual ORM views.
-5. Inspect separate horizontal and vertical RF-response views and RMS values.
-6. If physical dispersion is selected, confirm the displayed signed RF/slip-factor conversion and units. Do not treat RF orbit response as physical dispersion.
-7. Expand technical provenance to record lattice/MAT/checksum, input files, calculator, kicks, RF step, devices, and exclusions.
-
-Expected: comparison completes without running a Jacobian or optimizer and without changing imported data. A mapping or unit mismatch must fail closed. The post-FIT Results views remain scientifically distinct.
-
-## 12. Validate and run the restricted smoke FIT
-
-1. Review the single stage, its three normal quadrupoles, weights, solver settings, exclusions, and iteration count.
-2. Select **Validate**. Resolve every run-readiness error.
-3. Record the validation summary and save an adapted copy with **Save As** if settings changed.
-4. Only after approval, select **Run LOCO**. Selecting a table row edits that stage; it does **not** limit execution. **Run LOCO executes the entire validated recipe.**
-5. Do not run the four-stage review project with the 5H/5V measurements as though it were sufficiently constrained.
-
-Verified simulator evidence: the restricted three-quadrupole smoke FIT completed two configured iterations and wrote results/checkpoint/provenance artifacts. This is software-path verification, not a physics-quality EBS correction and not authorization for a real-machine correction.
-
-Stage-by-stage pause/review/continue remains deliberately deferred until after MDT. Selecting a stage edits its settings; the published workflow runs the complete validated recipe automatically. Safe future implementation requires recipe/session fingerprints, contiguous checkpoint validation, stale-downstream invalidation, and reopen/continue tests.
-
-## 13. Inspect FIT results and preserve evidence
-
-1. In **Results**, confirm selected stage and iteration labels.
-2. Review convergence, ORM residuals, optics, and fitted parameters.
-3. Use Results ORM for post-FIT measured/model comparison; do not confuse it with the pre-FIT initial-model comparison.
-4. Preserve the run request, backend options, project snapshot, model ORM/RF artifacts, checkpoints, logs, and exported summaries.
-5. Never edit historical result files in place.
-
-If a restored model artifact cannot be matched to the current project and measurements by provenance, fail closed rather than selecting a recent result by filename.
-
-## 14. Review the proposed four-stage configuration
-
-Review-only project:
-
-```text
-<PYLOCO_CHECKOUT>/mdt_smoke/configs/EBS_pyaml_MDT_four_stage_REVIEW_REQUIRED.pyloco.json
-```
-
-It contains:
-
-1. Calibration: BPM gains and H/V corrector calibration.
-2. BPM coupling: H/V BPM coupling.
-3. Normal optics: modern-lattice QD3/QF4/QD5 selection.
-4. Skew and coupling: validated modern-lattice skew candidates plus H/V BPM coupling.
-
-Stages 2-4 inherit the previous fitted state. Review `mdt_smoke/configs/EBS_modern_selection_provenance.json` for patterns, names, types, and zero-based ordinals. Historical 4432-element ordinals were not copied.
-
-The current 5H/5V ORM is not claimed to constrain the extended fit. Acquire a scientifically adequate corrector inventory, rebuild/validate identity mappings in exact measurement order, apply mapped BPM/corrector selections explicitly, review exclusions/weights, and save a new project before considering execution.
-
-## 15. FIT -> Correct read-only preview
-
-Status: the three-quadrupole FIT-to-Correct mapping and read-only preview completed against saved simulator evidence. ESRF live mapping/units remain **ESRF verification required**.
-
-1. Launch `pyloco-correct`.
-2. Load the exact FIT result/project bundle selected for review; confirm lattice and run provenance.
-3. Select the intended pyAML machine YAML with writes disabled.
-4. Use **Find machine mappings** and require validated normal/skew magnet mappings, component, ordinal, checksum, length, and readback evidence.
-5. Read current strengths only.
-6. Generate **Preview machine changes** and inspect current/target/delta values, units, limits, identities, and journal destination.
-7. Stop before **Apply**. The MDT smoke workflow is read-only.
-
-Expected: preview performs GET/readback operations only and reports zero writes. The saved offline preview validates the three explicit B2L mappings, but its remaining operational warning is that live pyAML strengths, readbacks, calibration and limits were not acquired. B2L/A2L real-machine integrated-strength units, signs and calibration remain open questions for Kostas. Unmapped magnets, missing lengths/readbacks, stale mappings, unit uncertainty, or changed machine state block application.
-
-## 16. Evidence preservation
-
-Create a shift evidence directory outside the source tree:
-
-```bash
-mkdir -p <MDT_DATA_DIR>/logs <MDT_DATA_DIR>/projects <MDT_DATA_DIR>/results <MDT_DATA_DIR>/journals
-git -C <PYLOCO_CHECKOUT> rev-parse HEAD > <MDT_DATA_DIR>/logs/pyloco-commit.txt
-python -m pip freeze > <MDT_DATA_DIR>/logs/python-packages.txt
-```
-
-Preserve, without rewriting:
-
-- HDF5 measurements and session manifest;
-- Measure and FIT project copies;
-- mapping bundles and checksum evidence;
-- validation output and screenshots;
-- run request/backend options/checkpoints/results;
-- Correct preview and transaction journal, including failed/restored records;
-- simulator and GUI console logs.
-
-Do not commit operational data, personal paths, live endpoints, or journals to a public branch.
-
-## 17. Safe shutdown
-
-1. Do not close Measure while an acquisition or restoration is active.
-2. Verify RF and every perturbed corrector are restored by readback.
-3. In Correct, leave no pending transaction; for this runbook, no Apply is permitted.
-4. Save project copies and record manifest/result paths.
-5. Disable all write authorizations and disconnect the GUI.
-6. Stop the simulator with `Ctrl-C` and verify port 13131 is closed.
-7. Archive logs and evidence; record all unresolved warnings in the shift log.
-
-## 18. Troubleshooting map
-
-| Symptom | First check | Safe action | Classification |
-|---|---|---|---|
-| pyAML connection fails | YAML path, active environment, simulator terminal/port, adapter traceback | Disable writes; retest connection/read inventory | control-system/configuration |
-| Wrong lattice or MAT variable | displayed path, `betamodel`, element count 4434, checksum | reopen the exact packaged lattice; do not accept another candidate by name alone | configuration |
-| FIT project appears empty | project-open dialog details and console traceback | cancel/rollback; verify package-relative files and current code revision | GUI/packaging |
-| BPM/corrector mappings unresolved | HDF5 identities, mapping checksum, AT ordinal/component | generate/review mapping; never infer by position or dimensions | identity/data |
-| ORM shape or units mismatch | ordered devices, exclusions, kick convention, HDF5 metadata | correct configuration or reacquire; never truncate/reorder arrays | data/science |
-| Dispersion mismatch | RF step/sign, RF response versus physical dispersion, slip-factor conversion | compare in RF-response units first; record provenance | data/science |
-| Pre-FIT comparison requests quadrupoles | comparison-readiness versus run-readiness path | update to the fixed build; comparison must not require fit groups | GUI/validation |
-| Run disabled | full validation details, stages, fitted element groups, optimizer settings | repair configuration and revalidate | configuration |
-| Stage row selection seems ignored | selected row edits configuration only | validate and remember Run executes the full recipe | usability |
-| Correct preview blocked | mapping, component, checksum, length/readback, units | remain read-only; resolve authoritative evidence | safety |
-| Restoration incomplete | acquisition/transaction log and independent readback | disable writes, preserve journal, escalate immediately | safety/control system |
-
-## 19. Go/no-go criteria
-
-Proceed only when the short checklist passes. Real-machine writes additionally require explicit ESRF authorization, verified unit/sign conventions, known limits/interlocks, and a rehearsed restoration procedure. Simulator success alone is not authorization for hardware use.
+| Problem | Check this | Safe response |
+|---|---|---|
+| FIT opens as **Untitled** | Project open dialog/log, external `configs/EBS_pyaml_MDT_smoke.pyloco.json`, MAT/measurement paths | Use the tested build; capture traceback; don't hand-rebuild silently |
+| Missing measurement files | Measure → Review & Save manifest, FIT → Measurements, package manifest | Rebind exact files, never same-shaped substitutes |
+| 42/330 mapped | Historical **4432** lattice used with modern measurement | Select modern **4434** lattice and repeat mapping |
+| Pre-FIT blocked by quad selection | Comparison readiness vs FIT execution readiness | Use fixed build; comparison should not require fitted quads |
+| ORM 640×10 vs 640×11 | Wrong build or incomplete result provenance | Use the tested revision; verify saved metadata and exact stage/iteration; never blindly truncate |
+| Wrong dispersion | RF sign/step, physical D conversion, X/Y separation | Compare like quantities with stated units and masks |
+| Correct unmapped | pyAML connection, exact B2L controls, lattice provenance | Keep writes disabled and resolve mappings |
+| Warning/unknown unit/restoration | Correct warning details, readbacks, journal | **NO-GO** for machine writes; consult ESRF expert |
+
+## Publication and hardware boundary
+
+Record the current documentation HEAD and confirm that it contains tested application revision `6081c0a`. pyAML/pySC version conflicts and the real-machine YAML, control-unit conventions, limits, interlocks and authorization must be agreed with Kostas. **This runbook never authorizes live Apply.**
