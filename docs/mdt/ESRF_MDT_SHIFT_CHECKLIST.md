@@ -2,7 +2,7 @@
 
 **Target:** ☐ Local pySC simulator  ☐ Real ESRF machine (**expert approval required**)
 
-**Date / shift:** __________  **Operator:** __________  **Documentation HEAD:** ______________________
+**Date / shift:** __________
 
 **Tested application revision present:** ☐ `6081c0aee5c0efd0c9ccdd4469571bfe5c8b1bc6`
 
