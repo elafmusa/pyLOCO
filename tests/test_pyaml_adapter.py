@@ -1,4 +1,7 @@
 from types import SimpleNamespace
+import sys
+import os
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -189,9 +192,92 @@ def writable_adapter(**options):
     base, bpms = make_adapter()
     frequency = Frequency()
     base.machine.rf = {"RF": SimpleNamespace(frequency=frequency)}
+    simulator_attested=options.pop("simulator_attested",bool(options.get("allow_get_only_restoration",False)))
+    if simulator_attested:
+        base.accelerator.simulator_identity=lambda:{"verified":True,"backend":"pySC","instance_id":"pytest-local-pysc","configuration_sha256":"1"*64,"evidence":"test runtime attestation"}
     options = {"allow_writes": False, "allow_rf_writes": False, **options}
     adapter = PyAMLAdapter("unused.yaml", accelerator=base.accelerator, rf_name="RF", **options)
     return adapter, frequency
+
+
+class DiagnosticAccessor:
+    def __init__(self, setpoint, readback, unit):
+        self.setpoint=setpoint; self.readback_value=readback; self.unit_name=unit
+    def get(self):return self.setpoint
+    def readback(self):return self.readback_value
+    def unit(self):return self.unit_name
+
+
+def test_corrector_diagnostics_report_only_exposed_quantities_with_metadata_units():
+    adapter, _=writable_adapter(allow_writes=True,corrector_values_in_radians=True)
+    magnet=adapter.machine.magnet["H1"]
+    magnet.strength=DiagnosticAccessor(2.0,1.9,"mrad")
+    magnet.hardware=DiagnosticAccessor(12.0,11.8,"A")
+    values=adapter.read_corrector_diagnostics("H1")
+    assert values["KICK.SP"]=={"status":"available","value":.002,"unit":"rad","error":""}
+    assert values["KICK.RBV"]=={"status":"available","value":.0019,"unit":"rad","error":""}
+    assert values["CURRENT.SP"]=={"status":"available","value":12.0,"unit":"A","error":""}
+    assert values["CURRENT.RBV"]=={"status":"available","value":11.8,"unit":"A","error":""}
+
+
+def test_corrector_diagnostics_do_not_duplicate_setpoint_as_missing_readback_or_current():
+    adapter,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True)
+    values=adapter.read_corrector_diagnostics("H1")
+    assert values["KICK.SP"]["status"]=="available" and values["KICK.SP"]["unit"]=="rad"
+    assert values["KICK.RBV"]["status"]=="unsupported"
+    assert values["CURRENT.SP"]["status"]=="unsupported"
+    assert values["CURRENT.RBV"]["status"]=="unsupported"
+
+
+def test_pyaml_restoration_evidence_fails_closed_without_runtime_attestation():
+    adapter,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True)
+    assert adapter.corrector_restoration_evidence("H1")["level"]=="unavailable"
+    with pytest.raises(RuntimeError,match="no readback"):
+        adapter.read_corrector_readback("H1")
+    adapter.allow_get_only_restoration=True
+    assert adapter.corrector_restoration_evidence("H1")["level"]=="unavailable"
+
+
+def test_caller_flag_cannot_authorize_adapter_value_without_runtime_attestation():
+    adapter,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True,allow_get_only_restoration=True,simulator_attested=False)
+    assert adapter.corrector_restoration_evidence("H1")["level"]=="unavailable"
+
+
+def test_alternative_runtime_attestation_requires_fresh_get_capability():
+    base,_=make_adapter()
+    base.accelerator.simulator_identity=lambda:{"verified":True,"backend":"esrf-simulator","instance_id":"sim-1","configuration_sha256":"2"*64,"strength_get_is_fresh":True,"evidence":"public runtime capability"}
+    adapter=PyAMLAdapter("unused.yaml",accelerator=base.accelerator,rf_name="",allow_writes=True,allow_rf_writes=False,corrector_values_in_radians=True)
+    assert adapter.simulator_identity["backend"]=="esrf-simulator"
+    assert adapter.corrector_restoration_evidence("H1")["level"]=="adapter_value"
+    other,_=make_adapter(); other.accelerator.simulator_identity=lambda:{"verified":True,"backend":"esrf-simulator","instance_id":"sim-2","configuration_sha256":"3"*64}
+    blocked=PyAMLAdapter("unused.yaml",accelerator=other.accelerator,rf_name="",allow_writes=True,allow_rf_writes=False,corrector_values_in_radians=True)
+    assert blocked.corrector_restoration_evidence("H1")["level"]=="unavailable"
+
+
+def test_pysc_runtime_identity_is_bound_to_configuration_hash(tmp_path,monkeypatch):
+    class RuntimePySC:pass
+    monkeypatch.setitem(sys.modules,"pySC2pyaml",SimpleNamespace())
+    monkeypatch.setitem(sys.modules,"pySC2pyaml.controlsystem",SimpleNamespace(pySCControlSystem=RuntimePySC))
+    config=tmp_path/"simulator.yaml"; config.write_text("test fixture\n")
+    base,_=make_adapter(); runtime=RuntimePySC(); base.accelerator.controls=lambda:{"live":runtime}
+    adapter=PyAMLAdapter(config,accelerator=base.accelerator,rf_name="",allow_writes=True,allow_rf_writes=False,corrector_values_in_radians=True,allow_get_only_restoration=True)
+    identity=adapter.simulator_identity
+    assert identity["verified"] is True and identity["backend"]=="pysc2pyaml"
+    assert len(identity["configuration_sha256"])==64 and identity["instance_id"]
+    other=tmp_path/"other.yaml"; other.write_text("different fixture\n")
+    base2,_=make_adapter(); base2.accelerator.controls=lambda:{"live":RuntimePySC()}
+    adapter2=PyAMLAdapter(other,accelerator=base2.accelerator,rf_name="",allow_writes=True,allow_rf_writes=False,corrector_values_in_radians=True,allow_get_only_restoration=True)
+    assert adapter2.simulator_identity["instance_id"]!=identity["instance_id"]
+
+
+def test_pyaml_uses_public_independent_strength_readback_when_available():
+    adapter,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True)
+    adapter.machine.magnet["H1"].strength=DiagnosticAccessor(2.0,1.9,"mrad")
+    evidence=adapter.corrector_restoration_evidence("H1")
+    value,read_evidence=adapter.read_corrector_readback("H1")
+    assert evidence["level"]=="independent"
+    assert read_evidence==evidence
+    assert value==pytest.approx(.0019)
 
 
 def test_single_magnet_write_converts_si_radians_to_declared_unit():
@@ -248,13 +334,40 @@ def test_rf_read_write_ignores_units_and_requires_opt_in():
 
 def test_orm_restores_pyaml_correctors():
     from pyLOCO.measure.acquisition import BpmDevice, CorrectorDevice, ORMAcquirer
-    adapter, _ = writable_adapter(allow_writes=True, corrector_values_in_radians=True)
+    adapter, _ = writable_adapter(allow_writes=True, corrector_values_in_radians=True, allow_get_only_restoration=True)
     acquirer = ORMAcquirer(adapter,
         [BpmDevice(**item) for item in adapter.list_devices("bpm")],
         [CorrectorDevice(**item) for item in adapter.list_devices("hcor")], [])
     result = acquirer.acquire([1e-6], [], readings=2, delay_seconds=0)
     assert result.restoration_status == ("restored",)
     assert adapter.groups["hcor"].values == pytest.approx([2])
+
+
+def test_installed_pysc2pyaml_runtime_authorizes_get_evidence_and_restores():
+    """Exercise the production identity check without contacting or writing a server."""
+    runtime_module=pytest.importorskip("pySC2pyaml.controlsystem")
+    config=Path(os.environ.get("PYLOCO_PYSC_PYAML_CONFIG",""))
+    if not config.is_file():pytest.skip("verified local pySC2pyaml configuration is not installed")
+    runtime=object.__new__(runtime_module.pySCControlSystem)
+    bpms=Array(["B1"],[[0.0,0.0]],[["m","m"]])
+    horizontal=Array(["H1"],[2e-6],["rad"]); vertical=Array(["V1"],[3e-6],["rad"])
+    machine=SimpleNamespace(
+        diagnostic=SimpleNamespace(bpms={"BPM":bpms}),
+        magnets={"HCorr":horizontal,"VCorr":vertical},
+        magnet={"H1":horizontal[0],"V1":vertical[0]}, rf={},
+    )
+    accelerator=SimpleNamespace(live=machine,controls=lambda:{"live":runtime})
+    adapter=PyAMLAdapter(config,accelerator=accelerator,rf_name="",allow_writes=True,
+        allow_rf_writes=False,corrector_values_in_radians=True,allow_get_only_restoration=True)
+    assert adapter.simulator_identity["backend"]=="pysc2pyaml"
+    assert adapter.corrector_restoration_evidence("H1")["level"]=="adapter_value"
+    from pyLOCO.measure.acquisition import BpmDevice,CorrectorDevice,ORMAcquirer
+    result=ORMAcquirer(adapter,[BpmDevice(**adapter.list_devices("bpm")[0])],
+        [CorrectorDevice(**adapter.list_devices("hcor")[0])],[]).acquire(
+            [1e-6],[],direction="positive",readings=2,delay_seconds=0,settling_delay_seconds=0)
+    assert result.restoration_status==("restored",)
+    assert adapter.corrector_restoration_evidence("H1")["level"]=="adapter_value"
+    assert horizontal.values==pytest.approx([2e-6])
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
@@ -280,7 +393,7 @@ def test_rf_measurement_restores_original(cancelled):
 
 def test_rf_failed_restore_is_reported_even_on_cancellation():
     from threading import Event
-    from pyLOCO.measure.acquisition import BpmDevice
+    from pyLOCO.measure.acquisition import AcquisitionCancelled, BpmDevice
     from pyLOCO.measure.automatic import AutomaticDispersionAcquirer
     adapter, frequency = writable_adapter(allow_rf_writes=True)
     cancel = Event()
@@ -292,9 +405,11 @@ def test_rf_failed_restore_is_reported_even_on_cancellation():
                 raise RuntimeError("RF unavailable")
             frequency.set = fail
     acquirer = AutomaticDispersionAcquirer(adapter, [BpmDevice(**item) for item in adapter.list_devices("bpm")])
-    with pytest.raises(RuntimeError, match="RF restoration failed") as error:
+    with pytest.raises(AcquisitionCancelled) as error:
         acquirer.acquire(1000, 2, 0, cancel_event=cancel, status=status)
     assert error.value.restoration_status == "restore_failed"
+    assert error.value.restoration_diagnostics["status"] == "restore_failed"
+    assert error.value.restoration_diagnostics["final_readback_hz"] is None
 
 
 def test_rf_writes_require_named_plant():
@@ -316,7 +431,7 @@ def test_default_write_capabilities_and_rf_name():
 def test_orm_cancellation_restores_changed_corrector():
     from threading import Event
     from pyLOCO.measure.acquisition import BpmDevice, CorrectorDevice, ORMAcquirer, AcquisitionCancelled
-    adapter, _ = writable_adapter(allow_writes=True, corrector_values_in_radians=True)
+    adapter, _ = writable_adapter(allow_writes=True, corrector_values_in_radians=True, allow_get_only_restoration=True)
     cancel = Event()
     original_write = adapter.write
     def write(channel, value):

@@ -15,9 +15,9 @@ def _default_measurement_selections() -> dict[str, dict[str, Any]]:
     """Independent, ordered device selections for each Measure workflow."""
     return {
         kind: {
-            "bpm": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
-            "hcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
-            "vcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
+            "bpm": {"method": "all", "manual": "", "names_file": "", "excluded_positions": "", "search": "", "resolved_names": []},
+            "hcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": "", "search": "", "resolved_names": []},
+            "vcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": "", "search": "", "resolved_names": []},
         }
         for kind in ("bpm_noise", "dispersion", "orm")
     }
@@ -53,6 +53,10 @@ class MeasureProject:
     nominal_rf_hz: float | None = None
     nominal_rf_source: str = "manual"
     rf_step_hz: float = 200.0
+    # Absolute RF restoration-readback tolerance. 0.1 Hz is 0.1% of the
+    # smallest standard 100 Hz one-sided MDT step and remains explicit in the
+    # acquisition diagnostics; sites may tighten it to their readback resolution.
+    rf_restoration_tolerance_hz: float = 0.1
     dispersion_direction: str = "bipolar"
     orm_direction: str = "bipolar"
     orm_kick_mode: str = "common"
@@ -91,6 +95,8 @@ class MeasureProject:
             raise ValueError("ORM acquisition is unavailable in PETRA read-only mode")
         if self.rf_control_mode not in {"manual","automatic"}:
             raise ValueError("Unsupported RF control mode")
+        if not isinstance(self.rf_restoration_tolerance_hz, (int, float)) or not float("-inf") < float(self.rf_restoration_tolerance_hz) < float("inf") or self.rf_restoration_tolerance_hz < 0:
+            raise ValueError("RF restoration tolerance must be finite and non-negative")
         if self.dispersion_direction not in {"bipolar", "positive", "negative"}:
             raise ValueError("Unsupported dispersion direction")
         if self.measurement_type == "dispersion":

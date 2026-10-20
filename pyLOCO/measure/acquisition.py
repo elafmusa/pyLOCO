@@ -80,13 +80,13 @@ class ORMResult:
 
 
 class ORMInterrupted(AcquisitionCancelled):
-    def __init__(self, message: str, *, restoration_status: str):
-        super().__init__(message); self.restoration_status=restoration_status
+    def __init__(self, message: str, *, restoration_status: str, restoration_diagnostics=None):
+        super().__init__(message); self.restoration_status=restoration_status; self.restoration_diagnostics=restoration_diagnostics or {}
 
 
 class ORMAcquisitionError(RuntimeError):
-    def __init__(self, message: str, *, restoration_status: str):
-        super().__init__(message); self.restoration_status=restoration_status
+    def __init__(self, message: str, *, restoration_status: str, restoration_diagnostics=None):
+        super().__init__(message); self.restoration_status=restoration_status; self.restoration_diagnostics=restoration_diagnostics or {}
 
 
 @dataclass(frozen=True)
@@ -317,18 +317,68 @@ class ORMAcquirer:
 
     def acquire(self, requested_kick_h_rad, requested_kick_v_rad, *, direction="bipolar", scaled=False,
                 readings=10, delay_seconds=.1, settling_delay_seconds=0.0, cancel_event=None,
-                progress=None, sleeper=sleep, clock=monotonic) -> ORMResult:
+                progress=None, sleeper=sleep, clock=monotonic, restoration_tolerance_rad=1e-12) -> ORMResult:
         if direction not in {"bipolar","positive","negative"}: raise ValueError("Unsupported ORM direction")
         if readings < 2 or delay_seconds < 0 or settling_delay_seconds < 0: raise ValueError("Invalid ORM timing configuration")
         correctors=self.horizontal_correctors+self.vertical_correctors
         kicks=np.concatenate((np.asarray(requested_kick_h_rad,float).ravel(),np.asarray(requested_kick_v_rad,float).ravel()))
         if kicks.shape!=(len(correctors),) or not np.isfinite(kicks).all() or np.any(kicks<=0): raise ValueError("Requested kick arrays must contain one positive finite value per corrector")
         cancel=cancel_event or Event(); nrows=2*len(self.bpms); ncor=len(correctors)
-        arrays={name:np.full(ncor,np.nan) for name in ("original","req_a","req_b","act_a","act_b","intermediate","final","effective")}
+        if not np.isfinite(restoration_tolerance_rad) or restoration_tolerance_rad < 0:raise ValueError("Restoration tolerance must be finite and non-negative")
+        arrays={name:np.full(ncor,np.nan) for name in ("original","original_readback","req_a","req_b","act_a","act_b","intermediate","final","effective")}
         raw_a=np.full((ncor,readings,nrows),np.nan); raw_b=np.full_like(raw_a,np.nan); raw_ref_before=np.full_like(raw_a,np.nan); raw_ref_intermediate=np.full_like(raw_a,np.nan); raw_ref_final=np.full_like(raw_a,np.nan); ts_a=np.full((ncor,readings),np.nan); ts_b=np.full_like(ts_a,np.nan)
-        matrix=np.full((nrows,ncor),np.nan); intermediate_statuses=[]; statuses=[]; start=clock()
+        matrix=np.full((nrows,ncor),np.nan); intermediate_statuses=["not_applicable"]*ncor; statuses=["not_attempted"]*ncor; start=clock(); touched=set(); restoration_attempts=[0]*ncor
+
+        evidence=[]
+        for corrector in correctors:
+            resolver=getattr(self.adapter,"corrector_restoration_evidence",None)
+            item=resolver(corrector.name) if callable(resolver) else {"level":"independent" if corrector.setpoint_channel!=corrector.readback_channel else "unavailable","source":"distinct adapter setpoint/readback channels" if corrector.setpoint_channel!=corrector.readback_channel else "setpoint and readback channels are identical"}
+            if item.get("level")=="unavailable":
+                raise ORMAcquisitionError(f"ORM writes blocked for {corrector.name}: independent corrector readback is unavailable. {item.get('source','')}",restoration_status="not_required",restoration_diagnostics={"status":"not_required","verification_level":"unavailable","correctors":[]})
+            evidence.append(dict(item))
+
+        def readback(index):
+            method=getattr(self.adapter,"read_corrector_readback",None)
+            if callable(method):value,_=method(correctors[index].name); return float(value)
+            return float(self.adapter.read(correctors[index].readback_channel).value)
+
+        # Snapshot the complete transaction inventory before the first write.
+        # Setpoints are the authoritative restore targets; independent readbacks
+        # are the verification baselines.
+        for index,corrector in enumerate(correctors):
+            arrays["original"][index]=float(self.adapter.read(corrector.setpoint_channel).value)
+            arrays["original_readback"][index]=readback(index)
+            if not np.isfinite(arrays["original"][index]) or not np.isfinite(arrays["original_readback"][index]):
+                raise ORMAcquisitionError(f"Cannot snapshot finite original setting/readback for {corrector.name}",restoration_status="not_required",restoration_diagnostics={"status":"not_required","correctors":[]})
+
+        def settle(*, cancellable):
+            if not settling_delay_seconds:return
+            if cancellable and sleeper is sleep:
+                if cancel.wait(settling_delay_seconds):raise AcquisitionCancelled("ORM acquisition was cancelled during corrector settling")
+            else:
+                sleeper(settling_delay_seconds)
+                if cancellable and cancel.is_set():raise AcquisitionCancelled("ORM acquisition was cancelled during corrector settling")
+
+        def restore(indices):
+            rows=[]
+            for restore_index in sorted(indices):
+                corrector=correctors[restore_index]; restoration_attempts[restore_index]+=1; error=""; final=None; command_issued=False
+                try:
+                    self.adapter.write(corrector.setpoint_channel,float(arrays["original"][restore_index]))
+                    command_issued=True
+                    settle(cancellable=False)
+                    final=readback(restore_index); arrays["final"][restore_index]=final
+                    status="restored" if np.isfinite(final) and np.isclose(final,arrays["original_readback"][restore_index],rtol=0,atol=restoration_tolerance_rad) else "verification_failed"
+                except Exception as exc:
+                    status="restore_failed"; error=str(exc)
+                statuses[restore_index]=status
+                rows.append({"index":restore_index,"name":corrector.name,"plane":corrector.plane,"setpoint_channel":corrector.setpoint_channel,"readback_channel":corrector.readback_channel,"set_command_issued":command_issued,"verification_level":evidence[restore_index]["level"],"verification_source":evidence[restore_index]["source"],"independent_readback_verified":bool(status=="restored" and evidence[restore_index]["level"]=="independent"),"original_setpoint_rad":float(arrays["original"][restore_index]),"original_readback_rad":float(arrays["original_readback"][restore_index]),"attempted_restoration_rad":float(arrays["original"][restore_index]),"final_readback_rad":final,"tolerance_rad":float(restoration_tolerance_rad),"attempts":restoration_attempts[restore_index],"status":status,"error":error})
+            overall="restored" if all(row["status"]=="restored" for row in rows) else "verification_failed" if rows and all(row["status"]!="restore_failed" for row in rows) else "restore_failed"
+            levels={row["verification_level"] for row in rows}; level="independent" if levels=={"independent"} else "adapter_value" if levels and levels<={"adapter_value"} else "mixed"
+            return overall,{"status":overall,"verification_level":level,"correctors":rows,"all_inventory":[{"index":i,"name":device.name,"plane":device.plane,"original_setpoint_rad":float(arrays["original"][i]),"original_readback_rad":float(arrays["original_readback"][i])} for i,device in enumerate(correctors)]}
+
         for index,(corrector,dkick) in enumerate(zip(correctors,kicks)):
-            original=float(self.adapter.read(corrector.readback_channel).value); arrays["original"][index]=original
+            original=float(arrays["original"][index]); original_readback=float(arrays["original_readback"][index])
             if direction=="bipolar": target_a,target_b=original+dkick/2,original-dkick/2; label_a,label_b="+kick","−kick"
             elif direction=="positive": target_a,target_b=original+dkick,original; label_a,label_b="+kick","reference"
             else: target_a,target_b=original-dkick,original; label_a,label_b="−kick","reference"
@@ -339,18 +389,18 @@ class ORMAcquirer:
                 for slot,target,label,raw,timestamps in (("a",target_a,label_a,raw_a,ts_a),("b",target_b,label_b,raw_b,ts_b)):
                     if cancel.is_set(): raise AcquisitionCancelled("ORM acquisition was cancelled")
                     if progress: progress({"event":"state","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":label,"elapsed":clock()-start})
-                    self.adapter.write(corrector.setpoint_channel,target); sleeper(settling_delay_seconds)
-                    actual=float(self.adapter.read(corrector.readback_channel).value); arrays[f"act_{slot}"][index]=actual
+                    touched.add(index); self.adapter.write(corrector.setpoint_channel,target); settle(cancellable=True)
+                    actual=readback(index); arrays[f"act_{slot}"][index]=actual
                     samples,times=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":label})
                     raw[index]=samples; timestamps[index]=times+clock()
                     if direction=="bipolar" and slot=="a":
                         if cancel.is_set(): raise AcquisitionCancelled("ORM acquisition was cancelled before intermediate restoration")
                         if progress: progress({"event":"intermediate_restore","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"restore K0 before −kick","elapsed":clock()-start})
-                        self.adapter.write(corrector.setpoint_channel,original); sleeper(settling_delay_seconds)
-                        arrays["intermediate"][index]=float(self.adapter.read(corrector.readback_channel).value)
-                        if not np.isclose(arrays["intermediate"][index],original,rtol=0,atol=1e-12):
-                            raise RuntimeError(f"Intermediate restoration verification failed: {arrays['intermediate'][index]!r} != {original!r}")
-                        intermediate_statuses.append("restored")
+                        self.adapter.write(corrector.setpoint_channel,original); settle(cancellable=True)
+                        arrays["intermediate"][index]=readback(index)
+                        if not np.isclose(arrays["intermediate"][index],original_readback,rtol=0,atol=restoration_tolerance_rad):
+                            raise RuntimeError(f"Intermediate restoration verification failed: {arrays['intermediate'][index]!r} != {original_readback!r}")
+                        intermediate_statuses[index]="restored"
                         if progress: progress({"event":"intermediate_restored","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"K0 restored and verified","readback":arrays["intermediate"][index],"original":original,"elapsed":clock()-start})
                         raw_ref_intermediate[index],_=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":"restored reference before −kick"})
                 effective=arrays["act_a"][index]-arrays["act_b"][index]; arrays["effective"][index]=effective
@@ -364,20 +414,21 @@ class ORMAcquirer:
                 matrix[:,index]=column/effective if scaled else column
                 if progress: progress({"event":"column","corrector":index+1,"correctors":ncor,"column":column,"matrix":matrix.copy(),"elapsed":clock()-start})
             except AcquisitionCancelled as exc:
-                try:self.adapter.write(corrector.setpoint_channel,original); arrays["final"][index]=float(self.adapter.read(corrector.readback_channel).value); restoration="restored" if np.isclose(arrays["final"][index],original) else "verification_failed"
-                except Exception: restoration="restore_failed"
-                raise ORMInterrupted(str(exc),restoration_status=restoration) from exc
+                restoration,diagnostics=restore(touched)
+                raise ORMInterrupted(str(exc),restoration_status=restoration,restoration_diagnostics=diagnostics) from exc
             except Exception as exc:
-                try:self.adapter.write(corrector.setpoint_channel,original); arrays["final"][index]=float(self.adapter.read(corrector.readback_channel).value); restoration="restored" if np.isclose(arrays["final"][index],original) else "verification_failed"
-                except Exception: restoration="restore_failed"
-                raise ORMAcquisitionError(f"ORM acquisition failed for {corrector.name}: {exc}",restoration_status=restoration) from exc
+                restoration,diagnostics=restore(touched)
+                raise ORMAcquisitionError(f"ORM acquisition failed for {corrector.name}: {exc}",restoration_status=restoration,restoration_diagnostics=diagnostics) from exc
             else:
                 try:
-                    self.adapter.write(corrector.setpoint_channel,original); sleeper(settling_delay_seconds); arrays["final"][index]=float(self.adapter.read(corrector.readback_channel).value); restoration="restored" if np.isclose(arrays["final"][index],original,rtol=0,atol=1e-12) else "verification_failed"
-                    if restoration!="restored":raise RuntimeError(f"Final restoration verification failed: {arrays['final'][index]!r} != {original!r}")
+                    restoration,diagnostics=restore((index,))
+                    if restoration!="restored":raise RuntimeError(f"Final restoration verification failed: {arrays['final'][index]!r} != {original_readback!r}")
                     if progress:progress({"event":"final_restored","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"final K0 restored and verified","readback":arrays["final"][index],"original":original,"elapsed":clock()-start})
                     raw_ref_final[index],_=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":"final restored reference"})
-                except Exception as exc: raise ORMAcquisitionError(f"Restoration failed for {corrector.name}: {exc}",restoration_status="restore_failed") from exc
-                statuses.append(restoration)
-                if direction!="bipolar":intermediate_statuses.append("not_applicable")
+                except AcquisitionCancelled as exc:
+                    restoration,diagnostics=restore(touched)
+                    raise ORMInterrupted(str(exc),restoration_status=restoration,restoration_diagnostics=diagnostics) from exc
+                except Exception as exc:
+                    restoration,diagnostics=restore(touched)
+                    raise ORMAcquisitionError(f"Restoration failed for {corrector.name}: {exc}",restoration_status=restoration,restoration_diagnostics=diagnostics) from exc
         return ORMResult(self.bpms,self.horizontal_correctors,self.vertical_correctors,matrix,direction,bool(scaled),kicks,arrays["effective"],arrays["original"],arrays["req_a"],arrays["req_b"],arrays["act_a"],arrays["act_b"],arrays["intermediate"],tuple(intermediate_statuses),arrays["final"],raw_a,raw_b,raw_ref_before,raw_ref_intermediate,raw_ref_final,ts_a,ts_b,tuple(statuses),clock()-start)

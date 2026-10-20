@@ -53,6 +53,7 @@ class AbstractInterfaceAdapter(WritableAdapter):
         self.allow_writes = bool(allow_writes)
         self.allow_rf_writes = bool(allow_rf_writes)
         self.backend_metadata = dict(backend_metadata or {})
+        self.allow_get_only_restoration = True  # Built-in pySC profile is explicitly simulator-only.
         self.history: list[tuple[str, str, object]] = []
 
     @property
@@ -139,6 +140,12 @@ class AbstractInterfaceAdapter(WritableAdapter):
                 "vertical_correctors": len(self.vertical_corrector_names),
                 "corrector_unit": self.backend_metadata.get("corrector_control_unit", "rad"),
                 "calibration": "backend managed"}
+
+    def corrector_restoration_evidence(self, name):
+        return {"level":"adapter_value","source":"fresh pySC simulator AbstractInterface.get() value; independent readback unavailable"}
+
+    def read_corrector_readback(self, name):
+        return float(self.interface.get(name)),self.corrector_restoration_evidence(name)
 
 
 class InterfaceRegistry:

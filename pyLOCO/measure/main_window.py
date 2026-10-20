@@ -12,7 +12,7 @@ from time import monotonic, sleep
 from typing import Sequence
 
 import numpy as np
-from PySide6.QtCore import QObject, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
+from PySide6.QtCore import QItemSelectionModel, QObject, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox, QInputDialog,
@@ -48,7 +48,8 @@ from pyLOCO.gui.themes import ACCENTS, accent_for_key, apply_application_theme, 
 from pyLOCO.gui.suite import launch_suite_application,present_single_about_dialog
 from .acquisition import (
     AcquisitionCancelled, BpmDevice, BpmNoiseAcquirer, BpmNoiseResult, CorrectorDevice,
-    DispersionResult, DispersionStateAcquirer, ORMAcquirer, ORMResult,
+    DispersionResult, DispersionStateAcquirer, ORMAcquirer, ORMAcquisitionError,
+    ORMInterrupted, ORMResult,
 )
 from .project import MeasureProject, load_measure_project, save_measure_project
 from .automatic import AutomaticDispersionAcquirer
@@ -310,7 +311,7 @@ class DispersionAcquisitionWorker(QObject):
 class AutomaticDispersionWorker(QObject):
     progress = Signal(int, int, int, float, object, object)
     status = Signal(str, object)
-    completed = Signal(object); cancelled = Signal(str); failed = Signal(str)
+    completed = Signal(object); cancelled = Signal(object); failed = Signal(object)
 
     def __init__(self, acquirer, options, cancel_event):
         super().__init__(); self.acquirer=acquirer; self.options=options; self.cancel_event=cancel_event
@@ -321,19 +322,28 @@ class AutomaticDispersionWorker(QObject):
             result=self.acquirer.acquire(cancel_event=self.cancel_event,
                                          progress=lambda *args:self.progress.emit(*args),
                                          status=lambda phase,details:self.status.emit(phase,details), **self.options)
-        except AcquisitionCancelled as exc:self.cancelled.emit(str(exc))
-        except Exception as exc:self.failed.emit(str(exc))
+        except AcquisitionCancelled as exc:self.cancelled.emit(exc)
+        except Exception as exc:self.failed.emit(exc)
         else:self.completed.emit(result)
 
 
+class ConnectionTestWorker(QObject):
+    completed=Signal(object); failed=Signal(object)
+    def __init__(self,operation):super().__init__(); self.operation=operation
+    @Slot()
+    def run(self):
+        try:self.completed.emit(self.operation())
+        except Exception as exc:self.failed.emit(exc)
+
+
 class ORMAcquisitionWorker(QObject):
-    event=Signal(object); completed=Signal(object); cancelled=Signal(str); failed=Signal(str)
+    event=Signal(object); completed=Signal(object); cancelled=Signal(object); failed=Signal(object)
     def __init__(self,acquirer,kick_h,kick_v,options,cancel_event): super().__init__(); self.acquirer=acquirer; self.kick_h=kick_h; self.kick_v=kick_v; self.options=options; self.cancel_event=cancel_event
     @Slot()
     def run(self):
         try:self.completed.emit(self.acquirer.acquire(self.kick_h,self.kick_v,cancel_event=self.cancel_event,progress=self.event.emit,**self.options))
-        except AcquisitionCancelled as exc:self.cancelled.emit(f"{exc} (restoration: {getattr(exc,'restoration_status','unknown')})")
-        except Exception as exc:self.failed.emit(f"{exc} (restoration: {getattr(exc,'restoration_status','unknown')})")
+        except AcquisitionCancelled as exc:self.cancelled.emit(exc)
+        except Exception as exc:self.failed.emit(exc)
 
 
 class MeasureMainWindow(QMainWindow):
@@ -352,6 +362,12 @@ class MeasureMainWindow(QMainWindow):
         self._selection_states = self.project.measurement_selections
         self._active_selection_kind = "bpm_noise"
         self._loading_selection_state = False
+        self._rf_restoration_unresolved = False
+        self._rf_restoration_diagnostics = None
+        self._orm_restoration_unresolved = False
+        self._orm_restoration_diagnostics = None
+        self._active_acquisition_kind = None
+        self._connection_timeout_ms = 15000
         self.project_path: Path | None = None
         self.selected_devices = self.devices
         self.selected_hcorrectors=self.horizontal_correctors; self.selected_vcorrectors=self.vertical_correctors
@@ -562,7 +578,15 @@ class MeasureMainWindow(QMainWindow):
         self.cancel_button.setEnabled(running)
         self.cancel_button.setText("Cancel measurement" if running else "Cancel")
         self.repeat_button.setEnabled(not running)
-        if running:self.statusBar().showMessage(f"ACQUIRING • {self.status_badge.text()}")
+        self.measurement_type.setEnabled(not running)
+        if running:
+            kind={"orm":"ORM","dispersion":"RF dispersion","bpm_noise":"BPM noise"}.get(self._active_acquisition_kind,"Measurement")
+            self.statusBar().showMessage(f"ACQUIRING {kind.upper()} • {self.status_badge.text()}")
+            if hasattr(self,"start_block_reason"):
+                io="temporary corrector writes authorized; BPM acquisition is read only" if self._active_acquisition_kind=="orm" else "temporary RF writes authorized; BPM acquisition is read only" if self._active_acquisition_kind=="dispersion" and self.rf_control_mode.currentData()=="automatic" else "read-only acquisition"
+                self.start_block_reason.setText(f"{kind} acquisition in progress — {io}.")
+        else:
+            self.statusBar().showMessage(self.status_badge.text())
 
     def _machine_page(self):
         content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(22,22,22,22); layout.setAlignment(Qt.AlignTop)
@@ -601,6 +625,7 @@ class MeasureMainWindow(QMainWindow):
             else: self.machine_rows.append((label,value))
             if key:self.machine_info[key]=value
         self.test_connection_button=QPushButton("Test connection"); self.test_connection_button.setMinimumHeight(36); self.test_connection_button.clicked.connect(self._test_connection); grid.addWidget(self.test_connection_button,0,2)
+        self.connection_progress=QProgressBar(); self.connection_progress.setRange(0,0); self.connection_progress.setTextVisible(True); self.connection_progress.setFormat("Testing connection…"); self.connection_progress.setVisible(False); grid.addWidget(self.connection_progress,1,2)
         self.adapter_combo.currentIndexChanged.connect(self._adapter_changed)
         self.pysc_profile_combo.currentIndexChanged.connect(self._pysc_profile_changed)
         for widget in self.pysc_profile_row: widget.setVisible(False)
@@ -622,13 +647,15 @@ class MeasureMainWindow(QMainWindow):
                 pyaml_form.addRow("Configuration file", config_row)
             else:
                 pyaml_form.addRow(field.replace("_", " ").title(), editor)
-            editor.textChanged.connect(self._invalidate_pyaml)
+            editor.textChanged.connect(self._pyaml_configuration_changed)
         self.pyaml_magnet_writes = QCheckBox("Enable corrector magnet writes (ORM)")
         self.pyaml_rf_writes = QCheckBox("Enable RF frequency writes (dispersion)")
         for checkbox in (self.pyaml_magnet_writes, self.pyaml_rf_writes):
             checkbox.setChecked(True)
             pyaml_form.addRow(checkbox)
             checkbox.toggled.connect(self._invalidate_pyaml)
+        self.pyaml_simulator_identity_status=QLabel("Unavailable until pyAML provides verified runtime simulator identity.")
+        self.pyaml_simulator_identity_status.setWordWrap(True); self.pyaml_simulator_identity_status.setObjectName("infoText"); pyaml_form.addRow("Simulator identity",self.pyaml_simulator_identity_status)
         pyaml_form.addRow(QLabel("Mode: design or live. RF plant defaults to RF. Writes default to enabled; uncheck to disable. Live connections require confirmation."))
         self.pyaml_group.setVisible(False)
         layout.addWidget(self.pyaml_group)
@@ -847,30 +874,57 @@ class MeasureMainWindow(QMainWindow):
     def _bpms_page(self):
         content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(22,22,22,22); layout.setAlignment(Qt.AlignTop)
         self.devices_identity=QLabel("Machine inventory"); self.devices_identity.setObjectName("planValue"); self.devices_identity.setWordWrap(True); layout.addWidget(self.devices_identity)
+        self.device_selection_configuration_group=QGroupBox("Device selection configuration")
+        self.device_selection_configuration_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        selection_config_layout=QHBoxLayout(self.device_selection_configuration_group)
+        selection_config_text=QLabel("Reuse the active measurement's ordered BPM, H-corrector and V-corrector selections, filters and exclusions.")
+        selection_config_text.setWordWrap(True); selection_config_text.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Preferred)
+        self.save_device_selection_button=QPushButton("Save selection…"); self.save_device_selection_button.clicked.connect(self._save_selection_configuration)
+        self.load_device_selection_button=QPushButton("Load selection…"); self.load_device_selection_button.clicked.connect(self._load_selection_configuration)
+        selection_config_layout.addWidget(selection_config_text,1); selection_config_layout.addWidget(self.save_device_selection_button); selection_config_layout.addWidget(self.load_device_selection_button)
+        layout.addWidget(self.device_selection_configuration_group)
         group=QGroupBox("BPMs — selection for the active measurement"); group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); form=QFormLayout(group); self._configure_form(form)
         self.selection_method=QComboBox(); self.selection_method.addItem("All available BPMs","all"); self.selection_method.addItem("Load names file","names_file"); self.selection_method.addItem("Manual names / positions","manual"); self.selection_method.currentIndexChanged.connect(self._selection_method_changed); form.addRow("Selection method",self.selection_method)
         self.names_row=QWidget(); nr=QHBoxLayout(self.names_row); nr.setContentsMargins(0,0,0,0); self.names_file=QLineEdit(); browse=QPushButton("Browse…"); browse.clicked.connect(self.browse_names); nr.addWidget(self.names_file,1); nr.addWidget(browse); form.addRow("BPM names file",self.names_row); self.names_label=form.labelForField(self.names_row)
         self.manual_input=QLineEdit(); self.manual_input.setPlaceholderText("BPM-001, BPM-004 or positions 0, 3"); form.addRow("Manual selection",self.manual_input); self.manual_label=form.labelForField(self.manual_input)
         self.bpm_exclusions=QLineEdit(); self.bpm_exclusions.setPlaceholderText("Selected-list positions to exclude, e.g. 1, 4"); form.addRow("Excluded BPM positions",self.bpm_exclusions); self.bpm_exclusions_label=form.labelForField(self.bpm_exclusions); self.bpm_exclusions.textChanged.connect(self.refresh_preview)
         self.bpm_search=QLineEdit(); self.bpm_search.setPlaceholderText("Filter preview by BPM name or identifier…"); self.bpm_search.textChanged.connect(self._filter_bpm_table); form.addRow("Search / filter",self.bpm_search)
-        quick=QHBoxLayout(); select_all=QPushButton("Select All"); select_all.clicked.connect(self._select_all_bpms); clear=QPushButton("Clear"); clear.clicked.connect(self._clear_bpms); select_filtered=QPushButton("Select Filtered"); select_filtered.clicked.connect(self._select_filtered_bpms); highlighted=QPushButton("Use Highlighted"); highlighted.clicked.connect(lambda:self._select_highlighted("bpm")); preview=QPushButton("Refresh"); preview.clicked.connect(self.refresh_preview); quick.addWidget(select_all); quick.addWidget(clear); quick.addWidget(select_filtered); quick.addWidget(highlighted); quick.addStretch(); quick.addWidget(preview); form.addRow("",quick)
+        self.bpm_visibility=QComboBox(); self.bpm_visibility.addItem("All devices","all"); self.bpm_visibility.addItem("Selected only","selected"); self.bpm_visibility.addItem("Unselected only","unselected"); self.bpm_visibility.currentIndexChanged.connect(self._filter_bpm_table); form.addRow("Show devices",self.bpm_visibility)
+        quick=QHBoxLayout(); select_all=QPushButton("Select All"); select_all.clicked.connect(self._select_all_bpms); clear=QPushButton("Clear"); clear.clicked.connect(self._clear_bpms); select_filtered=QPushButton("Replace with filtered"); select_filtered.clicked.connect(self._select_filtered_bpms); self.bpm_select_only_highlighted_button=QPushButton("Select only highlighted"); self.bpm_select_only_highlighted_button.setEnabled(False); self.bpm_select_only_highlighted_button.setToolTip("Replace the checked BPM selection with the highlighted rows"); self.bpm_select_only_highlighted_button.clicked.connect(lambda:self._select_only_highlighted("bpm")); self.bpm_add_highlighted_button=QPushButton("Add highlighted to selection"); self.bpm_add_highlighted_button.setEnabled(False); self.bpm_add_highlighted_button.setToolTip("Keep checked BPMs and add highlighted rows without duplicates"); self.bpm_add_highlighted_button.clicked.connect(lambda:self._select_highlighted("bpm")); preview=QPushButton("Refresh"); preview.clicked.connect(self.refresh_preview); quick.addWidget(select_all); quick.addWidget(clear); quick.addWidget(select_filtered); quick.addWidget(self.bpm_select_only_highlighted_button); quick.addWidget(self.bpm_add_highlighted_button); quick.addStretch(); quick.addWidget(preview); form.addRow("",quick)
         subset=QHBoxLayout(); self.bpm_subset_n=NoWheelSpinBox(); self.bpm_subset_n.setRange(1,100000); self.bpm_subset_n.setValue(20); first_n=QPushButton("First N"); first_n.clicked.connect(lambda:self._select_device_subset("bpm","first",self.bpm_subset_n.value())); uniform_n=QPushButton("Uniform N"); uniform_n.clicked.connect(lambda:self._select_device_subset("bpm","uniform",self.bpm_subset_n.value())); subset.addWidget(self.bpm_subset_n); subset.addWidget(first_n); subset.addWidget(uniform_n); subset.addStretch(); form.addRow("Selection helpers",subset); layout.addWidget(group)
         table_group=QGroupBox("Selection preview"); table_group.setMinimumHeight(350); tl=QVBoxLayout(table_group); self.preview_table=QTableWidget(0,3); self.preview_table.setMinimumHeight(260); self.preview_table.setHorizontalHeaderLabels(["Selection position","BPM name","Adapter/device identifier"]); self.preview_table.horizontalHeader().setSectionResizeMode(0,QHeaderView.ResizeToContents); self.preview_table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeToContents); self.preview_table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch); self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers); self.preview_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.preview_table.setSelectionMode(QAbstractItemView.ExtendedSelection); tl.addWidget(self.preview_table); self.selection_message=QLabel(); tl.addWidget(self.selection_message); layout.addWidget(table_group)
+        self.manual_input.textChanged.connect(self.refresh_preview)
+        self.preview_table.itemSelectionChanged.connect(self._filter_bpm_table)
         self.orm_corrector_group=QGroupBox("Correctors — ORM selection"); cg=QVBoxLayout(self.orm_corrector_group); self.corrector_selection_widgets={}
+        self.corrector_diagnostic_legend=QLabel("SP = Setpoint; RBV = Readback Value. Kick/strength and electrical current are distinct quantities; units are never inferred from one another.")
+        self.corrector_diagnostic_legend.setObjectName("infoText"); self.corrector_diagnostic_legend.setWordWrap(True)
+        self.corrector_diagnostic_legend.setToolTip("Table values come from the named control-system components. Hover a column heading for its source and unit policy.")
+        cg.addWidget(self.corrector_diagnostic_legend)
         demo=QHBoxLayout(); one=QPushButton("Demo: 1 H + 1 V"); one.clicked.connect(self._select_demo_one_each); small=QPushButton("Demo: small uniform ORM"); small.clicked.connect(self._select_demo_small_orm); demo.addWidget(one); demo.addWidget(small); demo.addStretch(); cg.addLayout(demo)
         for key,title,devices in (("hcor","Horizontal correctors",self.horizontal_correctors),("vcor","Vertical correctors",self.vertical_correctors)):
             box=QGroupBox(title); form=QFormLayout(box); self._configure_form(form); method=QComboBox(); method.addItem("All available","all"); method.addItem("Load names file","names_file"); method.addItem("Manual names / positions","manual")
             manual=QLineEdit(); manual.setPlaceholderText("Names or selected-list positions, comma separated"); file_edit=QLineEdit(); browse=QPushButton("Browse…"); file_row=QWidget(); fr=QHBoxLayout(file_row); fr.setContentsMargins(0,0,0,0); fr.addWidget(file_edit,1); fr.addWidget(browse)
             exclusion=QLineEdit(); exclusion.setPlaceholderText("Selected-list positions to exclude, e.g. 1, 4")
-            search=QLineEdit(); search.setPlaceholderText("Filter corrector names / identifiers…"); preview=QPushButton("Refresh"); table=QTableWidget(0,8); table.setMinimumHeight(150); table.setHorizontalHeaderLabels(["Selection position","Device name","Adapter/device identifier","Plane","KICK.SP","KICK.RBV","CURRENT.SP","CURRENT.RBV"]); table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
+            search=QLineEdit(); search.setPlaceholderText("Filter corrector names / identifiers…"); visibility=QComboBox(); visibility.addItem("All devices","all"); visibility.addItem("Selected only","selected"); visibility.addItem("Unselected only","unselected"); preview=QPushButton("Refresh"); table=QTableWidget(0,8); table.setMinimumHeight(150); table.setHorizontalHeaderLabels(["Selection position","Device name","Adapter/device identifier","Plane","Kick setpoint","Kick readback","Current setpoint","Current readback"]); table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
+            diagnostic_header_tooltips=(
+                "KICK.SP — requested kick/strength setpoint. The displayed numeric value remains in the unit supplied by the component adapter.",
+                "KICK.RBV — independently reported kick/strength readback value. It is not an electrical-current value.",
+                "CURRENT.SP — electrical-current setpoint. It is not converted to or presented as kick/strength.",
+                "CURRENT.RBV — independently reported electrical-current readback value. It is not converted to or presented as kick/strength.",
+            )
+            for column,tooltip in enumerate(diagnostic_header_tooltips,start=4):
+                table.horizontalHeaderItem(column).setToolTip(tooltip+" Units are shown only when authoritative component metadata are available; otherwise no unit is asserted.")
             table.setSelectionBehavior(QAbstractItemView.SelectRows); table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-            controls=QHBoxLayout(); all_button=QPushButton("Select All"); all_button.clicked.connect(lambda _=False,k=key:self._select_all_correctors(k)); clear_button=QPushButton("Clear"); clear_button.clicked.connect(lambda _=False,k=key:self._clear_correctors(k)); filtered=QPushButton("Select Filtered"); filtered.clicked.connect(lambda _=False,k=key:self._select_filtered_correctors(k)); highlighted=QPushButton("Use Highlighted"); highlighted.clicked.connect(lambda _=False,k=key:self._select_highlighted(k)); controls.addWidget(all_button); controls.addWidget(clear_button); controls.addWidget(filtered); controls.addWidget(highlighted); controls.addStretch(); controls.addWidget(preview)
+            controls=QHBoxLayout(); all_button=QPushButton("Select All"); all_button.clicked.connect(lambda _=False,k=key:self._select_all_correctors(k)); clear_button=QPushButton("Clear"); clear_button.clicked.connect(lambda _=False,k=key:self._clear_correctors(k)); filtered=QPushButton("Replace with filtered"); filtered.clicked.connect(lambda _=False,k=key:self._select_filtered_correctors(k)); select_only_highlighted=QPushButton("Select only highlighted"); select_only_highlighted.setEnabled(False); select_only_highlighted.setToolTip("Replace the checked corrector selection with the highlighted rows"); select_only_highlighted.clicked.connect(lambda _=False,k=key:self._select_only_highlighted(k)); add_highlighted=QPushButton("Add highlighted to selection"); add_highlighted.setEnabled(False); add_highlighted.setToolTip("Keep checked correctors and add highlighted rows without duplicates"); add_highlighted.clicked.connect(lambda _=False,k=key:self._select_highlighted(k)); controls.addWidget(all_button); controls.addWidget(clear_button); controls.addWidget(filtered); controls.addWidget(select_only_highlighted); controls.addWidget(add_highlighted)
+            if key=="vcor":
+                self.copy_h_to_v_button=QPushButton("Copy H selection to V…"); self.copy_h_to_v_button.clicked.connect(self._copy_h_selection_to_v); controls.addWidget(self.copy_h_to_v_button)
+            controls.addStretch(); controls.addWidget(preview)
             subset=QHBoxLayout(); nbox=NoWheelSpinBox(); nbox.setRange(1,100000); nbox.setValue(5); first_n=QPushButton("First N"); first_n.clicked.connect(lambda _=False,k=key,n=nbox:self._select_device_subset(k,"first",n.value())); uniform_n=QPushButton("Uniform N"); uniform_n.clicked.connect(lambda _=False,k=key,n=nbox:self._select_device_subset(k,"uniform",n.value())); subset.addWidget(nbox); subset.addWidget(first_n); subset.addWidget(uniform_n); subset.addStretch()
-            count=QLabel(); count.setObjectName("planValue")
-            form.addRow("Selection method",method); form.addRow("Search / filter",search); form.addRow("Names file",file_row); file_label=form.labelForField(file_row); form.addRow("Manual selection",manual); manual_label=form.labelForField(manual); form.addRow("Excluded positions",exclusion); form.addRow("",controls); form.addRow("Selection helpers",subset); form.addRow("Selected / available",count); form.addRow(table)
-            data={"method":method,"manual":manual,"file":file_edit,"file_row":file_row,"file_label":file_label,"manual_label":manual_label,"exclusion":exclusion,"search":search,"table":table,"devices":devices,"count":count,"n":nbox}
+            count=QLabel(); count.setObjectName("planValue"); empty=QLabel(); empty.setObjectName("infoText"); empty.setWordWrap(True); empty.setVisible(False)
+            form.addRow("Selection method",method); form.addRow("Search / filter",search); form.addRow("Show devices",visibility); form.addRow("Names file",file_row); file_label=form.labelForField(file_row); form.addRow("Manual selection",manual); manual_label=form.labelForField(manual); form.addRow("Excluded positions",exclusion); form.addRow("",controls); form.addRow("Selection helpers",subset); form.addRow("Selected / available",count); form.addRow(table); form.addRow("",empty)
+            data={"method":method,"manual":manual,"file":file_edit,"file_row":file_row,"file_label":file_label,"manual_label":manual_label,"exclusion":exclusion,"search":search,"visibility":visibility,"table":table,"devices":devices,"count":count,"empty":empty,"n":nbox,"select_only_highlighted":select_only_highlighted,"add_highlighted":add_highlighted}
             self.corrector_selection_widgets[key]=data
-            method.currentIndexChanged.connect(lambda _=0,k=key:self._corrector_method_changed(k)); preview.clicked.connect(lambda _=False,k=key:self._refresh_corrector_preview(k)); search.textChanged.connect(lambda _="",k=key:self._filter_corrector_table(k)); browse.clicked.connect(lambda _=False,e=file_edit:self._browse_into(e)); exclusion.textChanged.connect(self.refresh_plan)
+            method.currentIndexChanged.connect(lambda _=0,k=key:self._corrector_method_changed(k)); preview.clicked.connect(lambda _=False,k=key:self._refresh_corrector_preview(k)); search.textChanged.connect(lambda _="",k=key:self._filter_corrector_table(k)); visibility.currentIndexChanged.connect(lambda _=0,k=key:self._filter_corrector_table(k)); table.itemSelectionChanged.connect(lambda k=key:self._filter_corrector_table(k)); browse.clicked.connect(lambda _=False,e=file_edit:self._browse_into(e)); exclusion.textChanged.connect(self.refresh_plan)
             cg.addWidget(box); self._corrector_method_changed(key); self._refresh_corrector_preview(key)
         layout.addWidget(self.orm_corrector_group)
         self._selection_method_changed(); return self._scroll_page(content)
@@ -997,6 +1051,20 @@ class MeasureMainWindow(QMainWindow):
         if path:
             self.pyaml_fields["config_path"].setText(path)
 
+    def _pyaml_configuration_changed(self,*_):
+        if hasattr(self,"pyaml_simulator_identity_status"):
+            self.pyaml_simulator_identity_status.setText("Configuration changed — Test connection to identify the active runtime and restoration evidence.")
+        self._invalidate_pyaml()
+
+    def _set_pyaml_simulator_identity(self,adapter):
+        identity=getattr(adapter,"simulator_identity",None)
+        verified=bool(isinstance(identity,dict) and identity.get("verified") is True)
+        if verified:
+            evidence="Adapter value matched via fresh strength.get() — independent readback unavailable." if getattr(adapter,"allow_get_only_restoration",False) else "Independent readback capability will be used where available."
+            self.pyaml_simulator_identity_status.setText(f"Verified {identity['backend']} simulator · instance {identity['instance_id']} · {identity['evidence']}. Restoration evidence: {evidence}")
+        else:
+            self.pyaml_simulator_identity_status.setText("No authoritative runtime simulator identity/capability was provided by pyAML. Real-machine or unknown-target ORM remains blocked without an independent readback.")
+
     def _invalidate_pyaml(self, *_):
         if self.adapter_combo.currentData() != "pyaml":
             return
@@ -1045,6 +1113,7 @@ class MeasureMainWindow(QMainWindow):
             QMessageBox.warning(self, "pyAML connection unavailable", str(exc))
             return
         self.adapter = session.adapter
+        self._set_pyaml_simulator_identity(self.adapter)
         self.devices = tuple(BpmDevice(**item) for item in self.adapter.list_devices("bpm"))
         self.horizontal_correctors = tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("hcor"))
         self.vertical_correctors = tuple(CorrectorDevice(**item) for item in self.adapter.list_devices("vcor"))
@@ -1078,22 +1147,78 @@ class MeasureMainWindow(QMainWindow):
         self.refresh_preview()
 
     def _test_connection(self):
-        if self.adapter_combo.currentData() == "pyaml":
-            self._connect_pyaml()
-            return
-        if self.adapter_combo.currentData()=="pysc":
-            try:self._adapter_changed(); result=self.adapter.test_connection()
-            except Exception as exc:self._set_connection_state(False,"DISCONNECTED"); QMessageBox.warning(self,"pySC Server unavailable",str(exc)); return
-            profile=self.pysc_profile_combo.currentText(); self._set_connection_state(True,"CONNECTED"); self.machine_info["connection"].setText(f"Connected — {profile}"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(str(result["corrector_readback"])); self.machine_info["rf_readback"].setText(f"available — {result['rf_readback']:.6f} Hz"); self.nominal_rf.setText(f"{result['rf_readback']:.12f}"); self._load_profile_reference_model(); self.statusBar().showMessage(f"CONNECTED • {profile} • {result['bpms']} BPMs"); return
-        if not isinstance(self.adapter,PETRAReadOnlyAdapter):
-            self.statusBar().showMessage("Mock ready — no external connection"); return
-        self.test_connection_button.setEnabled(False); self.machine_info["connection"].setText("Testing safe reads…"); QApplication.processEvents()
-        try:result=self.adapter.test_connection()
-        except Exception as exc:
-            self.machine_info["connection"].setText("Unavailable"); self.machine_info["bpm_orbit"].setText("unavailable"); self.machine_info["corrector_readback"].setText("unavailable"); QMessageBox.warning(self,"PETRA connection unavailable",str(exc))
+        if getattr(self,"connection_thread",None) is not None:
+            self.statusBar().showMessage("A connection test is already running or cleaning up."); return
+        key=self.adapter_combo.currentData()
+        if key=="mock":self.statusBar().showMessage("Mock ready — no external connection"); return
+        options=None
+        if key=="pyaml":
+            self._invalidate_pyaml(); options={name:editor.text().strip() for name,editor in self.pyaml_fields.items()}; options.update(allow_writes=self.pyaml_magnet_writes.isChecked(),allow_rf_writes=self.pyaml_rf_writes.isChecked(),corrector_values_in_radians=True)
+            if options["mode"]=="live" and (options["allow_writes"] or options["allow_rf_writes"]):
+                answer=QMessageBox.question(self,"Enable live pyAML writes?","Measurements may change configured corrector magnets and/or RF frequency. Enable selected writes?",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
+                if answer!=QMessageBox.Yes:return
+            def operation():
+                session=InterfaceRegistry(pyaml_options=options).create("pyaml"); result=session.adapter.test_connection()
+                return {"key":key,"session":session,"result":result,"bpms":tuple(BpmDevice(**item) for item in session.adapter.list_devices("bpm")),"hcor":tuple(CorrectorDevice(**item) for item in session.adapter.list_devices("hcor")),"vcor":tuple(CorrectorDevice(**item) for item in session.adapter.list_devices("vcor")),"options":options}
         else:
-            self.machine_info["connection"].setText("Connected — read only"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(result["corrector_readback"]); self.machine_info["calibration"].setText(result["calibration"]); self.machine_info["rf_readback"].setText(result["rf_readback"]); self.statusBar().showMessage(f"CONNECTED • PETRA read only • {result['bpms']} BPMs")
-        finally:self.test_connection_button.setEnabled(True)
+            adapter=self.adapter
+            def operation():return {"key":key,"result":adapter.test_connection()}
+        self._connection_test_timed_out=False; self.test_connection_button.setEnabled(False); self.connection_progress.setVisible(True); self.machine_info["connection"].setText("Testing connection…"); self._set_connection_state(False,"TESTING")
+        self.connection_thread=QThread(self); self.connection_worker=ConnectionTestWorker(operation); self.connection_worker.moveToThread(self.connection_thread); self.connection_thread.started.connect(self.connection_worker.run); self.connection_worker.completed.connect(self._connection_test_completed); self.connection_worker.failed.connect(self._connection_test_failed)
+        self.connection_worker.completed.connect(self._finish_connection_test); self.connection_worker.failed.connect(self._finish_connection_test)
+        QTimer.singleShot(self._connection_timeout_ms,self._connection_test_timeout); self.connection_thread.start()
+
+    def _connection_test_completed(self,payload):
+        if getattr(self,"_connection_test_timed_out",False):return
+        key=payload["key"]; result=payload["result"]
+        if key=="pyaml":
+            self.adapter=payload["session"].adapter; self.devices=payload["bpms"]; self.horizontal_correctors=payload["hcor"]; self.vertical_correctors=payload["vcor"]
+            self._set_pyaml_simulator_identity(self.adapter)
+            self.selected_devices=self.devices; self.selected_hcorrectors=self.horizontal_correctors; self.selected_vcorrectors=self.vertical_correctors
+            for kind,devices in (("hcor",self.horizontal_correctors),("vcor",self.vertical_correctors)):self.corrector_selection_widgets[kind]["devices"]=devices
+            self.project.metadata["pyaml_options"]={name:value for name,value in payload["options"].items() if name not in ("allow_writes","allow_rf_writes")}
+            self.machine_info["connection"].setText("Connected — read only"); self.machine_info["bpm_orbit"].setText(f"{result['bpms']} BPMs")
+            for name in ("corrector_readback","calibration","rf_readback"):self.machine_info[name].setText(str(result[name]))
+            try:
+                rf_readback=float(result["rf_readback"])
+                self.nominal_rf.setText(f"{rf_readback:.12f}" if np.isfinite(rf_readback) else "")
+            except (TypeError,ValueError):
+                self.nominal_rf.clear()
+            self._reset_selection_states_for_inventory(); self.refresh_preview()
+            writable=AdapterCapability.WRITE in self.adapter.capabilities; rf_writable=AdapterCapability.RF_WRITE in self.adapter.capabilities
+            if rf_writable:
+                self.rf_control_mode.setCurrentIndex(self.rf_control_mode.findData("automatic"))
+            access=f"Correctors: {'WRITE' if writable else 'read only'}; RF: {'WRITE' if rf_writable else 'read only'}"
+            self.machine_info["access"].setText(access)
+            self.subtitle.setText(f"pyAML {payload['options']['mode']} connected — {access}")
+            self.status_badge.setText("pyAML • WRITES ENABLED" if writable or rf_writable else "pyAML • READ ONLY")
+            self.measurement_type.model().item(self.measurement_type.findData("orm")).setEnabled(writable); self.orm_unavailable_label.setVisible(not writable)
+            self._sync_rf_presentation()
+        elif key=="pysc":
+            self.machine_info["connection"].setText(f"Connected — {self.pysc_profile_combo.currentText()}"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(str(result["corrector_readback"])); self.machine_info["rf_readback"].setText(f"available — {result['rf_readback']:.6f} Hz"); self.nominal_rf.setText(f"{result['rf_readback']:.12f}"); self._load_profile_reference_model()
+        else:
+            self.machine_info["connection"].setText("Connected — read only"); self.machine_info["bpm_orbit"].setText(f"available — {result['bpms']} BPMs"); self.machine_info["corrector_readback"].setText(result["corrector_readback"]); self.machine_info["calibration"].setText(result["calibration"]); self.machine_info["rf_readback"].setText(result["rf_readback"])
+        self._set_connection_state(True,"CONNECTED"); self.statusBar().showMessage("Connection test succeeded")
+        self._verify_unresolved_orm_restoration()
+        diagnostics=self._rf_restoration_diagnostics or {}
+        if self._rf_restoration_unresolved and "rf_readback" in result and diagnostics:
+            try:resolved=abs(float(result["rf_readback"])-float(diagnostics["original_rf_hz"]))<=float(diagnostics["tolerance_hz"])
+            except Exception:resolved=False
+            if resolved:
+                self._rf_restoration_unresolved=False; self.statusBar().showMessage("Connection verified; original RF readback restored. RF-write block cleared.")
+
+    def _connection_test_failed(self,exc):
+        if getattr(self,"_connection_test_timed_out",False):return
+        self._set_connection_state(False,"DISCONNECTED"); self.machine_info["connection"].setText("Unavailable"); QMessageBox.warning(self,"Connection unavailable",str(exc))
+
+    def _connection_test_timeout(self):
+        if getattr(self,"connection_thread",None) is not None and self.connection_thread.isRunning():
+            self._connection_test_timed_out=True
+            self._set_connection_state(False,"TIMEOUT"); self.machine_info["connection"].setText("Connection test timed out; waiting for backend cleanup…"); self.statusBar().showMessage("Connection test timed out — no stale connection was accepted")
+            self.connection_progress.setVisible(False); self.test_connection_button.setEnabled(True)
+
+    def _finish_connection_test(self,*_):
+        thread=self.connection_thread; thread.quit(); thread.wait(3000); thread.deleteLater(); self.connection_thread=None; self.connection_worker=None; self.connection_progress.setVisible(False); self.test_connection_button.setEnabled(True); self.refresh_plan()
 
     def _measurement_page(self):
         content=QWidget(); layout=QVBoxLayout(content); layout.setContentsMargins(22,22,22,22); layout.setAlignment(Qt.AlignTop)
@@ -1128,11 +1253,13 @@ class MeasureMainWindow(QMainWindow):
         self.rf_step=NoWheelDoubleSpinBox(); self.rf_step.setRange(1,1e9); self.rf_step.setDecimals(0); self.rf_step.setValue(200.0); self.rf_step.setSuffix(" Hz")
         self.dispersion_direction=QComboBox(); self.dispersion_direction.addItem("Bipolar ±Δf","bipolar"); self.dispersion_direction.addItem("One-sided +Δf","positive"); self.dispersion_direction.addItem("One-sided −Δf","negative")
         self.settling_delay=NoWheelDoubleSpinBox(); self.settling_delay.setRange(0,3600); self.settling_delay.setDecimals(3); self.settling_delay.setSuffix(" s")
+        self.rf_restoration_tolerance=NoWheelDoubleSpinBox(); self.rf_restoration_tolerance.setRange(0,1000); self.rf_restoration_tolerance.setDecimals(6); self.rf_restoration_tolerance.setValue(.1); self.rf_restoration_tolerance.setSuffix(" Hz")
+        self.rf_restoration_tolerance.setToolTip("Maximum absolute difference between the original independent RF readback and the final restored readback. This does not weaken missing-readback checks.")
         self.verify_restored_orbit=QCheckBox("Verify restored orbit"); self.verify_restored_orbit.setChecked(True)
         self.verify_restored_orbit.setToolTip("After exact RF restoration, acquire a read-only reference orbit for comparison. This orbit is never used in the dispersion calculation.")
         self.rf_safety=QLabel("READ ONLY — pyLOCO Measure will guide RF changes but will never write RF."); self.rf_safety.setWordWrap(True)
         self.rf_states_explanation=QLabel("Applied states: f₀ + 100 Hz / f₀ − 100 Hz\nTotal separation: Δ = 200 Hz"); self.rf_states_explanation.setWordWrap(True)
-        for label,widget in (("RF control mode",self.rf_control_mode),("Nominal RF frequency",nominal_widget),("Actual applied RF",self.manual_actual_rf),("Total RF separation Δ",self.rf_step),("Applied RF states",self.rf_states_explanation),("Measurement direction",self.dispersion_direction),("Settling delay",self.settling_delay),("Restoration check",self.verify_restored_orbit),("",self.rf_safety)): dispersion_form.addRow(label,widget)
+        for label,widget in (("RF control mode",self.rf_control_mode),("Nominal RF frequency",nominal_widget),("Actual applied RF",self.manual_actual_rf),("Total RF separation Δ",self.rf_step),("Applied RF states",self.rf_states_explanation),("Measurement direction",self.dispersion_direction),("Settling delay after RF change",self.settling_delay),("RF restoration tolerance",self.rf_restoration_tolerance),("Restoration check",self.verify_restored_orbit),("",self.rf_safety)): dispersion_form.addRow(label,widget)
         self.rf_step_label=dispersion_form.labelForField(self.rf_step)
         for widget in (self.nominal_rf,self.rf_step,self.dispersion_direction,self.settling_delay):
             signal=widget.textChanged if isinstance(widget,QLineEdit) else widget.currentIndexChanged if isinstance(widget,QComboBox) else widget.valueChanged
@@ -1155,9 +1282,11 @@ class MeasureMainWindow(QMainWindow):
             "Applied states: K₀ + ΔK/2 and K₀ − ΔK/2\n"
             "Effective readback separation: K⁺ − K⁻ = +ΔK"
         ); self.orm_state_explanation.setWordWrap(True)
-        orm_form.addRow("ORM output format",self.orm_output_format); orm_form.addRow("Optional analysis",self.orm_normalized_analysis); orm_form.addRow("Measurement direction",self.orm_direction); orm_form.addRow("Corrector kick mode",self.orm_kick_mode); orm_form.addRow("Total horizontal bipolar kick Δ",self.orm_hkick); self.orm_hkick_label=orm_form.labelForField(self.orm_hkick); orm_form.addRow("Total vertical bipolar kick Δ",self.orm_vkick); self.orm_vkick_label=orm_form.labelForField(self.orm_vkick); orm_form.addRow("Applied corrector states",self.orm_state_explanation); orm_form.addRow("Kick arrays file",self.orm_kick_file_row); self.orm_kick_file_label=orm_form.labelForField(self.orm_kick_file_row)
+        self.orm_settling_delay=NoWheelDoubleSpinBox(); self.orm_settling_delay.setRange(0,3600); self.orm_settling_delay.setDecimals(3); self.orm_settling_delay.setValue(1.0); self.orm_settling_delay.setSuffix(" s")
+        self.orm_settling_delay.setToolTip("Wait after every corrector transition, including restoration, before checking readback or acquiring BPM data.")
+        orm_form.addRow("ORM output format",self.orm_output_format); orm_form.addRow("Optional analysis",self.orm_normalized_analysis); orm_form.addRow("Measurement direction",self.orm_direction); orm_form.addRow("Corrector kick mode",self.orm_kick_mode); orm_form.addRow("Settling delay after corrector change",self.orm_settling_delay); orm_form.addRow("Total horizontal bipolar kick Δ",self.orm_hkick); self.orm_hkick_label=orm_form.labelForField(self.orm_hkick); orm_form.addRow("Total vertical bipolar kick Δ",self.orm_vkick); self.orm_vkick_label=orm_form.labelForField(self.orm_vkick); orm_form.addRow("Applied corrector states",self.orm_state_explanation); orm_form.addRow("Kick arrays file",self.orm_kick_file_row); self.orm_kick_file_label=orm_form.labelForField(self.orm_kick_file_row)
         self.kick_preview=QTableWidget(0,5); self.kick_preview.setMinimumHeight(180); self.kick_preview.setHorizontalHeaderLabels(["Position","Plane","Corrector","Effective kick [µrad]","Source"]); self.kick_preview.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch); orm_form.addRow("Effective kicks",self.kick_preview)
-        for widget in (self.orm_direction,self.orm_kick_mode,self.orm_hkick,self.orm_vkick,self.orm_kick_file,self.orm_normalized_analysis):
+        for widget in (self.orm_direction,self.orm_kick_mode,self.orm_settling_delay,self.orm_hkick,self.orm_vkick,self.orm_kick_file,self.orm_normalized_analysis):
             signal=widget.currentIndexChanged if isinstance(widget,QComboBox) else widget.valueChanged if isinstance(widget,QDoubleSpinBox) else widget.textChanged if isinstance(widget,QLineEdit) else widget.toggled
             signal.connect(self._orm_config_changed)
         layout.addWidget(self.orm_config_group)
@@ -1363,19 +1492,48 @@ class MeasureMainWindow(QMainWindow):
         method=self.selection_method.currentData(); names_visible=method=="names_file"; manual_visible=method=="manual"
         self.names_row.setVisible(names_visible); self.names_label.setVisible(names_visible)
         self.manual_input.setVisible(manual_visible); self.manual_label.setVisible(manual_visible)
+        if hasattr(self,"preview_table") and not self._loading_selection_state:self.refresh_preview()
 
     def _filter_bpm_table(self, text=""):
         if not hasattr(self,"preview_table"):return
-        query=str(text).strip().lower()
+        query=self.bpm_search.text().strip().lower(); mode=self.bpm_visibility.currentData() if hasattr(self,"bpm_visibility") else "all"; selected={device.name for device in self.selected_devices}; visible=0
+        source={"all":"adapter discovery","names_file":"names file","manual":"manual selection"}.get(self.selection_method.currentData(),"selection")
         for row in range(self.preview_table.rowCount()):
             hay=" ".join(self.preview_table.item(row,col).text() for col in (1,2) if self.preview_table.item(row,col))
-            self.preview_table.setRowHidden(row,bool(query and query not in hay.lower()))
+            name=self.preview_table.item(row,1).text() if self.preview_table.item(row,1) else ""; selected_row=name in selected
+            hidden=bool(query and query not in hay.lower()) or mode=="selected" and not selected_row or mode=="unselected" and selected_row
+            self.preview_table.setRowHidden(row,hidden); visible+=not hidden
+        if hasattr(self,"selection_message"):
+            highlighted=len(self.preview_table.selectionModel().selectedRows()) if self.preview_table.selectionModel() is not None else 0
+            if hasattr(self,"bpm_select_only_highlighted_button"):
+                self.bpm_select_only_highlighted_button.setEnabled(highlighted>0); self.bpm_add_highlighted_button.setEnabled(highlighted>0)
+            prefix=f"Highlighted: {highlighted} • {len(selected)} / {len(self.devices)} BPMs selected for measurement. "
+            error=getattr(self,"_bpm_selection_error","")
+            if error:self.selection_message.setText(prefix+f"Selection is not valid: {error}")
+            elif mode=="selected" and not selected:self.selection_message.setText(prefix+"No BPMs are selected. Choose All devices to highlight devices, or use Clear to return to All devices automatically.")
+            elif visible==0:self.selection_message.setText(prefix+"No BPM devices match the current search and visibility filters.")
+            else:self.selection_message.setText(prefix+f"Showing {visible} devices. Highlighted rows do not change the checked selection. Source: {source}.")
 
     def _select_all_bpms(self):
         self.selection_method.setCurrentIndex(self.selection_method.findData("all")); self.refresh_preview()
 
+    @staticmethod
+    def _highlighted_device_names(table):
+        return tuple(table.item(index.row(),1).text() for index in table.selectionModel().selectedRows() if table.item(index.row(),1))
+
+    @staticmethod
+    def _restore_table_highlights(table,names):
+        wanted=set(names); table.clearSelection()
+        for row in range(table.rowCount()):
+            item=table.item(row,1)
+            if item is not None and item.text() in wanted:
+                table.selectionModel().select(table.model().index(row,0),QItemSelectionModel.Select|QItemSelectionModel.Rows)
+
     def _clear_bpms(self):
+        highlighted=self._highlighted_device_names(self.preview_table)
+        if self.bpm_visibility.currentData()=="selected":self.bpm_visibility.setCurrentIndex(self.bpm_visibility.findData("all"))
         self.selection_method.setCurrentIndex(self.selection_method.findData("manual")); self.manual_input.clear(); self.refresh_preview()
+        self._restore_table_highlights(self.preview_table,highlighted); self._filter_bpm_table()
 
     def _select_filtered_bpms(self):
         query=self.bpm_search.text().strip().lower()
@@ -1394,7 +1552,10 @@ class MeasureMainWindow(QMainWindow):
             devices=self.devices; method=self.selection_method; manual=self.manual_input
         else:
             data=self.corrector_selection_widgets[key]; devices=tuple(data["devices"]); method=data["method"]; manual=data["manual"]
-        selected=tuple(devices[:min(count,len(devices))]) if mode=="first" else self._uniform_devices(devices,count)
+        search=self.bpm_search if key=="bpm" else self.corrector_selection_widgets[key]["search"]
+        query=search.text().strip().lower()
+        candidates=tuple(device for device in devices if not query or query in (device.name+" "+device.identifier).lower())
+        selected=tuple(candidates[:min(count,len(candidates))]) if mode=="first" else self._uniform_devices(candidates,count)
         method.setCurrentIndex(method.findData("manual")); manual.setText(", ".join(device.name for device in selected))
         self.refresh_preview() if key=="bpm" else self._refresh_corrector_preview(key,read_diagnostics=False)
 
@@ -1402,7 +1563,10 @@ class MeasureMainWindow(QMainWindow):
         data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(data["method"].findData("all")); self._refresh_corrector_preview(key,read_diagnostics=False)
 
     def _clear_correctors(self,key):
-        data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].clear(); self._refresh_corrector_preview(key,read_diagnostics=False)
+        data=self.corrector_selection_widgets[key]; highlighted=self._highlighted_device_names(data["table"])
+        if data["visibility"].currentData()=="selected":data["visibility"].setCurrentIndex(data["visibility"].findData("all"))
+        data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].clear(); self._refresh_corrector_preview(key,read_diagnostics=False)
+        self._restore_table_highlights(data["table"],highlighted); self._filter_corrector_table(key)
 
     def _select_filtered_correctors(self,key):
         data=self.corrector_selection_widgets[key]; query=data["search"].text().strip().lower(); matches=[device.name for device in data["devices"] if not query or query in (device.name+" "+device.identifier).lower()]
@@ -1410,11 +1574,26 @@ class MeasureMainWindow(QMainWindow):
 
     def _select_highlighted(self,key):
         table=self.preview_table if key=="bpm" else self.corrector_selection_widgets[key]["table"]
-        names=[table.item(index.row(),1).text() for index in table.selectionModel().selectedRows() if table.item(index.row(),1)]
+        highlighted={table.item(index.row(),1).text() for index in table.selectionModel().selectedRows() if table.item(index.row(),1)}
+        if not highlighted:return
         if key=="bpm":
+            current={device.name for device in self.selected_devices}; names=[device.name for device in self.devices if device.name in current|highlighted]
             self.selection_method.setCurrentIndex(self.selection_method.findData("manual")); self.manual_input.setText(", ".join(names)); self.refresh_preview()
         else:
-            data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText(", ".join(names)); self._refresh_corrector_preview(key,read_diagnostics=False)
+            data=self.corrector_selection_widgets[key]; current={device.name for device in (self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors)}; names=[device.name for device in data["devices"] if device.name in current|highlighted]
+            data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText(", ".join(names)); self._refresh_corrector_preview(key,read_diagnostics=False)
+
+    def _select_only_highlighted(self,key):
+        table=self.preview_table if key=="bpm" else self.corrector_selection_widgets[key]["table"]
+        highlighted={table.item(index.row(),1).text() for index in table.selectionModel().selectedRows() if table.item(index.row(),1)}
+        if not highlighted:
+            self.statusBar().showMessage("Highlight at least one device before replacing the measurement selection."); return
+        if key=="bpm":
+            names=[device.name for device in self.devices if device.name in highlighted]
+            self.selection_method.setCurrentIndex(self.selection_method.findData("manual")); self.manual_input.setText(", ".join(names)); self.refresh_preview()
+        else:
+            data=self.corrector_selection_widgets[key]; names=[device.name for device in data["devices"] if device.name in highlighted]
+            data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText(", ".join(names)); self._refresh_corrector_preview(key,read_diagnostics=False)
 
     def _select_demo_one_each(self):
         self._select_device_subset("hcor","uniform",1); self._select_device_subset("vcor","uniform",1)
@@ -1422,15 +1601,79 @@ class MeasureMainWindow(QMainWindow):
     def _select_demo_small_orm(self):
         self._select_device_subset("bpm","uniform",20); self._select_device_subset("hcor","uniform",5); self._select_device_subset("vcor","uniform",5)
 
+    def _h_to_v_proposal_from_document(self,document):
+        """Resolve H B1L to V A1L only through a shared exact-identity mapping."""
+        rows=tuple(document.get("mappings",()))
+        horizontal={row.get("measured_name"):row for row in rows if row.get("role")=="horizontal_corrector"}
+        vertical_by_ordinal={}
+        for row in rows:
+            if row.get("role")=="vertical_corrector" and row.get("component")=="A1L" and type(row.get("lattice_ordinal")) is int:
+                vertical_by_ordinal.setdefault(row["lattice_ordinal"],[]).append(row)
+        preview=[]; matched=set()
+        for device in self.selected_hcorrectors:
+            source=horizontal.get(device.name)
+            if not source or source.get("status")!="mapped" or source.get("component")!="B1L":
+                preview.append({"horizontal":device.name,"vertical":"","status":"Missing","reason":(source or {}).get("reason","No exact B1L mapping")}); continue
+            candidates=vertical_by_ordinal.get(source.get("lattice_ordinal"),[])
+            valid=[row for row in candidates if row.get("status")=="mapped"]
+            if len(candidates)>1 or len(valid)>1:
+                preview.append({"horizontal":device.name,"vertical":"","status":"Ambiguous","reason":"More than one A1L device maps to the same AT element"}); continue
+            if len(valid)!=1:
+                reason=candidates[0].get("reason","No validated A1L counterpart") if candidates else "No A1L device maps to the same AT element"
+                preview.append({"horizontal":device.name,"vertical":"","status":"Missing","reason":reason}); continue
+            target=valid[0]; matched.add(target["measured_name"])
+            preview.append({"horizontal":device.name,"vertical":target["measured_name"],"status":"Matched","reason":f"Exact Device identity; AT ordinal {source['lattice_ordinal']} (B1L → A1L)"})
+        ordered=tuple(device for device in self.vertical_correctors if device.name in matched)
+        return {"rows":preview,"devices":ordered}
+
+    def _h_to_v_proposal(self):
+        if self.reference_model is None:raise ValueError("Load the authoritative AT reference lattice first.")
+        configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        if not configuration.is_file():raise ValueError("The active machine configuration file is unavailable.")
+        inventory={"bpm":[],"horizontal_corrector":[device.name for device in self.selected_hcorrectors],"vertical_corrector":[device.name for device in self.vertical_correctors]}
+        document=find_exact_device_mappings(self.reference_model.ring,inventory,lattice_path=self.reference_model.path,configuration_path=configuration,provenance="Measure H B1L to V A1L counterpart preview")
+        return self._h_to_v_proposal_from_document(document)
+
+    def _show_h_to_v_preview(self,proposal):
+        dialog=QDialog(self); dialog.setWindowTitle("Copy horizontal corrector selection to vertical correctors"); dialog.resize(900,520)
+        layout=QVBoxLayout(dialog); summary=QLabel(f"{len(proposal['devices'])} validated V counterparts found for {len(self.selected_hcorrectors)} selected H correctors. No positional or name-similarity fallback is used."); summary.setWordWrap(True); layout.addWidget(summary)
+        table=QTableWidget(len(proposal["rows"]),4); table.setHorizontalHeaderLabels(("Selected H corrector (B1L)","Proposed V corrector (A1L)","Status","Evidence / problem")); table.setEditTriggers(QTableWidget.NoEditTriggers)
+        for row,item in enumerate(proposal["rows"]):
+            for column,key in enumerate(("horizontal","vertical","status","reason")):table.setItem(row,column,QTableWidgetItem(str(item[key]) or "—"))
+        table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch); table.horizontalHeader().setSectionResizeMode(1,QHeaderView.Stretch); table.horizontalHeader().setSectionResizeMode(3,QHeaderView.Stretch); layout.addWidget(table)
+        if self.corrector_selection_widgets["vcor"]["exclusion"].text().strip():
+            warning=QLabel("Vertical positional exclusions will be cleared because the ordered V inventory is changing; review exclusions after applying."); warning.setObjectName("warningText"); warning.setWordWrap(True); layout.addWidget(warning)
+        actions=QDialogButtonBox(); replace=actions.addButton("Replace vertical selection",QDialogButtonBox.AcceptRole); add=actions.addButton("Add to vertical selection",QDialogButtonBox.ActionRole); cancel=actions.addButton(QDialogButtonBox.Cancel); layout.addWidget(actions)
+        choice={"mode":None}; replace.clicked.connect(lambda:(choice.update(mode="replace"),dialog.accept())); add.clicked.connect(lambda:(choice.update(mode="add"),dialog.accept())); cancel.clicked.connect(dialog.reject)
+        return choice["mode"] if dialog.exec()==QDialog.Accepted else None
+
+    def _copy_h_selection_to_v(self):
+        try:proposal=self._h_to_v_proposal()
+        except Exception as exc:QMessageBox.warning(self,"Cannot copy H selection to V",str(exc)); return
+        mode=self._show_h_to_v_preview(proposal)
+        if mode not in {"replace","add"}:return
+        proposed={device.name for device in proposal["devices"]}; current={device.name for device in self.selected_vcorrectors} if mode=="add" else set()
+        ordered=[device.name for device in self.vertical_correctors if device.name in proposed|current]
+        data=self.corrector_selection_widgets["vcor"]; data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText(", ".join(ordered)); data["exclusion"].clear(); self._refresh_corrector_preview("vcor",read_diagnostics=False)
+        unmatched=sum(item["status"]!="Matched" for item in proposal["rows"]); self.statusBar().showMessage(f"Applied {len(proposal['devices'])} validated V counterparts; {unmatched} H correctors had no unique counterpart. Vertical selection is now independent.")
+
     def _select_first_corrector(self,key):
         data=self.corrector_selection_widgets[key]
         data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText("0"); self._refresh_corrector_preview(key)
 
     def _filter_corrector_table(self,key):
-        data=self.corrector_selection_widgets[key]; query=data["search"].text().strip().lower(); table=data["table"]
+        data=self.corrector_selection_widgets[key]; query=data["search"].text().strip().lower(); mode=data["visibility"].currentData(); table=data["table"]; selected={device.name for device in (self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors)}; visible=0
         for row in range(table.rowCount()):
             hay=" ".join(table.item(row,col).text() for col in (1,2) if table.item(row,col))
-            table.setRowHidden(row,bool(query and query not in hay.lower()))
+            name=table.item(row,1).text() if table.item(row,1) else ""; selected_row=name in selected
+            hidden=bool(query and query not in hay.lower()) or mode=="selected" and not selected_row or mode=="unselected" and selected_row
+            table.setRowHidden(row,hidden); visible+=not hidden
+        highlighted=len(table.selectionModel().selectedRows()) if table.selectionModel() is not None else 0
+        data["select_only_highlighted"].setEnabled(highlighted>0); data["add_highlighted"].setEnabled(highlighted>0)
+        data["count"].setText(f"{len(selected)} / {len(data['devices'])} selected • {highlighted} highlighted • {visible} shown")
+        if mode=="selected" and not selected:data["empty"].setText("No correctors are selected. Choose All devices to highlight devices, or use Clear to return to All devices automatically."); data["empty"].setVisible(True)
+        elif visible==0:data["empty"].setText("No devices match the current search and visibility filters."); data["empty"].setVisible(True)
+        else:data["empty"].setVisible(False)
 
     def _browse_into(self,edit):
         path=QFileDialog.getOpenFileName(self,"Select names/kick file","","Data files (*.txt *.csv *.json *.npy *.npz);;All files (*)")[0]
@@ -1462,9 +1705,26 @@ class MeasureMainWindow(QMainWindow):
     def _corrector_method_changed(self,key):
         data=self.corrector_selection_widgets[key]; method=data["method"].currentData(); data["file_row"].setVisible(method=="names_file"); data["file_label"].setVisible(method=="names_file"); data["manual"].setVisible(method=="manual"); data["manual_label"].setVisible(method=="manual")
 
+    @staticmethod
+    def _corrector_diagnostic_cell(entry, field):
+        if entry is None:
+            return "Not read yet",f"{field} has not been queried. Select the device and use Refresh after connecting."
+        if not isinstance(entry,dict):
+            try:return f"{float(entry):.8g}",f"{field} was read from the adapter; no authoritative unit metadata were returned."
+            except Exception:return "Read failed",f"{field} returned an unsupported value: {entry!r}"
+        status=entry.get("status")
+        if status=="unsupported":return "Not supported",f"{field} is not exposed independently by this adapter. {entry.get('error','')}".strip()
+        if status=="failed":return "Read failed",f"{field} read failed: {entry.get('error','unknown error')}"
+        if status!="available":return "Not read yet",f"{field} has not been queried."
+        value=entry.get("value"); unit=str(entry.get("unit") or "").strip()
+        try:text=f"{float(value):.8g}"+(f" {unit}" if unit else "")
+        except Exception:return "Read failed",f"{field} returned an invalid value: {value!r}"
+        source="authoritative component metadata" if unit else "adapter read (unit metadata unavailable)"
+        return text,f"{field}: {value!r}{(' '+unit) if unit else ''}; source: {source}."
+
     def _refresh_corrector_preview(self,key,read_diagnostics=True):
         self._model_orm_cache=None
-        data=self.corrector_selection_widgets[key]
+        data=self.corrector_selection_widgets[key]; devices=tuple(data["devices"])
         try:selected=self._resolve_correctors(key)
         except Exception as exc:data["table"].setRowCount(0); data["table"].setToolTip(str(exc)); return
         previous=self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors
@@ -1472,22 +1732,25 @@ class MeasureMainWindow(QMainWindow):
             self._invalidate_device_alignment("Corrector inventory changed — verify device alignment again.")
         if key=="hcor":self.selected_hcorrectors=selected
         else:self.selected_vcorrectors=selected
-        table=data["table"]; table.setRowCount(len(selected)); table.setToolTip(f"{len(selected)} retained")
-        for row,device in enumerate(selected):
-            diagnostics={}
-            if read_diagnostics and isinstance(self.adapter,PETRAReadOnlyAdapter):
+        table=data["table"]; table.setRowCount(len(devices)); table.setToolTip(f"{len(selected)} selected; highlighting rows does not change the checked selection")
+        selected_positions={device.name:position for position,device in enumerate(selected)}
+        for row,device in enumerate(devices):
+            diagnostics=None
+            should_read=device.name in selected_positions and read_diagnostics and (isinstance(self.adapter,PETRAReadOnlyAdapter) or self.connection_verified)
+            if should_read and callable(getattr(self.adapter,"read_corrector_diagnostics",None)):
                 try:diagnostics=self.adapter.read_corrector_diagnostics(device.name)
-                except Exception as exc:table.setToolTip(f"Source: adapter discovery/readback unavailable — {exc}")
-            elif read_diagnostics and self.adapter_combo.currentData() == "pyaml" and self.connection_verified:
-                try:
-                    diagnostics["KICK.RBV"] = self.adapter.read(device.readback_channel).value
                 except Exception as exc:
-                    table.setToolTip(f"pyAML strength read unavailable — {exc}")
-            values=(row,device.name,device.identifier,device.plane,*(f"{diagnostics.get(field):.8g}" if field in diagnostics else "—" for field in ("KICK.SP","KICK.RBV","CURRENT.SP","CURRENT.RBV")))
-            for col,value in enumerate(values):table.setItem(row,col,QTableWidgetItem(str(value)))
+                    diagnostics={field:{"status":"failed","error":str(exc)} for field in ("KICK.SP","KICK.RBV","CURRENT.SP","CURRENT.RBV")}
+            elif should_read:
+                diagnostics={field:{"status":"unsupported","error":"The active adapter has no corrector-diagnostics interface."} for field in ("KICK.SP","KICK.RBV","CURRENT.SP","CURRENT.RBV")}
+            diagnostic_cells=[self._corrector_diagnostic_cell(None if diagnostics is None else diagnostics.get(field),field) for field in ("KICK.SP","KICK.RBV","CURRENT.SP","CURRENT.RBV")]
+            values=(selected_positions.get(device.name,"—"),device.name,device.identifier,device.plane,*(cell[0] for cell in diagnostic_cells))
+            for col,value in enumerate(values):
+                item=QTableWidgetItem(str(value)); table.setItem(row,col,item)
+                if col==1:item.setCheckState(Qt.Checked if device.name in selected_positions else Qt.Unchecked); item.setFlags(item.flags()&~Qt.ItemIsUserCheckable)
+                if col>=4:item.setToolTip(diagnostic_cells[col-4][1])
         self._filter_corrector_table(key)
         source={"all":"adapter discovery","names_file":"names file","manual":"manual selection"}[data["method"].currentData()]; table.setToolTip((table.toolTip()+"\n" if table.toolTip() else "")+f"Source: {source}; {len(selected)} retained")
-        data["count"].setText(f"{len(selected)} / {len(data['devices'])}")
         # Correctors are ORM inputs even when prepared before ORM is selected.
         # Store them directly in the ORM-specific state so changing measurement
         # type cannot replace the user's prepared selection with old defaults.
@@ -1496,7 +1759,8 @@ class MeasureMainWindow(QMainWindow):
                 "method":data["method"].currentData(),
                 "manual":data["manual"].text(),
                 "names_file":data["file"].text(),
-                "excluded_positions":data["exclusion"].text(),
+                "excluded_positions":data["exclusion"].text(), "search":data["search"].text(),
+                "resolved_names":[device.name for device in selected],
             }
         if hasattr(self,"kick_preview"):self._update_kick_preview()
         self.refresh_plan()
@@ -1510,13 +1774,48 @@ class MeasureMainWindow(QMainWindow):
         if path: self.output_directory.setText(path)
 
     def _selection_snapshot(self):
-        def values(method,manual,names_file,excluded):
-            return {"method":method.currentData(),"manual":manual.text(),"names_file":names_file.text(),"excluded_positions":excluded.text()}
-        result={"bpm":values(self.selection_method,self.manual_input,self.names_file,self.bpm_exclusions)}
+        def values(method,manual,names_file,excluded,search,resolved):
+            return {"method":method.currentData(),"manual":manual.text(),"names_file":names_file.text(),"excluded_positions":excluded.text(),"search":search.text(),"resolved_names":[device.name for device in resolved]}
+        result={"bpm":values(self.selection_method,self.manual_input,self.names_file,self.bpm_exclusions,self.bpm_search,self.selected_devices)}
         for key in ("hcor","vcor"):
             data=self.corrector_selection_widgets[key]
-            result[key]=values(data["method"],data["manual"],data["file"],data["exclusion"])
+            result[key]=values(data["method"],data["manual"],data["file"],data["exclusion"],data["search"],self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors)
         return result
+
+    def _save_selection_configuration(self):
+        """Save selections using the existing Measure-project schema."""
+        path=QFileDialog.getSaveFileName(self,"Save device selection configuration","device-selection.pyloco-measure.json","pyLOCO Measure (*.pyloco-measure.json)")[0]
+        if not path:return
+        self._store_active_selection()
+        project=MeasureProject(measurement_type=self._active_selection_kind,
+                               measurement_selections=self._selection_states,
+                               metadata={"purpose":"device_selection_configuration"})
+        save_measure_project(path,project)
+        self.statusBar().showMessage(f"Device selections saved in Measure project {path}")
+
+    def _load_selection_configuration(self):
+        path=QFileDialog.getOpenFileName(self,"Load device selection configuration","","pyLOCO Measure (*.pyloco-measure.json *.json)")[0]
+        if not path:return
+        try:
+            project=load_measure_project(path); state=project.measurement_selections.get(self._active_selection_kind,{})
+            inventories={"bpm":self.devices,"hcor":self.horizontal_correctors,"vcor":self.vertical_correctors}
+            missing=[]; duplicates=[]
+            for key,devices in inventories.items():
+                names=list(state.get(key,{}).get("resolved_names",()))
+                if len(names)!=len(set(names)):duplicates.extend(f"{key}: {name}" for name in names if names.count(name)>1)
+                available={device.name for device in devices}; missing.extend(f"{key}: {name}" for name in names if name not in available)
+            if duplicates or missing:
+                details=[]
+                if duplicates:details.append("Duplicate saved identities:\n"+"\n".join(sorted(set(duplicates))))
+                if missing:details.append("Devices missing from the current machine inventory:\n"+"\n".join(missing))
+                raise ValueError("\n\n".join(details))
+        except Exception as exc:
+            QMessageBox.warning(self,"Selection configuration incompatible",str(exc)); return
+        answer=QMessageBox.question(self,"Replace current device selection?",f"Replace the current {self._active_selection_kind.replace('_',' ')} BPM/H/V selection with the validated selection from:\n{path}?",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
+        if answer!=QMessageBox.Yes:return
+        self._selection_states[self._active_selection_kind]={key:dict(value) for key,value in state.items()}
+        self._restore_selection(self._active_selection_kind)
+        self.statusBar().showMessage("Device selection loaded and validated against the current inventory")
 
     def _store_active_selection(self):
         if not self._loading_selection_state and hasattr(self,"selection_method"):
@@ -1526,9 +1825,9 @@ class MeasureMainWindow(QMainWindow):
         state=self._selection_states.get(kind) or MeasureProject().measurement_selections[kind]
         self._loading_selection_state=True
         try:
-            bpm=state["bpm"]; self.selection_method.setCurrentIndex(max(0,self.selection_method.findData(bpm["method"]))); self.manual_input.setText(bpm.get("manual","")); self.names_file.setText(bpm.get("names_file","")); self.bpm_exclusions.setText(bpm.get("excluded_positions",""))
+            bpm=state["bpm"]; self.selection_method.setCurrentIndex(max(0,self.selection_method.findData(bpm["method"]))); self.manual_input.setText(bpm.get("manual","")); self.names_file.setText(bpm.get("names_file","")); self.bpm_exclusions.setText(bpm.get("excluded_positions","")); self.bpm_search.setText(bpm.get("search",""))
             for key in ("hcor","vcor"):
-                settings=state[key]; data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(max(0,data["method"].findData(settings["method"]))); data["manual"].setText(settings.get("manual","")); data["file"].setText(settings.get("names_file","")); data["exclusion"].setText(settings.get("excluded_positions","")); self._corrector_method_changed(key); self._refresh_corrector_preview(key,read_diagnostics=False)
+                settings=state[key]; data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(max(0,data["method"].findData(settings["method"]))); data["manual"].setText(settings.get("manual","")); data["file"].setText(settings.get("names_file","")); data["exclusion"].setText(settings.get("excluded_positions","")); data["search"].setText(settings.get("search","")); self._corrector_method_changed(key); self._refresh_corrector_preview(key,read_diagnostics=False)
             self._selection_method_changed(); self.refresh_preview()
         finally:self._loading_selection_state=False
 
@@ -1735,7 +2034,7 @@ class MeasureMainWindow(QMainWindow):
         if orm and not getattr(self,"_fresh_orm_defaults_applied",False):
             # Match the established PETRA III ORM procedure for a fresh GUI
             # workflow. Loaded projects subsequently restore their own values.
-            self.readings.setValue(10); self.delay.setValue(.1); self.settling_delay.setValue(1.0)
+            self.readings.setValue(10); self.delay.setValue(.1); self.orm_settling_delay.setValue(1.0)
             self._fresh_orm_defaults_applied=True
         if orm and isinstance(self.adapter,MockAdapter) and hasattr(self.adapter,"set_simulated_writes_enabled"):
             self.adapter.set_simulated_writes_enabled(True)
@@ -2149,30 +2448,38 @@ class MeasureMainWindow(QMainWindow):
             excluded=self._positions(self.bpm_exclusions.text()); bad=sorted(pos for pos in excluded if pos<0 or pos>=len(result))
             if bad: raise ValueError("Excluded BPM positions outside selection: "+", ".join(map(str,bad)))
             result=[device for pos,device in enumerate(result) if pos not in excluded]
-        if not result: raise ValueError("The BPM selection is empty")
         if len({d.name for d in result}) != len(result): raise ValueError("The BPM selection contains duplicates")
         return tuple(result)
 
     def refresh_preview(self):
         self._model_orm_cache=None
-        try: selected=self._resolve_selection()
-        except Exception as exc: self.selected_devices=(); self.preview_table.setRowCount(0); self.selection_message.setText(str(exc)); self.refresh_plan(); self._update_workflow_tabs(); return
+        try:selected=self._resolve_selection(); self._bpm_selection_error=""
+        except Exception as exc:selected=(); self._bpm_selection_error=str(exc)
         if tuple(device.name for device in self.selected_devices)!=tuple(device.name for device in selected):
             self._invalidate_device_alignment("BPM inventory changed — verify device alignment again.")
-        self.selected_devices=tuple(selected); self.preview_table.setRowCount(len(selected))
-        for row,device in enumerate(selected):
-            for column,value in enumerate((row,device.name,device.identifier)): self.preview_table.setItem(row,column,QTableWidgetItem(str(value)))
-        self._filter_bpm_table(self.bpm_search.text())
+        self.selected_devices=tuple(selected); self.preview_table.setRowCount(len(self.devices)); selected_positions={device.name:position for position,device in enumerate(selected)}
+        for row,device in enumerate(self.devices):
+            for column,value in enumerate((selected_positions.get(device.name,"—"),device.name,device.identifier)):
+                item=QTableWidgetItem(str(value)); self.preview_table.setItem(row,column,item)
+                if column==1:item.setCheckState(Qt.Checked if device.name in selected_positions else Qt.Unchecked); item.setFlags(item.flags()&~Qt.ItemIsUserCheckable)
         source={"all":"adapter discovery","names_file":"names file","manual":"manual selection"}.get(self.selection_method.currentData(),"selection")
-        self.selection_message.setText(f"{len(selected)} BPMs selected and ready for measurement. Source: {source}."); self.refresh_plan(); self._update_workflow_tabs()
+        if not self._loading_selection_state:
+            self._selection_states[self._active_selection_kind]["bpm"]={
+                "method":self.selection_method.currentData(), "manual":self.manual_input.text(),
+                "names_file":self.names_file.text(), "excluded_positions":self.bpm_exclusions.text(),
+                "search":self.bpm_search.text(), "resolved_names":[device.name for device in selected],
+            }
+        self.preview_table.setToolTip(f"Source: {source}; checked devices define the measurement inventory, while highlighted rows are only for selection helpers.")
+        self._filter_bpm_table(self.bpm_search.text()); self.refresh_plan(); self._update_workflow_tabs()
 
     def refresh_plan(self, *_):
         if not hasattr(self,"plan_values"): return
         kind=self.measurement_type.currentData(); dispersion=kind=="dispersion"; orm=kind=="orm"; state_count=len(self._dispersion_state_specs()) if dispersion else 1
-        per_state=max(0,self.readings.value()-1)*self.delay.value()+(self.settling_delay.value() if (dispersion or orm) else 0)
+        active_settling=self.orm_settling_delay.value() if orm else self.settling_delay.value()
+        per_state=max(0,self.readings.value()-1)*self.delay.value()+(active_settling if (dispersion or orm) else 0)
         if orm:
             orbit_states=5 if self.orm_direction.currentData()=="bipolar" else 4; writes=4 if self.orm_direction.currentData()=="bipolar" else 3
-            estimate=(len(self.selected_hcorrectors)+len(self.selected_vcorrectors))*(orbit_states*max(0,self.readings.value()-1)*self.delay.value()+writes*self.settling_delay.value())
+            estimate=(len(self.selected_hcorrectors)+len(self.selected_vcorrectors))*(orbit_states*max(0,self.readings.value()-1)*self.delay.value()+writes*self.orm_settling_delay.value())
         else:estimate=state_count*per_state
         self.duration.setText(f"approximately {estimate:.2f} s")
         output=self._resolved_output_directory()
@@ -2180,7 +2487,9 @@ class MeasureMainWindow(QMainWindow):
         except Exception:kick_valid=False
         automatic_rf=dispersion and self.rf_control_mode.currentData()=="automatic"
         requires_connection=self.adapter_combo.currentData() in ("pysc", "pyaml"); connection_ok=not requires_connection or self.connection_verified
-        valid=bool(connection_ok and self.selected_devices and self.measurement_name.text().strip() and self.output_directory.text().strip() and (not dispersion or automatic_rf or self._nominal_rf_value() is not None) and (not automatic_rf or AdapterCapability.RF_WRITE in self.adapter.capabilities) and (not orm or (self.selected_hcorrectors or self.selected_vcorrectors) and kick_valid and AdapterCapability.WRITE in self.adapter.capabilities))
+        rf_safe=not (automatic_rf and self._rf_restoration_unresolved)
+        orm_safe=not (orm and self._orm_restoration_unresolved)
+        valid=bool(connection_ok and rf_safe and orm_safe and self.selected_devices and self.measurement_name.text().strip() and self.output_directory.text().strip() and (not dispersion or automatic_rf or self._nominal_rf_value() is not None) and (not automatic_rf or AdapterCapability.RF_WRITE in self.adapter.capabilities) and (not orm or (self.selected_hcorrectors or self.selected_vcorrectors) and kick_valid and AdapterCapability.WRITE in self.adapter.capabilities))
         direction={"bipolar":"Bipolar ±Δf","positive":"One-sided +Δf","negative":"One-sided −Δf"}.get(self.dispersion_direction.currentData(),"—")
         try:kh,kv=self._load_kick_arrays()
         except Exception:kh=kv=np.array([])
@@ -2189,7 +2498,7 @@ class MeasureMainWindow(QMainWindow):
             adapter_text = self.status_badge.text()
         nominal=self._nominal_rf_value(); offset=self._rf_offset_hz(); negative="Waiting for RF readback" if nominal is None else f"{nominal-offset:.3f} Hz"; positive="Waiting for RF readback" if nominal is None else f"{nominal+offset:.3f} Hz"
         separation=2*offset if self.dispersion_direction.currentData()=="bipolar" else offset
-        values={"measurement":"ORM" if orm else "Dispersion" if dispersion else "BPM noise","bpms":str(len(self.selected_devices)),"h_correctors":str(len(self.selected_hcorrectors)),"v_correctors":str(len(self.selected_vcorrectors)),"total_correctors":str(len(self.selected_hcorrectors)+len(self.selected_vcorrectors)),"kick_source":"Per-corrector file" if self.orm_kick_mode.currentData()=="file" else "Common","h_kick":f"{np.min(kh)*1e6:g}–{np.max(kh)*1e6:g} µrad" if kh.size else "Invalid","v_kick":f"{np.min(kv)*1e6:g}–{np.max(kv)*1e6:g} µrad" if kv.size else "Invalid","scaled_orm":"Saved FIT matrix: orbit difference [m]"+("; normalized analysis view enabled" if self.orm_normalized_analysis.isChecked() else ""),"orm_direction":self.orm_direction.currentText(),"rf_mode":"Automatic backend RF with restoration protection" if automatic_rf else "Manual (no writes)","nominal_rf":"Read from backend" if automatic_rf and nominal is None else f"{nominal:.3f} Hz" if nominal else "Required","rf_step_±δf":f"{offset:g} Hz per side","bipolar_separation":f"{separation:g} Hz total","negative_rf":negative,"positive_rf":positive,"direction":direction,"readings":str(self.readings.value()),"delay":f"{self.delay.value():g} s","settling_delay":f"{self.settling_delay.value():g} s","rf_states":", ".join(spec[0] for spec in self._dispersion_state_specs()) or "backend-derived","est_duration":f"{estimate:.2f} s","adapter":adapter_text,"output":str(output)}
+        values={"measurement":"ORM" if orm else "Dispersion" if dispersion else "BPM noise","bpms":str(len(self.selected_devices)),"h_correctors":str(len(self.selected_hcorrectors)),"v_correctors":str(len(self.selected_vcorrectors)),"total_correctors":str(len(self.selected_hcorrectors)+len(self.selected_vcorrectors)),"kick_source":"Per-corrector file" if self.orm_kick_mode.currentData()=="file" else "Common","h_kick":f"{np.min(kh)*1e6:g}–{np.max(kh)*1e6:g} µrad" if kh.size else "Invalid","v_kick":f"{np.min(kv)*1e6:g}–{np.max(kv)*1e6:g} µrad" if kv.size else "Invalid","scaled_orm":"Saved FIT matrix: orbit difference [m]"+("; normalized analysis view enabled" if self.orm_normalized_analysis.isChecked() else ""),"orm_direction":self.orm_direction.currentText(),"rf_mode":"Automatic backend RF with restoration protection" if automatic_rf else "Manual (no writes)","nominal_rf":"Read from backend" if automatic_rf and nominal is None else f"{nominal:.3f} Hz" if nominal else "Required","rf_step_±δf":f"{offset:g} Hz per side","bipolar_separation":f"{separation:g} Hz total","negative_rf":negative,"positive_rf":positive,"direction":direction,"readings":str(self.readings.value()),"delay":f"{self.delay.value():g} s","settling_delay":f"{active_settling:g} s","rf_states":", ".join(spec[0] for spec in self._dispersion_state_specs()) or "backend-derived","est_duration":f"{estimate:.2f} s","adapter":adapter_text,"output":str(output)}
         values["measurement_i/o"] = "Temporary magnet writes" if orm else "Temporary RF writes" if automatic_rf else "Read only — orbit reads only"
         values["noise_definition"] = f"{'Population' if self.bpm_noise_convention.currentData()==0 else 'Sample'} σ per BPM (ddof={self.bpm_noise_convention.currentData()})" if not (orm or dispersion) else "—"
         for key,value in values.items(): self.plan_values[key].setText(value)
@@ -2202,11 +2511,14 @@ class MeasureMainWindow(QMainWindow):
         if not self.output_directory.text().strip():reasons.append("output/session directory is empty")
         if dispersion and not automatic_rf and self._nominal_rf_value() is None:reasons.append("nominal RF frequency is required")
         if automatic_rf and AdapterCapability.RF_WRITE not in self.adapter.capabilities:reasons.append("selected backend does not support RF writes")
+        if automatic_rf and self._rf_restoration_unresolved:reasons.append("RF restoration is unresolved — stop writes and verify RF before continuing")
+        if orm and self._orm_restoration_unresolved:reasons.append("corrector restoration is unresolved — stop writes and verify affected correctors before continuing")
         if orm and not (self.selected_hcorrectors or self.selected_vcorrectors):reasons.append("select at least one corrector")
         if orm and not kick_valid:reasons.append("corrector kick settings are invalid")
         if reasons:self.start_block_reason.setText("Cannot start: "+"; ".join(reasons)+".")
-        elif automatic_rf:self.start_block_reason.setText(f"Ready for automatic dispersion through {descriptor.badge.split(' • ')[0]} • RF WRITES AUTHORIZED; BPM orbit acquisition is read only.")
-        else:self.start_block_reason.setText("Ready to acquire through "+descriptor.badge+".")
+        elif automatic_rf:self.start_block_reason.setText(f"Ready for automatic dispersion through {adapter_text.split(' • ')[0]} • RF WRITES AUTHORIZED; BPM orbit acquisition is read only.")
+        elif orm:self.start_block_reason.setText(f"Ready to acquire ORM through {adapter_text} — temporary corrector writes authorized; BPM orbit acquisition is read only.")
+        else:self.start_block_reason.setText("Ready to acquire through "+adapter_text+".")
         for widget in getattr(self,"orm_plan_widgets",[]):widget.setVisible(orm)
         for widget in getattr(self,"dispersion_plan_widgets",[]):widget.setVisible(dispersion)
         for widget in getattr(self,"settling_plan_widgets",[]):widget.setVisible(dispersion or orm)
@@ -2230,16 +2542,27 @@ class MeasureMainWindow(QMainWindow):
         self._set_completed_result_view(False)
         self.refresh_preview()
         if not self.selected_devices: QMessageBox.warning(self,"Cannot start","Select at least one valid BPM first."); return
+        if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="automatic" and self._rf_restoration_unresolved:
+            QMessageBox.critical(self,"RF writes blocked","A previous RF restoration could not be verified. Stop further machine writes and check the RF frequency, then reconnect and verify the RF readback."); return
         if self.measurement_type.currentData()=="orm": return self._start_orm()
         if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="automatic": return self._start_automatic_dispersion()
         if self.measurement_type.currentData()=="dispersion": return self._start_dispersion_step()
-        self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat(f"Starting — 0 / {self.readings.value()}"); self.reading_status.setText("Starting…"); self.elapsed.setText("Elapsed: 0.00 s"); self.remaining.setText(f"Remaining: ~{max(0,self.readings.value()-1)*self.delay.value():.2f} s"); self.samples.setText(f"Samples: 0 / {self.readings.value()}"); self._reset_live_plot(); self.log.clear(); self.log.appendPlainText(f"Starting BPM-noise measurement through {self.status_badge.text()}…")
+        self._active_acquisition_kind="bpm_noise"; self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat(f"Starting — 0 / {self.readings.value()}"); self.reading_status.setText("Starting…"); self.elapsed.setText("Elapsed: 0.00 s"); self.remaining.setText(f"Remaining: ~{max(0,self.readings.value()-1)*self.delay.value():.2f} s"); self.samples.setText(f"Samples: 0 / {self.readings.value()}"); self._reset_live_plot(); self.log.clear(); self.log.appendPlainText(f"Starting BPM-noise measurement through {self.status_badge.text()}…")
         self.thread=QThread(self); self.worker=AcquisitionWorker(BpmNoiseAcquirer(self.adapter,self.selected_devices,ddof=int(self.bpm_noise_convention.currentData())),self.readings.value(),self.delay.value(),self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_progress); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed): signal.connect(self._finish_thread)
         self._set_acquisition_running(True); self.thread.start()
 
     def _start_orm(self):
+        if self._orm_restoration_unresolved:
+            QMessageBox.critical(self,"Corrector writes blocked","A previous ORM restoration could not be verified. Stop further machine writes and check the affected correctors, then reconnect and verify their independent readbacks."); return
         if isinstance(self.adapter,PETRAReadOnlyAdapter):QMessageBox.warning(self,"ORM unavailable","ORM needs write access. PETRA is read only."); return
+        if self.adapter_combo.currentData()=="pyaml":
+            for device in self.selected_hcorrectors+self.selected_vcorrectors:
+                resolver=getattr(self.adapter,"corrector_restoration_evidence",None)
+                evidence=resolver(device.name) if callable(resolver) else {"level":"unavailable"}
+                if evidence.get("level")=="independent":continue
+                if evidence.get("level")=="adapter_value":continue
+                QMessageBox.warning(self,"Cannot start ORM","Independent corrector readback is unavailable and this connection has no authoritative verified-simulator authorization. ORM writes remain blocked."); return
         self._refresh_corrector_preview("hcor"); self._refresh_corrector_preview("vcor")
         try:kick_h,kick_v=self._load_kick_arrays(); acquirer=ORMAcquirer(self.adapter,self.selected_devices,self.selected_hcorrectors,self.selected_vcorrectors)
         except Exception as exc:QMessageBox.warning(self,"Cannot start ORM",str(exc)); return
@@ -2249,8 +2572,11 @@ class MeasureMainWindow(QMainWindow):
             try:
                 self._model_orm_cache=model_orm(self.reference_model,self.selected_devices,self.selected_hcorrectors,self.selected_vcorrectors,kick_h,kick_v,scaled=False,**self._model_mapping_kwargs())
             except Exception as exc:self.statusBar().showMessage(f"Reference-model ORM unavailable: {exc}")
-        self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat("Preparing ORM"); self.reading_status.setText("Preparing first corrector…"); self.log.clear(); self.log.appendPlainText(f"Starting ORM through {self.status_badge.text()}; each original setpoint will be restored.")
-        options={"direction":self.orm_direction.currentData(),"scaled":False,"readings":self.readings.value(),"delay_seconds":self.delay.value(),"settling_delay_seconds":self.settling_delay.value()}
+        self._active_acquisition_kind="orm"; self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat("Preparing ORM"); self.reading_status.setText("Preparing first corrector…"); self.log.clear(); self.log.appendPlainText(f"Starting ORM through {self.status_badge.text()}; each original setpoint will be restored.")
+        if self.adapter_combo.currentData()=="pyaml" and getattr(self.adapter,"allow_get_only_restoration",False):
+            identity=getattr(self.adapter,"simulator_identity",{})
+            self.log.appendPlainText(f"Restoration evidence: adapter value matched through fresh simulator strength.get(); independent readback unavailable; verified instance {identity.get('instance_id','unknown')}.")
+        options={"direction":self.orm_direction.currentData(),"scaled":False,"readings":self.readings.value(),"delay_seconds":self.delay.value(),"settling_delay_seconds":self.orm_settling_delay.value()}
         self.thread=QThread(self); self.worker=ORMAcquisitionWorker(acquirer,kick_h,kick_v,options,self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.event.connect(self._on_orm_event); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed):signal.connect(self._finish_thread)
         self._set_acquisition_running(True); self.thread.start()
@@ -2258,8 +2584,8 @@ class MeasureMainWindow(QMainWindow):
     def _start_automatic_dispersion(self):
         try:acquirer=AutomaticDispersionAcquirer(self.adapter,self.selected_devices)
         except Exception as exc:QMessageBox.warning(self,"Automatic RF unavailable",str(exc)); return
-        self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat("Preparing RF scan"); self.reading_status.setText("Reading original RF frequency…"); self.log.clear(); self.log.appendPlainText(f"Starting automatic dispersion through {self.status_badge.text()}; original RF is restored in cleanup.")
-        options={"rf_step_hz":self._rf_offset_hz(),"readings":self.readings.value(),"delay_seconds":self.delay.value(),"direction":self.dispersion_direction.currentData(),"settling_delay_seconds":self.settling_delay.value(),"verify_restored_orbit":self.verify_restored_orbit.isChecked()}
+        self._active_acquisition_kind="dispersion"; self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat("Preparing RF scan"); self.reading_status.setText("Reading original RF frequency…"); self.log.clear(); self.log.appendPlainText(f"Starting automatic dispersion through {self.status_badge.text()}; original RF is restored in cleanup.")
+        options={"rf_step_hz":self._rf_offset_hz(),"readings":self.readings.value(),"delay_seconds":self.delay.value(),"direction":self.dispersion_direction.currentData(),"settling_delay_seconds":self.settling_delay.value(),"verify_restored_orbit":self.verify_restored_orbit.isChecked(),"restoration_tolerance_hz":self.rf_restoration_tolerance.value()}
         self.thread=QThread(self); self.worker=AutomaticDispersionWorker(acquirer,options,self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_automatic_dispersion_progress); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         self.worker.status.connect(self._on_automatic_dispersion_status)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed):signal.connect(self._finish_thread)
@@ -2371,7 +2697,7 @@ class MeasureMainWindow(QMainWindow):
         self._launch_manual_dispersion_state(label,frequency,title,actual,source,verified)
 
     def _launch_manual_dispersion_state(self,label,frequency,title,actual,source,verified):
-        self.cancel_event=Event(); self.result=None
+        self._active_acquisition_kind="dispersion"; self.cancel_event=Event(); self.result=None
         specs=self._dispersion_state_specs(); total=(len(specs)+(1 if label=="reference_after" else 0))*self.readings.value(); completed=min(self.dispersion_step_index,len(specs))*self.readings.value(); self.progress.setValue(round(100*completed/total)); self.progress.setFormat(f"RF state {min(self.dispersion_step_index+1,len(specs))} / {len(specs)} — 0 / {self.readings.value()}"); self.reading_status.setText(f"{title} — settling/acquiring")
         self.thread=QThread(self); self.worker=DispersionAcquisitionWorker(DispersionStateAcquirer(self.adapter,self.selected_devices),label,frequency,actual,source,verified,self.readings.value(),self.delay.value(),self.settling_delay.value(),self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_progress); self.worker.completed.connect(self._on_dispersion_state_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed): signal.connect(self._finish_thread)
@@ -2457,7 +2783,7 @@ class MeasureMainWindow(QMainWindow):
     def _finish_thread(self,*_):
         thread=self.thread
         if thread: thread.quit(); thread.wait(3000); thread.deleteLater()
-        self.thread=None; self.worker=None; self._set_acquisition_running(False); self.refresh_plan()
+        self.thread=None; self.worker=None; self._set_acquisition_running(False); self._active_acquisition_kind=None; self.refresh_plan()
 
     def _manual_rf_restore_instruction(self):
         nominal=self._nominal_rf_value()
@@ -2466,12 +2792,73 @@ class MeasureMainWindow(QMainWindow):
     def cancel_acquisition(self):
         self.cancel_event.set(); self.log.appendPlainText("Stopping…")
         if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual":self.log.appendPlainText(self._manual_rf_restore_instruction().strip())
+    @staticmethod
+    def _restoration_diagnostic_text(event):
+        data=getattr(event,"restoration_diagnostics",None) or {}
+        if not data:return ""
+        if "correctors" in data:
+            rows=[]
+            for item in data.get("correctors",()):
+                rows.append(f"{item.get('name')} ({item.get('plane')}): Set command issued={item.get('set_command_issued')}; Evidence={item.get('verification_source','adapter read')}; Independent readback verified={item.get('independent_readback_verified',False)}; Original setpoint={item.get('original_setpoint_rad')} rad; Original readback={item.get('original_readback_rad')} rad; Restoration target={item.get('attempted_restoration_rad')} rad; Final readback={item.get('final_readback_rad')} rad; Tolerance={item.get('tolerance_rad')} rad; Attempts={item.get('attempts')}; Status={item.get('status')}"+(f"; Error={item.get('error')}" if item.get('error') else ""))
+            return "\nCorrector restoration diagnostics (SI kick angle in rad; converted only from verified angular component metadata):\n"+"\n".join(rows)
+        return (f" Original setpoint={data.get('original_rf_hz')} Hz; Restoration target={data.get('attempted_restoration_hz')} Hz; "
+                f"Final readback={data.get('final_readback_hz')} Hz; Absolute difference={data.get('absolute_difference_hz')} Hz; "
+                f"Tolerance={data.get('tolerance_hz')} Hz; Status={data.get('status')}")
+
+    def _verify_unresolved_orm_restoration(self):
+        if not self._orm_restoration_unresolved:return True
+        diagnostics=self._orm_restoration_diagnostics or {}; inventory={device.name:device for device in self.horizontal_correctors+self.vertical_correctors}
+        rows=diagnostics.get("correctors",()); verified=bool(rows)
+        for item in rows:
+            device=inventory.get(item.get("name"))
+            if device is None or device.readback_channel!=item.get("readback_channel"):
+                verified=False; continue
+            try:final=float(self.adapter.read(device.readback_channel).value)
+            except Exception:verified=False; continue
+            item["recovery_readback_rad"]=final
+            item["recovery_verified"]=bool(np.isfinite(final) and np.isclose(final,float(item["original_readback_rad"]),rtol=0,atol=float(item["tolerance_rad"])))
+            verified=verified and item["recovery_verified"]
+        if verified:
+            self._orm_restoration_unresolved=False; diagnostics["status"]="restored"; self.statusBar().showMessage("Connection verified; affected corrector readbacks match their original values. Corrector-write block cleared.")
+        return verified
+
     def _on_cancelled(self,message):
-        instruction=self._manual_rf_restore_instruction() if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual" else ""
-        self.progress.setValue(0); self.progress.setFormat("Cancelled"); self.reading_status.setText("Cancelled — no measurement saved."+instruction); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message+instruction); self._update_workflow_tabs()
+        event=message; message=str(message); restoration=getattr(event,"restoration_status",None)
+        operation=self._event_operation(event)
+        instruction=self._manual_rf_restore_instruction() if operation=="dispersion" and self.rf_control_mode.currentData()=="manual" else ""
+        if operation=="orm":
+            if restoration=="restored":
+                level=(getattr(event,"restoration_diagnostics",None) or {}).get("verification_level")
+                message=("ORM measurement cancelled. All correctors restored and independently verified." if level=="independent" else "ORM measurement cancelled. Corrector setpoints restored; simulator adapter get() values matched. Independent readback was not available.")
+            elif restoration=="not_required":message="ORM measurement cancelled before a corrector change; restoration was not required."
+            elif restoration:
+                self._orm_restoration_unresolved=True; self._orm_restoration_diagnostics=getattr(event,"restoration_diagnostics",None); message="ORM measurement cancelled. Corrector restoration could not be verified. Stop further machine writes and check the affected correctors."
+                QMessageBox.critical(self,"Corrector restoration not verified",message+self._restoration_diagnostic_text(event))
+        elif restoration=="restored":
+            message="Measurement cancelled. Original RF frequency restored and verified."
+        elif restoration:
+            self._rf_restoration_unresolved=True; self._rf_restoration_diagnostics=getattr(event,"restoration_diagnostics",None); message="Measurement cancelled. RF restoration could not be verified. Stop further machine writes and check the RF frequency."
+            QMessageBox.critical(self,"RF restoration not verified",message+self._restoration_diagnostic_text(event))
+        self.progress.setValue(0); self.progress.setFormat("Cancelled"); self.reading_status.setText(message+instruction); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message+self._restoration_diagnostic_text(event)+instruction); self._update_workflow_tabs(); self.refresh_plan()
     def _on_failed(self,message):
-        instruction=self._manual_rf_restore_instruction() if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual" else ""
-        self.progress.setValue(0); self.progress.setFormat("Failed"); self.reading_status.setText("Failed — no measurement saved."+instruction); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message+instruction); QMessageBox.critical(self,"Measurement failed",message+instruction); self._update_workflow_tabs()
+        event=message; message=str(message); restoration=getattr(event,"restoration_status",None)
+        operation=self._event_operation(event)
+        instruction=self._manual_rf_restore_instruction() if operation=="dispersion" and self.rf_control_mode.currentData()=="manual" else ""
+        if operation=="orm":
+            if restoration not in (None,"restored","not_required"):
+                self._orm_restoration_unresolved=True; self._orm_restoration_diagnostics=getattr(event,"restoration_diagnostics",None); message="ORM measurement failed. Corrector restoration could not be verified. Stop further machine writes and check the affected correctors."
+            elif restoration=="restored":message="ORM measurement failed, but all affected correctors were restored according to the recorded verification evidence."
+        elif restoration and restoration!="restored":
+            self._rf_restoration_unresolved=True; self._rf_restoration_diagnostics=getattr(event,"restoration_diagnostics",None); message="RF restoration could not be verified. Stop further machine writes and check the RF frequency."
+        diagnostic=self._restoration_diagnostic_text(event)
+        self.progress.setValue(0); self.progress.setFormat("Failed"); self.reading_status.setText("Failed — no measurement saved. "+message+instruction); self.remaining.setText("Remaining: —"); self.log.appendPlainText(message+diagnostic+instruction); QMessageBox.critical(self,"Measurement failed",message+diagnostic+instruction); self._update_workflow_tabs(); self.refresh_plan()
+
+    def _event_operation(self,event):
+        """Classify terminal worker events without consulting mutable GUI state."""
+        diagnostics=getattr(event,"restoration_diagnostics",None) or {}
+        if isinstance(event,(ORMInterrupted,ORMAcquisitionError)) or "correctors" in diagnostics:return "orm"
+        if "original_rf_hz" in diagnostics:return "dispersion"
+        return self._active_acquisition_kind or self.measurement_type.currentData()
 
     def closeEvent(self,event):
         if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual" and self.result is None and (self.dispersion_step_index or self.thread is not None):
@@ -2592,7 +2979,7 @@ class MeasureMainWindow(QMainWindow):
             profile_metadata={"machine":profile.machine,"profile_key":profile.key,"profile":profile.scenario,"profile_label":profile.label,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"lattice_provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
         model_metadata=self._reference_model_provenance() if self.reference_model is not None else {"reference_model_available":False}
         actual_readings=(result.raw_state_a_m.shape[1] if isinstance(result,ORMResult) and result.raw_state_a_m.ndim==3 else self.readings.value())
-        metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"acquisition_timestamp":datetime.now().astimezone().isoformat(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"machine_identity":identity,**profile_metadata,**model_metadata,"compare_with_reference_model":self.compare_reference.isChecked(),"pysc_machine_profile":self.pysc_profile_combo.currentData() if descriptor.key=="pysc" else None,"readings_per_state":actual_readings,"delay_seconds":self.delay.value(),"settling_delay_seconds":self.settling_delay.value() if isinstance(result,(ORMResult,DispersionResult)) else 0.0,"elapsed_seconds":result.elapsed_seconds}
+        metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"acquisition_timestamp":datetime.now().astimezone().isoformat(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"machine_identity":identity,**profile_metadata,**model_metadata,"compare_with_reference_model":self.compare_reference.isChecked(),"pysc_machine_profile":self.pysc_profile_combo.currentData() if descriptor.key=="pysc" else None,"readings_per_state":actual_readings,"delay_seconds":self.delay.value(),"settling_delay_seconds":self.orm_settling_delay.value() if isinstance(result,ORMResult) else self.settling_delay.value() if isinstance(result,DispersionResult) else 0.0,"elapsed_seconds":result.elapsed_seconds}
         if isinstance(result,ORMResult):
             nh=len(result.horizontal_correctors); diagnostics={}
             if result.raw_state_a_m.ndim==3 and result.raw_state_a_m.shape[1]>1:
@@ -2615,7 +3002,7 @@ class MeasureMainWindow(QMainWindow):
             if model_matrix is not None and self.reference_model is not None:
                 store_reference_model_arrays(measurement,{"orm":model_matrix,"orm_difference":result.response_matrix-model_matrix},units={"orm":"m/rad" if result.scaled else "m","orm_difference":"m/rad" if result.scaled else "m"},provenance=self._reference_model_provenance())
         elif is_dispersion:
-            automatic=self.rf_control_mode.currentData()=="automatic"; states=result.states; metadata.update({"rf_control_mode":"automatic" if automatic else "manual","nominal_rf_hz":result.nominal_rf_hz,"nominal_rf_source":"backend_readback" if automatic else self._manual_nominal_source,"requested_rf_offset_hz":result.requested_offset_hz,"direction":result.direction,"canonical_measured_eta_definition":"mean_orbit_negative - mean_orbit_positive; historical PETRA III pyLOCO RF-response convention; reference_before and reference_after are excluded","canonical_measured_eta_unit":"m","rf_difference_sign_convention":"negative_minus_positive","rf_normalized_response_unit":"m/Hz","actual_rf_available":bool(all(np.isfinite(s.actual_rf_hz) for s in states)),"rf_acquisition_order":[s.label for s in states],"rf_requested_frequencies_hz":[float(s.requested_rf_hz) for s in states],"rf_actual_frequencies_hz":[float(s.actual_rf_hz) for s in states],"rf_actual_frequency_sources":[s.actual_rf_source for s in states],"rf_readback_verified":[bool(s.rf_readback_verified) for s in states],"operator_confirmed_states":[bool(s.operator_confirmed) for s in states],"restoration_status":result.restoration_status,"rf_restoration_source":"backend_readback" if automatic else self._manual_restoration_source,"rf_restoration_readback_verified":True if automatic else self._manual_restoration_verified,"settling_delay_seconds":self.settling_delay.value(),"dispersion_measurement_states":"reference_before,positive,negative","rf_restoration_is_measurement_state":False,"verify_restored_orbit":any(state.label=="reference_after" for state in states),"reference_after_role":"post-restoration diagnostic only; excluded from physical dispersion and RF orbit difference"})
+            automatic=self.rf_control_mode.currentData()=="automatic"; states=result.states; metadata.update({"rf_control_mode":"automatic" if automatic else "manual","nominal_rf_hz":result.nominal_rf_hz,"nominal_rf_source":"backend_readback" if automatic else self._manual_nominal_source,"requested_rf_offset_hz":result.requested_offset_hz,"direction":result.direction,"canonical_measured_eta_definition":"mean_orbit_negative - mean_orbit_positive; historical PETRA III pyLOCO RF-response convention; reference_before and reference_after are excluded","canonical_measured_eta_unit":"m","rf_difference_sign_convention":"negative_minus_positive","rf_normalized_response_unit":"m/Hz","actual_rf_available":bool(all(np.isfinite(s.actual_rf_hz) for s in states)),"rf_acquisition_order":[s.label for s in states],"rf_requested_frequencies_hz":[float(s.requested_rf_hz) for s in states],"rf_actual_frequencies_hz":[float(s.actual_rf_hz) for s in states],"rf_actual_frequency_sources":[s.actual_rf_source for s in states],"rf_readback_verified":[bool(s.rf_readback_verified) for s in states],"operator_confirmed_states":[bool(s.operator_confirmed) for s in states],"restoration_status":result.restoration_status,"rf_restoration_source":"backend_readback" if automatic else self._manual_restoration_source,"rf_restoration_readback_verified":True if automatic else self._manual_restoration_verified,"rf_restoration_tolerance_hz":self.rf_restoration_tolerance.value(),"settling_delay_seconds":self.settling_delay.value(),"dispersion_measurement_states":"reference_before,positive,negative","rf_restoration_is_measurement_state":False,"verify_restored_orbit":any(state.label=="reference_after" for state in states),"reference_after_role":"post-restoration diagnostic only; excluded from physical dispersion and RF orbit difference"})
             state_rf={state.label:float(state.actual_rf_hz) for state in states}; restored=float(getattr(self,"_restored_rf_readback",np.nan)); metadata.update({"rf_original_hz":result.nominal_rf_hz,"rf_positive_hz":state_rf.get("positive",np.nan),"rf_negative_hz":state_rf.get("negative",np.nan),"rf_restored_hz":restored,"rf_restoration_difference_hz":restored-result.nominal_rf_hz if np.isfinite(restored) else np.nan})
             diagnostics={"raw_orbit_difference_x_m":result.measured_eta_x,"raw_orbit_difference_y_m":result.measured_eta_y}
             if all(state.orbits_x_m.shape[0]>1 for state in states):
@@ -3414,21 +3801,25 @@ class MeasureMainWindow(QMainWindow):
         self._store_active_selection()
         h=self.corrector_selection_widgets["hcor"]; v=self.corrector_selection_widgets["vcor"]
         identity,profile=self._machine_identity(); profile_meta={} if profile is None else {"machine":profile.machine,"profile":profile.scenario,"profile_key":profile.key,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
-        return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),bpm_noise_ddof=int(self.bpm_noise_convention.currentData()),delay_seconds=self.delay.value(),settling_delay_seconds=self.settling_delay.value(),verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=False,reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",reference_model_mat_variable=self.reference_model.mat_variable if self.reference_model is not None and self.reference_model.mat_variable else "",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta,"orm_normalized_analysis":self.orm_normalized_analysis.isChecked()})
+        active_settling=self.orm_settling_delay.value() if self.measurement_type.currentData()=="orm" else self.settling_delay.value()
+        return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),bpm_noise_ddof=int(self.bpm_noise_convention.currentData()),delay_seconds=self.delay.value(),settling_delay_seconds=active_settling,verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),rf_restoration_tolerance_hz=self.rf_restoration_tolerance.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=False,reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",reference_model_mat_variable=self.reference_model.mat_variable if self.reference_model is not None and self.reference_model.mat_variable else "",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta,"orm_normalized_analysis":self.orm_normalized_analysis.isChecked()})
 
     def _load_project_widgets(self):
         self.pyaml_magnet_writes.setChecked(True)
         self.pyaml_rf_writes.setChecked(True)
+        self.pyaml_simulator_identity_status.setText("Project opened — Test connection to obtain verified runtime simulator identity.")
         for key, editor in self.pyaml_fields.items():
             editor.setText(self.project.metadata.get("pyaml_options", {}).get(key, {"mode": "live", "bpm_group": "BPM", "hcor_group": "HCorr", "vcor_group": "VCorr", "rf_name": "RF"}.get(key, "")))
         self.pysc_profile_combo.setCurrentIndex(max(0,self.pysc_profile_combo.findData(self.project.pysc_profile)))
         self.adapter_combo.setCurrentIndex(max(0,self.adapter_combo.findText(self.project.adapter)))
         if self.adapter_combo.currentData() == "pyaml":
             self._invalidate_pyaml()
-        p=self.project; self._selection_states=p.measurement_selections; self._active_selection_kind=p.measurement_type; self.measurement_type.blockSignals(True); self.measurement_type.setCurrentIndex(max(0,self.measurement_type.findData(p.measurement_type))); self.measurement_type.blockSignals(False); self._restore_selection(p.measurement_type); self.measurement_name.setText(p.measurement_name); self.measurement_label.setText(p.measurement_label); self.comments.setPlainText(p.operator_comments); self.readings.setValue(p.readings); self.bpm_noise_convention.setCurrentIndex(max(0,self.bpm_noise_convention.findData(p.bpm_noise_ddof))); self.delay.setValue(p.delay_seconds); self.settling_delay.setValue(p.settling_delay_seconds); self.verify_restored_orbit.setChecked(p.verify_restored_orbit); self.nominal_rf.setText("" if p.nominal_rf_hz is None else f"{p.nominal_rf_hz:g}"); self.rf_step.setValue(p.rf_step_hz); self.dispersion_direction.setCurrentIndex(max(0,self.dispersion_direction.findData(p.dispersion_direction))); self.orm_direction.setCurrentIndex(max(0,self.orm_direction.findData(p.orm_direction))); self.orm_kick_mode.setCurrentIndex(max(0,self.orm_kick_mode.findData(p.orm_kick_mode))); self.orm_hkick.setValue(p.orm_horizontal_kick_rad*1e6); self.orm_vkick.setValue(p.orm_vertical_kick_rad*1e6); self.orm_kick_file.setText(p.orm_kick_file); self.orm_normalized_analysis.setChecked(bool(p.orm_scaled or p.metadata.get("orm_normalized_analysis",False)))
+        p=self.project; self._selection_states=p.measurement_selections; self._active_selection_kind=p.measurement_type; self.measurement_type.blockSignals(True); self.measurement_type.setCurrentIndex(max(0,self.measurement_type.findData(p.measurement_type))); self.measurement_type.blockSignals(False); self._restore_selection(p.measurement_type); self.measurement_name.setText(p.measurement_name); self.measurement_label.setText(p.measurement_label); self.comments.setPlainText(p.operator_comments); self.readings.setValue(p.readings); self.bpm_noise_convention.setCurrentIndex(max(0,self.bpm_noise_convention.findData(p.bpm_noise_ddof))); self.delay.setValue(p.delay_seconds); self.settling_delay.setValue(p.settling_delay_seconds); self.orm_settling_delay.setValue(p.settling_delay_seconds); self.rf_restoration_tolerance.setValue(p.rf_restoration_tolerance_hz); self.verify_restored_orbit.setChecked(p.verify_restored_orbit); self.nominal_rf.setText("" if p.nominal_rf_hz is None else f"{p.nominal_rf_hz:g}"); self.rf_step.setValue(p.rf_step_hz); self.dispersion_direction.setCurrentIndex(max(0,self.dispersion_direction.findData(p.dispersion_direction))); self.orm_direction.setCurrentIndex(max(0,self.orm_direction.findData(p.orm_direction))); self.orm_kick_mode.setCurrentIndex(max(0,self.orm_kick_mode.findData(p.orm_kick_mode))); self.orm_hkick.setValue(p.orm_horizontal_kick_rad*1e6); self.orm_vkick.setValue(p.orm_vertical_kick_rad*1e6); self.orm_kick_file.setText(p.orm_kick_file); self.orm_normalized_analysis.setChecked(bool(p.orm_scaled or p.metadata.get("orm_normalized_analysis",False)))
         self.reference_model_path.setText(p.reference_model_path); self.compare_reference.setChecked(p.compare_with_reference_model)
         if p.reference_model_path:self._load_reference_model(p.reference_model_path,"Project reference model",p.reference_model_mat_variable or None)
-        self.output_directory.setText(p.output_directory); self.apply_theme(p.theme); self.refresh_preview(); self._measurement_type_changed(); self._update_machine_identity()
+        self.output_directory.setText(p.output_directory); self.apply_theme(p.theme); self.refresh_preview()
+        if p.measurement_type=="orm":self._fresh_orm_defaults_applied=True
+        self._measurement_type_changed(); self._update_machine_identity()
 
     def new_project(self):
         self.project = MeasureProject()

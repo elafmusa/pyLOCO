@@ -189,7 +189,7 @@ def test_one_sided_orm_save_omits_non_applicable_intermediate_reference(app,tmp_
 
 def test_orm_gui_context_preview_kicks_and_project_roundtrip(app,tmp_path):
     window=MeasureMainWindow(); window.measurement_type.setCurrentIndex(2); app.processEvents()
-    assert window.readings.value()==10 and window.delay.value()==pytest.approx(.1) and window.settling_delay.value()==pytest.approx(1.0)
+    assert window.readings.value()==10 and window.delay.value()==pytest.approx(.1) and window.orm_settling_delay.value()==pytest.approx(1.0)
     assert window.orm_output_format.text()=="Orbit difference [m] — required for pyLOCO FIT"
     assert "K₀ + ΔK/2" in window.orm_state_explanation.text()
     window.orm_direction.setCurrentIndex(window.orm_direction.findData("positive")); app.processEvents()

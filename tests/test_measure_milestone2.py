@@ -89,9 +89,10 @@ def test_bpm_selection_preview_and_context_controls(app, tmp_path):
     window.selection_method.setCurrentIndex(window.selection_method.findData("manual"))
     window.manual_input.setText("BPM-004, 0")
     window.refresh_preview()
-    assert window.preview_table.rowCount() == 2
-    assert window.preview_table.item(0, 1).text() == "BPM-004"
-    assert window.preview_table.item(1, 1).text() == "BPM-001"
+    assert window.preview_table.rowCount() == 4
+    assert [device.name for device in window.selected_devices] == ["BPM-004", "BPM-001"]
+    assert window.preview_table.item(0, 1).checkState() == Qt.Checked
+    assert window.preview_table.item(3, 1).checkState() == Qt.Checked
     assert not window.manual_input.isHidden()
     assert window.names_row.isHidden()
     assert not window.manual_label.isHidden()
@@ -99,7 +100,8 @@ def test_bpm_selection_preview_and_context_controls(app, tmp_path):
     names = tmp_path / "bpms.txt"; names.write_text("BPM-002\nBPM-003\n")
     window.selection_method.setCurrentIndex(window.selection_method.findData("names_file"))
     window.names_file.setText(str(names)); window.refresh_preview()
-    assert window.preview_table.rowCount() == 2
+    assert window.preview_table.rowCount() == 4
+    assert [device.name for device in window.selected_devices] == ["BPM-002", "BPM-003"]
     window.close()
 
 

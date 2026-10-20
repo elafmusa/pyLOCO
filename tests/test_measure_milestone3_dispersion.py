@@ -156,6 +156,11 @@ def test_connected_pysc_dispersion_presents_automatic_total_200_hz_scan(app,monk
     monkeypatch.setattr(InterfaceRegistry,"create",lambda self,key:session)
     monkeypatch.setattr("pyLOCO.measure.main_window.QMessageBox.information",lambda *args:None)
     window=MeasureMainWindow(); window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("pysc")); window._test_connection()
+    deadline=time.monotonic()+1.0
+    while getattr(window,"connection_thread",None) is not None and time.monotonic()<deadline:
+        app.processEvents(); time.sleep(.005)
+    app.processEvents()
+    assert getattr(window,"connection_thread",None) is None
     window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion")); window.refresh_plan()
     nominal=adapter.get_rf_frequency()
     assert window.rf_control_mode.currentData()=="automatic" and window.rf_control_mode.isEnabled()

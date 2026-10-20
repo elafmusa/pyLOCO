@@ -4,6 +4,8 @@ from __future__ import annotations
 from threading import Event
 from time import monotonic, sleep
 
+import numpy as np
+
 from pyLOCO.control_system import AdapterCapability
 from .acquisition import AcquisitionCancelled, DispersionResult, DispersionStateAcquirer
 
@@ -16,14 +18,16 @@ class AutomaticDispersionAcquirer:
     def acquire(self, rf_step_hz, readings, delay_seconds, *, direction="bipolar",
                 settling_delay_seconds=0.0, cancel_event=None, progress=None,
                 verify_restored_orbit=True, status=None,
-                sleeper=sleep, clock=monotonic):
+                sleeper=sleep, clock=monotonic, restoration_tolerance_hz=0.1):
         if rf_step_hz <= 0: raise ValueError("RF step must be positive")
         if direction not in {"bipolar", "positive", "negative"}: raise ValueError("Unsupported dispersion direction")
+        if not np.isfinite(restoration_tolerance_hz) or restoration_tolerance_hz < 0:
+            raise ValueError("RF restoration tolerance must be finite and non-negative")
         cancel = cancel_event or Event(); original = float(self.adapter.get_rf_frequency())
         offsets = {"bipolar": (("reference", 0.0), ("positive", rf_step_hz), ("negative", -rf_step_hz)),
                    "positive": (("reference", 0.0), ("positive", rf_step_hz)),
                    "negative": (("reference", 0.0), ("negative", -rf_step_hz))}[direction]
-        states = []; start = clock(); restoration = "not_attempted"
+        states = []; start = clock(); restoration = "not_attempted"; final_readback = None
         acquisition_error = None
         try:
             for index, (label, offset) in enumerate(offsets):
@@ -47,15 +51,26 @@ class AutomaticDispersionAcquirer:
             try:
                 if status: status("restoring", {"offset_hz":0.0,"rf_hz":original})
                 self.adapter.set_rf_frequency(original)
-                restoration = "restored" if abs(float(self.adapter.get_rf_frequency()) - original) <= 1e-6 else "verification_failed"
+                final_readback = float(self.adapter.get_rf_frequency())
+                restoration = "restored" if abs(final_readback - original) <= restoration_tolerance_hz else "verification_failed"
             except Exception:
                 restoration = "restore_failed"
+            difference = None if final_readback is None else abs(final_readback - original)
+            diagnostics = {
+                "original_rf_hz": original, "attempted_restoration_hz": original,
+                "final_readback_hz": final_readback,
+                "absolute_difference_hz": difference,
+                "tolerance_hz": float(restoration_tolerance_hz), "status": restoration,
+            }
             if acquisition_error is not None:
                 acquisition_error.restoration_status = restoration
+                acquisition_error.restoration_diagnostics = diagnostics
             if restoration != "restored":
-                error = RuntimeError(f"RF restoration failed ({restoration})")
-                error.restoration_status = restoration
-                raise error from acquisition_error
+                if acquisition_error is None:
+                    error = RuntimeError(f"RF restoration failed ({restoration})")
+                    error.restoration_status = restoration
+                    error.restoration_diagnostics = diagnostics
+                    raise error
         if verify_restored_orbit:
             if status: status("verifying_orbit", {"offset_hz":0.0,"rf_hz":original})
             state = DispersionStateAcquirer(self.adapter, self.devices).acquire(

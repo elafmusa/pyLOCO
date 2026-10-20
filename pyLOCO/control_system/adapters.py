@@ -127,6 +127,19 @@ class MockAdapter(WritableAdapter):
         self._timestamp += self._timestamp_step
         return result
 
+    def _corrector_device(self,name):
+        matches=[item for kind in ("hcor","vcor") for item in self._device_catalog.get(kind,()) if item.get("name")==name]
+        if len(matches)!=1:raise KeyError(name)
+        return matches[0]
+
+    def corrector_restoration_evidence(self,name):
+        device=self._corrector_device(name)
+        return {"level":"independent" if device["setpoint_channel"]!=device["readback_channel"] else "adapter_value","source":"distinct mock channels" if device["setpoint_channel"]!=device["readback_channel"] else "fresh in-memory simulator adapter value; independent readback unavailable"}
+
+    def read_corrector_readback(self,name):
+        device=self._corrector_device(name)
+        return float(self.read(device["readback_channel"]).value),self.corrector_restoration_evidence(name)
+
     def read(self, channel: str) -> ChannelSample:
         self.require(AdapterCapability.READ)
         if channel not in self._channels:
