@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from types import SimpleNamespace
 
 import h5py
@@ -1110,6 +1111,112 @@ def test_open_project_can_keep_compatible_active_measurements_and_invalidate_run
     reopened = ProjectMetadata.load(copy_path)
     assert {role: dataset.path for role, dataset in reopened.measurements.items()} == active_paths
     assert reopened.measurement_session["session_id"] == "new-compatible-case-c-session"
+
+
+def test_keep_current_measurements_preserves_revalidated_project_mapping_and_requires_validation(
+    app, tmp_path, monkeypatch
+):
+    historical, active = _case_c_project_with_copied_measurements(tmp_path)
+    saved_mapping = {
+        "schema": "pyloco.measurement_device_mapping",
+        "schema_version": 1,
+        "inventory": {"sha256": "active-inventory"},
+        "mappings": [{"role": "bpm", "measured_name": "BPM1", "status": "mapped"}],
+    }
+    historical.measurement_device_mapping = deepcopy(saved_mapping)
+    historical.compatibility_validation = {"required": True, "status": "validated", "issues": []}
+    candidate_path = historical.save(tmp_path / "mapped-project.pyloco.json")
+    active.measurement_device_mapping = {}
+    window = MainWindow(); window.project = active; window.project.modified = False; window._refresh_ui("handoff")
+
+    monkeypatch.setattr(window, "_choose_open_project_measurement_policy", lambda candidate: "keep")
+
+    def reconcile(candidate):
+        assert candidate.measurement_device_mapping == saved_mapping
+        candidate.measurement_device_mapping = {
+            **deepcopy(saved_mapping),
+            "mapping_provenance": "revalidated against retained measurements",
+        }
+        return []
+
+    monkeypatch.setattr(window, "_reconcile_retained_measurement_mapping", reconcile)
+    monkeypatch.setattr(window, "_validate_retained_measurements", lambda candidate: [])
+    window.open_project(candidate_path)
+
+    assert window.project.measurement_device_mapping["mapping_provenance"] == (
+        "revalidated against retained measurements"
+    )
+    assert window.project.compatibility_validation["status"] == "validation_required"
+    assert window.project.compatibility_validation["required"] is True
+    assert window.run_loco_action.isEnabled() is False
+
+    saved_copy = tmp_path / "retained-measurements-save-as.pyloco.json"
+    assert window._save_project_to(saved_copy) is True
+    restored = ProjectMetadata.load(saved_copy)
+    assert restored.measurement_device_mapping == window.project.measurement_device_mapping
+    assert restored.compatibility_validation["status"] == "validation_required"
+    window.project.modified = False
+    window.close()
+
+
+def test_reconcile_retained_mapping_invalidates_stale_mapping_without_guessing(app, tmp_path, monkeypatch):
+    historical, active = _case_c_project_with_copied_measurements(tmp_path)
+    historical.measurements = deepcopy(active.measurements)
+    historical.measurement_device_mapping = {
+        "schema": "pyloco.measurement_device_mapping",
+        "schema_version": 1,
+        "inventory": {"sha256": "stale"},
+        "mappings": [{"role": "bpm", "measured_name": "old", "status": "mapped"}],
+    }
+    lattice_path = tmp_path / "ring.mat"
+    lattice_path.write_bytes(b"ring")
+    historical.lattice.path = str(lattice_path)
+    historical.lattice.mat_variable = "RING"
+    payload = {
+        "errors": [],
+        "files": {"orm": {
+            "bpm_names": ["BPM1"],
+            "horizontal_corrector_names": ["HC1-B1L"],
+            "vertical_corrector_names": ["VC1-A1L"],
+        }},
+    }
+    monkeypatch.setattr("pyLOCO.gui.main_window.inspect_measurement_files", lambda *args, **kwargs: payload)
+    monkeypatch.setattr("pyLOCO.gui.main_window.load_project_lattice", lambda *args, **kwargs: [object()])
+    calls = []
+
+    def reject(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise ValueError("Mapping device inventory differs from the current measurement inventory")
+
+    monkeypatch.setattr("pyLOCO.gui.main_window.validate_measurement_mapping", reject)
+    window = MainWindow()
+    errors = window._reconcile_retained_measurement_mapping(historical)
+    assert len(calls) == 1
+    assert historical.measurement_device_mapping == {}
+    assert errors and "invalidated" in errors[0]
+    assert "inventory differs" in errors[0]
+    window.close()
+
+
+def test_reconcile_retained_mapping_requires_mapping_for_identified_inventory(app, tmp_path, monkeypatch):
+    historical, active = _case_c_project_with_copied_measurements(tmp_path)
+    historical.measurements = deepcopy(active.measurements)
+    historical.measurement_device_mapping = {}
+    historical.compatibility_validation = {"required": True, "status": "validated", "issues": []}
+    payload = {
+        "errors": [],
+        "files": {"orm": {
+            "bpm_names": ["BPM1"],
+            "horizontal_corrector_names": ["HC1-B1L"],
+            "vertical_corrector_names": ["VC1-A1L"],
+        }},
+    }
+    monkeypatch.setattr("pyLOCO.gui.main_window.inspect_measurement_files", lambda *args, **kwargs: payload)
+    window = MainWindow()
+    errors = window._reconcile_retained_measurement_mapping(historical)
+    assert errors and "mapping is missing" in errors[0]
+    assert historical.measurement_device_mapping == {}
+    window.close()
 
 
 def test_open_project_unsaved_decision_is_optional_and_precedes_measurement_choice(app, tmp_path, monkeypatch):

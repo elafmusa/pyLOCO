@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from pyLOCO.gui.measurement_mapping import mapping_counts
 from pyLOCO.gui.models.project import ProjectMetadata
 from pyLOCO.gui.main_window import MainWindow
 
 
-ROOT = Path(__file__).resolve().parents[1] / "mdt_smoke"
+ROOT = Path(os.environ.get(
+    "PYLOCO_MDT_SMOKE_ROOT",
+    Path(__file__).resolve().parents[1] / "mdt_smoke",
+))
 PROJECT = ROOT / "configs" / "EBS_pyaml_MDT_smoke.pyloco.json"
 EXTENDED = ROOT / "configs" / "EBS_pyaml_MDT_four_stage_REVIEW_REQUIRED.pyloco.json"
 
@@ -144,6 +148,52 @@ def test_smoke_project_save_as_close_reopen_and_relocation(app, tmp_path):
     assert relocated in Path(profile["configuration_path"]).parents
     moved.project.modified = False
     moved.close()
+
+
+@pytest.mark.skipif(not PROJECT.is_file(), reason="local-only MDT artifacts are not installed")
+def test_modern_ebs_both_fit_loading_orders_preserve_exact_mapping(app, tmp_path, monkeypatch):
+    session = ROOT / "measurements" / "measurement-session.pyloco-session.json"
+    if not session.is_file():
+        pytest.skip("local modern-EBS session manifest is unavailable")
+    monkeypatch.setattr("pyLOCO.gui.main_window.QMessageBox.information", lambda *args, **kwargs: QMessageBox.Ok)
+    monkeypatch.setattr("pyLOCO.gui.main_window.QMessageBox.warning", lambda *args, **kwargs: QMessageBox.Ok)
+
+    session_first = MainWindow()
+    assert session_first.open_measurement_session(session) is True
+    session_first._confirm_open_with_unsaved_changes = lambda: True
+    session_first._choose_open_project_measurement_policy = lambda candidate: "keep"
+    session_first.open_project(PROJECT)
+    app.processEvents()
+    counts = mapping_counts(session_first.project.measurement_device_mapping)
+    assert counts["mapped"] == counts["total"] == 330
+    assert session_first._validate_retained_measurements(session_first.project) == []
+    session_first.project.modified = False
+    session_first.close()
+
+    project_first = MainWindow()
+    project_first.open_project(PROJECT)
+    assert project_first.open_measurement_session(session) is True
+    app.processEvents()
+    counts = mapping_counts(project_first.project.measurement_device_mapping)
+    assert counts["mapped"] == counts["total"] == 330
+    assert project_first.project.compatibility_validation["status"] == "validation_required"
+    assert project_first.run_loco_action.isEnabled() is False
+    project_first.validate_project()
+    app.processEvents()
+    assert project_first.project.compatibility_validation["status"] == "validated"
+    saved = tmp_path / "both-orders-save-as.pyloco.json"
+    assert project_first._save_project_to(saved) is True
+    project_first.project.modified = False
+    project_first.close()
+
+    reopened = MainWindow()
+    reopened.open_project(saved)
+    app.processEvents()
+    counts = mapping_counts(reopened.project.measurement_device_mapping)
+    assert counts["mapped"] == counts["total"] == 330
+    assert reopened.project.compatibility_validation["status"] == "validated"
+    reopened.project.modified = False
+    reopened.close()
 
 
 def test_harmonic_number_string_is_normalized_for_legacy_projects(tmp_path):

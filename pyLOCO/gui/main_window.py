@@ -4618,6 +4618,89 @@ class MainWindow(QMainWindow):
             requirements["rf_step_hz"] = float(dispersion["rf_step_hz"])
         return requirements, []
 
+    def _reconcile_retained_measurement_mapping(self, candidate: ProjectMetadata) -> list[str]:
+        """Revalidate a saved mapping against retained measurements and lattice.
+
+        Opening a FIT project with ``Keep current measurements`` deliberately
+        keeps the project's scientific configuration.  Its mapping may only be
+        kept as validated evidence after rebuilding the active HDF5 inventory
+        and checking every saved source/target identity and fingerprint.  No
+        positional or fuzzy remapping is performed here.
+        """
+
+        paths = {
+            role: str(candidate.resolve_path(dataset.path))
+            for role, dataset in candidate.measurements.items()
+        }
+        options = {
+            role: deepcopy(dataset.options)
+            for role, dataset in candidate.measurements.items()
+        }
+        saved_mapping = candidate.measurement_device_mapping or {}
+        payload = inspect_measurement_files(paths, options)
+        if payload["errors"]:
+            if not saved_mapping and all(
+                "identities are absent" in error.lower()
+                for error in payload["errors"]
+            ):
+                # Historical projects without identity-bearing HDF5 files use
+                # recipe-pinned checksums in the established validator below.
+                candidate.measurement_device_mapping = {}
+                return []
+            return list(payload["errors"])
+        inventory = measurement_inventory(payload)
+        if not all(inventory.values()):
+            # Legacy measurements without authoritative identities continue
+            # through their existing compatibility checks.  They cannot be
+            # promoted to a validated device mapping here.
+            candidate.measurement_device_mapping = {}
+            return []
+
+        if not saved_mapping:
+            # Established legacy projects predate explicit mapping evidence and
+            # retain their existing identity/order checks.  Projects that opt
+            # into compatibility validation must fail closed when that evidence
+            # is absent.
+            if not (candidate.compatibility_validation or {}).get("required"):
+                return []
+            return [
+                "Measurement-device mapping is missing for the retained ordered BPM/H/V inventory; "
+                "run Find machine mappings and validate before fitting."
+            ]
+
+        lattice_path = candidate.resolve_path(candidate.lattice.path) if candidate.lattice.path else Path()
+        if not lattice_path.is_file():
+            return ["The selected project's reference lattice is unavailable."]
+        try:
+            lattice = load_project_lattice(lattice_path, candidate.lattice.mat_variable or None)
+        except Exception as exc:
+            return [f"The selected project's reference lattice could not be loaded: {exc}"]
+
+        orm_metadata = (options.get("orm", {}).get("acquisition_metadata") or {})
+        pyaml_options = orm_metadata.get("pyaml_options") or {}
+        raw_configuration = pyaml_options.get("config_path") or ""
+        configuration = Path(raw_configuration).expanduser() if raw_configuration else None
+        if configuration is not None and not configuration.is_absolute():
+            configuration = candidate.resolve_path(configuration)
+        if configuration is not None and not configuration.is_file():
+            configuration = None
+        try:
+            candidate.measurement_device_mapping = validate_measurement_mapping(
+                saved_mapping,
+                lattice,
+                inventory,
+                lattice_path=lattice_path,
+                configuration_path=configuration,
+                require_provenance=True,
+            )
+        except Exception as exc:
+            candidate.measurement_device_mapping = {}
+            return [
+                "Measurement-device mapping was invalidated for the retained measurements: "
+                f"{exc}. Run Find machine mappings and validate before fitting."
+            ]
+        return []
+
     def _recipe_from_project(self, project: ProjectMetadata) -> FitRecipe | None:
         raw = project.fit_recipe or {}
         if not raw or not raw.get("stages"):
@@ -4973,10 +5056,10 @@ class MainWindow(QMainWindow):
             saved_signature = self._measurement_binding_signature(candidate)
             candidate.measurements = deepcopy(self.project.measurements)
             candidate.measurement_session = deepcopy(self.project.measurement_session)
-            candidate.measurement_device_mapping = deepcopy(self.project.measurement_device_mapping)
             measurements_changed = current_signature != saved_signature
             try:
-                errors = self._validate_retained_measurements(candidate)
+                mapping_errors = self._reconcile_retained_measurement_mapping(candidate)
+                errors = mapping_errors + self._validate_retained_measurements(candidate)
             except Exception as exc:
                 self._show_project_load_error(filename, exc)
                 return
@@ -4995,6 +5078,17 @@ class MainWindow(QMainWindow):
             if (measurements_changed or stale_run_binding) and not opened_for_editing:
                 candidate.completed_run = CompletedRunReference()
                 candidate.fit_run_session = {}
+                candidate.compatibility_validation = {
+                    "required": True,
+                    "status": "validation_required",
+                    "issues": [
+                        "Current measurements were retained; exact mapping and FIT compatibility "
+                        "must be validated before running."
+                    ],
+                    "measurement_signature": json_safe(
+                        self._measurement_binding_signature(candidate)
+                    ),
+                }
                 candidate.modified = True
         previous_project = self.project
         previous_recipe = deepcopy(self.fit_recipe)

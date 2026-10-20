@@ -59,6 +59,16 @@ def test_revalidation_rejects_order_inventory_lattice_and_configuration_changes(
     reversed_inventory = deepcopy(inventory); reversed_inventory["bpm"].reverse()
     with pytest.raises(ValueError, match="inventory differs"):
         validate_mapping(result, ring, reversed_inventory, lattice_path=lattice, configuration_path=config)
+    reordered_correctors = deepcopy(inventory)
+    reordered_correctors["horizontal_corrector"], reordered_correctors["vertical_corrector"] = (
+        reordered_correctors["vertical_corrector"], reordered_correctors["horizontal_corrector"]
+    )
+    with pytest.raises(ValueError, match="inventory differs"):
+        validate_mapping(result, ring, reordered_correctors, lattice_path=lattice, configuration_path=config)
+    config.write_text("machine: changed\n")
+    with pytest.raises(ValueError, match="different machine/control-system configuration"):
+        validate_mapping(result, ring, inventory, lattice_path=lattice, configuration_path=config)
+    config.write_text("machine: example\n")
     lattice.write_bytes(b"changed")
     with pytest.raises(ValueError, match="different reference lattice"):
         validate_mapping(result, ring, inventory, lattice_path=lattice, configuration_path=config)
