@@ -83,8 +83,9 @@ pyloco-measure
 ## 4. Connect Measure and verify the target
 
 1. **Measure → Machine:** choose **pyAML** and the trusted YAML (simulator YAML for the local test; ESRF-approved YAML for hardware).
-2. Start with **writes disabled**. Press **Test connection**.
-3. Check target/mode, BPM/H/V corrector inventories, RF readback, backend permissions and output directory.
+2. Start with **writes disabled**. Press **Test connection** and review the target identity, inventory and read capabilities.
+3. For an approved simulator ORM test, enable corrector writes, accept the normal write warning and press **Test connection once**. A verified simulator must show its runtime identity/configuration fingerprint and either **independent readback** or **Adapter value matched — independent readback unavailable**. No separate simulator checkbox or second connection is required. Unknown targets remain blocked when independent restoration evidence is unavailable.
+4. Check target/mode, BPM/H/V corrector inventories, RF readback, backend permissions and output directory.
 4. **Only for approved acquisition**, enable the minimum necessary corrector or RF write capability after confirming the target.
 
 For Measure's model comparison, select the reference lattice. MAT files are inspected for valid AT lattices: the modern EBS file selects `betamodel` and must show **4,434 elements**. If more than one valid lattice exists, choose it explicitly. Then select the BPM/H/V inventory and click **Verify device alignment**. The shared FIT/Measure mapper requires exact AT `Device` identities, unique ordinals and the correct `B1L`/`A1L` steering components; it preserves measurement order and fails closed. The full simulator inventory was verified at **896/896**. Changing the lattice, MAT variable, YAML or device inventory invalidates alignment.
@@ -99,9 +100,11 @@ Navigate **Machine → Devices → Measurement → Review & Save**. **Keep the B
 |---|---|---|
 | **BPM noise** | Select the BPM inventory; choose BPM noise; configure readings and delay; start read-only acquisition | Samples finite; HDF5 saved with BPM names and units |
 | **RF dispersion** | Review signed RF separation and orbit readings; authorize RF writes only for approved target; start automatic dispersion | RF restored to original reference and verified by readback; HDF5 records sign and RF state |
-| **ORM** | Review ordered H/V correctors, kick size and bipolar/one-sided mode; authorize corrector writes only as approved; start ORM | All correctors restored and verified; ORM HDF5 saved with names and kick metadata |
+| **ORM** | Review ordered H/V correctors, kick size and bipolar/one-sided mode; authorize corrector writes only as approved; start ORM | All correctors restored; evidence explicitly states either independent readback or verified simulator adapter-value matching; ORM HDF5 saved with names and kick metadata |
 
 **Stop on failed restoration.** Disable writes; retain logs and the session. Restarting the GUI is not proof of restoration.
+
+For the local pySC2pyaml simulator, a fresh public `magnet.strength.get()` is accepted only after the runtime and configuration SHA-256 are verified. It is simulator adapter evidence, not an independent hardware readback. Alternative simulators, including Simone's ESRF simulator, require an authoritative public runtime attestation containing a stable instance identity, configuration fingerprint and confirmation that `strength.get()` is a fresh simulator-state read. Editable YAML labels, hostnames and ports are not identity proof. Real-machine ORM requires the ESRF-approved readback and operating procedure.
 
 ### Three different saved artifacts
 

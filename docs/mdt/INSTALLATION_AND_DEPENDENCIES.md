@@ -97,3 +97,7 @@ Do not assume that external simulator/lattice files come with `git clone`. Verif
 5. Which later documentation HEAD has been approved for the meeting, while retaining application revision `6081c0a`?
 
 **Until these are answered, simulator verification does not authorize live machine correction.**
+
+## Corrector restoration evidence
+
+The tested local pySC2pyaml runtime is identified from the active runtime class and configuration SHA-256. After the ordinary corrector-write authorization and one successful connection, Measure may use a fresh public `magnet.strength.get()` as **simulator adapter-value evidence**. This is not an independent hardware readback. Other simulator adapters must provide an authoritative public runtime identity/capability attestation with a stable instance identity, configuration fingerprint and `strength_get_is_fresh` capability. Configuration labels, hostnames, ports and `mode=live` are not sufficient. Unknown and real-machine targets remain blocked without the ESRF-approved restoration evidence and operating procedure.

@@ -18,12 +18,12 @@
 
 ## B. Measure → save
 
-- [ ] **Measure → Machine:** Test connection and confirm BPM/H/V corrector and RF readbacks.
+- [ ] **Measure → Machine:** Test connection and confirm BPM/H/V corrector and RF capabilities. For an approved simulator ORM, authorize writes normally and connect once; record whether restoration evidence is **independent readback** or **adapter value matched — independent readback unavailable**.
 - [ ] **Devices:** Review exact device order.
 - [ ] Reference lattice shows MAT variable `betamodel`, **4,434** elements. Click **Verify device alignment**; full simulator inventory expects **896/896** exact mappings. Any lattice/YAML/inventory change requires revalidation.
 - [ ] **Measurement:** BPM noise saved to `.h5`.
 - [ ] RF dispersion saved to `.h5`; RF returned to nominal by **readback**.
-- [ ] ORM saved to `.h5`; corrector kicks/signs recorded and **all correctors restored by readback**.
+- [ ] ORM saved to `.h5`; corrector kicks/signs recorded and all correctors restored. Evidence level recorded: ☐ independent readback ☐ verified simulator adapter value. Any mismatch/failed read is **NO-GO**.
 - [ ] **Review & Save:** All three measurement types shown, **Validate for pyLOCO** passes.
 - [ ] Record **measurement session** `*.pyloco-session.json` path: __________________________
 
