@@ -1,6 +1,8 @@
 """pyLOCO Measure GUI for structured, read-only measurement acquisition."""
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import re
 import csv
 from html import escape
@@ -654,6 +656,10 @@ class MeasureMainWindow(QMainWindow):
             checkbox.setChecked(True)
             pyaml_form.addRow(checkbox)
             checkbox.toggled.connect(self._invalidate_pyaml)
+        self.pyaml_orbit_correction = QCheckBox("Correct orbit after each ORM column")
+        self.pyaml_orbit_correction.setToolTip("Use the measured corrector and its opposite-plane partner to return to the pre-kick orbit. Corrections remain applied.")
+        pyaml_form.addRow(self.pyaml_orbit_correction)
+        self.pyaml_orbit_correction.toggled.connect(self._invalidate_pyaml)
         self.pyaml_simulator_identity_status=QLabel("Unavailable until pyAML provides verified runtime simulator identity.")
         self.pyaml_simulator_identity_status.setWordWrap(True); self.pyaml_simulator_identity_status.setObjectName("infoText"); pyaml_form.addRow("Simulator identity",self.pyaml_simulator_identity_status)
         pyaml_form.addRow(QLabel("Mode: design or live. RF plant defaults to RF. Writes default to enabled; uncheck to disable. Live connections require confirmation."))
@@ -1098,7 +1104,8 @@ class MeasureMainWindow(QMainWindow):
         options = {key: editor.text().strip() for key, editor in self.pyaml_fields.items()}
         options.update(allow_writes=self.pyaml_magnet_writes.isChecked(),
                        allow_rf_writes=self.pyaml_rf_writes.isChecked(),
-                       corrector_values_in_radians=True)
+                       corrector_values_in_radians=True,
+                       orbit_correction_enabled=self.pyaml_orbit_correction.isChecked())
         if options["mode"] == "live" and (options["allow_writes"] or options["allow_rf_writes"]):
             answer = QMessageBox.question(self, "Enable live pyAML writes?",
                 "Measurements may change configured corrector magnets and/or RF frequency. "
@@ -1155,7 +1162,7 @@ class MeasureMainWindow(QMainWindow):
         if key=="mock":self.statusBar().showMessage("Mock ready — no external connection"); return
         options=None
         if key=="pyaml":
-            self._invalidate_pyaml(); options={name:editor.text().strip() for name,editor in self.pyaml_fields.items()}; options.update(allow_writes=self.pyaml_magnet_writes.isChecked(),allow_rf_writes=self.pyaml_rf_writes.isChecked(),corrector_values_in_radians=True)
+            self._invalidate_pyaml(); options={name:editor.text().strip() for name,editor in self.pyaml_fields.items()}; options.update(allow_writes=self.pyaml_magnet_writes.isChecked(),allow_rf_writes=self.pyaml_rf_writes.isChecked(),corrector_values_in_radians=True,orbit_correction_enabled=self.pyaml_orbit_correction.isChecked())
             if options["mode"]=="live" and (options["allow_writes"] or options["allow_rf_writes"]):
                 answer=QMessageBox.question(self,"Enable live pyAML writes?","Measurements may change configured corrector magnets and/or RF frequency. Enable selected writes?",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
                 if answer!=QMessageBox.Yes:return
@@ -2802,6 +2809,19 @@ class MeasureMainWindow(QMainWindow):
     def _restoration_diagnostic_text(event):
         data=getattr(event,"restoration_diagnostics",None) or {}
         if not data:return ""
+        if data.get("orbit_correction"):
+            rows = []
+            for correction in data["orbit_correction"]:
+                rows.append(f"Orbit correction for {correction['corrector']}: {correction['status']}; "
+                            f"correctors={correction['correctors']}; strengths before={correction['before_native']}; "
+                            f"strengths after={correction.get('after_native')}; units={correction['units']}; "
+                            f"error={correction.get('error', '')}; rollback={correction.get('rollback', [])}")
+            text = "\n" + "\n".join(rows) + "\nSuccessful earlier corrections remain applied."
+            if "correctors" in data:
+                remainder = dict(data)
+                remainder.pop("orbit_correction")
+                text += MeasureMainWindow._restoration_diagnostic_text(SimpleNamespace(restoration_diagnostics=remainder))
+            return text
         if "correctors" in data:
             rows=[]
             for item in data.get("correctors",()):
@@ -2814,6 +2834,16 @@ class MeasureMainWindow(QMainWindow):
     def _verify_unresolved_orm_restoration(self):
         if not self._orm_restoration_unresolved:return True
         diagnostics=self._orm_restoration_diagnostics or {}; inventory={device.name:device for device in self.horizontal_correctors+self.vertical_correctors}
+        if diagnostics.get("orbit_correction") and "correctors" not in diagnostics:
+            from pyLOCO.control_system.pyaml_adapter import PyAMLAdapter
+            if not isinstance(self.adapter, PyAMLAdapter) or not self.adapter.orbit_correction_enabled:
+                return False
+            verified = self.adapter.verify_orbit_correction_restoration(diagnostics["orbit_correction"][-1])
+            if verified:
+                self._orm_restoration_unresolved = False
+                diagnostics["status"] = "restored"
+                self.statusBar().showMessage("Orbit-correction rollback targets verified; corrector-write block cleared.")
+            return verified
         rows=diagnostics.get("correctors",()); verified=bool(rows)
         for item in rows:
             device=inventory.get(item.get("name"))
@@ -2973,6 +3003,8 @@ class MeasureMainWindow(QMainWindow):
         identity,profile=self._machine_identity(); profile_metadata={}
         if descriptor.key == "pyaml":
             options = {key: editor.text().strip() for key, editor in self.pyaml_fields.items()}
+            if isinstance(result, ORMResult) and result.orbit_correction_diagnostics:
+                options["orbit_correction_enabled"] = True
             profile_metadata = {"pyaml_options": options, "pyaml_mode": options["mode"],
                                 "backend_badge": self.status_badge.text(),
                                 "backend_environment": options["mode"].upper(),
@@ -2988,6 +3020,10 @@ class MeasureMainWindow(QMainWindow):
         metadata={"measurement_name":self.measurement_name.text(),"measurement_label":self.measurement_label.text(),"acquisition_timestamp":datetime.now().astimezone().isoformat(),"operator_comments":self.comments.toPlainText(),"adapter":self.adapter_combo.currentText(),"backend_key":descriptor.key,"backend_badge":descriptor.badge,"backend_environment":descriptor.environment,"backend_real_machine":descriptor.real_machine,"machine_identity":identity,**profile_metadata,**model_metadata,"compare_with_reference_model":self.compare_reference.isChecked(),"pysc_machine_profile":self.pysc_profile_combo.currentData() if descriptor.key=="pysc" else None,"readings_per_state":actual_readings,"delay_seconds":self.delay.value(),"settling_delay_seconds":self.orm_settling_delay.value() if isinstance(result,ORMResult) else self.settling_delay.value() if isinstance(result,DispersionResult) else 0.0,"elapsed_seconds":result.elapsed_seconds}
         if isinstance(result,ORMResult):
             nh=len(result.horizontal_correctors); diagnostics={}
+            if result.orbit_correction_diagnostics:
+                metadata["orbit_correction_enabled"] = True
+                metadata["orbit_correction"] = list(result.orbit_correction_diagnostics)
+                metadata["final_reference_role"] = "post-correction orbit; nominal restoration strengths recorded before correction"
             if result.raw_state_a_m.ndim==3 and result.raw_state_a_m.shape[1]>1:
                 diagnostics={"state_a_first_sample_minus_later_mean_m":result.raw_state_a_m[:,0,:]-np.mean(result.raw_state_a_m[:,1:,:],axis=1),"state_b_first_sample_minus_later_mean_m":result.raw_state_b_m[:,0,:]-np.mean(result.raw_state_b_m[:,1:,:],axis=1)}
             bipolar=result.direction=="bipolar"
@@ -3522,6 +3558,9 @@ class MeasureMainWindow(QMainWindow):
                       f"<tr><td>BPMs used: {nb}</td><td>H correctors used: {nh}</td><td>V correctors used: {len(result.vertical_correctors)}</td></tr>"
                       f"<tr><td>Requested separation: {kick_text}</td><td>Actual separation: {actual_text}</td><td>Readings/state: {readings}</td><td>Matrix: {matrix.shape[0]} × {matrix.shape[1]} [{unit}]</td></tr>"
                       f"<tr><td>Reading delay: {self.delay.value():g} s</td><td>Settling delay: {self.settling_delay.value():g} s</td><td colspan='2'>Storage: {'normalized response divided by actual separation' if result.scaled else 'orbit difference; not kick-normalized'}</td></tr></table>")
+        if result.orbit_correction_diagnostics:
+            self.orm_restoration_status.setText("✓ NOMINAL RESTORES VERIFIED; ORBIT CORRECTIONS RETAINED" if restored else "✗ CORRECTOR RESTORATION FAILED")
+            summary_html += "<br>Orbit correction applied after each column; corrected strengths remain applied. Restore checks refer to nominal restoration before correction."
         self.orm_measurement_summary.setText(summary_html); self.restoration_label.setText("<b>Restore checks</b><br>"+" &nbsp; • &nbsp; ".join(f"{escape(device.name)}: {middle} / {final}" for device,middle,final in zip(result.correctors,result.intermediate_restoration_status,result.restoration_status)))
         if self.compare_reference.isChecked() and self.reference_model is not None:
             try:
@@ -3557,7 +3596,16 @@ class MeasureMainWindow(QMainWindow):
             middle_return=(np.mean(result.raw_reference_intermediate_m[index],axis=0)-reference)*scale; middle_x=middle_return[:nb]; middle_y=middle_return[nb:]
             middle_text=f"Intermediate orbit return: X RMS {np.sqrt(np.mean(middle_x**2)):.6g} µm / max {np.max(np.abs(middle_x)):.6g} µm; Y RMS {np.sqrt(np.mean(middle_y**2)):.6g} µm / max {np.max(np.abs(middle_y)):.6g} µm\n"
         else:middle_text="Intermediate orbit return: not applicable for a one-sided measurement\n"
+        correction_text = ""
+        if result.orbit_correction_diagnostics:
+            correction = result.orbit_correction_diagnostics[index]
+            correction_text = (f"Orbit correction after nominal restore: {correction['status']}; "
+                               f"correctors: {', '.join(correction['correctors'])}; "
+                               f"strengths before: {correction['before_native']}; "
+                               f"retained strengths: {correction['after_native']}; units: {correction['units']}. "
+                               "Final orbit return is measured after correction.\n")
         return (f"Corrector transaction — {device.name} ({device.plane})\n"
+                f"{correction_text}"
                 f"Backend identifier: {device.identifier}\n"
                 f"Original K0: {result.original_setpoints_rad[index]*scale:+.9g} µrad; requested K+/K−: {result.requested_state_a_rad[index]*scale:+.9g} / {result.requested_state_b_rad[index]*scale:+.9g} µrad\n"
                 f"Readback K+: {result.actual_state_a_rad[index]*scale:+.9g} µrad\n"
@@ -3803,7 +3851,7 @@ class MeasureMainWindow(QMainWindow):
         missing=", ".join(session.missing_roles) or "none"; self.statusBar().showMessage(f"Opening session in pyLOCO Fit ({detail}); missing roles: {missing}")
 
     def _collect_project(self):
-        self.project.metadata["pyaml_options"] = {key: editor.text().strip() for key, editor in self.pyaml_fields.items()}
+        self.project.metadata["pyaml_options"] = {**{key: editor.text().strip() for key, editor in self.pyaml_fields.items()}, "orbit_correction_enabled": self.pyaml_orbit_correction.isChecked()}
         self._store_active_selection()
         h=self.corrector_selection_widgets["hcor"]; v=self.corrector_selection_widgets["vcor"]
         identity,profile=self._machine_identity(); profile_meta={} if profile is None else {"machine":profile.machine,"profile":profile.scenario,"profile_key":profile.key,"profile_manifest":str(profile.manifest_path),"lattice_file":str(profile.resolve("lattice_file")),"provenance":profile.configuration.get("provenance",{}),"random_seed":profile.configuration.get("random_seed")}
@@ -3813,6 +3861,7 @@ class MeasureMainWindow(QMainWindow):
     def _load_project_widgets(self):
         self.pyaml_magnet_writes.setChecked(True)
         self.pyaml_rf_writes.setChecked(True)
+        self.pyaml_orbit_correction.setChecked(bool(self.project.metadata.get("pyaml_options", {}).get("orbit_correction_enabled", False)))
         self.pyaml_simulator_identity_status.setText("Project opened — Test connection to confirm pyAML capabilities and restoration evidence.")
         for key, editor in self.pyaml_fields.items():
             editor.setText(self.project.metadata.get("pyaml_options", {}).get(key, {"mode": "live", "bpm_group": "BPM", "hcor_group": "HCorr", "vcor_group": "VCorr", "rf_name": "RF"}.get(key, "")))

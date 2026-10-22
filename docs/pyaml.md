@@ -8,6 +8,29 @@ Correct also supports normal and skew integrated-strength corrections (see below
 Install pyAML and the control-system plugin referenced by your configuration into
 the same Python environment as pyLOCO. They are imported only when connecting.
 
+### Optional orbit correction during ORM measurement
+
+The pyAML panel's **Correct orbit after each ORM column** checkbox defaults to off.
+When enabled, connection checks require magnet writes, a valid loaded
+`machine.tool.orbit` response matrix, and the same BPM array and ordering in the
+adapter and orbit tool. ORM acquisition must select that complete BPM array.
+
+After each completed column's final nominal-strength restore, correction uses the
+mean of the existing pre-kick orbit samples. It adjusts the measured corrector,
+then its opposite-plane partner sharing `get_model_name()`, if present. The partner
+can be outside the selected measurement correctors. There is no correction between
+bipolar kicks, and RF is not adjusted. Successful corrections remain applied and
+become subsequent column baselines. Final reference samples are taken after
+correction; nominal restoration values and correction diagnostics are recorded
+separately in the result and export metadata.
+
+Failure or cancellation during correction attempts to restore that correction's
+pre-change strengths and verifies the result; successful earlier corrections stay
+applied. Temporary response-matrix input selection and virtual weight are restored
+on both success and failure. Other adapters and pyAML with this checkbox off retain
+their existing behavior. This integration follows the current pyAML orbit API,
+including its private `_pySC_response_matrix` interface, as in the ESRF example.
+
 ### Tested EBS pySC/pyAML environment
 
 The EBS demonstration has been exercised with:
