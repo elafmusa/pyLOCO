@@ -84,7 +84,7 @@ pyloco-measure
 
 1. **Measure → Machine:** choose **pyAML** and the trusted YAML (simulator YAML for the local test; ESRF-approved YAML for hardware).
 2. Start with **writes disabled**. Press **Test connection** and review the target identity, inventory and read capabilities.
-3. For an approved simulator ORM test, enable corrector writes, accept the normal write warning and press **Test connection once**. A verified simulator must show its runtime identity/configuration fingerprint and either **independent readback** or **Adapter value matched — independent readback unavailable**. No separate simulator checkbox or second connection is required. Unknown targets remain blocked when independent restoration evidence is unavailable.
+3. For the approved ESRF simulator ORM test, enable corrector writes, accept the normal write warning and press **Test connection once**. Measure reports either **independent readback** or the weaker **Adapter strength.get() value matched — independent readback unavailable**. No separate simulator checkbox or second connection is required. The get-only path is for the approved simulator workflow and is not authorization for real-machine operation.
 4. Check target/mode, BPM/H/V corrector inventories, RF readback, backend permissions and output directory.
 4. **Only for approved acquisition**, enable the minimum necessary corrector or RF write capability after confirming the target.
 
@@ -104,7 +104,7 @@ Navigate **Machine → Devices → Measurement → Review & Save**. **Keep the B
 
 **Stop on failed restoration.** Disable writes; retain logs and the session. Restarting the GUI is not proof of restoration.
 
-For the local pySC2pyaml simulator, a fresh public `magnet.strength.get()` is accepted only after the runtime and configuration SHA-256 are verified. It is simulator adapter evidence, not an independent hardware readback. Alternative simulators, including Simone's ESRF simulator, require an authoritative public runtime attestation containing a stable instance identity, configuration fingerprint and confirmation that `strength.get()` is a fresh simulator-state read. Editable YAML labels, hostnames and ports are not identity proof. Real-machine ORM requires the ESRF-approved readback and operating procedure.
+For pyAML simulator testing, public `magnet.strength.get()` is adapter-value evidence, not an independent hardware readback. It is used for original values, applied kicks and restoration checks after the normal write authorization and connection confirmation. Real-machine ORM still requires an ESRF-approved readback and operating procedure; successful simulator testing does not grant that authorization.
 
 ### Three different saved artifacts
 

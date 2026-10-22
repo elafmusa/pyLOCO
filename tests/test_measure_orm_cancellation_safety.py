@@ -144,7 +144,8 @@ def test_adapter_value_message_never_claims_independent_readback(app):
     window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm"))
     diagnostics={"status":"restored","verification_level":"adapter_value","correctors":[]}
     window._on_cancelled(ORMInterrupted("cancelled",restoration_status="restored",restoration_diagnostics=diagnostics))
-    assert "simulator adapter get() values matched" in window.reading_status.text()
+    assert "adapter strength.get() value matched" in window.reading_status.text()
+    assert "independent readback unavailable" in window.reading_status.text()
     assert "independently verified" not in window.reading_status.text()
     window.close()
 

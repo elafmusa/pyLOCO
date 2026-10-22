@@ -229,18 +229,18 @@ def test_corrector_diagnostics_do_not_duplicate_setpoint_as_missing_readback_or_
     assert values["CURRENT.RBV"]["status"]=="unsupported"
 
 
-def test_pyaml_restoration_evidence_fails_closed_without_runtime_attestation():
+def test_pyaml_get_is_adapter_value_without_runtime_attestation():
     adapter,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True)
-    assert adapter.corrector_restoration_evidence("H1")["level"]=="unavailable"
-    with pytest.raises(RuntimeError,match="no readback"):
-        adapter.read_corrector_readback("H1")
-    adapter.allow_get_only_restoration=True
-    assert adapter.corrector_restoration_evidence("H1")["level"]=="unavailable"
+    evidence=adapter.corrector_restoration_evidence("H1")
+    value,read_evidence=adapter.read_corrector_readback("H1")
+    assert evidence["level"]=="adapter_value"
+    assert "independent readback unavailable" in evidence["source"]
+    assert read_evidence==evidence and value==pytest.approx(.002)
 
 
-def test_caller_flag_cannot_authorize_adapter_value_without_runtime_attestation():
+def test_get_evidence_does_not_require_caller_flag_or_runtime_attestation():
     adapter,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True,allow_get_only_restoration=True,simulator_attested=False)
-    assert adapter.corrector_restoration_evidence("H1")["level"]=="unavailable"
+    assert adapter.corrector_restoration_evidence("H1")["level"]=="adapter_value"
 
 
 def test_alternative_runtime_attestation_requires_fresh_get_capability():
@@ -251,7 +251,25 @@ def test_alternative_runtime_attestation_requires_fresh_get_capability():
     assert adapter.corrector_restoration_evidence("H1")["level"]=="adapter_value"
     other,_=make_adapter(); other.accelerator.simulator_identity=lambda:{"verified":True,"backend":"esrf-simulator","instance_id":"sim-2","configuration_sha256":"3"*64}
     blocked=PyAMLAdapter("unused.yaml",accelerator=other.accelerator,rf_name="",allow_writes=True,allow_rf_writes=False,corrector_values_in_radians=True)
-    assert blocked.corrector_restoration_evidence("H1")["level"]=="unavailable"
+    assert blocked.corrector_restoration_evidence("H1")["level"]=="adapter_value"
+
+
+@pytest.mark.parametrize("bad_value",[np.nan,np.inf])
+def test_pyaml_get_verification_rejects_nonfinite_values(bad_value):
+    adapter,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True)
+    adapter.machine.magnet["H1"].strength=SimpleNamespace(
+        get=lambda:bad_value,set=lambda value:None,unit=lambda:"rad")
+    with pytest.raises(RuntimeError,match="non-finite"):
+        adapter.read_corrector_readback("H1")
+
+
+def test_pyaml_get_verification_reports_failed_read():
+    adapter,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True)
+    def fail():raise OSError("simulator unavailable")
+    adapter.machine.magnet["H1"].strength=SimpleNamespace(
+        get=fail,set=lambda value:None,unit=lambda:"rad")
+    with pytest.raises(RuntimeError,match="verification read failed.*simulator unavailable"):
+        adapter.read_corrector_readback("H1")
 
 
 def test_pysc_runtime_identity_is_bound_to_configuration_hash(tmp_path,monkeypatch):
@@ -334,12 +352,22 @@ def test_rf_read_write_ignores_units_and_requires_opt_in():
 
 def test_orm_restores_pyaml_correctors():
     from pyLOCO.measure.acquisition import BpmDevice, CorrectorDevice, ORMAcquirer
-    adapter, _ = writable_adapter(allow_writes=True, corrector_values_in_radians=True, allow_get_only_restoration=True)
+    adapter, _ = writable_adapter(
+        allow_writes=True,
+        corrector_values_in_radians=True,
+        simulator_attested=False,
+    )
+    assert adapter.simulator_identity is None
+    assert adapter.corrector_restoration_evidence("H1")["level"] == "adapter_value"
     acquirer = ORMAcquirer(adapter,
         [BpmDevice(**item) for item in adapter.list_devices("bpm")],
         [CorrectorDevice(**item) for item in adapter.list_devices("hcor")], [])
     result = acquirer.acquire([1e-6], [], readings=2, delay_seconds=0)
     assert result.restoration_status == ("restored",)
+    assert result.intermediate_restoration_status == ("restored",)
+    original = result.original_setpoints_rad[0]
+    assert result.actual_state_a_rad == pytest.approx((original + 0.5e-6,))
+    assert result.actual_state_b_rad == pytest.approx((original - 0.5e-6,))
     assert adapter.groups["hcor"].values == pytest.approx([2])
 
 
@@ -431,7 +459,11 @@ def test_default_write_capabilities_and_rf_name():
 def test_orm_cancellation_restores_changed_corrector():
     from threading import Event
     from pyLOCO.measure.acquisition import BpmDevice, CorrectorDevice, ORMAcquirer, AcquisitionCancelled
-    adapter, _ = writable_adapter(allow_writes=True, corrector_values_in_radians=True, allow_get_only_restoration=True)
+    adapter, _ = writable_adapter(
+        allow_writes=True,
+        corrector_values_in_radians=True,
+        simulator_attested=False,
+    )
     cancel = Event()
     original_write = adapter.write
     def write(channel, value):

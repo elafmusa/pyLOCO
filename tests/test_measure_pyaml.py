@@ -149,7 +149,8 @@ def test_simulator_restoration_evidence_is_reported_from_runtime_identity():
     try:
         unattested,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True)
         window._set_pyaml_simulator_identity(unattested)
-        assert "remains blocked" in window.pyaml_simulator_identity_status.text()
+        assert "strength.get() is available" in window.pyaml_simulator_identity_status.text()
+        assert "does not authorize real-machine operation" in window.pyaml_simulator_identity_status.text()
         attested,_=writable_adapter(allow_writes=True,corrector_values_in_radians=True,allow_get_only_restoration=True)
         window._set_pyaml_simulator_identity(attested)
         assert "pytest-local-pysc" in window.pyaml_simulator_identity_status.text()

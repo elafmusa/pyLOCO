@@ -47,8 +47,8 @@ pyloco-measure
 1. On **Machine**, select **pyAML**, load Simone's approved simulator YAML,
    choose the intended runtime mode, and enable only the writes required for
    the planned measurement.
-2. Click **Test Connection** once. Confirm the displayed runtime identity and
-   capabilities. A positively identified simulator may report
+2. Click **Test Connection** once. Confirm the displayed pyAML capabilities and
+   connection. An approved simulator may report
    **Adapter value matched — independent readback unavailable**; this is not an
    independent hardware readback.
 3. Load the 4434-element `.mat` reference model and select `betamodel`. Click

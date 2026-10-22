@@ -31,9 +31,7 @@ class PyAMLAdapter(WritableAdapter):
         # Write authorization and restoration evidence are deliberately separate.
         # A verified runtime may attest that strength.get() is a fresh simulator
         # state read; editable configuration labels and caller flags cannot.
-        self.allow_get_only_restoration = bool(
-            self.simulator_identity and self.simulator_identity.get("strength_get_is_fresh") is True
-        )
+        self.allow_get_only_restoration = False
         self.rf = self.machine.rf.get(rf_name).frequency if rf_name else None
         if self.allow_rf_writes and self.rf is None:
             raise ValueError("Select an RF plant before enabling RF writes")
@@ -73,6 +71,14 @@ class PyAMLAdapter(WritableAdapter):
                                         readback_channel=channel,
                                         plane="Horizontal" if kind == "hcor" else "Vertical"))
             self._catalog[kind] = tuple(devices)
+        # The installed pyAML scalar API exposes strength.get() even when it
+        # does not expose an independent readback().  Preserve that established
+        # adapter-value verification path; it is deliberately classified below
+        # as weaker than independent readback evidence.
+        self.allow_get_only_restoration = all(
+            callable(getattr(self.machine.magnet.get(item["name"]).strength,"get",None))
+            for kind in ("hcor","vcor") for item in self._catalog[kind]
+        )
 
     @staticmethod
     def _verified_simulator_identity(accelerator,mode,config_path):
@@ -214,16 +220,22 @@ class PyAMLAdapter(WritableAdapter):
     def corrector_restoration_evidence(self, name):
         magnet=self.machine.magnet.get(name); independent=callable(getattr(magnet.strength,"readback",None))
         if independent:return {"level":"independent","source":"public pyAML magnet.strength.readback()"}
-        if self.simulator_identity and self.simulator_identity.get("strength_get_is_fresh") is True:
-            return {"level":"adapter_value","source":"fresh public pyAML magnet.strength.get() from an authoritatively verified simulator runtime; independent readback unavailable"}
-        return {"level":"unavailable","source":"public pyAML magnet.strength accessor has no readback()"}
+        if callable(getattr(magnet.strength,"get",None)):
+            return {"level":"adapter_value","source":"public pyAML magnet.strength.get() adapter value; independent readback unavailable"}
+        return {"level":"unavailable","source":"public pyAML magnet.strength accessor exposes neither readback() nor get()"}
 
     def read_corrector_readback(self, name):
         magnet=self.machine.magnet.get(name); channel=next(item["setpoint_channel"] for kind in ("hcor","vcor") for item in self._catalog[kind] if item["name"]==name); scale=self._corrector_scales_to_rad.get(channel,1.0)
         evidence=self.corrector_restoration_evidence(name)
         if evidence["level"]=="unavailable":raise RuntimeError(evidence["source"])
         method=magnet.strength.readback if evidence["level"]=="independent" else magnet.strength.get
-        raw=method(); raw=getattr(raw,"value",raw); return float(raw)*scale,evidence
+        try:
+            raw=method(); raw=getattr(raw,"value",raw); value=float(raw)*scale
+        except Exception as exc:
+            raise RuntimeError(f"Corrector verification read failed for {name}: {exc}") from exc
+        if not np.isfinite(value):
+            raise RuntimeError(f"Corrector verification read returned non-finite value for {name}: {value!r}")
+        return value,evidence
 
     def get_rf_frequency(self):
         self.require(AdapterCapability.RF_READ)

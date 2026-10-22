@@ -1062,6 +1062,8 @@ class MeasureMainWindow(QMainWindow):
         if verified:
             evidence="Adapter value matched via fresh strength.get() — independent readback unavailable." if getattr(adapter,"allow_get_only_restoration",False) else "Independent readback capability will be used where available."
             self.pyaml_simulator_identity_status.setText(f"Verified {identity['backend']} simulator · instance {identity['instance_id']} · {identity['evidence']}. Restoration evidence: {evidence}")
+        elif getattr(adapter,"allow_get_only_restoration",False):
+            self.pyaml_simulator_identity_status.setText("pyAML strength.get() is available for adapter-value restoration checks. Independent readback is unavailable. This weaker evidence is intended for the approved ESRF simulator workflow and does not authorize real-machine operation.")
         else:
             self.pyaml_simulator_identity_status.setText("No authoritative runtime simulator identity/capability was provided by pyAML. Real-machine or unknown-target ORM remains blocked without an independent readback.")
 
@@ -2554,7 +2556,7 @@ class MeasureMainWindow(QMainWindow):
 
     def _start_orm(self):
         if self._orm_restoration_unresolved:
-            QMessageBox.critical(self,"Corrector writes blocked","A previous ORM restoration could not be verified. Stop further machine writes and check the affected correctors, then reconnect and verify their independent readbacks."); return
+            QMessageBox.critical(self,"Corrector writes blocked","A previous ORM restoration could not be verified. Stop further machine writes and check the affected correctors, then reconnect and verify the available restoration evidence."); return
         if isinstance(self.adapter,PETRAReadOnlyAdapter):QMessageBox.warning(self,"ORM unavailable","ORM needs write access. PETRA is read only."); return
         if self.adapter_combo.currentData()=="pyaml":
             for device in self.selected_hcorrectors+self.selected_vcorrectors:
@@ -2562,7 +2564,7 @@ class MeasureMainWindow(QMainWindow):
                 evidence=resolver(device.name) if callable(resolver) else {"level":"unavailable"}
                 if evidence.get("level")=="independent":continue
                 if evidence.get("level")=="adapter_value":continue
-                QMessageBox.warning(self,"Cannot start ORM","Independent corrector readback is unavailable and this connection has no authoritative verified-simulator authorization. ORM writes remain blocked."); return
+                QMessageBox.warning(self,"Cannot start ORM",f"No usable corrector restoration verification is available for {device.name}. The pyAML strength accessor must provide readback() or get(). ORM writes remain blocked."); return
         self._refresh_corrector_preview("hcor"); self._refresh_corrector_preview("vcor")
         try:kick_h,kick_v=self._load_kick_arrays(); acquirer=ORMAcquirer(self.adapter,self.selected_devices,self.selected_hcorrectors,self.selected_vcorrectors)
         except Exception as exc:QMessageBox.warning(self,"Cannot start ORM",str(exc)); return
@@ -2574,8 +2576,7 @@ class MeasureMainWindow(QMainWindow):
             except Exception as exc:self.statusBar().showMessage(f"Reference-model ORM unavailable: {exc}")
         self._active_acquisition_kind="orm"; self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat("Preparing ORM"); self.reading_status.setText("Preparing first corrector…"); self.log.clear(); self.log.appendPlainText(f"Starting ORM through {self.status_badge.text()}; each original setpoint will be restored.")
         if self.adapter_combo.currentData()=="pyaml" and getattr(self.adapter,"allow_get_only_restoration",False):
-            identity=getattr(self.adapter,"simulator_identity",{})
-            self.log.appendPlainText(f"Restoration evidence: adapter value matched through fresh simulator strength.get(); independent readback unavailable; verified instance {identity.get('instance_id','unknown')}.")
+            self.log.appendPlainText("Corrector restoration evidence: adapter strength.get() values will be checked; independent readback unavailable. Approved ESRF simulator workflow only — not authorization for real-machine operation.")
         options={"direction":self.orm_direction.currentData(),"scaled":False,"readings":self.readings.value(),"delay_seconds":self.delay.value(),"settling_delay_seconds":self.orm_settling_delay.value()}
         self.thread=QThread(self); self.worker=ORMAcquisitionWorker(acquirer,kick_h,kick_v,options,self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.event.connect(self._on_orm_event); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed):signal.connect(self._finish_thread)
@@ -2717,6 +2718,11 @@ class MeasureMainWindow(QMainWindow):
     def _on_completed(self,result):
         if isinstance(result,ORMResult):
             self.result=result; total=len(result.correctors); self.reading_status.setText("Done — all correctors restored"); self.progress.setValue(100); self.progress.setFormat(f"Done — {total} / {total} correctors"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Correctors: {total} / {total}"); self.log.appendPlainText("ORM complete. Saving…")
+            evidence_levels={self.adapter.corrector_restoration_evidence(device.name).get("level") for device in result.correctors}
+            if evidence_levels=={"independent"}:
+                self.log.appendPlainText("Correctors restored — independent readback matched.")
+            else:
+                self.log.appendPlainText("Corrector restored — adapter strength.get() value matched; independent readback unavailable.")
             try:self._save_result(result)
             except Exception as exc:self.log.appendPlainText(f"Saving failed: {exc}"); QMessageBox.critical(self,"Save failed",str(exc)); return
             self._show_result(result); self._update_diagnostics_visibility(); self._set_completed_result_view(True); self.start_button.setVisible(False); self.repeat_button.setVisible(True); self.validate_button.setEnabled(True); self.open_button.setEnabled(True); self.log.appendPlainText("ORM saved and validated for pyLOCO."); self._update_workflow_tabs(); return
@@ -2829,7 +2835,7 @@ class MeasureMainWindow(QMainWindow):
         if operation=="orm":
             if restoration=="restored":
                 level=(getattr(event,"restoration_diagnostics",None) or {}).get("verification_level")
-                message=("ORM measurement cancelled. All correctors restored and independently verified." if level=="independent" else "ORM measurement cancelled. Corrector setpoints restored; simulator adapter get() values matched. Independent readback was not available.")
+                message=("ORM measurement cancelled. All correctors restored and independently verified." if level=="independent" else "ORM measurement cancelled. Corrector restored — adapter strength.get() value matched; independent readback unavailable.")
             elif restoration=="not_required":message="ORM measurement cancelled before a corrector change; restoration was not required."
             elif restoration:
                 self._orm_restoration_unresolved=True; self._orm_restoration_diagnostics=getattr(event,"restoration_diagnostics",None); message="ORM measurement cancelled. Corrector restoration could not be verified. Stop further machine writes and check the affected correctors."
@@ -3807,7 +3813,7 @@ class MeasureMainWindow(QMainWindow):
     def _load_project_widgets(self):
         self.pyaml_magnet_writes.setChecked(True)
         self.pyaml_rf_writes.setChecked(True)
-        self.pyaml_simulator_identity_status.setText("Project opened — Test connection to obtain verified runtime simulator identity.")
+        self.pyaml_simulator_identity_status.setText("Project opened — Test connection to confirm pyAML capabilities and restoration evidence.")
         for key, editor in self.pyaml_fields.items():
             editor.setText(self.project.metadata.get("pyaml_options", {}).get(key, {"mode": "live", "bpm_group": "BPM", "hcor_group": "HCorr", "vcor_group": "VCorr", "rf_name": "RF"}.get(key, "")))
         self.pysc_profile_combo.setCurrentIndex(max(0,self.pysc_profile_combo.findData(self.project.pysc_profile)))
