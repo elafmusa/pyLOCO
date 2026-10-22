@@ -154,7 +154,9 @@ def test_schema_session_and_main_importer(app,tmp_path):
     loaded=_load_measurements({"orm":str(window.saved_measurement_path)}); np.testing.assert_allclose(loaded["orm"],result.response_matrix)
     # A newly opened Measure window owns a fresh logical session and must not
     # merge an unrelated manifest merely because the output directory matches.
-    session=load_session(manifest,validate_files=False); assert {entry.role for entry in session.files}=={"orm"}; assert set(session.missing_roles)=={"bpm_noise","dispersion"}; window.close()
+    session=load_session(manifest,validate_files=False); assert {entry.role for entry in session.files}=={"bpm_noise","dispersion"}
+    assert window.saved_session_path!=manifest
+    new_session=load_session(window.saved_session_path,validate_files=False); assert {entry.role for entry in new_session.files}=={"orm"}; assert set(new_session.missing_roles)=={"bpm_noise","dispersion"}; window.close()
 
 @pytest.mark.parametrize("direction",["positive","negative"])
 def test_one_sided_orm_save_omits_non_applicable_intermediate_reference(app,tmp_path,direction):

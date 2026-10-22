@@ -77,7 +77,7 @@ class MeasureProject:
     def validate(self) -> None:
         if self.file_type != FILE_TYPE or self.schema_version != SCHEMA_VERSION:
             raise ValueError("Invalid or unsupported pyLOCO Measure project")
-        if self.adapter not in {"Mock","pySC Server","PETRA / DOOCS","PETRA III DOOCS"}:
+        if self.adapter not in {"Mock","pySC Server","PETRA / DOOCS","PETRA III DOOCS","pyAML"}:
             raise ValueError("Unsupported Measure adapter")
         if self.pysc_profile not in {"ebs", "petra3", "petra3_realistic"}:
             raise ValueError("Unsupported pySC machine profile")
@@ -118,8 +118,9 @@ class MeasureProject:
             raise ValueError("BPM-noise ddof must be 0 or 1")
         if not self.measurement_name.strip() or not self.output_directory.strip():
             raise ValueError("Measurement name and output directory are required")
-        if Path(self.output_directory).is_absolute():
-            raise ValueError("Portable Measure projects require a relative output directory")
+        # Ordinary local Measure projects may use an absolute acquisition
+        # directory. Full-session export rewrites this to a bundle-relative
+        # directory so the exported session remains portable.
 
 
 def save_measure_project(path: str | Path, project: MeasureProject) -> Path:

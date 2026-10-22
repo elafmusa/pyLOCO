@@ -136,8 +136,8 @@ def test_write_opt_in_live_confirmation_and_project_reset(monkeypatch):
         window.project = window._collect_project()
         assert "allow_writes" not in window.project.metadata["pyaml_options"]
         window._load_project_widgets()
-        assert window.pyaml_magnet_writes.isChecked()
-        assert window.pyaml_rf_writes.isChecked()
+        assert not window.pyaml_magnet_writes.isChecked()
+        assert not window.pyaml_rf_writes.isChecked()
         assert not window.connection_verified
     finally:
         window.close()

@@ -111,8 +111,11 @@ For pyAML simulator testing, public `magnet.strength.get()` is adapter-value evi
 - **Individual measurements:** separate `.h5` files with numerical data and acquisition metadata.
 - **Measurement session:** `*.pyloco-session.json` manifest that points to the measurement files. The manifest **does not embed their arrays**.
 - **Measure project:** `*.pyloco-measure.json` with application/backend setup. **Save Project** is *not* Save Measurement Session.
+- **Full Measure session:** use **Review & Save → Save Full Measurement Session…** to create a portable bundle containing the Measure project, integrity-checked HDF5 files, the session manifest and the selected reference lattice. pyAML YAML remains an external checksummed dependency unless the operator explicitly confirms that an approved credential-free configuration may be included.
 
 In **Review & Save**, check that BPM noise, dispersion and ORM are listed; click **Validate for pyLOCO** and record the exact manifest path. Use **Open session in pyLOCO Fit** to hand off, or load in FIT through **Measurements → Open Measurement Session…**. If a role is missing, the session is partial; never substitute invented arrays.
+
+To continue later, choose **Open Full Measurement Session…** and select the bundle's `measurement-session.pyloco-session.json`. Measure verifies file hashes, restores settings and selections, and loads the role summary. It does not connect or restore write authorization. Reconnect deliberately; exact device mapping is revalidated against the active inventory, lattice and pyAML configuration before model comparison. Acquiring a missing role updates this resumed manifest while preserving the earlier HDF5 files. **New Session** creates a separate logical session and never overwrites an older manifest in the selected output directory.
 
 ## 6. Open the complete FIT smoke project
 

@@ -120,7 +120,9 @@ def test_new_measure_window_does_not_merge_an_unrelated_stale_session(app,tmp_pa
     window=MeasureMainWindow(devices=result.devices,adapter=build_mock_adapter(result.devices,readings=8)); window.measurement_type.setCurrentIndex(1); window.nominal_rf.setText("500000000"); window.readings.setValue(8); window.output_directory.setText(str(tmp_path)); window._save_result(result)
     # A new Measure window is a new logical session. A manifest left in the
     # chosen directory must not silently import measurements from an earlier run.
-    assert {entry.role for entry in load_session(manifest,validate_files=False).files}=={"dispersion"}
+    assert {entry.role for entry in load_session(manifest,validate_files=False).files}=={"bpm_noise"}
+    assert window.saved_session_path!=manifest
+    assert {entry.role for entry in load_session(window.saved_session_path,validate_files=False).files}=={"dispersion"}
     window.close()
 
 

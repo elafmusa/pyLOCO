@@ -69,7 +69,14 @@ pyloco-measure
    manifest path. Individual measurements and the manifest are saved by the
    acquisition workflow. **Save Project** saves Measure configuration, not the
    measurement session.
-8. Click **Validate for pyLOCO**. Preserve the HDF5 files and manifest together.
+8. For a reproducible continuation bundle, choose **Save Full Measurement
+   Session…**. The bundle includes the project, measurement HDF5 files,
+   integrity hashes and reference lattice. A pyAML YAML is external by default;
+   include it only after explicit approval that it contains no credentials or
+   private endpoints. Reopen with **Open Full Measurement Session…**. Reopening
+   never connects to a backend or enables writes and requires device-mapping
+   revalidation after the connection inventory is available.
+9. Click **Validate for pyLOCO**. Preserve the HDF5 files and manifest together.
 
 The **Open session in pyLOCO Fit** action imports measurements only. It does not
 load the FIT lattice, machine selections, mapping, quadrupoles, exclusions,
