@@ -10,11 +10,21 @@ import numpy as np
 from .adapters import AdapterCapability, ChannelSample, WritableAdapter
 
 
+class PyAMLOrbitCorrectionError(RuntimeError):
+    """Correction failed; diagnostics describe the attempted rollback."""
+
+    def __init__(self, message, diagnostics, *, cancelled=False):
+        super().__init__(message)
+        self.diagnostics = diagnostics
+        self.cancelled = cancelled
+
+
 class PyAMLAdapter(WritableAdapter):
     def __init__(self, config_path, *, mode="live", bpm_group="BPM",
                  hcor_group="HCorr", vcor_group="VCorr", accelerator=None,
                  rf_name="RF", allow_writes=True, allow_rf_writes=True,
-                 corrector_values_in_radians=False, allow_get_only_restoration=False):
+                 corrector_values_in_radians=False, allow_get_only_restoration=False,
+                 orbit_correction_enabled=False):
         if mode not in ("design", "live"):
             raise ValueError("pyAML mode must be design or live")
         if accelerator is None:
@@ -79,6 +89,155 @@ class PyAMLAdapter(WritableAdapter):
             callable(getattr(self.machine.magnet.get(item["name"]).strength,"get",None))
             for kind in ("hcor","vcor") for item in self._catalog[kind]
         )
+
+        self.orbit_correction_enabled = bool(orbit_correction_enabled)
+        if self.orbit_correction_enabled:
+            self._initialize_orbit_correction()
+
+    def _initialize_orbit_correction(self):
+        if not self.allow_writes:
+            raise ValueError("pyAML orbit correction requires corrector magnet writes")
+        orbit = getattr(getattr(self.machine, "tool", None), "orbit", None)
+        matrix = getattr(orbit, "_pySC_response_matrix", None)
+        if orbit is None or getattr(orbit, "response_matrix", None) is None or matrix is None:
+            raise ValueError("pyAML orbit correction requires a valid loaded orbit response matrix")
+        if orbit.bpms is not self.groups["bpm"] or tuple(orbit.bpms.names()) != tuple(self.groups["bpm"].names()):
+            raise ValueError("pyAML orbit correction must use the same BPM array and ordering as measurement")
+        bpm_names = tuple(self.groups["bpm"].names())
+        inputs = list(zip(matrix.input_names, matrix.input_planes))
+        outputs = list(zip(matrix.output_names, matrix.output_planes))
+        values = np.asarray(matrix.matrix, dtype=float)
+        expected_outputs = [(name, plane) for plane in ("H", "V") for name in bpm_names]
+        if (values.shape != (len(expected_outputs), len(inputs)) or not np.isfinite(values).all()
+                or outputs != expected_outputs or len(set(inputs)) != len(inputs)
+                or len(matrix.input_names) != len(matrix.input_planes)
+                or len(matrix.output_names) != len(matrix.output_planes)):
+            raise ValueError("Invalid pyAML orbit response matrix dimensions, values, or BPM/plane ordering")
+        self.models_map = {}
+        self._orbit_correctors = {}
+        self._orbit_planes = {}
+        for plane, array in (("H", orbit.hcorrectors), ("V", orbit.vcorrectors)):
+            for corrector in array:
+                name = corrector.name
+                if name in self._orbit_correctors or (name, plane) not in inputs:
+                    raise ValueError(f"Invalid pyAML orbit response matrix mapping for {name}")
+                model = corrector.get_model_name()
+                if not model:
+                    raise ValueError(f"Missing pyAML model name for {name}")
+                self.models_map.setdefault(model, []).append(name)
+                self._orbit_correctors[name] = corrector
+                self._orbit_planes[name] = plane
+                self._angular_scale_to_rad(corrector.strength.unit())
+        if set(inputs) != {(name, plane) for name, plane in self._orbit_planes.items()}:
+            raise ValueError("pyAML orbit response matrix correctors do not match the orbit tool")
+        for names in self.models_map.values():
+            planes = [self._orbit_planes[name] for name in names]
+            if len(set(planes)) != len(planes):
+                raise ValueError(f"Ambiguous pyAML combined-function corrector mapping: {names}")
+        for kind, plane in (("hcor", "H"), ("vcor", "V")):
+            for item in self._catalog[kind]:
+                if self._orbit_planes.get(item["name"]) != plane:
+                    raise ValueError(f"Measurement corrector {item['name']} is missing from the pyAML orbit response matrix")
+        for name, plane in self._orbit_planes.items():
+            column = inputs.index((name, plane))
+            rows = [i for i, (_, p) in enumerate(outputs) if p == plane and i not in matrix.bad_outputs]
+            if not rows or not np.any(values[rows, column]):
+                raise ValueError(f"pyAML orbit response matrix has no usable {plane} response for {name}")
+        self._orbit_tool = orbit
+
+    def validate_orbit_correction_selection(self, bpm_names):
+        if tuple(bpm_names) != tuple(self.groups["bpm"].names()):
+            raise ValueError("Orbit correction requires the complete configured BPM array in its original order")
+
+    def correct_orbit_after_column(self, name, reference, *, cancel_event, settle, tolerance_rad):
+        """Apply a local correction, rolling back this transaction on failure."""
+        self.require(AdapterCapability.WRITE)
+        if not self.orbit_correction_enabled:
+            raise RuntimeError("pyAML orbit correction is disabled")
+        reference = np.asarray(reference, dtype=float)
+        if reference.shape != (2 * len(self.groups["bpm"].names()),) or not np.isfinite(reference).all():
+            raise ValueError("Invalid orbit correction reference")
+        orbit = self._orbit_tool
+        matrix = orbit._pySC_response_matrix
+        model = self._orbit_correctors[name].get_model_name()
+        names = [name] + [other for other in self.models_map[model] if other != name]
+        before = {n: self._scalar(c.strength.get()) for n, c in self._orbit_correctors.items()}
+        before_readback = {n: self._scalar((getattr(c.strength, "readback", None)
+                                          or c.strength.get)()) for n, c in self._orbit_correctors.items()}
+        units = {n: str(c.strength.unit()) for n, c in self._orbit_correctors.items()}
+        scales = {n: self._angular_scale_to_rad(unit) for n, unit in units.items()}
+        old_bad_inputs = list(matrix.bad_inputs)
+        old_virtual_weight = matrix.virtual_weight
+        singular_h = min(matrix.get_matrix_in_plane("H").shape)
+        singular_v = min(matrix.get_matrix_in_plane("V").shape)
+        diagnostics = {"corrector": name, "correctors": names, "status": "started",
+                       "reference_m": reference.tolist(), "before_native": {n: before[n] for n in names},
+                       "units": {n: units[n] for n in names}}
+        attempted = False
+        def check_cancel():
+            if cancel_event.is_set():
+                raise RuntimeError("Orbit correction was cancelled")
+        try:
+            for active in names:
+                check_cancel()
+                matrix.virtual_weight = 1e-16
+                matrix.enable_all_inputs()
+                matrix.disable_all_inputs_but([active])
+                attempted = True
+                orbit.correct(plane=self._orbit_planes[active], singular_values_h=singular_h,
+                              singular_values_v=singular_v, reference=reference, rf=False)
+                settle()
+                check_cancel()
+            after = {n: self._scalar(c.strength.get()) for n, c in self._orbit_correctors.items()}
+            if any(after[n] != before[n] for n in before if n not in names):
+                raise RuntimeError("Orbit correction unexpectedly changed an unrelated corrector")
+            diagnostics.update(status="corrected", after_native={n: after[n] for n in names})
+            return diagnostics
+        except Exception as exc:
+            rollback = []
+            # pyAML writes whole arrays: also recover unexpected unrelated changes.
+            for n, corrector in (self._orbit_correctors.items() if attempted else ()):
+                row = {"name": n, "target_native": before[n], "readback_target_native": before_readback[n],
+                       "unit": units[n], "tolerance_rad": tolerance_rad}
+                try:
+                    if n not in names and self._scalar(corrector.strength.get()) == before[n]:
+                        continue
+                    corrector.strength.set(before[n])
+                    settle()
+                    read = getattr(corrector.strength, "readback", None) or corrector.strength.get
+                    final = self._scalar(read())
+                    scale = scales[n]
+                    target = before_readback.get(n, before[n])
+                    if not np.isclose(final * scale, target * scale, rtol=0, atol=tolerance_rad):
+                        raise RuntimeError("Rollback readback verification failed")
+                    rollback.append({**row, "status": "restored", "final_native": final})
+                except Exception as rollback_exc:
+                    rollback.append({**row, "status": "restore_failed", "error": str(rollback_exc)})
+            diagnostics.update(status="failed", error=str(exc), rollback=rollback,
+                               restoration_status="restored" if all(r["status"] == "restored" for r in rollback) else "restore_failed")
+            raise PyAMLOrbitCorrectionError(str(exc), diagnostics, cancelled=cancel_event.is_set()) from exc
+        finally:
+            matrix.bad_inputs = old_bad_inputs
+            matrix.virtual_weight = old_virtual_weight
+
+    def verify_orbit_correction_restoration(self, diagnostics):
+        """Recheck failed rollback targets, including partners outside ORM selection."""
+        rows = diagnostics.get("rollback", ())
+        verified = bool(rows)
+        for row in rows:
+            try:
+                corrector = self._orbit_correctors[row["name"]]
+                if str(corrector.strength.unit()) != row["unit"]:
+                    raise ValueError("Corrector unit changed")
+                read = getattr(corrector.strength, "readback", None) or corrector.strength.get
+                value = self._scalar(read())
+                scale = self._angular_scale_to_rad(row["unit"])
+                row["recovery_verified"] = bool(np.isclose(value * scale, row["readback_target_native"] * scale,
+                                                           rtol=0, atol=row["tolerance_rad"]))
+            except Exception:
+                row["recovery_verified"] = False
+            verified = verified and row["recovery_verified"]
+        return verified
 
     @staticmethod
     def _verified_simulator_identity(accelerator,mode,config_path):

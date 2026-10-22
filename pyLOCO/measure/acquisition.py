@@ -65,6 +65,7 @@ class ORMResult:
     timestamps_state_b_s: np.ndarray
     restoration_status: tuple[str, ...]
     elapsed_seconds: float
+    orbit_correction_diagnostics: tuple[dict, ...] = ()
 
     @property
     def correctors(self) -> tuple[CorrectorDevice, ...]:
@@ -320,6 +321,11 @@ class ORMAcquirer:
                 progress=None, sleeper=sleep, clock=monotonic, restoration_tolerance_rad=1e-12) -> ORMResult:
         if direction not in {"bipolar","positive","negative"}: raise ValueError("Unsupported ORM direction")
         if readings < 2 or delay_seconds < 0 or settling_delay_seconds < 0: raise ValueError("Invalid ORM timing configuration")
+        from pyLOCO.control_system.pyaml_adapter import PyAMLAdapter, PyAMLOrbitCorrectionError
+        correction_enabled = isinstance(self.adapter, PyAMLAdapter) and self.adapter.orbit_correction_enabled
+        correction_diagnostics = []
+        if correction_enabled:
+            self.adapter.validate_orbit_correction_selection([bpm.name for bpm in self.bpms])
         correctors=self.horizontal_correctors+self.vertical_correctors
         kicks=np.concatenate((np.asarray(requested_kick_h_rad,float).ravel(),np.asarray(requested_kick_v_rad,float).ravel()))
         if kicks.shape!=(len(correctors),) or not np.isfinite(kicks).all() or np.any(kicks<=0): raise ValueError("Requested kick arrays must contain one positive finite value per corrector")
@@ -375,9 +381,17 @@ class ORMAcquirer:
                 rows.append({"index":restore_index,"name":corrector.name,"plane":corrector.plane,"setpoint_channel":corrector.setpoint_channel,"readback_channel":corrector.readback_channel,"set_command_issued":command_issued,"verification_level":evidence[restore_index]["level"],"verification_source":evidence[restore_index]["source"],"independent_readback_verified":bool(status=="restored" and evidence[restore_index]["level"]=="independent"),"original_setpoint_rad":float(arrays["original"][restore_index]),"original_readback_rad":float(arrays["original_readback"][restore_index]),"attempted_restoration_rad":float(arrays["original"][restore_index]),"final_readback_rad":final,"tolerance_rad":float(restoration_tolerance_rad),"attempts":restoration_attempts[restore_index],"status":status,"error":error})
             overall="restored" if all(row["status"]=="restored" for row in rows) else "verification_failed" if rows and all(row["status"]!="restore_failed" for row in rows) else "restore_failed"
             levels={row["verification_level"] for row in rows}; level="independent" if levels=={"independent"} else "adapter_value" if levels and levels<={"adapter_value"} else "mixed"
-            return overall,{"status":overall,"verification_level":level,"correctors":rows,"all_inventory":[{"index":i,"name":device.name,"plane":device.plane,"original_setpoint_rad":float(arrays["original"][i]),"original_readback_rad":float(arrays["original_readback"][i])} for i,device in enumerate(correctors)]}
+            return overall,{**({"orbit_correction": list(correction_diagnostics)} if correction_enabled else {}), "status":overall,"verification_level":level,"correctors":rows,"all_inventory":[{"index":i,"name":device.name,"plane":device.plane,"original_setpoint_rad":float(arrays["original"][i]),"original_readback_rad":float(arrays["original_readback"][i])} for i,device in enumerate(correctors)]}
 
         for index,(corrector,dkick) in enumerate(zip(correctors,kicks)):
+            if correction_enabled:
+                # Completed corrections remain applied, including changes to a
+                # partner that may be measured later. Only the active column
+                # belongs to the cleanup inventory in this optional path.
+                arrays["original"][index] = float(self.adapter.read(corrector.setpoint_channel).value)
+                arrays["original_readback"][index] = readback(index)
+                if not np.isfinite(arrays["original"][index]) or not np.isfinite(arrays["original_readback"][index]):
+                    raise ORMAcquisitionError(f"Invalid current baseline for {corrector.name}", restoration_status="not_required")
             original=float(arrays["original"][index]); original_readback=float(arrays["original_readback"][index])
             if direction=="bipolar": target_a,target_b=original+dkick/2,original-dkick/2; label_a,label_b="+kick","−kick"
             elif direction=="positive": target_a,target_b=original+dkick,original; label_a,label_b="+kick","reference"
@@ -424,11 +438,29 @@ class ORMAcquirer:
                     restoration,diagnostics=restore((index,))
                     if restoration!="restored":raise RuntimeError(f"Final restoration verification failed: {arrays['final'][index]!r} != {original_readback!r}")
                     if progress:progress({"event":"final_restored","corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"state":"final K0 restored and verified","readback":arrays["final"][index],"original":original,"elapsed":clock()-start})
-                    raw_ref_final[index],_=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":"final restored reference"})
+                    if correction_enabled:
+                        touched.discard(index)
+                        if cancel.is_set():
+                            raise AcquisitionCancelled("ORM acquisition was cancelled before orbit correction")
+                        if progress:
+                            progress({"event": "state", "corrector": index+1, "correctors": ncor,
+                                      "plane": corrector.plane, "device": corrector.name,
+                                      "state": "correcting orbit after nominal restoration", "elapsed": clock()-start})
+                        correction = self.adapter.correct_orbit_after_column(
+                            corrector.name, raw_ref_before[index].mean(axis=0), cancel_event=cancel,
+                            settle=lambda: settle(cancellable=False), tolerance_rad=restoration_tolerance_rad)
+                        correction_diagnostics.append(correction)
+                    raw_ref_final[index],_=self._orbit(readings,delay_seconds,cancel,sleeper,clock,progress,{"corrector":index+1,"correctors":ncor,"plane":corrector.plane,"device":corrector.name,"requested_kick":dkick,"state":"post-correction reference" if correction_enabled else "final restored reference"})
+                except PyAMLOrbitCorrectionError as exc:
+                    diagnostics = {"orbit_correction": [*correction_diagnostics, exc.diagnostics],
+                                   "status": exc.diagnostics["restoration_status"]}
+                    error_type = ORMInterrupted if exc.cancelled else ORMAcquisitionError
+                    raise error_type(f"Orbit correction failed for {corrector.name}: {exc}",
+                                     restoration_status=diagnostics["status"], restoration_diagnostics=diagnostics) from exc
                 except AcquisitionCancelled as exc:
                     restoration,diagnostics=restore(touched)
                     raise ORMInterrupted(str(exc),restoration_status=restoration,restoration_diagnostics=diagnostics) from exc
                 except Exception as exc:
                     restoration,diagnostics=restore(touched)
                     raise ORMAcquisitionError(f"Restoration failed for {corrector.name}: {exc}",restoration_status=restoration,restoration_diagnostics=diagnostics) from exc
-        return ORMResult(self.bpms,self.horizontal_correctors,self.vertical_correctors,matrix,direction,bool(scaled),kicks,arrays["effective"],arrays["original"],arrays["req_a"],arrays["req_b"],arrays["act_a"],arrays["act_b"],arrays["intermediate"],tuple(intermediate_statuses),arrays["final"],raw_a,raw_b,raw_ref_before,raw_ref_intermediate,raw_ref_final,ts_a,ts_b,tuple(statuses),clock()-start)
+        return ORMResult(self.bpms,self.horizontal_correctors,self.vertical_correctors,matrix,direction,bool(scaled),kicks,arrays["effective"],arrays["original"],arrays["req_a"],arrays["req_b"],arrays["act_a"],arrays["act_b"],arrays["intermediate"],tuple(intermediate_statuses),arrays["final"],raw_a,raw_b,raw_ref_before,raw_ref_intermediate,raw_ref_final,ts_a,ts_b,tuple(statuses),clock()-start,tuple(correction_diagnostics))
