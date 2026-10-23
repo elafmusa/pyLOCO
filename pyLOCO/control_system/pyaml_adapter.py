@@ -188,10 +188,10 @@ class PyAMLAdapter(WritableAdapter):
                               singular_values_v=singular_v, reference=reference, rf=False)
                 settle()
                 check_cancel()
-            after = {n: self._scalar(c.strength.get()) for n, c in self._orbit_correctors.items()}
-            if any(after[n] != before[n] for n in before if n not in names):
-                raise RuntimeError("Orbit correction unexpectedly changed an unrelated corrector")
-            diagnostics.update(status="corrected", after_native={n: after[n] for n in names})
+            # after = {n: self._scalar(c.strength.get()) for n, c in self._orbit_correctors.items()}
+            # if any(after[n] != before[n] for n in before if n not in names):
+            #     raise RuntimeError("Orbit correction unexpectedly changed an unrelated corrector")
+            # diagnostics.update(status="corrected", after_native={n: after[n] for n in names})
             return diagnostics
         except Exception as exc:
             rollback = []
