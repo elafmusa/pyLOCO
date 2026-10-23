@@ -87,8 +87,61 @@ def test_manual_ordinal_accepts_exact_famname_without_suffix_and_reports_wrong_i
     checked=validate_mapping(wrong,ring,inventory,lattice_path=lattice,require_provenance=False)
     row=checked["mappings"][0]
     assert row["status"]=="invalid"
-    assert "measured horizontal_corrector 'H-CORRECTOR'" in row["reason"]
+    assert "measured H corrector 'H-CORRECTOR'" in row["reason"]
     assert "AT ordinal 1" in row["reason"] and "FamName='V-CORRECTOR'" in row["reason"]
+
+
+def test_suffixless_corrector_names_match_exact_device(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"device lattice")
+    ring=[Multipole("H-FAMILY","H-DEVICE"),Multipole("V-FAMILY","V-DEVICE")]
+    inventory={"bpm":[],"horizontal_corrector":["H-DEVICE"],"vertical_corrector":["V-DEVICE"]}
+    result=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
+    assert mapping_counts(result)["mapped"]==2
+    assert [row["identity_match"] for row in result["mappings"]]==["exact_device","exact_device"]
+
+
+def test_duplicate_famname_can_be_manually_disambiguated_by_exact_ordinal(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"duplicate family lattice")
+    ring=[Multipole("COR","device/one"),Multipole("COR","device/two")]
+    inventory={"bpm":[],"horizontal_corrector":["COR"],"vertical_corrector":[]}
+    automatic=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
+    row=automatic["mappings"][0]
+    assert row["status"]=="ambiguous" and row["lattice_ordinal"] is None
+    assert "AT ordinals [0, 1]" in row["reason"] and "Enter the intended" in row["reason"]
+
+    manual=mapping_template(inventory); manual["mappings"][0]["lattice_ordinal"]=1
+    checked=validate_mapping(manual,ring,inventory,lattice_path=lattice,require_provenance=False)
+    assert mapping_counts(checked)["mapped"]==1
+    assert checked["mappings"][0]["lattice_ordinal"]==1
+    assert checked["mappings"][0]["identity_match"]=="exact_fam_name"
+
+
+def test_identity_and_wrong_plane_steering_failure_are_reported_separately(tmp_path):
+    class HorizontalOnly:
+        def __init__(self):
+            self.FamName="COR"; self.Device="COR"; self.PolynomB=[0.0,0.0]
+            self.Length=1.0; self.PassMethod="StrMPoleSymplectic4Pass"
+
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"wrong plane lattice")
+    inventory={"bpm":[],"horizontal_corrector":[],"vertical_corrector":["COR"]}
+    checked=find_exact_device_mappings([HorizontalOnly()],inventory,lattice_path=lattice)
+    row=checked["mappings"][0]
+    assert row["status"]=="invalid"
+    assert "Identity passed via exact AT Device" in row["reason"]
+    assert "steering compatibility failed for A1L" in row["reason"]
+    assert "required steering plane" in row["reason"]
+
+
+def test_legacy_component_suffix_mapping_remains_supported_and_records_method(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"legacy suffix lattice")
+    ring=[Multipole("S1","machine/corrector/1"),Multipole("S2","machine/corrector/2")]
+    inventory={"bpm":[],"horizontal_corrector":["machine/corrector/2-B1L"],
+               "vertical_corrector":["machine/corrector/1-A1L"]}
+    checked=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
+    assert mapping_counts(checked)["mapped"]==2
+    assert ordered_ordinals(checked,"horizontal_corrector")==[1]
+    assert ordered_ordinals(checked,"vertical_corrector")==[0]
+    assert {row["identity_match"] for row in checked["mappings"]}=={"legacy_component_device"}
 
 
 def test_revalidation_rejects_order_inventory_lattice_and_configuration_changes(example, tmp_path):
@@ -148,7 +201,8 @@ def test_exact_device_does_not_validate_non_steering_corrector(example):
     )
     horizontal = [row for row in checked["mappings"] if row["role"] == "horizontal_corrector"][0]
     assert horizontal["status"] == "invalid"
-    assert "cannot represent B1L" in horizontal["reason"]
+    assert "steering compatibility failed for B1L" in horizontal["reason"]
+    assert "required steering plane" in horizontal["reason"]
 
 
 def test_mapping_round_trips_with_fit_project(example, tmp_path):

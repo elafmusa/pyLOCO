@@ -18,6 +18,7 @@ VERSION = 1
 ROLES = ("bpm", "horizontal_corrector", "vertical_corrector")
 ROLE_COMPONENT = {"bpm": "", "horizontal_corrector": "B1L", "vertical_corrector": "A1L"}
 STATUS_VALUES = frozenset({"mapped", "unresolved", "ambiguous", "duplicate", "invalid"})
+ROLE_LABEL = {"bpm": "BPM", "horizontal_corrector": "H corrector", "vertical_corrector": "V corrector"}
 
 
 def file_sha256(path: str | Path) -> str:
@@ -130,31 +131,45 @@ def find_exact_device_mappings(ring, inventory: dict[str, list[str]], *,
     for role in ROLES:
         component = ROLE_COMPONENT[role]
         for position, measured_name in enumerate(inventory.get(role, ())):
-            hits, match_method = _identity_hits(lookup, str(measured_name), role)
+            measured_name = str(measured_name)
+            role_label = ROLE_LABEL[role]
+            hits, match_method = _identity_hits(lookup, measured_name, role)
             status = "mapped" if len(hits) == 1 else "ambiguous" if len(hits) > 1 else "unresolved"
             ordinal = hits[0] if len(hits) == 1 else None
             reason = _match_label(match_method) if status == "mapped" else (
-                f"Ambiguous {_match_label(match_method)}: matching AT ordinals {hits}; select the intended ordinal manually"
+                f"Ambiguous identity for measured {role_label} {measured_name!r}: {_match_label(match_method)} "
+                f"matches AT ordinals {hits}. Enter the intended zero-based ordinal manually; it will be "
+                "revalidated for exact identity and steering capability."
                 if status == "ambiguous" else
-                "No exact AT Device or FamName identity match (legacy -B1L/-A1L interpretation was also checked)"
+                f"No exact identity match for measured {role_label} {measured_name!r}: no AT Device or "
+                "FamName matched (optional legacy -B1L/-A1L component interpretation was also checked)."
             )
             if ordinal is not None:
+                lattice_name, element_class = _element_identity(ring[ordinal])
+                lattice_device = str(getattr(ring[ordinal], "Device", ""))
                 compatible, representation = _role_compatibility(ring[ordinal], role)
                 if not compatible:
-                    status, reason = "invalid", f"AT element cannot represent {component}: {representation}"
+                    status, reason = "invalid", (
+                        f"Identity passed via {_match_label(match_method)} for measured {role_label} "
+                        f"{measured_name!r} at AT ordinal {ordinal} (FamName={lattice_name!r}, "
+                        f"Device={lattice_device!r}), but steering compatibility failed for "
+                        f"{component or 'BPM'}: {representation}. Select an element that supports the "
+                        "required steering plane."
+                    )
                 else:
                     reason = f"Identity: {_match_label(match_method)}; steering compatibility: {representation}"
                 key = (role, ordinal)
                 if status == "mapped" and key in used:
-                    status, reason = "duplicate", "AT element is assigned more than once in this role"
+                    status, reason = "duplicate", (
+                        f"AT ordinal {ordinal} (FamName={lattice_name!r}, Device={lattice_device!r}) is "
+                        f"assigned more than once to measured {role_label} devices. Choose unique elements."
+                    )
                 if status == "mapped":
                     used[key] = position
-                lattice_name, element_class = _element_identity(ring[ordinal])
-                lattice_device = str(getattr(ring[ordinal], "Device", ""))
             else:
                 lattice_name = element_class = lattice_device = ""
             rows.append({
-                "measured_name": str(measured_name), "role": role,
+                "measured_name": measured_name, "role": role,
                 "lattice_name": lattice_name, "lattice_ordinal": ordinal,
                 "lattice_device": lattice_device, "element_class": element_class,
                 "component": component, "unit": "rad" if component else "m",
@@ -234,6 +249,7 @@ def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[s
     targets = set()
     for role in ROLES:
         component = ROLE_COMPONENT[role]
+        role_label = ROLE_LABEL[role]
         for name in inventory.get(role, ()):
             source = keyed.get((role, name))
             ordinal = source.get("lattice_ordinal") if source else None
@@ -246,14 +262,14 @@ def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[s
                 compatible, representation = _role_compatibility(ring[ordinal], role)
                 if not match_method:
                     status, reason = "invalid", (
-                        f"No exact identity match: measured {role} {name!r}; selected AT ordinal {ordinal}; "
+                        f"No exact identity match: measured {role_label} {name!r}; selected AT ordinal {ordinal}; "
                         f"FamName={lattice_name!r}; Device={lattice_device!r}. Exact Device, exact FamName, "
                         "and optional legacy -B1L/-A1L component interpretation all failed. Select the AT "
                         "element with the matching Device or FamName."
                     )
                 elif not compatible:
                     status, reason = "invalid", (
-                        f"Identity passed via {_match_label(match_method)} for measured {role} {name!r} at AT "
+                        f"Identity passed via {_match_label(match_method)} for measured {role_label} {name!r} at AT "
                         f"ordinal {ordinal} (FamName={lattice_name!r}, Device={lattice_device!r}), but steering "
                         f"compatibility failed for {component or 'BPM'}: {representation}. Select an element "
                         "that supports the required steering plane."
@@ -265,7 +281,7 @@ def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[s
                     targets.add((role, ordinal))
             elif ordinal is not None:
                 status, reason = "invalid", (
-                    f"Invalid manual ordinal for measured {role} {name!r}: {ordinal!r} is not a valid "
+                    f"Invalid manual ordinal for measured {role_label} {name!r}: {ordinal!r} is not a valid "
                     f"zero-based AT element index for this {len(ring)}-element lattice."
                 )
             rows.append({"measured_name": name, "role": role, "lattice_name": lattice_name,
