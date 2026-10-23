@@ -90,6 +90,11 @@ def test_ebs_gui_export_session_fit_reopen_and_correct_preserve_complete_mapping
         assert _role_counts(fit.project.machine_mapping) == Counter(expected)
         assert len(fit.project.measurement_device_mapping["mappings"]) == 330
         assert fit.machine_mapping_details_button.isEnabled()
+        assert fit.mapping_table_scope.currentData() == "machine"
+        assert fit.measurement_mapping_table.rowCount() == 1954
+        assert fit.mapping_table_scope.currentText() == "Complete Machine Mapping (1,954 configured devices)"
+        measurement_scope=fit.mapping_table_scope.findData("measurement")
+        assert fit.mapping_table_scope.itemText(measurement_scope) == "Measured BPM/H/V mapping (330 selected devices)"
 
         # Exercise the actual FIT button slot. It must rediscover/revalidate
         # the complete configured inventory without changing measured order

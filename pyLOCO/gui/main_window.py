@@ -1784,8 +1784,8 @@ class MainWindow(QMainWindow):
         self.create_measurement_mapping_template_button = QPushButton("Create Machine Mapping template…")
         self.measurement_mapping_python_helper_button = QPushButton("Python Mapping Helper…")
         self.load_measurement_mapping_button = QPushButton("Load Machine Mapping…")
-        self.measurement_mapping_details_button = QPushButton("Measurement Mapping Details")
-        self.machine_mapping_details_button = QPushButton("Complete Machine Mapping…")
+        self.measurement_mapping_details_button = QPushButton("Show Measurement Mapping…")
+        self.machine_mapping_details_button = QPushButton("Show Complete Machine Mapping…")
         self.save_measurement_mapping_button = QPushButton("Save validated Machine Mapping…")
         self.find_measurement_mappings_button.clicked.connect(self.find_measurement_mappings)
         self.create_measurement_mapping_template_button.clicked.connect(self.create_measurement_mapping_template)
@@ -5396,6 +5396,14 @@ class MainWindow(QMainWindow):
         candidate.modified=True
         self.project=candidate; self.fit_recipe=recipe; self._load_config_to_widgets(); self._refresh_fit_workflow_table(0)
         if imported_machine_mapping_document is not None:self._loaded_machine_mapping_document=imported_machine_mapping_document
+        # A Full Measure Session carries two deliberately separate scopes.
+        # Show the imported whole-machine document first so it is not mistaken
+        # for the smaller ordered BPM/H/V subset required by the ORM.
+        if mode=="full" and is_machine_mapping(candidate.machine_mapping):
+            scope_index=self.mapping_table_scope.findData("machine")
+            if scope_index>=0:self.mapping_table_scope.setCurrentIndex(scope_index)
+            filter_index=self.measurement_mapping_filter.findData("all")
+            if filter_index>=0:self.measurement_mapping_filter.setCurrentIndex(filter_index)
         self._refresh_ui(f"Imported Measurement Session {handoff.session_id}")
         available="\n".join(f"✓ {role.replace('_',' ').title()}" for role in handoff.available_roles) or "—"
         missing="\n".join(f"✗ {role.replace('_',' ').title()}" for role in handoff.missing_roles) or "None"
@@ -6295,6 +6303,19 @@ class MainWindow(QMainWindow):
             1 for row in master_rows
             if row.get("role") in ("bpm", "horizontal_corrector", "vertical_corrector")
         )
+        if hasattr(self,"mapping_table_scope"):
+            measurement_index=self.mapping_table_scope.findData("measurement")
+            machine_index=self.mapping_table_scope.findData("machine")
+            if measurement_index>=0:
+                self.mapping_table_scope.setItemText(
+                    measurement_index,
+                    f"Measured BPM/H/V mapping ({counts['total']:,} selected devices)",
+                )
+            if machine_index>=0:
+                self.mapping_table_scope.setItemText(
+                    machine_index,
+                    f"Complete Machine Mapping ({master_total:,} configured devices)",
+                )
         if hasattr(self, "machine_mapping_details_button"):
             self.machine_mapping_details_button.setEnabled(bool(master_rows))
         scope = (

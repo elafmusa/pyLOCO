@@ -135,7 +135,7 @@ def test_fit_mapping_actions_include_python_helper(qapp):
     assert window.load_measurement_mapping_button.text()=="Load Machine Mapping…"
     assert window.create_measurement_mapping_template_button.text()=="Create Machine Mapping template…"
     assert window.measurement_mapping_python_helper_button.text()=="Python Mapping Helper…"
-    assert window.measurement_mapping_details_button.text()=="Measurement Mapping Details"
-    assert window.machine_mapping_details_button.text()=="Complete Machine Mapping…"
+    assert window.measurement_mapping_details_button.text()=="Show Measurement Mapping…"
+    assert window.machine_mapping_details_button.text()=="Show Complete Machine Mapping…"
     assert window.save_measurement_mapping_button.text()=="Save validated Machine Mapping…"
     window.project.modified=False; window.close()
