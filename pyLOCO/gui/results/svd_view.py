@@ -3,6 +3,7 @@
 import json
 import shutil
 from pathlib import Path
+import numpy as np
 from PySide6.QtWidgets import QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from .plot_canvas import PlotCanvas
@@ -17,7 +18,10 @@ class SvdView(QWidget):
         self.note = QLabel(); self.note.setWordWrap(True)
         self.save_jacobian = QPushButton("Save Jacobian…"); self.save_jacobian.setEnabled(False)
         self.save_jacobian.clicked.connect(self._save_jacobian)
-        self.plot = PlotCanvas(show_toolbar=True, minimum_height=140); self.plot.hide()
+        # Leave enough vertical space for logarithmic tick labels.  At the old
+        # 140 px minimum the toolbar consumed most of the canvas and macOS/Qt
+        # rendered several powers-of-ten labels on top of one another.
+        self.plot = PlotCanvas(show_toolbar=True, minimum_height=300); self.plot.hide()
         layout = QVBoxLayout(self); layout.addLayout(self.form); layout.addWidget(self.note); layout.addWidget(self.save_jacobian); layout.addWidget(self.plot)
 
     def set_loader(self, loader):
@@ -35,8 +39,32 @@ class SvdView(QWidget):
             if source and Path(source).parent == loader.result_dir
             else "iteration artifact"
         )
-        self.note.setText(f"Singular values loaded from the persisted {source_note}."); self.plot.show()
-        axis = self.plot.figure.add_subplot(111); axis.semilogy(spectrum, color="#19a974")
+        values = np.ravel(np.asarray(spectrum, dtype=float))
+        positive = np.isfinite(values) & (values > 0.0)
+        omitted = int(values.size - np.count_nonzero(positive))
+        suffix = (
+            f" {omitted} zero or non-finite value(s) are not shown on the logarithmic axis."
+            if omitted else ""
+        )
+        self.note.setText(f"Singular values loaded from the persisted {source_note}.{suffix}"); self.plot.show()
+        axis = self.plot.figure.add_subplot(111)
+        plotted = np.where(positive, values, np.nan)
+        axis.plot(np.arange(values.size), plotted, color="#19a974")
+        if np.any(positive):
+            axis.set_yscale("log")
+            low = float(np.min(values[positive])); high = float(np.max(values[positive]))
+            # A constant or extremely narrow spectrum otherwise gives
+            # effectively coincident log tick labels.  Add symmetric padding
+            # in log space without changing any persisted values.
+            if np.isclose(np.log10(low), np.log10(high), rtol=0.0, atol=1e-9):
+                axis.set_ylim(low / 10.0, high * 10.0)
+            from matplotlib.ticker import LogLocator
+            axis.yaxis.set_major_locator(LogLocator(base=10.0, numticks=7))
+        else:
+            axis.text(
+                0.5, 0.5, "No positive finite singular values to plot",
+                ha="center", va="center", transform=axis.transAxes,
+            )
         axis.set(xlabel="Singular-value index", ylabel="Singular value", title="Persisted singular-value spectrum")
         axis.grid(True, alpha=.25); self.plot.apply_theme(); self.plot.canvas.draw_idle()
 

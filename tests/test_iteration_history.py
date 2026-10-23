@@ -2,6 +2,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -262,6 +263,56 @@ def test_final_iteration_uses_root_svd_spectrum_and_reopens_without_refit(tmp_pa
     np.testing.assert_array_equal(reopened.loader.svd_metadata["spectrum"], final_spectrum)
     assert reopened.iteration_selector.currentText() == "Iteration 1 / Final"
     reopened.close()
+
+
+def test_svd_view_has_readable_log_axis_for_narrow_spectrum():
+    from pyLOCO.gui.results.svd_view import SvdView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+
+    loader = SimpleNamespace(
+        svd_metadata={
+            "method": "threshold", "threshold": 1e-7, "rank": 3,
+            "measurement_values": 6, "fitted_dofs": 3,
+            "spectrum": np.asarray([100.0, 100.0, 100.0]),
+            "spectrum_source": "/tmp/result/loco_results.npz",
+        },
+        jacobian_available=False,
+        jacobian_metadata={},
+        result_dir=Path("/tmp/result"),
+    )
+    view = SvdView(); view.set_loader(loader)
+    axis = view.plot.figure.axes[0]
+    assert view.plot.minimumHeight() == 300
+    assert axis.get_yscale() == "log"
+    low, high = axis.get_ylim()
+    assert low < 100.0 < high
+    assert len(axis.get_yticks()) <= 7
+    view.close()
+
+
+def test_svd_view_reports_values_omitted_from_log_axis():
+    from pyLOCO.gui.results.svd_view import SvdView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+
+    loader = SimpleNamespace(
+        svd_metadata={
+            "method": "threshold", "threshold": 1e-7, "rank": 1,
+            "measurement_values": 3, "fitted_dofs": 1,
+            "spectrum": np.asarray([4.0, 0.0, np.nan]),
+            "spectrum_source": "/tmp/result/loco_results.npz",
+        },
+        jacobian_available=False,
+        jacobian_metadata={},
+        result_dir=Path("/tmp/result"),
+    )
+    view = SvdView(); view.set_loader(loader)
+    plotted = view.plot.figure.axes[0].lines[0].get_ydata()
+    assert plotted[0] == 4.0
+    assert np.isnan(plotted[1:]).all()
+    assert "2 zero or non-finite value(s)" in view.note.text()
+    view.close()
 
 
 def test_results_workspace_selector_switches_all_views(tmp_path, monkeypatch):
