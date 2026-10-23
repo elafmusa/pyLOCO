@@ -1130,6 +1130,7 @@ class MeasureMainWindow(QMainWindow):
             self.measurement_device_alignment=selected_document
         try:document=self._ensure_complete_machine_mapping()
         except Exception as exc:QMessageBox.warning(self,"Cannot display Machine Mapping",str(exc)); return
+        common=is_machine_mapping(document)
         dialog=QDialog(self); dialog.setWindowTitle("Complete Machine Mapping — configured pyAML devices"); dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.setMinimumSize(900,520); dialog.resize(1250,700)
         layout=QVBoxLayout(dialog)
         total,roles=self._master_mapping_counts(document)
@@ -1151,11 +1152,16 @@ class MeasureMainWindow(QMainWindow):
                 status=str(item.get("status","") or "Not available")
                 capability=item.get("component") or "BPM position"
                 evidence=item.get("evidence") or item.get("identity_evidence") or "Exact configured identity checked against active lattice"
-                values=(item.get("pyaml_device") or "Not available",item.get("role") or "Not available",
-                    item.get("lattice_fam_name") or "Not available",item.get("lattice_device") or "Not available",
+                measured_name=item.get("pyaml_device") if common else item.get("measured_name")
+                lattice_name=item.get("lattice_fam_name") if common else item.get("lattice_name")
+                if not common:
+                    evidence=item.get("reason") or item.get("identity_evidence") or evidence
+                    capability=(item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated")
+                values=(measured_name or "Not available",item.get("role") or "Not available",
+                    lattice_name or "Not available",item.get("lattice_device") or "Not available",
                     item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",
                     identity_match_label(item.get("identity_match")),capability,status.replace("_"," ").title(),evidence)
-                record_identity=(row,str(item.get("role","") or ""),str(item.get("pyaml_device","") or ""),item.get("lattice_ordinal"))
+                record_identity=(row,str(item.get("role","") or ""),str(measured_name or ""),item.get("lattice_ordinal"))
                 for column,value in enumerate(values):
                     cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,record_identity); cell.setToolTip(str(value)); table.setItem(row,column,cell)
             table.setSortingEnabled(True)

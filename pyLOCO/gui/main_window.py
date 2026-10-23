@@ -1764,15 +1764,14 @@ class MainWindow(QMainWindow):
         measurement_mapping_group = QGroupBox("Machine Mapping")
         measurement_mapping_layout = QVBoxLayout(measurement_mapping_group)
         mapping_intro = QLabel(
-            "Measured identities come from imported HDF5 metadata. AT FamName, AT Device and zero-based ordinal "
-            "come from the active reference lattice. The recorded match method and steering compatibility are "
-            "reviewed separately; array position is never identity. "
-            "Find Machine Mapping verifies identities only — it does not change the FIT selections."
+            "The complete Machine Mapping comes from configured pyAML devices and the active AT lattice. "
+            "The measured BPM/H/V mapping is a separate ordered HDF5 subset. Use the view selector below "
+            "to inspect either scope; mapping never changes FIT parameter selections."
         )
         mapping_intro.setWordWrap(True); measurement_mapping_layout.addWidget(mapping_intro)
         self.measurement_mapping_steps = QLabel(
-            "<b>Step 1 — Find Machine Mapping</b><br>Match measured BPMs and correctors with the reference AT lattice.<br>"
-            "<b>Step 2 — Review results</b><br>Check matched devices and resolve unmatched or ambiguous entries.<br>"
+            "<b>Step 1 — Find Machine Mapping</b><br>Match every configured pyAML device and the measured BPM/H/V subset with the reference AT lattice.<br>"
+            "<b>Step 2 — Review results</b><br>Switch between Complete Machine Mapping and Measured BPM/H/V mapping; filter by device role.<br>"
             "<b>Step 3 — Use mappings in FIT</b><br>Preview and confirm the BPM and corrector selections for the measured ORM.<br>"
             "<b>Step 4 — Validate</b><br>Verify the complete configuration before running LOCO."
         )
@@ -1810,7 +1809,13 @@ class MainWindow(QMainWindow):
         self.use_measurement_mappings_button.setEnabled(False)
         self.use_measurement_mappings_button.clicked.connect(self.use_measurement_mappings_for_fit)
         measurement_mapping_layout.addWidget(self.use_measurement_mappings_button, 0, Qt.AlignLeft)
-        mapping_filters = QHBoxLayout(); self.measurement_mapping_search = QLineEdit()
+        mapping_filters = QHBoxLayout()
+        self.mapping_table_scope = QComboBox()
+        self.mapping_table_scope.addItem("Measured BPM/H/V mapping", "measurement")
+        self.mapping_table_scope.addItem("Complete Machine Mapping", "machine")
+        self.mapping_table_role_filter = QComboBox()
+        self.mapping_table_role_filter.addItem("All device roles", "")
+        self.measurement_mapping_search = QLineEdit()
         self.measurement_mapping_search.setPlaceholderText("Search measured device, AT FamName or AT Device")
         self.measurement_mapping_filter = QComboBox()
         self.measurement_mapping_filter.addItem("Needs attention", "attention")
@@ -1818,7 +1823,12 @@ class MainWindow(QMainWindow):
         self.measurement_mapping_filter.addItem("Validated only", "validated")
         self.measurement_mapping_search.textChanged.connect(self._refresh_measurement_mapping_table)
         self.measurement_mapping_filter.currentIndexChanged.connect(self._refresh_measurement_mapping_table)
-        mapping_filters.addWidget(self.measurement_mapping_search, 1); mapping_filters.addWidget(self.measurement_mapping_filter)
+        self.mapping_table_scope.currentIndexChanged.connect(self._refresh_measurement_mapping_table)
+        self.mapping_table_role_filter.currentIndexChanged.connect(self._refresh_measurement_mapping_table)
+        mapping_filters.addWidget(self.mapping_table_scope)
+        mapping_filters.addWidget(self.mapping_table_role_filter)
+        mapping_filters.addWidget(self.measurement_mapping_search, 1)
+        mapping_filters.addWidget(self.measurement_mapping_filter)
         measurement_mapping_layout.addLayout(mapping_filters)
         self.measurement_mapping_table = CopyableMappingTable(0, 9)
         self.measurement_mapping_table.setHorizontalHeaderLabels(
@@ -5934,6 +5944,12 @@ class MainWindow(QMainWindow):
             "issues": ["Measurement-device mapping changed; validation is required."],
         }
         self._select_measurement_mapping_filter_after_operation(mapping)
+        scope_index = self.mapping_table_scope.findData("machine")
+        if scope_index >= 0:
+            self.mapping_table_scope.setCurrentIndex(scope_index)
+        all_index = self.measurement_mapping_filter.findData("all")
+        if all_index >= 0:
+            self.measurement_mapping_filter.setCurrentIndex(all_index)
         self._refresh_measurement_mapping_table(); self._refresh_measurement_mapping_feedback()
         self._refresh_ui("Measurement-device mapping changed; validate before running FIT")
         return measurement_mapping_counts(mapping)["mapped"] == measurement_mapping_counts(mapping)["total"]
@@ -6320,6 +6336,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def show_measurement_mapping_details(self) -> None:
         """Reveal the existing copyable detail table without creating a second mapping view."""
+        scope=self.mapping_table_scope.findData("measurement")
+        if scope>=0:self.mapping_table_scope.setCurrentIndex(scope)
         index=self.measurement_mapping_filter.findData("all")
         if index>=0:self.measurement_mapping_filter.setCurrentIndex(index)
         self.measurement_mapping_search.clear(); self._refresh_measurement_mapping_table()
@@ -6334,63 +6352,72 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self,"Complete Machine Mapping unavailable",
                 "No complete Machine Mapping is stored in this FIT project. Import a Full Measure Session or load a shared Machine Mapping file.")
             return
-        counts={}
-        for row in rows:
-            role=str(row.get("role","") or "unclassified"); counts[role]=counts.get(role,0)+1
-        dialog=QDialog(self); dialog.setWindowTitle("Complete Machine Mapping — imported configured devices")
-        dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.resize(1250,700)
-        layout=QVBoxLayout(dialog)
-        measured=sum(counts.get(role,0) for role in ("bpm","horizontal_corrector","vertical_corrector"))
-        summary=QLabel(f"Machine Mapping: {len(rows):,} configured devices · Measurement Mapping: {measured:,} available BPM/H/V devices. FIT element selections remain independent.")
-        summary.setWordWrap(True); layout.addWidget(summary)
-        role_filter=QComboBox(); role_filter.addItem("All configured device roles","")
-        for role in sorted(counts):role_filter.addItem(f"{role.replace('_',' ').title()} ({counts[role]:,})",role)
-        layout.addWidget(role_filter,0,Qt.AlignLeft)
-        table=CopyableMappingTable(0,9); table.setHorizontalHeaderLabels(
-            ("pyAML device","Role","AT FamName","AT Device","AT index (0-based)","Match method","Component","Physical element type","Status"))
-        configure_mapping_table(table,("Configured pyAML control/device identity.","Automatically derived device role.",
-            "AT FamName.","AT Device attribute.","Zero-based AT lattice ordinal.","Recorded exact identity method.",
-            "Applicable control or measurement component.","Actual AT element class.","Mapping state; unresolved targets are never guessed."))
-        def populate():
-            selected=role_filter.currentData(); visible=[row for row in rows if not selected or row.get("role")==selected]
-            table.setSortingEnabled(False); table.setRowCount(len(visible))
-            for index,row in enumerate(visible):
-                values=(row.get("pyaml_device") or "Not available",row.get("role") or "Not available",
-                    row.get("lattice_fam_name") or "Not available",row.get("lattice_device") or "Not available",
-                    row.get("lattice_ordinal") if row.get("lattice_ordinal") is not None else "Not available",
-                    identity_match_label(row.get("identity_match")),row.get("component") or "Not applicable",
-                    row.get("physical_element_type") or "Not available",str(row.get("status") or "Not available").replace("_"," ").title())
-                identity=(str(row.get("role","") or ""),str(row.get("pyaml_device","") or ""),row.get("lattice_ordinal"))
-                for column,value in enumerate(values):
-                    cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,identity); cell.setToolTip(str(value)); table.setItem(index,column,cell)
-            table.setSortingEnabled(True)
-        role_filter.currentIndexChanged.connect(populate); populate(); layout.addWidget(table,1)
-        buttons=QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
-        self.complete_machine_mapping_dialog=dialog; self.complete_machine_mapping_table=table
-        dialog.exec()
+        scope=self.mapping_table_scope.findData("machine")
+        if scope>=0:self.mapping_table_scope.setCurrentIndex(scope)
+        index=self.measurement_mapping_filter.findData("all")
+        if index>=0:self.measurement_mapping_filter.setCurrentIndex(index)
+        self.measurement_mapping_search.clear(); self._refresh_measurement_mapping_table()
+        self.measurement_mapping_table.setFocus(Qt.OtherFocusReason)
+        self.measurement_mapping_table.scrollToTop()
 
     def _refresh_measurement_mapping_table(self, *_args) -> None:
         if not hasattr(self, "measurement_mapping_table"): return
         query = self.measurement_mapping_search.text().strip().lower()
         mode = self.measurement_mapping_filter.currentData()
-        rows = (self.project.measurement_device_mapping or {}).get("mappings", ())
+        complete = self.mapping_table_scope.currentData() == "machine"
+        document = self.project.machine_mapping if complete else self.project.measurement_device_mapping
+        rows = (document or {}).get("mappings", ())
+        roles={str(row.get("role","") or "unclassified") for row in rows}
+        selected_role=self.mapping_table_role_filter.currentData()
+        current_roles=[self.mapping_table_role_filter.itemData(i) for i in range(self.mapping_table_role_filter.count())]
+        desired=[""]+sorted(roles)
+        if current_roles!=desired:
+            self.mapping_table_role_filter.blockSignals(True)
+            self.mapping_table_role_filter.clear(); self.mapping_table_role_filter.addItem("All device roles","")
+            for role in sorted(roles):
+                count=sum(1 for row in rows if (row.get("role") or "unclassified")==role)
+                self.mapping_table_role_filter.addItem(f"{role.replace('_',' ').title()} ({count:,})",role)
+            target=self.mapping_table_role_filter.findData(selected_role)
+            self.mapping_table_role_filter.setCurrentIndex(target if target>=0 else 0)
+            self.mapping_table_role_filter.blockSignals(False)
+        selected_role=self.mapping_table_role_filter.currentData()
         table = self.measurement_mapping_table; table.setSortingEnabled(False); table.setRowCount(0)
+        if complete:
+            table.setHorizontalHeaderLabels(("pyAML configured device","Device role","AT FamName","AT Device","AT index (0-based)","Match method","Control component","Physical element type","Mapping status / evidence"))
+            self.measurement_mapping_search.setPlaceholderText("Search pyAML device, role, AT FamName or AT Device")
+        else:
+            table.setHorizontalHeaderLabels(("Measured device (HDF5)","Role / plane","AT FamName","AT Device","AT index (0-based)","Match method","Component / steering capability","Mapping status","Evidence / problem"))
+            self.measurement_mapping_search.setPlaceholderText("Search measured device, AT FamName or AT Device")
         role_labels = {"bpm": "BPM", "horizontal_corrector": "H corrector", "vertical_corrector": "V corrector"}
         displayed = 0
         for item in rows:
             status = item.get("status", "unresolved")
-            if mode == "attention" and status == "mapped": continue
-            if mode == "validated" and status != "mapped": continue
-            searchable = " ".join(str(item.get(key, "")) for key in ("measured_name", "lattice_name", "lattice_device", "reason")).lower()
+            resolved=status in ("mapped","proposed_unique_exact_match","proposed_manual_exact_disambiguation")
+            if mode == "attention" and resolved: continue
+            if mode == "validated" and not resolved: continue
+            if selected_role and item.get("role")!=selected_role:continue
+            keys=("pyaml_device","role","lattice_fam_name","lattice_device","evidence") if complete else ("measured_name","lattice_name","lattice_device","reason")
+            searchable = " ".join(str(item.get(key, "")) for key in keys).lower()
             if query and query not in searchable: continue
-            capability=(item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated")
-            values = (item.get("measured_name", "") or "Not available", role_labels.get(item.get("role"), item.get("role", "")) or "Not available",
-                      item.get("lattice_name") or "Not available", item.get("lattice_device") or "Not available",
-                      item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",
-                      identity_match_label(item.get("identity_match")), capability,
-                      "Validated" if status == "mapped" else status.capitalize(), item.get("reason", "") or "Not available")
+            if complete:
+                evidence=str(item.get("evidence") or item.get("identity_evidence") or "").strip()
+                status_text=str(status or "Not available").replace("_"," ").title()
+                values=(item.get("pyaml_device") or "Not available",str(item.get("role") or "Not available").replace("_"," ").title(),
+                    item.get("lattice_fam_name") or "Not available",item.get("lattice_device") or "Not available",
+                    item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",
+                    identity_match_label(item.get("identity_match")),item.get("component") or "Not applicable",
+                    item.get("physical_element_type") or "Not available",status_text+(f" — {evidence}" if evidence else ""))
+            else:
+                capability=(item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated")
+                values = (item.get("measured_name", "") or "Not available", role_labels.get(item.get("role"), item.get("role", "")) or "Not available",
+                          item.get("lattice_name") or "Not available", item.get("lattice_device") or "Not available",
+                          item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",
+                          identity_match_label(item.get("identity_match")), capability,
+                          "Validated" if status == "mapped" else status.capitalize(), item.get("reason", "") or "Not available")
             row = table.rowCount(); table.insertRow(row)
-            record_identity=(displayed,str(item.get("role","") or ""),str(item.get("measured_name","") or ""),item.get("lattice_ordinal"))
+            record_identity=(displayed,str(item.get("role","") or ""),
+                             str(item.get("pyaml_device" if complete else "measured_name","") or ""),
+                             item.get("lattice_ordinal"))
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,record_identity); cell.setToolTip(str(value)); table.setItem(row, column, cell)
             displayed += 1

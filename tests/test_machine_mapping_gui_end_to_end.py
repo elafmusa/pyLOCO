@@ -109,6 +109,18 @@ def test_ebs_gui_export_session_fit_reopen_and_correct_preserve_complete_mapping
         assert json.dumps(fit.project.fit_recipe, sort_keys=True) == recipe_before
         assert "Machine Mapping: 1,954 configured devices" in fit.measurement_mapping_feedback.text()
         assert "Measurement Mapping: 896 available BPM/H/V devices" in fit.measurement_mapping_feedback.text()
+        assert fit.mapping_table_scope.currentData() == "machine"
+        assert fit.measurement_mapping_table.rowCount() == 1954
+        normal_index = fit.mapping_table_role_filter.findData("normal_quadrupole")
+        assert normal_index >= 0
+        fit.mapping_table_role_filter.setCurrentIndex(normal_index)
+        assert fit.measurement_mapping_table.rowCount() == expected["normal_quadrupole"]
+        fit.show_measurement_mapping_details()
+        assert fit.mapping_table_scope.currentData() == "measurement"
+        assert fit.measurement_mapping_table.rowCount() == 330
+        fit.show_complete_machine_mapping_details()
+        assert fit.mapping_table_scope.currentData() == "machine"
+        assert fit.measurement_mapping_table.rowCount() == 1954
 
         project_path = tmp_path / "imported-complete-mapping.pyloco.json"
         assert fit._save_project_to(project_path)
