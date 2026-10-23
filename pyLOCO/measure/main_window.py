@@ -15,15 +15,16 @@ from importlib.util import find_spec
 from threading import Event
 from time import monotonic, sleep
 from typing import Sequence
+from uuid import uuid4
 
 import numpy as np
 from PySide6.QtCore import QItemSelectionModel, QObject, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox, QInputDialog,
-    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
+    QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QMenu,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter,
-    QDoubleSpinBox, QSizePolicy, QTabWidget, QTableWidget, QTableWidgetItem, QToolBar,
+    QDoubleSpinBox, QSizePolicy, QTabWidget, QTableWidget, QTableWidgetItem, QToolBar, QToolButton,
     QVBoxLayout, QWidget,
 )
 
@@ -58,7 +59,7 @@ from .acquisition import (
     ORMInterrupted, ORMResult,
 )
 from .project import MeasureProject, load_measure_project, save_measure_project
-from .full_session import (file_sha256 as session_file_sha256, open_full_session_bundle,
+from .full_session import (MANIFEST_NAME, file_sha256 as session_file_sha256, open_full_session_bundle,
                            save_full_session_bundle, save_full_session_state)
 from .automatic import AutomaticDispersionAcquirer
 from .dispersion import MOMENTUM_RELATION, physical_dispersion, relative_momentum_deviation
@@ -419,10 +420,11 @@ class MeasureMainWindow(QMainWindow):
         if QApplication.platformName()=="offscreen":self.menuBar().setMaximumHeight(0)
         self.session_new_action=QAction("New Session",self); self.session_new_action.triggered.connect(self.new_project)
         self.session_open_action=QAction("Open Session…",self); self.session_open_action.triggered.connect(self.open_full_measurement_session)
-        self.session_save_action=QAction("Save Session",self); self.session_save_action.triggered.connect(self.save_active_session); self.session_save_action.setEnabled(False)
-        self.session_save_as_action=QAction("Save Session As…",self); self.session_save_as_action.triggered.connect(self.save_session_as); self.session_save_as_action.setEnabled(False)
+        self.session_save_action=QAction("Save Session",self); self.session_save_action.triggered.connect(self.save_active_session); self.session_save_action.setEnabled(True)
+        self.session_save_as_action=QAction("Save Session As…",self); self.session_save_as_action.triggered.connect(self.save_session_as); self.session_save_as_action.setEnabled(True)
         self.session_export_action=QAction("Export Portable Session…",self); self.session_export_action.triggered.connect(self.export_portable_session); self.session_export_action.setEnabled(False)
         for action in (self.session_new_action,self.session_open_action,self.session_save_action,self.session_save_as_action,self.session_export_action):file_menu.addAction(action)
+        self.session_open_folder_action=QAction("Open Portable Session Folder…",self); self.session_open_folder_action.triggered.connect(self.open_full_measurement_session_folder); file_menu.insertAction(self.session_save_action,self.session_open_folder_action)
         templates=file_menu.addMenu("Configuration Templates")
         open_template=QAction("Open Measure Configuration…",self); open_template.triggered.connect(self.open_project)
         save_template=QAction("Save Measure Configuration As…",self); save_template.triggered.connect(self.save_project_as)
@@ -436,7 +438,7 @@ class MeasureMainWindow(QMainWindow):
         self.session_toolbar_buttons={}
         for text,handler in (("New",self.new_project),("Open",self.open_full_measurement_session),("Save",self.save_active_session),("Open in FIT",self.explain_open)):
             button=QPushButton(text); button.clicked.connect(handler); toolbar.addWidget(button); self.session_toolbar_buttons[text]=button
-        self.session_toolbar_buttons["Save"].setEnabled(False); self.session_toolbar_buttons["Open in FIT"].setEnabled(False)
+        self.session_toolbar_buttons["Save"].setEnabled(True); self.session_toolbar_buttons["Open in FIT"].setEnabled(False)
         spacer=QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(spacer)
         self.theme_button=QPushButton("☀ Light"); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         logo_container=QFrame(); logo_container.setObjectName("measureLogoContainer"); logo_layout=QHBoxLayout(logo_container); logo_layout.setContentsMargins(4,2,4,2)
@@ -492,29 +494,35 @@ class MeasureMainWindow(QMainWindow):
             host=QWidget(); host_layout=QVBoxLayout(host); host_layout.setContentsMargins(0,0,0,0)
             self.measurement_tab_hosts[kind]=(host,host_layout); self.tabs.addTab(host,label)
         self.measurement_tab_hosts["bpm_noise"][1].addWidget(measurement)
-        saved=QWidget(); saved_layout=QVBoxLayout(saved); saved_layout.setContentsMargins(28,28,28,28)
-        saved_title=QLabel("Completed measurement"); saved_title.setObjectName("pageTitle"); saved_layout.addWidget(saved_title)
+        saved=QWidget(); saved_layout=QVBoxLayout(saved); saved_layout.setContentsMargins(20,18,20,18); saved_layout.setSpacing(12)
+        saved_title=QLabel("Session overview"); saved_title.setObjectName("pageTitle"); saved_layout.addWidget(saved_title)
         saved_explanation=QLabel(
-            "Measurements are saved automatically as individual HDF5 files. The session manifest links the available BPM-noise, dispersion and ORM files for FIT. Save Project stores Measure configuration settings only."
+            "New creates a complete Measure session workspace. Open restores a saved full session. Save stores the configuration, reference lattice and measurement references without duplicating HDF5 files. File → Export Portable Session packages approved files for relocation."
         )
         saved_explanation.setObjectName("infoText"); saved_explanation.setWordWrap(True); saved_layout.addWidget(saved_explanation)
         self.review_machine_identity=QLabel(); self.review_machine_identity.setObjectName("planValue"); self.review_machine_identity.setWordWrap(True); saved_layout.addWidget(self.review_machine_identity)
-        review_group=QGroupBox("Review"); review_layout=QVBoxLayout(review_group)
+        review_group=QGroupBox("Review"); self.review_summary_group=review_group; review_layout=QVBoxLayout(review_group)
         self.review_status=QLabel("No completed measurement yet."); self.review_status.setObjectName("runState"); self.review_status.setWordWrap(True)
         self.review_details=QLabel("Complete a measurement to review its saved data and validation status."); self.review_details.setObjectName("summaryCard"); self.review_details.setWordWrap(True); self.review_details.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.review_paths=QLabel("Measurement file: —\nSession manifest: —"); self.review_paths.setWordWrap(True); self.review_paths.setTextInteractionFlags(Qt.TextSelectableByMouse)
         review_layout.addWidget(self.review_status); review_layout.addWidget(self.review_details); review_layout.addWidget(self.review_paths); saved_layout.addWidget(review_group)
-        roles_group=QGroupBox("Measurements in this session"); roles_layout=QGridLayout(roles_group)
-        self.role_status_labels={}
+        roles_group=QGroupBox("Measurements in this session"); self.review_roles_group=roles_group; roles_layout=QGridLayout(roles_group); roles_layout.setVerticalSpacing(9); roles_layout.setHorizontalSpacing(14)
+        self.role_status_labels={}; self.role_manage_actions={}; self.role_manage_buttons={}
         for row,(role,label) in enumerate((("bpm_noise","BPM noise"),("dispersion","RF dispersion"),("orm","ORM"))):
             roles_layout.addWidget(QLabel(label),row,0); status=QLabel("Missing"); status.setTextInteractionFlags(Qt.TextSelectableByMouse); self.role_status_labels[role]=status; roles_layout.addWidget(status,row,1)
-            load=QPushButton("Load Existing Measurement…"); load.clicked.connect(lambda _=False,r=role:self._load_measurement_role(r,replace=False)); roles_layout.addWidget(load,row,2)
-            replace_button=QPushButton("Replace Measurement…"); replace_button.clicked.connect(lambda _=False,r=role:self._load_measurement_role(r,replace=True)); roles_layout.addWidget(replace_button,row,3)
-            remove=QPushButton("Remove from Session"); remove.clicked.connect(lambda _=False,r=role:self._remove_measurement_role(r)); roles_layout.addWidget(remove,row,4)
+            manage=QToolButton(); manage.setText("Manage…"); manage.setPopupMode(QToolButton.InstantPopup); manage.setMinimumHeight(30)
+            menu=QMenu(manage); load=menu.addAction("Load existing measurement…"); replace_action=menu.addAction("Replace measurement…"); remove=menu.addAction("Remove from session")
+            load.triggered.connect(lambda _=False,r=role:self._load_measurement_role(r,replace=False)); replace_action.triggered.connect(lambda _=False,r=role:self._load_measurement_role(r,replace=True)); remove.triggered.connect(lambda _=False,r=role:self._remove_measurement_role(r))
+            manage.setMenu(menu); self.role_manage_buttons[role]=manage; self.role_manage_actions[role]={"load":load,"replace":replace_action,"remove":remove}; roles_layout.addWidget(manage,row,2)
         roles_layout.setColumnStretch(1,1); saved_layout.addWidget(roles_group)
-        review_actions=QHBoxLayout(); self.review_validate_button=QPushButton("Validate for pyLOCO"); self.review_validate_button.setEnabled(False); self.review_validate_button.clicked.connect(self.validate_saved); self.review_open_button=QPushButton("Open session in pyLOCO Fit"); self.review_open_button.setEnabled(False); self.review_open_button.clicked.connect(self.explain_open); back_button=QPushButton("Back to active measurement"); back_button.clicked.connect(lambda:self.tabs.setCurrentIndex(self.measurement_tab_indices[self._active_selection_kind])); review_actions.addWidget(self.review_validate_button); review_actions.addWidget(self.review_open_button); review_actions.addWidget(back_button); review_actions.addStretch(1); saved_layout.addLayout(review_actions)
+        review_actions=QHBoxLayout(); review_actions.setSpacing(10); self.review_validate_button=QPushButton("Validate measurements for pyLOCO"); self.review_validate_button.setEnabled(False); self.review_validate_button.clicked.connect(self.validate_saved); back_button=QPushButton("Back to active measurement"); back_button.clicked.connect(lambda:self.tabs.setCurrentIndex(self.measurement_tab_indices[self._active_selection_kind])); review_actions.addWidget(self.review_validate_button); review_actions.addWidget(back_button); review_actions.addStretch(1); saved_layout.addLayout(review_actions)
+        # Keep one authoritative Open in FIT action in the primary toolbar.
+        self.review_open_button=self.session_toolbar_buttons["Open in FIT"]
         saved_layout.addStretch()
-        self.tabs.addTab(saved,"Review && Save")
+        self.review_scroll=self._scroll_page(saved)
+        saved.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Preferred)
+        saved.setMinimumHeight(saved.sizeHint().height())
+        self.tabs.addTab(self.review_scroll,"Review && Save")
         self.review_tab_index=5
         self.tabs.tabBar().setExpanding(False)
         self.tabs.tabBar().setElideMode(Qt.ElideNone)
@@ -535,9 +543,8 @@ class MeasureMainWindow(QMainWindow):
     def _mark_session_dirty(self, *_):
         self._session_dirty = True
         if hasattr(self, "session_save_action"):
-            ready = self.saved_session_path is not None
-            self.session_save_action.setEnabled(ready)
-            self.session_toolbar_buttons["Save"].setEnabled(ready)
+            self.session_save_action.setEnabled(True)
+            self.session_toolbar_buttons["Save"].setEnabled(True)
         self._update_session_title()
 
     def _scroll_page(self, content):
@@ -2225,17 +2232,17 @@ class MeasureMainWindow(QMainWindow):
 
     def _refresh_review_page(self):
         if not hasattr(self,"review_status"):return
-        ready=self.saved_session_path is not None
-        self.review_validate_button.setEnabled(ready); self.review_open_button.setEnabled(ready)
-        self.session_save_action.setEnabled(ready and self._session_dirty)
-        self.session_save_as_action.setEnabled(ready); self.session_export_action.setEnabled(ready)
-        self.session_toolbar_buttons["Save"].setEnabled(ready and self._session_dirty)
-        self.session_toolbar_buttons["Open in FIT"].setEnabled(ready)
-        if not ready:
-            self.review_status.setText("No measurement session is available yet.")
+        session_exists=self.saved_session_path is not None
+        self.session_save_action.setEnabled(self._session_dirty or not session_exists)
+        self.session_save_as_action.setEnabled(True); self.session_export_action.setEnabled(session_exists)
+        self.session_toolbar_buttons["Save"].setEnabled(self._session_dirty or not session_exists)
+        if not session_exists:
+            self.review_validate_button.setEnabled(False); self.review_open_button.setEnabled(False)
+            self.review_status.setText("No measurements acquired yet")
             self.review_details.setText("<b>BPM noise</b> &nbsp; Missing<br><b>Dispersion</b> &nbsp; Missing<br><b>ORM</b> &nbsp; Missing<br><b>FIT readiness</b> &nbsp; Incomplete")
-            self.review_paths.setText("Latest measurement HDF5: —\nAutomatically saved session manifest: —")
+            self.review_paths.setText("Active measurement HDF5: —\nFull session manifest: Not saved yet")
             for label in self.role_status_labels.values():label.setText("Missing")
+            for actions in self.role_manage_actions.values():actions["load"].setEnabled(True); actions["replace"].setEnabled(False); actions["remove"].setEnabled(False)
             return
         kind="ORM" if isinstance(self.result,ORMResult) else "Dispersion" if isinstance(self.result,DispersionResult) else "BPM noise" if isinstance(self.result,BpmNoiseResult) else "Restored session"
         if kind=="Restored session" and self.saved_measurement_path is not None:
@@ -2255,24 +2262,29 @@ class MeasureMainWindow(QMainWindow):
         except Exception as exc:
             roles=set(); completeness=f"Session could not be read: {exc}"
             session=None
+        has_measurements=bool(roles)
+        self.review_validate_button.setEnabled(has_measurements); self.review_open_button.setEnabled(has_measurements)
         role_rows="".join(
             f"<tr><td><b>{label}</b></td><td>{'Present ✓' if role in roles else 'Missing —'}</td></tr>"
             for role,label in (("bpm_noise","BPM noise"),("dispersion","Dispersion"),("orm","ORM"))
         )
-        self.review_status.setText("✓ Measurement session complete for FIT" if complete else f"✓ {kind} saved — measurement session incomplete")
+        if complete:self.review_status.setText("✓ Measurement session complete for FIT")
+        elif not has_measurements:self.review_status.setText("✓ Session configuration saved — no measurements acquired yet")
+        else:self.review_status.setText(f"✓ {kind} saved — measurement session incomplete")
         self.review_details.setText(
             f"<table cellspacing='0' cellpadding='3'>{role_rows}</table>"
-            f"<br><b>Latest measurement</b> &nbsp; {kind} — files and manifest validated"
+            f"<br><b>Latest measurement</b> &nbsp; {kind+' — files and manifest validated' if has_measurements else 'None'}"
             f"<br><b>Restoration</b> &nbsp; {restoration}"
             f"<br><b>FIT readiness</b> &nbsp; {completeness}"
         )
         display_path=self.saved_measurement_path
         if display_path is None and session is not None:
             display_path=next(iter(session.resolve(self.saved_session_path).values()),None)
-        self.review_paths.setText(f"Active measurement HDF5: {display_path or '—'}\nAutomatically saved session manifest: {self.saved_session_path}")
+        self.review_paths.setText(f"Active measurement HDF5: {display_path or '—'}\nFull session manifest: {self.saved_session_path}")
         entries={entry.role:entry for entry in session.files} if session is not None else {}
         for role,label in self.role_status_labels.items():
             entry=entries.get(role); label.setText(f"Available — {Path(entry.path).name}" if entry else "Missing")
+            actions=self.role_manage_actions[role]; actions["load"].setEnabled(entry is None); actions["replace"].setEnabled(entry is not None); actions["remove"].setEnabled(entry is not None)
 
     def _measurement_type_changed(self, *_):
         if not hasattr(self,"measurement_type"): return
@@ -2327,7 +2339,16 @@ class MeasureMainWindow(QMainWindow):
             kind="orm" if orm else "dispersion" if dispersion else "bpm_noise"
             names={"bpm_noise":"pyloco-bpm-noise","dispersion":"pyloco-dispersion","orm":"pyloco-orm"}
             labels={"bpm_noise":f"pyLOCO BPM noise — {context}","dispersion":f"pyLOCO dispersion — {context}","orm":f"pyLOCO ORM — {context}"}
-            self.measurement_name.setText(names[kind]); self.measurement_label.setText(labels[kind])
+            # A default filename stem may legitimately accompany an operator's
+            # custom label.  Refresh only labels that are still application
+            # defaults; otherwise opening a saved session silently discards
+            # the configured scientific description.
+            current_label=self.measurement_label.text().strip()
+            default_label=(not current_label or current_label.startswith("pyLOCO BPM noise — ")
+                           or current_label.startswith("pyLOCO dispersion — ")
+                           or current_label.startswith("pyLOCO ORM — "))
+            self.measurement_name.setText(names[kind])
+            if default_label:self.measurement_label.setText(labels[kind])
         self._update_kick_preview()
 
     def _configure_physical_dispersion_option(self):
@@ -4199,17 +4220,32 @@ class MeasureMainWindow(QMainWindow):
         self.setWindowTitle(f"pyLOCO Measure — {name}{' *' if self._session_dirty else ''}")
 
     def save_active_session(self):
+        created_manifest=False
         if self.saved_session_path is None:
-            QMessageBox.information(self,"No active measurement session","Acquire or import at least one measurement before saving the session workspace."); return False
+            suggested=Path(self.output_directory.text()).expanduser()
+            if not suggested.is_dir():suggested=Path.cwd()
+            target_text=QFileDialog.getSaveFileName(self,"Save Full Measurement Session",str(suggested/"measurement-session.pyloco-session.json"),"Measurement session (*.pyloco-session.json)")[0]
+            if not target_text:return False
+            target=Path(target_text).expanduser().resolve()
+            if target.exists():QMessageBox.warning(self,"Session already exists","Open the existing session or choose a new manifest path. Save never overwrites an unrelated session."); return False
+            try:
+                session_id=f"measure-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
+                save_session(target,MeasurementSession(session_id,(),{"created":datetime.now().astimezone().isoformat()}))
+            except Exception as exc:QMessageBox.warning(self,"Cannot create session",str(exc)); return False
+            self.saved_session_path=target; self._fresh_measurement_session=False; created_manifest=True
         try:
             bundle=save_full_session_state(self.saved_session_path,project=self._collect_project(),
                 reference_lattice=self.reference_model.path if self.reference_model is not None else None,
                 reference_mat_variable=self.reference_model.mat_variable if self.reference_model is not None else "",
                 reference_element_count=len(self.reference_model.ring) if self.reference_model is not None else None,
                 mapping=self.measurement_device_alignment)
-        except Exception as exc:QMessageBox.warning(self,"Cannot save session",str(exc)); return False
+        except Exception as exc:
+            if created_manifest:
+                self.saved_session_path.unlink(missing_ok=True); self.saved_session_path=None; self._fresh_measurement_session=True
+            QMessageBox.warning(self,"Cannot save session",str(exc)); return False
         self.project=bundle.project; self.project_path=bundle.project_path; self._pending_full_bundle=bundle
-        self._session_dirty=False; self._update_session_title(); self._refresh_review_page()
+        self._measurement_result_paths={role:bundle.measurement_paths.get(role) for role in ("bpm_noise","dispersion","orm")}
+        self._session_dirty=False; self._update_session_title(); self._refresh_review_page(); self._update_workflow_tabs()
         self.statusBar().showMessage(f"Saved session workspace without copying measurement HDF5 files: {bundle.manifest_path}")
         return True
 
@@ -4271,7 +4307,9 @@ class MeasureMainWindow(QMainWindow):
             if not target.exists():shutil.copy2(source,target)
             relative=target.relative_to(root).as_posix()
         entries[role]=SessionFile(role,relative,{"sha256":session_file_sha256(target),"size":target.stat().st_size,"imported":True})
-        updated=MeasurementSession(session.session_id,tuple(entries[name] for name in ("bpm_noise","dispersion","orm") if name in entries),dict(session.metadata))
+        metadata=deepcopy(session.metadata); full=metadata.get("full_measure_session")
+        if isinstance(full,dict):full["roles"]={name:name in entries for name in ("bpm_noise","dispersion","orm")}
+        updated=MeasurementSession(session.session_id,tuple(entries[name] for name in ("bpm_noise","dispersion","orm") if name in entries),metadata)
         save_session(self.saved_session_path,updated); self.saved_measurement_path=target; self._fresh_measurement_session=False; self.result=None
         self._measurement_results[role]=None; self._measurement_result_paths[role]=target
         if incompatible or role=="orm":self.measurement_device_alignment=None; self._invalidate_device_alignment("Measurement inventory changed — verify exact device alignment again.")
@@ -4282,7 +4320,9 @@ class MeasureMainWindow(QMainWindow):
         session=load_session(self.saved_session_path,validate_files=True); entries=tuple(entry for entry in session.files if entry.role!=role)
         if len(entries)==len(session.files):return False
         if QMessageBox.question(self,"Remove measurement from session?",f"Remove the {role.replace('_',' ')} reference from this session? The HDF5 file will not be deleted.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return False
-        save_session(self.saved_session_path,MeasurementSession(session.session_id,entries,dict(session.metadata)))
+        metadata=deepcopy(session.metadata); full=metadata.get("full_measure_session"); present={entry.role for entry in entries}
+        if isinstance(full,dict):full["roles"]={name:name in present for name in ("bpm_noise","dispersion","orm")}
+        save_session(self.saved_session_path,MeasurementSession(session.session_id,entries,metadata))
         self.saved_measurement_path=next(iter(MeasurementSession(session.session_id,entries).resolve(self.saved_session_path).values()),None)
         self._measurement_results[role]=None; self._measurement_result_paths[role]=None
         if role=="orm":self.measurement_device_alignment=None; self._invalidate_device_alignment("ORM removed — device alignment and FIT readiness are invalid.")
@@ -4309,22 +4349,43 @@ class MeasureMainWindow(QMainWindow):
         if bundle.warnings:message+=" — dependencies require attention: "+" ".join(bundle.warnings)
         self.statusBar().showMessage(message)
 
-    def open_full_measurement_session(self):
-        filename=QFileDialog.getOpenFileName(self,"Open Full Measurement Session","","Measurement session (*.pyloco-session.json *.json);;All files (*)")[0]
+    def open_full_measurement_session_folder(self):
+        directory=QFileDialog.getExistingDirectory(self,"Open Portable Measurement Session Folder","")
+        if directory:self.open_full_measurement_session(directory)
+
+    def _clear_session_role_caches(self):
+        self.result=None; self.saved_measurement_path=None
+        self._measurement_results={"bpm_noise":None,"dispersion":None,"orm":None}
+        self._measurement_result_paths={"bpm_noise":None,"dispersion":None,"orm":None}
+
+    def open_full_measurement_session(self,selected_path=None):
+        if isinstance(selected_path,bool):selected_path=None
+        filename=str(selected_path or QFileDialog.getOpenFileName(self,"Open Full Measurement Session","","Measurement session (*.pyloco-session.json *.json);;All files (*)")[0])
         if not filename:return
-        try:bundle=open_full_session_bundle(filename)
-        except ValueError as exc:
-            try:session=load_session(filename,validate_files=True); paths=session.resolve(filename)
-            except Exception:QMessageBox.warning(self,"Cannot open measurement session",str(exc)); return
-            self.saved_session_path=Path(filename).resolve(); self.saved_measurement_path=next(iter(paths.values()),None); self._fresh_measurement_session=False; self.result=None
-            self._measurement_result_paths.update(paths); self._measurement_results={"bpm_noise":None,"dispersion":None,"orm":None}
+        selected=Path(filename).expanduser().resolve(); manifest=selected/MANIFEST_NAME if selected.is_dir() else selected
+        try:session_probe=load_session(manifest,validate_files=False)
+        except Exception as exc:QMessageBox.warning(self,"Cannot open measurement session",str(exc)); return
+        is_modern="full_measure_session" in session_probe.metadata
+        if not is_modern:
+            try:session=load_session(manifest,validate_files=True); paths=session.resolve(manifest)
+            except Exception as exc:QMessageBox.warning(self,"Cannot open legacy measurement session",str(exc)); return
+            # Legacy manifests contain measurements only. Clear prior full-session
+            # configuration so it cannot be mistaken for legacy provenance.
+            self.project=MeasureProject(); self.project_path=None; self._pending_full_bundle=None; self._load_project_widgets(); self._clear_session_role_caches()
+            self.saved_session_path=manifest; self.saved_measurement_path=next(iter(paths.values()),None); self._fresh_measurement_session=False
+            self._measurement_result_paths.update(paths)
             self._session_dirty=False; self._update_session_title(); self._refresh_review_page(); self._update_workflow_tabs()
-            QMessageBox.information(self,"Older measurement session loaded","Measurement files were restored for review and FIT, but this older manifest contains no Measure project, lattice, selections or mapping. Load those dependencies manually before continuing acquisition."); return
-        except Exception as exc:QMessageBox.warning(self,"Cannot open full session",str(exc)); return
+            QMessageBox.information(self,"Older measurement session loaded","Measurement files were restored for review and FIT, but this older manifest contains no Measure project, lattice, selections or mapping. Those historical settings cannot be recovered; load authoritative dependencies manually before continuing acquisition."); return
+        try:bundle=open_full_session_bundle(manifest)
+        except Exception as exc:
+            # Presence of the modern marker is authoritative. Integrity or
+            # schema failures must never be reinterpreted as a legacy session.
+            QMessageBox.warning(self,"Cannot open full session",f"The modern full session failed integrity validation and was not opened:\n{exc}"); return
+        self._clear_session_role_caches()
         self.project=bundle.project; self.project_path=bundle.project_path; self._pending_full_bundle=bundle; self._load_project_widgets()
         self.pyaml_magnet_writes.setChecked(False); self.pyaml_rf_writes.setChecked(False); self.connection_verified=False
-        self.saved_session_path=bundle.manifest_path; self.saved_measurement_path=next(iter(bundle.measurement_paths.values()),None); self._fresh_measurement_session=False; self.result=None
-        self._measurement_result_paths.update(bundle.measurement_paths); self._measurement_results={"bpm_noise":None,"dispersion":None,"orm":None}
+        self.saved_session_path=bundle.manifest_path; self.saved_measurement_path=next(iter(bundle.measurement_paths.values()),None); self._fresh_measurement_session=False
+        self._measurement_result_paths.update(bundle.measurement_paths)
         self._session_dirty=False; self._update_session_title()
         self.measurement_device_alignment=None; self._invalidate_device_alignment("Session loaded — reconnect and revalidate exact device alignment before model comparison.")
         self._refresh_review_page(); self._update_workflow_tabs()

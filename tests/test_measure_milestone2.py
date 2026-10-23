@@ -165,7 +165,7 @@ def test_saved_measurement_session_and_existing_importer(app, tmp_path):
     assert "<b>Dispersion</b>" in window.review_details.text() and "<b>ORM</b>" in window.review_details.text()
     assert "Missing for FIT: orm, dispersion" in window.review_details.text()
     assert str(window.saved_measurement_path) in window.review_paths.text()
-    assert "Automatically saved session manifest" in window.review_paths.text()
+    assert "Full session manifest" in window.review_paths.text()
     assert set(window.session_toolbar_buttons)=={"New","Open","Save","Open in FIT"}
     assert window.session_save_action.text()=="Save Session"
     assert window.session_export_action.text()=="Export Portable Session…"
@@ -187,7 +187,7 @@ def test_review_page_reports_complete_automatic_session_without_extra_save_actio
     assert window.review_details.text().count("Present ✓")==3
     assert "Complete for FIT" in window.review_details.text()
     assert str(manifest) in window.review_paths.text()
-    assert window.review_open_button.text()=="Open session in pyLOCO Fit"
+    assert window.review_open_button.text()=="Open in FIT"
     window.close()
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -104,9 +105,50 @@ def test_primary_toolbar_uses_session_actions_and_templates_are_in_file_menu():
     app=QApplication.instance() or QApplication([]); window=MeasureMainWindow()
     try:
         assert tuple(window.session_toolbar_buttons)==("New","Open","Save","Open in FIT")
-        assert not window.session_toolbar_buttons["Save"].isEnabled()
+        assert window.session_toolbar_buttons["Save"].isEnabled()
         assert window.session_export_action.text()=="Export Portable Session…"
+        assert window.session_open_folder_action.text()=="Open Portable Session Folder…"
         assert any(action.menu() and action.text()=="Configuration Templates" for action in window.menuBar().actions()[0].menu().actions())
+    finally:window.close(); app.processEvents()
+
+
+def test_save_and_reopen_configured_full_session_before_any_measurement(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]); root=tmp_path/"empty-session"; root.mkdir(); manifest=root/"measurement-session.pyloco-session.json"
+    window=MeasureMainWindow(); window.measurement_label.setText("configured before acquisition"); window.readings.setValue(7)
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getSaveFileName",lambda *args:(str(manifest),""))
+    try:
+        assert window.save_active_session()
+        session=load_session(manifest); assert session.files==() and "full_measure_session" in session.metadata
+        assert (root/"measure-project.pyloco-measure.json").is_file()
+        first_id=session.session_id; assert first_id.startswith("measure-")
+        restored=MeasureMainWindow(); messages=[]
+        monkeypatch.setattr(QMessageBox,"information",lambda _parent,title,text,*args:messages.append((title,text)) or QMessageBox.Ok)
+        restored.open_full_measurement_session(root); app.processEvents()
+        assert restored.saved_session_path==manifest.resolve()
+        assert restored.measurement_label.text()=="configured before acquisition" and restored.readings.value()==7
+        assert load_session(restored.saved_session_path).session_id==first_id
+        assert all(value is None for value in restored._measurement_result_paths.values())
+        restored.tabs.setCurrentIndex(restored.review_tab_index); app.processEvents()
+        assert "no measurements acquired yet" in restored.review_status.text().lower()
+        restored.close()
+    finally:window.close(); app.processEvents()
+
+
+def test_empty_full_session_accepts_all_roles_and_repeated_save_does_not_rewrite_hdf5(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]); root=tmp_path/"append-session"; root.mkdir(); manifest=root/"measurement-session.pyloco-session.json"
+    external=tmp_path/"external"; external.mkdir(); files=measurement_files(external)
+    window=MeasureMainWindow(); monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getSaveFileName",lambda *args:(str(manifest),"")); assert window.save_active_session()
+    selected=iter(str(files[role]) for role in ("bpm_noise","dispersion","orm"))
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getOpenFileName",lambda *args:(next(selected),""))
+    monkeypatch.setattr(QMessageBox,"question",lambda *args:QMessageBox.Yes)
+    try:
+        for role in ("bpm_noise","dispersion","orm"):assert window._load_measurement_role(role)
+        session=load_session(manifest); assert session.is_complete_for_loco
+        paths=session.resolve(manifest); before={role:(path,file_sha256(path),path.stat().st_mtime_ns) for role,path in paths.items()}
+        assert window.save_active_session(); window.measurement_label.setText("saved again"); assert window.save_active_session()
+        for role,(path,digest,mtime) in before.items():
+            assert load_session(manifest).resolve(manifest)[role]==path
+            assert file_sha256(path)==digest and path.stat().st_mtime_ns==mtime
     finally:window.close(); app.processEvents()
 
 
@@ -160,6 +202,52 @@ def test_full_session_action_opens_older_manifest_and_explains_unrecoverable_set
         assert "manually" in explanation
     finally:
         window.close(); app.processEvents()
+
+
+def test_corrupt_modern_session_is_not_reinterpreted_as_legacy_and_preserves_active_state(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]); configured,_=project(tmp_path); lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"authoritative ring")
+    bundle=save_full_session_bundle(tmp_path/"corrupt.pyloco-measure-session",project=configured,session_manifest=source_session(tmp_path,("bpm_noise",)),reference_lattice=lattice)
+    Path(bundle.project.reference_model_path).write_bytes(b"corrupted ring")
+    window=MeasureMainWindow(); window.measurement_label.setText("active session must survive"); original_project=window.project; warnings=[]
+    monkeypatch.setattr(QMessageBox,"warning",lambda _parent,title,text,*args:warnings.append((title,text)) or QMessageBox.Ok)
+    try:
+        window.open_full_measurement_session(bundle.manifest_path); app.processEvents()
+        assert window.project is original_project and window.measurement_label.text()=="active session must survive"
+        assert window.saved_session_path is None
+        assert warnings and warnings[0][0]=="Cannot open full session"
+        assert "integrity validation" in warnings[0][1] and "hash mismatch" in warnings[0][1]
+    finally:window.close(); app.processEvents()
+
+
+def test_opening_session_after_another_clears_stale_role_paths_and_folder_is_supported(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]); configured,_=project(tmp_path)
+    first_source=tmp_path/"first-source"; second_source=tmp_path/"second-source"; first_source.mkdir(); second_source.mkdir()
+    first=save_full_session_bundle(tmp_path/"first.pyloco-measure-session",project=configured,session_manifest=source_session(first_source,("bpm_noise",)),reference_lattice=None)
+    second=save_full_session_bundle(tmp_path/"second.pyloco-measure-session",project=configured,session_manifest=source_session(second_source,("orm",)),reference_lattice=None)
+    window=MeasureMainWindow(); monkeypatch.setattr(QMessageBox,"information",lambda *args:QMessageBox.Ok)
+    try:
+        window.open_full_measurement_session(first.root); app.processEvents()
+        assert window._measurement_result_paths["bpm_noise"].is_file() and window._measurement_result_paths["orm"] is None
+        window.open_full_measurement_session(second.manifest_path); app.processEvents()
+        assert window._measurement_result_paths["bpm_noise"] is None
+        assert window._measurement_result_paths["dispersion"] is None
+        assert window._measurement_result_paths["orm"].is_file()
+    finally:window.close(); app.processEvents()
+
+
+@pytest.mark.parametrize("size",[(1280,720),(1440,900)])
+@pytest.mark.parametrize("theme",["light","purple"])
+def test_review_page_scroll_layout_keeps_manage_actions_readable(size,theme):
+    app=QApplication.instance() or QApplication([]); window=MeasureMainWindow(); window.resize(*size); window.apply_theme(theme); window.show(); window.tabs.setCurrentIndex(window.review_tab_index); app.processEvents()
+    try:
+        assert window.tabs.count()==6 and window.review_scroll.isVisible()
+        assert window.review_summary_group.height()>=window.review_summary_group.minimumSizeHint().height()
+        assert window.review_roles_group.height()>=window.review_roles_group.minimumSizeHint().height()
+        for button in window.role_manage_buttons.values():
+            assert button.height()>=30 and button.isVisible()
+        assert window.review_scroll.verticalScrollBar().maximum()>=0
+        assert window.review_open_button is window.session_toolbar_buttons["Open in FIT"]
+    finally:window.close(); app.processEvents()
 
 
 def test_opened_full_session_marks_configuration_edits_unsaved(tmp_path, monkeypatch):
