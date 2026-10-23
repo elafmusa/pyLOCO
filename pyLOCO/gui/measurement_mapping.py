@@ -218,6 +218,73 @@ def mapping_template(inventory: dict[str, list[str]]) -> dict[str, Any]:
     }
 
 
+def is_unvalidated_mapping_template(document: dict[str, Any]) -> bool:
+    """Identify the editable template format without trusting it as provenance."""
+    return (
+        document.get("schema") == SCHEMA
+        and document.get("schema_version") == VERSION
+        and document.get("user_fields") == ["lattice_ordinal", "identity_evidence"]
+        and isinstance(document.get("derived_on_load"), list)
+        and "reference_lattice" not in document
+        and "inventory" not in document
+        and "machine_profile" not in document
+    )
+
+
+def python_mapping_helper_script(template_path: str | Path, lattice_path: str | Path,
+                                 mat_variable: str, output_path: str | Path) -> str:
+    """Return a readable external helper; pyLOCO never executes this text."""
+    template = str(Path(template_path).expanduser()) if str(template_path).strip() else ""
+    lattice = str(Path(lattice_path).expanduser()) if str(lattice_path).strip() else ""
+    output = str(Path(output_path).expanduser()) if str(output_path).strip() else ""
+    return f'''import json
+import at
+
+TEMPLATE_PATH = {template!r}
+LATTICE_PATH = {lattice!r}
+MAT_VARIABLE = {str(mat_variable or '')!r}
+OUTPUT_PATH = {output!r}
+
+ring = at.load_mat(LATTICE_PATH, use=MAT_VARIABLE) if MAT_VARIABLE else at.load_lattice(LATTICE_PATH)
+with open(TEMPLATE_PATH, "r", encoding="utf-8") as stream:
+    d = json.load(stream)
+
+def exact_hits(attribute, identity):
+    return [i for i, element in enumerate(ring)
+            if str(getattr(element, attribute, "") or "") == identity]
+
+def find_hits(row):
+    name = str(row["measured_name"])
+    role = str(row["role"])
+    identities = [("Device", name), ("FamName", name)]
+    suffix = {{"horizontal_corrector": "-B1L", "vertical_corrector": "-A1L"}}.get(role)
+    if suffix and name.endswith(suffix):
+        base = name[:-len(suffix)]
+        identities += [("Device", base), ("FamName", base)]
+    for attribute, identity in identities:
+        hits = exact_hits(attribute, identity)
+        if hits:
+            return hits
+    return []
+
+matched = 0
+for row in d["mappings"]:
+    hits = find_hits(row)
+    if len(hits) == 1:
+        row["lattice_ordinal"] = hits[0]
+        matched += 1
+    else:
+        row["lattice_ordinal"] = None
+        label = "missing" if not hits else "ambiguous"
+        print(f"{{label}}: {{row['role']}} {{row['measured_name']}} ({{len(hits)}} matches)")
+
+with open(OUTPUT_PATH, "w", encoding="utf-8") as stream:
+    json.dump(d, stream, indent=2)
+    stream.write("\\n")
+print(f"Matched {{matched}} / {{len(d['mappings'])}} devices")
+'''
+
+
 def load_document(path: str | Path) -> dict[str, Any]:
     source = Path(path).expanduser()
     if source.suffix.lower() in {".yaml", ".yml"}:

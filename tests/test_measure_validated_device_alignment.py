@@ -7,7 +7,10 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog
+
+from pyLOCO.gui.measurement_mapping import (is_unvalidated_mapping_template,
+    load_document, mapping_counts, mapping_template, python_mapping_helper_script)
 
 from pyLOCO.measure.reference_model import ReferenceModel, model_dispersion, model_orm
 from pyLOCO.measure.project import MeasureProject, load_measure_project, save_measure_project
@@ -123,6 +126,60 @@ def test_measure_prompts_for_multiple_valid_mat_variables(qapp, tmp_path, monkey
     window.close()
 
 
+def test_python_mapping_helper_is_prefilled_editable_and_copies_without_execution(qapp,tmp_path,monkeypatch):
+    from pyLOCO.measure.main_window import MeasureMainWindow,default_mock_devices
+    template=tmp_path/"template.json"; lattice=tmp_path/"betamodel.mat"
+    window=MeasureMainWindow(devices=default_mock_devices(2)); window.last_mapping_template_path=template
+    window.reference_model=replace(_model(_Ring(5)),path=lattice,mat_variable="betamodel")
+    monkeypatch.setattr(QDialog,"exec",lambda _dialog:0)
+    window._show_python_mapping_helper()
+    assert window.mapping_python_helper_button.text()=="Python Mapping Helper…"
+    assert window.mapping_helper_template.text()==str(template)
+    assert window.mapping_helper_lattice.text()==str(lattice)
+    assert window.mapping_helper_variable.text()=="betamodel"
+    script=window.mapping_helper_editor.toPlainText()
+    assert "import json" in script and "import at" in script
+    assert "for row in d[\"mappings\"]" in script and "len(hits) == 1" in script
+    assert "hits[0]" in script and "ambiguous" in script
+    window.mapping_helper_output.setText(str(tmp_path/"changed.json"))
+    assert str(tmp_path/"changed.json") in window.mapping_helper_editor.toPlainText()
+    window.mapping_helper_copy.click()
+    assert QApplication.clipboard().text()==window.mapping_helper_editor.toPlainText()
+    assert window.mapping_helper_copy.text()=="Copied ✓"
+    saved=tmp_path/"helper.py"
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getSaveFileName",lambda *args:(str(saved),""))
+    window.mapping_helper_save.click()
+    assert saved.read_text()==window.mapping_helper_editor.toPlainText()
+    window.close()
+
+
+def test_filled_template_loads_as_unvalidated_then_gains_active_provenance(qapp,tmp_path,monkeypatch):
+    from pyLOCO.measure.main_window import MeasureMainWindow,default_mock_devices
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"active lattice")
+    inventory={"bpm":["BPM1"],"horizontal_corrector":[],"vertical_corrector":[]}
+    template=mapping_template(inventory); template["mappings"][0]["lattice_ordinal"]=0
+    source=tmp_path/"filled.json"; source.write_text(__import__("json").dumps(template))
+    assert is_unvalidated_mapping_template(load_document(source))
+    ring=[SimpleNamespace(FamName="BPM1",Device="BPM1")]
+    window=MeasureMainWindow(devices=default_mock_devices(1)); window.reference_model=SimpleNamespace(ring=ring,path=lattice)
+    monkeypatch.setattr(window,"_mapping_context",lambda:(inventory,tmp_path/"missing.yaml"))
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getOpenFileName",lambda *args:(str(source),""))
+    window._load_device_mapping()
+    assert mapping_counts(window.measurement_device_alignment)["mapped"]==1
+    assert window.measurement_device_alignment["reference_lattice"]["sha256"]
+    assert window.measurement_device_alignment["inventory"]["sha256"]
+    assert "Filled template validated" in window.device_alignment_status.text()
+    window.close()
+
+
+def test_generated_script_preserves_missing_and_ambiguous_as_none(tmp_path):
+    script=python_mapping_helper_script(tmp_path/"template.json",tmp_path/"ring.mat","betamodel",tmp_path/"output.json")
+    compile(script,"mapping-helper.py","exec")
+    assert 'row["lattice_ordinal"] = None' in script
+    assert 'if len(hits) == 1:' in script
+    assert 'return hits' in script
+
+
 REPOSITORY_ROOT = Path(__file__).parents[1]
 MODERN_EBS = Path(os.environ.get("PYLOCO_EBS_TEST_ROOT", "/external/ebs-pysc-pyaml")) / "betamodel.mat"
 HISTORICAL_EBS = REPOSITORY_ROOT / "Examples/EBS/multistage_fit/data/betamodel.mat"
@@ -133,6 +190,22 @@ def test_measure_loads_modern_ebs_betamodel_4434():
     from pyLOCO.measure.reference_model import load_reference_model
     model = load_reference_model(MODERN_EBS)
     assert (model.mat_variable, model.element_count) == ("betamodel", 4434)
+
+
+@pytest.mark.skipif(not all((MODERN_EBS.parent/name).is_file() for name in ("betamodel.mat","betamodel_conf_pyaml.yaml")),reason="Modern EBS mapping inputs unavailable")
+def test_python_mapping_helper_completes_real_896_device_ebs_template(tmp_path):
+    import json
+    yaml=pytest.importorskip("yaml"); pytest.importorskip("at")
+    config=yaml.safe_load((MODERN_EBS.parent/"betamodel_conf_pyaml.yaml").read_text())
+    arrays={row["name"]:row["elements"] for row in config["arrays"]}
+    inventory={"bpm":arrays["BPM"],"horizontal_corrector":arrays["HCorr"],"vertical_corrector":arrays["VCorr"]}
+    template_path=tmp_path/"template.json"; output_path=tmp_path/"completed.json"
+    template_path.write_text(json.dumps(mapping_template(inventory)),encoding="utf-8")
+    script=python_mapping_helper_script(template_path,MODERN_EBS,"betamodel",output_path)
+    exec(compile(script,"mapping-helper.py","exec"),{})
+    completed=json.loads(output_path.read_text())
+    assert len(completed["mappings"])==896
+    assert all(type(row["lattice_ordinal"]) is int for row in completed["mappings"])
 
 
 @pytest.mark.skipif(not HISTORICAL_EBS.is_file(), reason="Historical EBS lattice unavailable")

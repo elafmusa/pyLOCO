@@ -49,8 +49,9 @@ from pyLOCO.gui import __version__ as PYLOCO_VERSION
 from pyLOCO.data_schema import SCHEMA_VERSION as MEASUREMENT_SCHEMA_VERSION
 from pyLOCO.gui.results.plot_canvas import PlotCanvas
 from pyLOCO.gui.measurement_mapping import (
-    find_exact_device_mappings, load_document, mapping_counts, mapping_template,
-    ordered_ordinals, validate_mapping,
+    find_exact_device_mappings, is_unvalidated_mapping_template, load_document,
+    mapping_counts, mapping_template, ordered_ordinals,
+    python_mapping_helper_script, validate_mapping,
 )
 from pyLOCO.gui.mapping_table import (CopyableMappingTable, configure_mapping_table,
                                       identity_match_label)
@@ -403,6 +404,7 @@ class MeasureMainWindow(QMainWindow):
         self.saved_session_path: Path | None = None
         self.reference_model = None
         self.measurement_device_alignment = None
+        self.last_mapping_template_path: Path | None = None
         self._pending_full_bundle = None
         self._session_dirty = True
 
@@ -749,10 +751,11 @@ class MeasureMainWindow(QMainWindow):
         self.verify_alignment_button.clicked.connect(self._verify_device_alignment)
         self.load_mapping_button=QPushButton("Load mapping…"); self.load_mapping_button.clicked.connect(self._load_device_mapping)
         self.mapping_template_button=QPushButton("Create mapping template…"); self.mapping_template_button.clicked.connect(self._save_mapping_template)
+        self.mapping_python_helper_button=QPushButton("Python Mapping Helper…"); self.mapping_python_helper_button.clicked.connect(self._show_python_mapping_helper)
         self.save_mapping_button=QPushButton("Save validated mapping…"); self.save_mapping_button.setEnabled(False); self.save_mapping_button.clicked.connect(self._save_validated_mapping)
         self.alignment_details_button=QPushButton("Mapping details…"); self.alignment_details_button.setEnabled(False)
         self.alignment_details_button.clicked.connect(self._show_alignment_details)
-        alignment_actions=QWidget(); aal=QGridLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button,0,0); aal.addWidget(self.load_mapping_button,0,1); aal.addWidget(self.mapping_template_button,1,0); aal.addWidget(self.save_mapping_button,1,1); aal.addWidget(self.alignment_details_button,0,2,2,1); aal.setColumnStretch(3,1)
+        alignment_actions=QWidget(); aal=QGridLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button,0,0); aal.addWidget(self.load_mapping_button,0,1); aal.addWidget(self.mapping_template_button,1,0); aal.addWidget(self.mapping_python_helper_button,1,1); aal.addWidget(self.save_mapping_button,2,0); aal.addWidget(self.alignment_details_button,0,2,3,1); aal.setColumnStretch(3,1)
         self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then find or load an exact device mapping."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
         reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("Lattice elements",self.reference_model_element_count); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Device mapping",alignment_actions); reference_layout.addRow("Mapping status",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
         layout.addWidget(reference_group); return self._scroll_page(content)
@@ -876,10 +879,13 @@ class MeasureMainWindow(QMainWindow):
         if not path:return
         try:
             inventory,configuration=self._mapping_context(); source=load_document(path)
+            template=is_unvalidated_mapping_template(source)
+            if template:source={**source,"mapping_provenance":"Externally completed Measure mapping template, validated against the active lattice and inventory"}
             checked=validate_mapping(source,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
-                configuration_path=configuration,require_provenance=source.get("schema") is not None)
+                configuration_path=configuration,require_provenance=bool(source.get("schema")) and not template)
             counts=mapping_counts(checked); self.measurement_device_alignment=checked
-            self.device_alignment_status.setText(f"Loaded mapping — {counts['mapped']}/{counts['total']} mapped; {counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate, {counts['invalid']} invalid.")
+            kind="Filled template validated" if template else "Loaded mapping"
+            self.device_alignment_status.setText(f"{kind} — {counts['mapped']}/{counts['total']} mapped; {counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate, {counts['invalid']} invalid.")
             self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(counts["mapped"]==counts["total"])
             self._update_reference_comparison_enabled()
         except Exception as exc:QMessageBox.warning(self,"Cannot load device mapping",str(exc))
@@ -889,7 +895,31 @@ class MeasureMainWindow(QMainWindow):
         if not path:return
         try:self._write_json_atomic(path,mapping_template(self._alignment_inventory()))
         except Exception as exc:QMessageBox.warning(self,"Cannot create mapping template",str(exc)); return
+        self.last_mapping_template_path=Path(path).expanduser().resolve()
         self.statusBar().showMessage(f"Created mapping template: {path}")
+
+    def _show_python_mapping_helper(self):
+        dialog=QDialog(self); dialog.setWindowTitle("Python Mapping Helper"); dialog.setMinimumSize(820,620); dialog.resize(980,760); dialog.setSizeGripEnabled(True)
+        layout=QVBoxLayout(dialog); form=QFormLayout(); layout.addLayout(form)
+        template=QLineEdit(str(self.last_mapping_template_path or "")); lattice=QLineEdit(str(self.reference_model.path) if self.reference_model is not None else "")
+        variable=QLineEdit(self.reference_model.mat_variable or "" if self.reference_model is not None else "")
+        default_parent=self.last_mapping_template_path.parent if self.last_mapping_template_path is not None else Path.cwd()
+        output=QLineEdit(str(default_parent/"measurement-device-mapping-completed.json"))
+        form.addRow("Mapping template JSON",template); form.addRow("AT lattice",lattice); form.addRow("MAT variable",variable); form.addRow("Output JSON",output)
+        editor=QPlainTextEdit(); editor.setLineWrapMode(QPlainTextEdit.NoWrap); layout.addWidget(editor,1)
+        def refresh_script(*_):editor.setPlainText(python_mapping_helper_script(template.text(),lattice.text(),variable.text(),output.text()))
+        for field in (template,lattice,variable,output):field.textChanged.connect(refresh_script)
+        refresh_script()
+        buttons=QHBoxLayout(); copy=QPushButton("Copy Script"); save=QPushButton("Save Script…"); close=QPushButton("Close")
+        def copy_script():
+            QApplication.clipboard().setText(editor.toPlainText()); copy.setText("Copied ✓"); QTimer.singleShot(1800,lambda: copy.setText("Copy Script"))
+        def save_script():
+            path=QFileDialog.getSaveFileName(dialog,"Save Python mapping helper","fill-measurement-device-mapping.py","Python (*.py)")[0]
+            if path:Path(path).expanduser().write_text(editor.toPlainText(),encoding="utf-8")
+        copy.clicked.connect(copy_script); save.clicked.connect(save_script); close.clicked.connect(dialog.accept)
+        buttons.addWidget(copy); buttons.addWidget(save); buttons.addStretch(1); buttons.addWidget(close); layout.addLayout(buttons)
+        self.mapping_helper_dialog=dialog; self.mapping_helper_template=template; self.mapping_helper_lattice=lattice; self.mapping_helper_variable=variable; self.mapping_helper_output=output; self.mapping_helper_editor=editor; self.mapping_helper_copy=copy; self.mapping_helper_save=save
+        dialog.exec()
 
     def _save_validated_mapping(self):
         if self.measurement_device_alignment is None:return
