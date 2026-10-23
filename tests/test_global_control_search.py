@@ -3,11 +3,12 @@ from __future__ import annotations
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QToolBar
 
 from pyLOCO.correct.main_window import CorrectMainWindow
 from pyLOCO.gui.main_window import MainWindow
 from pyLOCO.measure.main_window import MeasureMainWindow
+from pyLOCO.gui.models.project import ProjectMetadata
 
 
 @pytest.fixture(scope="module")
@@ -19,9 +20,27 @@ def _result(controller, label):
     return next(result for result in controller.search(label) if result.label == label)
 
 
-def test_fit_search_finds_documented_examples_and_navigates_without_activation(
-    app, monkeypatch,
-):
+def test_fit_uses_one_always_advanced_interface(app, tmp_path):
+    legacy = ProjectMetadata(mode="Basic")
+    source = legacy.save(tmp_path / "legacy-basic.pyloco.json")
+    window = MainWindow()
+    window.project.modified = False
+    window.open_project(source)
+    app.processEvents()
+    toolbar = window.findChild(QToolBar, "mainToolbar")
+    action_labels = {_action.text().replace("&", "") for _action in toolbar.actions()}
+    assert "Basic" not in action_labels
+    assert "Advanced" not in action_labels
+    assert window.project.mode == "Advanced"
+    window._apply_mode_visibility()
+    assert not window.rm_fixedpath.isHidden()
+    assert not window.rm_coupling.isHidden()
+    assert not window.fixed_group.isHidden()
+    window.project.modified = False
+    window.close()
+
+
+def test_fit_search_finds_documented_examples_and_navigates_without_activation(app):
     window = MainWindow()
     window.show()
     app.processEvents()
@@ -34,9 +53,8 @@ def test_fit_search_finds_documented_examples_and_navigates_without_activation(
 
     fixed_path = _result(search, "fixedpathlength")
     assert fixed_path.widget is window.rm_fixedpath
-    assert fixed_path.requires_advanced
+    assert not fixed_path.requires_advanced
     original = window.rm_fixedpath.isChecked()
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes)
     assert search.navigate_to(fixed_path)
     app.processEvents()
     assert window.project.mode == "Advanced"

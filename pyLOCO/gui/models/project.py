@@ -862,7 +862,7 @@ class ProjectMetadata:
 
     name: str = "Untitled LOCO Project"
     description: str = ""
-    mode: str = "Basic"
+    mode: str = "Advanced"
     path: str = ""
     base_directory: str = ""
     modified: bool = False

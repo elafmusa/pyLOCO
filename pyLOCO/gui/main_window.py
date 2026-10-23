@@ -1343,11 +1343,9 @@ class MainWindow(QMainWindow):
             else self._settings.value("window/normal_geometry")
         )
         self._startup_geometry = self._settings.value("window/geometry")
-        saved_mode = str(self._settings.value("workflow/mode", "Basic"))
-        self.project.mode = saved_mode if saved_mode in {"Basic", "Advanced"} else "Basic"
-
-        self._mode_label = QLabel("Basic mode")
-        self._mode_label.setObjectName("statusPill")
+        # FIT exposes the complete configuration at all times.  ``mode`` is
+        # retained in project JSON only for compatibility with older files.
+        self.project.mode = "Advanced"
         self._project_label = QLabel()
         self._workflow_label = QLabel("Workflow: Project")
         self._backend_label = QLabel("Backend: unchanged")
@@ -1420,7 +1418,6 @@ class MainWindow(QMainWindow):
             self._reference_comparison_thread.quit()
             self._reference_comparison_thread.wait()
         self._save_window_layout()
-        self._settings.setValue("workflow/mode", self.project.mode)
         self._settings.sync()
         event.accept()
 
@@ -3532,12 +3529,6 @@ class MainWindow(QMainWindow):
         self.exit_action = QAction("Exit", self)
         self.exit_action.setShortcut(QKeySequence.Quit)
         self.exit_action.triggered.connect(self.close)
-        self.basic_mode_action = QAction("Basic", self, checkable=True, checked=self.project.mode == "Basic")
-        self.advanced_mode_action = QAction("Advanced", self, checkable=True, checked=self.project.mode == "Advanced")
-        self.mode_action_group = QActionGroup(self, exclusive=True)
-        self.mode_action_group.addAction(self.basic_mode_action)
-        self.mode_action_group.addAction(self.advanced_mode_action)
-        self.mode_action_group.triggered.connect(self._on_mode_changed)
         self.theme_action_group = QActionGroup(self, exclusive=True)
         self.theme_actions = {}
         for key, theme in THEMES.items():
@@ -3587,9 +3578,6 @@ class MainWindow(QMainWindow):
         view_menu = self.menuBar().addMenu("&View")
         view_menu.addAction(self._project_explorer.toggleViewAction())
         view_menu.addAction(self.float_explorer_action)
-        mode_menu = view_menu.addMenu("Workflow Mode")
-        mode_menu.addAction(self.basic_mode_action)
-        mode_menu.addAction(self.advanced_mode_action)
         theme_menu = view_menu.addMenu("Theme")
         for action in self.theme_actions.values():
             theme_menu.addAction(action)
@@ -3617,9 +3605,6 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.validate_project_action)
         toolbar.addAction(self.run_loco_action)
         toolbar.addSeparator()
-        toolbar.addAction(self.basic_mode_action)
-        toolbar.addAction(self.advanced_mode_action)
-        toolbar.addSeparator()
         toolbar.addAction(self.toggle_theme_action)
         self.accent_combo=QComboBox(); self.accent_combo.setToolTip("Shared suite accent color")
         for key,values in ACCENTS.items():self.accent_combo.addItem(values[0],key)
@@ -3629,11 +3614,7 @@ class MainWindow(QMainWindow):
             self,toolbar,application_slug="fit",
             directory_provider=self._screenshot_project_directory,file_menu=self.file_menu,
         )
-        self.control_search=install_control_search(
-            self, toolbar,
-            advanced_mode_getter=lambda: self.project.mode == "Advanced",
-            switch_to_advanced=lambda: self.advanced_mode_action.trigger(),
-        )
+        self.control_search=install_control_search(self, toolbar)
         toolbar_spacer = QWidget(); toolbar_spacer.setObjectName("toolbarSpacer")
         toolbar_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(toolbar_spacer)
@@ -3663,7 +3644,6 @@ class MainWindow(QMainWindow):
         status_bar.addWidget(self._workflow_label, 1)
         status_bar.addWidget(self._validation_label, 1)
         status_bar.addPermanentWidget(self._backend_label)
-        status_bar.addPermanentWidget(self._mode_label)
         self.setStatusBar(status_bar)
 
 
@@ -4031,7 +4011,7 @@ class MainWindow(QMainWindow):
 
     def _update_cmstep_input_availability(self) -> None:
         is_uniform = (self.cmstep_mode.currentData() or "uniform") == "uniform"
-        advanced = self.project.mode == "Advanced"
+        advanced = True
         for widget in (self.params_cmstep_h_label, self.params_cmstep_h,
                        self.params_cmstep_v_label, self.params_cmstep_v):
             widget.setVisible(advanced and is_uniform); widget.setEnabled(is_uniform)
@@ -5284,6 +5264,7 @@ class MainWindow(QMainWindow):
         previous_project = self.project
         previous_recipe = deepcopy(self.fit_recipe)
         previous_stage = self._active_fit_stage
+        candidate.mode = "Advanced"
         self.project = candidate
         for recent in reversed(existing_recent):
             self.project.add_recent_project(recent)
@@ -5671,7 +5652,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "element_count_labels"):
             return
         elements = self.project.loco_config.machine_elements
-        advanced = self.project.mode == "Advanced"
+        advanced = True
         signature = (
             self.project.lattice.path,
             self.project.lattice.mat_variable,
@@ -7034,7 +7015,7 @@ class MainWindow(QMainWindow):
     def _apply_mode_visibility(self) -> None:
         if not hasattr(self, "fixed_group"):
             return
-        advanced = self.project.mode == "Advanced"
+        advanced = True
         widgets = (
             self.rm_coupling, self.rm_fixedpath, self.rm_log_info,
             self.loco_plot_fit_parameters,
@@ -7044,7 +7025,6 @@ class MainWindow(QMainWindow):
             self.params_tilt_method, self.fixed_group,
         )
         for widget in widgets:
-            widget.setProperty("pyLOCORequiresAdvanced", True)
             widget.setVisible(advanced)
         # Raw Python-literal storage is intentionally never shown.  Showing a
         # parentless QLineEdit made it appear as the blank macOS window seen in
@@ -7061,7 +7041,6 @@ class MainWindow(QMainWindow):
         self.loco_individuals.setVisible(False)
         self.fit_init_group.setVisible(advanced)
         for form, field in self._advanced_form_rows:
-            field.setProperty("pyLOCORequiresAdvanced", True)
             if hasattr(form, "setRowVisible"):
                 form.setRowVisible(field, advanced)
             else:
@@ -7071,7 +7050,7 @@ class MainWindow(QMainWindow):
                 field.setVisible(advanced)
         self._update_cmstep_input_availability()
         if hasattr(self, "results_workspace"):
-            self.results_workspace.set_mode(self.project.mode)
+            self.results_workspace.set_mode("Advanced")
 
     @Slot()
     def _toggle_theme(self) -> None:
@@ -7081,15 +7060,6 @@ class MainWindow(QMainWindow):
     @Slot(QAction)
     def _on_theme_changed(self, action: QAction) -> None:
         self._apply_theme_selection(action.data())
-
-    @Slot(QAction)
-    def _on_mode_changed(self, action: QAction) -> None:
-        self.project.mode = action.text()
-        self.project.modified = True
-        self._settings.setValue("workflow/mode", self.project.mode)
-        self._mode_label.setText(f"{self.project.mode} mode")
-        self._apply_mode_visibility()
-        self._refresh_ui(f"{self.project.mode} mode selected")
 
     @Slot(int)
     def _on_tab_changed(self, index: int) -> None:
