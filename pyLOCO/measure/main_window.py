@@ -1710,17 +1710,97 @@ class MeasureMainWindow(QMainWindow):
         ordered=tuple(device for device in self.vertical_correctors if device.name in matched)
         return {"rows":preview,"devices":ordered}
 
+    def _authoritative_h_to_v_pairs(self):
+        """Return optional exact pairs published by the active backend.
+
+        ``corrector_pairings()`` is an optional adapter capability.  Its data
+        come from the connected backend, never from editable GUI labels.  A
+        mapping or an iterable of ``(horizontal, vertical)`` pairs is accepted;
+        repeated horizontal identities remain visible as ambiguity.
+        """
+        provider=getattr(self.adapter,"corrector_pairings",None)
+        if not callable(provider):return {}
+        supplied=provider(); pairs={}
+        entries=supplied.items() if isinstance(supplied,dict) else supplied
+        for entry in entries:
+            if isinstance(entry,dict):horizontal=entry.get("horizontal"); vertical=entry.get("vertical")
+            else:
+                try:horizontal,vertical=entry
+                except (TypeError,ValueError) as exc:raise ValueError("Backend corrector pairing metadata must contain exact H/V identity pairs.") from exc
+            if not isinstance(horizontal,str) or not isinstance(vertical,str) or not horizontal or not vertical:
+                raise ValueError("Backend corrector pairing metadata contains an empty or non-text device identity.")
+            pairs.setdefault(horizontal,[]).append(vertical)
+        return pairs
+
+    def _h_to_v_proposal_from_inventory(self):
+        """Pair selected H controls to the connected V inventory without AT.
+
+        Authoritative backend pairs take precedence.  Otherwise only the ESRF
+        terminal-component convention ``shared-B1L`` → ``shared-A1L`` is
+        accepted.  This is device-selection evidence, not validated AT mapping.
+        """
+        authoritative=self._authoritative_h_to_v_pairs()
+        vertical_by_name={}
+        for device in self.vertical_correctors:vertical_by_name.setdefault(device.name,[]).append(device)
+        preview=[]; matched=set()
+        for device in self.selected_hcorrectors:
+            source="backend_pairing" if device.name in authoritative else "esrf_terminal_component"
+            targets=list(authoritative.get(device.name,()))
+            if not targets:
+                match=re.fullmatch(r"(.+)-B1L",device.name)
+                if match:targets=[match.group(1)+"-A1L"]
+                else:
+                    preview.append({"horizontal":device.name,"vertical":"","status":"Unmatched","pairing":"unrecognized",
+                                    "reason":"No authoritative backend pair and the H identity does not end with the recognized -B1L terminal component. Select V devices manually or load an AT lattice for optional lattice-based pairing."}); continue
+            if len(set(targets))!=1 or len(targets)!=1:
+                preview.append({"horizontal":device.name,"vertical":"","status":"Ambiguous","pairing":source,
+                                "reason":"Authoritative backend metadata provides more than one V identity for this H corrector."}); continue
+            target_name=targets[0]; candidates=vertical_by_name.get(target_name,())
+            if len(candidates)>1:
+                preview.append({"horizontal":device.name,"vertical":"","status":"Ambiguous","pairing":source,
+                                "reason":f"Exact V identity {target_name!r} occurs {len(candidates)} times in the connected V inventory."}); continue
+            if len(candidates)!=1:
+                preview.append({"horizontal":device.name,"vertical":"","status":"Unmatched","pairing":source,
+                                "reason":f"Exact proposed V identity {target_name!r} is not present in the connected V inventory."}); continue
+            matched.add(target_name)
+            evidence=("Authoritative backend H/V pairing metadata" if source=="backend_pairing" else
+                      "Exact shared ESRF device identity with terminal component -B1L → -A1L")
+            preview.append({"horizontal":device.name,"vertical":target_name,"status":"Matched","pairing":source,
+                            "reason":evidence+"; selection pairing only, not validated AT mapping."})
+        ordered=tuple(device for device in self.vertical_correctors if device.name in matched)
+        return {"rows":preview,"devices":ordered}
+
     def _h_to_v_proposal(self):
-        if self.reference_model is None:raise ValueError("Load the authoritative AT reference lattice first.")
+        proposal=self._h_to_v_proposal_from_inventory()
+        # Preserve the former AT path as an optional fallback, but only for an
+        # unrecognized naming convention.  Recognized missing/ambiguous pairs
+        # must not be silently substituted.
+        unresolved={row["horizontal"] for row in proposal["rows"] if row.get("pairing")=="unrecognized"}
+        if not unresolved or self.reference_model is None:return proposal
         configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
-        if not configuration.is_file():raise ValueError("The active machine configuration file is unavailable.")
-        inventory={"bpm":[],"horizontal_corrector":[device.name for device in self.selected_hcorrectors],"vertical_corrector":[device.name for device in self.vertical_correctors]}
-        document=find_exact_device_mappings(self.reference_model.ring,inventory,lattice_path=self.reference_model.path,configuration_path=configuration,provenance="Measure H B1L to V A1L counterpart preview")
-        return self._h_to_v_proposal_from_document(document)
+        inventory={"bpm":[],"horizontal_corrector":[device.name for device in self.selected_hcorrectors if device.name in unresolved],"vertical_corrector":[device.name for device in self.vertical_correctors]}
+        try:
+            document=find_exact_device_mappings(self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
+                                                configuration_path=configuration if configuration.is_file() else None,
+                                                provenance="Measure optional AT H-to-V counterpart preview")
+            lattice=self._h_to_v_proposal_from_document(document)
+        except Exception as exc:
+            for row in proposal["rows"]:
+                if row.get("pairing")=="unrecognized":row["reason"]+=f" AT fallback was unavailable: {exc}"
+            return proposal
+        lattice_rows={row["horizontal"]:row for row in lattice["rows"]}
+        for index,row in enumerate(proposal["rows"]):
+            fallback=lattice_rows.get(row["horizontal"])
+            if row.get("pairing")=="unrecognized" and fallback and fallback["status"]=="Matched":
+                proposal["rows"][index]={**fallback,"pairing":"at_lattice",
+                                         "reason":fallback["reason"]+"; optional AT-lattice pairing used."}
+        matched={row["vertical"] for row in proposal["rows"] if row["status"]=="Matched"}
+        proposal["devices"]=tuple(device for device in self.vertical_correctors if device.name in matched)
+        return proposal
 
     def _show_h_to_v_preview(self,proposal):
         dialog=QDialog(self); dialog.setWindowTitle("Copy horizontal corrector selection to vertical correctors"); dialog.resize(900,520)
-        layout=QVBoxLayout(dialog); summary=QLabel(f"{len(proposal['devices'])} validated V counterparts found for {len(self.selected_hcorrectors)} selected H correctors. No positional or name-similarity fallback is used."); summary.setWordWrap(True); layout.addWidget(summary)
+        layout=QVBoxLayout(dialog); summary=QLabel(f"{len(proposal['devices'])} unique V counterparts found for {len(self.selected_hcorrectors)} selected H correctors. Pairing uses authoritative backend metadata, exact ESRF terminal components, or an optional AT fallback; it is not validated AT mapping. No positional or name-similarity fallback is used."); summary.setWordWrap(True); layout.addWidget(summary)
         table=QTableWidget(len(proposal["rows"]),4); table.setHorizontalHeaderLabels(("Selected H corrector (B1L)","Proposed V corrector (A1L)","Status","Evidence / problem")); table.setEditTriggers(QTableWidget.NoEditTriggers)
         for row,item in enumerate(proposal["rows"]):
             for column,key in enumerate(("horizontal","vertical","status","reason")):table.setItem(row,column,QTableWidgetItem(str(item[key]) or "—"))
@@ -1739,7 +1819,7 @@ class MeasureMainWindow(QMainWindow):
         proposed={device.name for device in proposal["devices"]}; current={device.name for device in self.selected_vcorrectors} if mode=="add" else set()
         ordered=[device.name for device in self.vertical_correctors if device.name in proposed|current]
         data=self.corrector_selection_widgets["vcor"]; data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText(", ".join(ordered)); data["exclusion"].clear(); self._refresh_corrector_preview("vcor",read_diagnostics=False)
-        unmatched=sum(item["status"]!="Matched" for item in proposal["rows"]); self.statusBar().showMessage(f"Applied {len(proposal['devices'])} validated V counterparts; {unmatched} H correctors had no unique counterpart. Vertical selection is now independent.")
+        unmatched=sum(item["status"]!="Matched" for item in proposal["rows"]); self.statusBar().showMessage(f"Applied {len(proposal['devices'])} unique V counterparts; {unmatched} H correctors had no unique counterpart. Device selection pairing does not validate AT alignment; the V selection is now independent.")
 
     def _select_first_corrector(self,key):
         data=self.corrector_selection_widgets[key]

@@ -305,6 +305,50 @@ def test_h_to_v_counterpart_preview_full_partial_and_ambiguous(app):
     window.close()
 
 
+def _esrf_pair_window(vertical_names):
+    bpms=(BpmDevice("BPM","x","y"),)
+    horizontal=tuple(CorrectorDevice(name,name+".SP",name+".RBV","H") for name in (
+        "srmag/m-sd1/c04-a-B1L","srmag/m-sd1/c08-a-B1L","UNRECOGNIZED-H",
+    ))
+    vertical=tuple(CorrectorDevice(name,name+".SP",name+".RBV","V") for name in vertical_names)
+    return MeasureMainWindow(devices=bpms,horizontal_correctors=horizontal,vertical_correctors=vertical)
+
+
+def test_h_to_v_exact_esrf_pairs_work_without_reference_lattice_and_preserve_v_order(app,monkeypatch):
+    window=_esrf_pair_window(("srmag/m-sd1/c08-a-A1L","spare-A1L","srmag/m-sd1/c04-a-A1L"))
+    assert window.reference_model is None
+    proposal=window._h_to_v_proposal()
+    assert [row["status"] for row in proposal["rows"]]==["Matched","Matched","Unmatched"]
+    assert [device.name for device in proposal["devices"]]==["srmag/m-sd1/c08-a-A1L","srmag/m-sd1/c04-a-A1L"]
+    assert all("not validated AT mapping" in row["reason"] for row in proposal["rows"][:2])
+    assert "Select V devices manually" in proposal["rows"][2]["reason"]
+    window._clear_correctors("vcor"); monkeypatch.setattr(window,"_show_h_to_v_preview",lambda _proposal:"replace")
+    window._copy_h_selection_to_v()
+    assert [device.name for device in window.selected_vcorrectors]==["srmag/m-sd1/c08-a-A1L","srmag/m-sd1/c04-a-A1L"]
+    window.close()
+
+
+def test_h_to_v_missing_and_duplicate_exact_v_identities_fail_closed_without_lattice(app):
+    duplicate="srmag/m-sd1/c04-a-A1L"
+    window=_esrf_pair_window((duplicate,duplicate))
+    proposal=window._h_to_v_proposal()
+    assert proposal["devices"]==()
+    assert proposal["rows"][0]["status"]=="Ambiguous" and "occurs 2 times" in proposal["rows"][0]["reason"]
+    assert proposal["rows"][1]["status"]=="Unmatched" and "not present" in proposal["rows"][1]["reason"]
+    window.close()
+
+
+def test_h_to_v_uses_authoritative_backend_pairing_metadata_without_name_guessing(app):
+    window=_esrf_pair_window(("VERTICAL-CONTROL",))
+    window.adapter.corrector_pairings=lambda:{"UNRECOGNIZED-H":"VERTICAL-CONTROL"}
+    window._select_device_subset("hcor","first",3)
+    proposal=window._h_to_v_proposal()
+    row=next(item for item in proposal["rows"] if item["horizontal"]=="UNRECOGNIZED-H")
+    assert row["status"]=="Matched" and row["vertical"]=="VERTICAL-CONTROL"
+    assert row["pairing"]=="backend_pairing" and "Authoritative backend" in row["reason"]
+    window.close()
+
+
 def test_copy_h_to_v_apply_is_independent_and_persists(app,tmp_path,monkeypatch):
     window=_window(); window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm")); window._select_device_subset("hcor","first",3); window._clear_correctors("vcor")
     proposal=window._h_to_v_proposal_from_document(_counterpart_document(window)); monkeypatch.setattr(window,"_h_to_v_proposal",lambda:proposal); monkeypatch.setattr(window,"_show_h_to_v_preview",lambda _proposal:"replace")
