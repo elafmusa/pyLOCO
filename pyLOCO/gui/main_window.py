@@ -2226,7 +2226,7 @@ class MainWindow(QMainWindow):
         self.rm_dkick_v = self._double_spin(0.0, 1e-1, 1e-5, 9, " rad")
         self.rm_dkick_h.setParent(container); self.rm_dkick_v.setParent(container)
         self.rm_dkick_h.hide(); self.rm_dkick_v.hide()
-        self.rm_rf_step = self._double_spin(-1e9, 1e9, -3000.0, 9, " Hz")
+        self.rm_rf_step = self._double_spin(-1e9, 1e9, 3000.0, 9, " Hz")
         self.rm_delta_coupling = self._double_spin(-1.0, 1.0, 1e-6, 9)
         self.rm_bpm_ords = QLineEdit()
         self.rm_cm_ords = QLineEdit()
@@ -2242,12 +2242,12 @@ class MainWindow(QMainWindow):
             "This is separate from fitting the RF-dispersion column. This setting applies to the selected stage."
         )
         self.rm_log_info = QCheckBox("log_info")
-        self.rm_rf_step.setToolTip("RF frequency step in Hz. Positive and negative shifts are supported and the sign is preserved.")
+        self.rm_rf_step.setToolTip("Positive total RF separation in Hz. A bipolar calculation uses +Δf/2 and −Δf/2 states.")
         self.rm_delta_coupling.setToolTip("Small dimensionless delta used to evaluate corrector coupling terms; scientific notation is accepted.")
         rm_form = QFormLayout()
         for label, widget in (
             ("Response Matrix Calculator", self.rm_calculator),
-            ("RF frequency step", self.rm_rf_step),
+            ("Total RF separation", self.rm_rf_step),
             ("Coupling delta (dimensionless)", self.rm_delta_coupling),
         ):
             rm_form.addRow(label, widget)
@@ -2561,7 +2561,7 @@ class MainWindow(QMainWindow):
         self.params_cmstep_resolved_v.setTextInteractionFlags(Qt.TextSelectableByMouse)
         resolved_layout.addRow("Resolved horizontal values", self.params_cmstep_resolved_h)
         resolved_layout.addRow("Resolved vertical values", self.params_cmstep_resolved_v)
-        self.params_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
+        self.params_rfstep = self._double_spin(-1e9, 1e9, 3000.0, 9)
         # Hidden compatibility storage.  The user-facing editor is the modal
         # dialog opened by ``params_init_edit`` below.
         self.params_init = QLineEdit(self)
@@ -2665,7 +2665,7 @@ class MainWindow(QMainWindow):
         fixed_form = QFormLayout(self.fixed_group)
         self.fixed_frequency = QLineEdit("499664399.4230182")
         self.fixed_harm_number = self._spin(1, 1000000, 3840)
-        self.fixed_rfstep = self._double_spin(-1e9, 1e9, -3000.0, 9)
+        self.fixed_rfstep = self._double_spin(-1e9, 1e9, 3000.0, 9)
         self.mcf_source = QComboBox()
         self.mcf_source.addItem("Automatic — from reference lattice (AT/pyAT)", "automatic")
         self.mcf_source.addItem("Manual — user-defined value", "user")
@@ -3862,7 +3862,7 @@ class MainWindow(QMainWindow):
         source_labels = (
             ("Start at 1", "ones"), ("Start at 0", "zeros"),
             ("Horizontal corrector kick steps", "cmstep:h"), ("Vertical corrector kick steps", "cmstep:v"),
-            ("Configured RF frequency step", "rfstep"), ("Values from lattice K", "quads:K"),
+            ("Configured total RF separation", "rfstep"), ("Values from lattice K", "quads:K"),
             ("Configured lattice attribute", "quads:attr"), ("Zero tilt", "tilts:zeros"),
         )
         policy_combos = {}
@@ -5486,6 +5486,8 @@ class MainWindow(QMainWindow):
                     notices.append("Saved reference lattice is missing or its checksum changed.")
                 else:
                     candidate.lattice=LatticeSelection(path=str(lattice_path),file_type=lattice_path.suffix.lower().lstrip("."),element_count=lattice_info.get("element_count"),mat_variable=str(lattice_info.get("mat_variable", "")))
+                    try:self._apply_reference_lattice_rf(candidate)
+                    except Exception as exc:notices.append(f"Reference-lattice RF settings are unavailable: {exc}")
                     saved_mapping=full.get("mapping") or {}
                     if saved_mapping and orm:
                         if is_machine_mapping(saved_mapping):
@@ -5525,6 +5527,9 @@ class MainWindow(QMainWindow):
                     else:
                         candidate.measurement_device_mapping={}; notices.append("No Machine Mapping was saved in this Measure session. Use Load Machine Mapping if a separate file is available.")
             else:notices.append("No reference lattice was saved in this Measure session.")
+        if candidate.lattice.path:
+            try:self._apply_reference_lattice_rf(candidate)
+            except Exception as exc:notices.append(f"Reference-lattice RF settings are unavailable: {exc}")
         candidate.compatibility_validation={"required":True,"status":"validation_required",
             "issues":notices or ["Imported Measure session must be validated before running FIT."]}
         if mode=="measurements_only":
@@ -6748,13 +6753,42 @@ class MainWindow(QMainWindow):
                 f"The selected file was not loaded and the active project is unchanged.\n\n{exc}",
             )
             return
-        self.project.lattice = selection
+        candidate_project = deepcopy(self.project)
+        candidate_project.lattice = selection
+        try:
+            self._apply_reference_lattice_rf(candidate_project)
+        except Exception as exc:
+            QMessageBox.warning(self, "Invalid reference-lattice RF configuration", str(exc))
+            return
+        self.project.lattice = candidate_project.lattice
+        self.project.loco_config.fixed_parameters = candidate_project.loco_config.fixed_parameters
+        self.project.loco_config.response_matrix.Frequency = candidate_project.loco_config.response_matrix.Frequency
+        self.project.loco_config.response_matrix.HarmNumber = candidate_project.loco_config.response_matrix.HarmNumber
+        self.fixed_frequency.setText(str(self.project.loco_config.fixed_parameters.Frequency))
+        self.fixed_harm_number.setValue(int(self.project.loco_config.fixed_parameters.HarmNumber))
+        self.rm_frequency.setText(str(self.project.loco_config.response_matrix.Frequency))
+        self.rm_harm_number.setText(str(self.project.loco_config.response_matrix.HarmNumber))
         self.project.modified = True
         self._mark_compatibility_stale("Reference lattice changed; validation is required.")
         self._element_preview_signature = None
         self._reference_model_info_path = None
         self._refresh_element_selection_ui()
         self._refresh_ui(f"Selected lattice {path.name}")
+
+    @staticmethod
+    def _apply_reference_lattice_rf(project: ProjectMetadata) -> None:
+        """Use the authoritative cavity frequency and harmonic from the selected lattice."""
+        from pyLOCO.reference_model import load_reference_model
+        model = load_reference_model(
+            project.resolve_path(project.lattice.path), source="FIT reference lattice",
+            mat_key=project.lattice.mat_variable or None,
+        )
+        if model.nominal_rf_hz is None or model.harmonic_number is None:
+            raise ValueError("Reference lattice has no unique RF frequency and harmonic number.")
+        project.loco_config.fixed_parameters.Frequency = str(model.nominal_rf_hz)
+        project.loco_config.fixed_parameters.HarmNumber = int(model.harmonic_number)
+        project.loco_config.response_matrix.Frequency = str(model.nominal_rf_hz)
+        project.loco_config.response_matrix.HarmNumber = str(model.harmonic_number)
 
     def _choose_mat_lattice_candidate(self, candidates, current: str = ""):
         labels = [f"{candidate.variable} — {candidate.element_count} elements" for candidate in candidates]
@@ -7164,7 +7198,7 @@ class MainWindow(QMainWindow):
             definition = dispersion.get("measured_eta_definition") or acquisition.get("rf_difference_sign_convention")
             text = "Dispersion RF orbit difference"
             if step is not None:
-                text += f": signed RF step {self._format_measurement_scalar(step)} Hz"
+                text += f": positive total RF separation {self._format_measurement_scalar(step)} Hz"
             if definition:
                 text += f", {str(definition).replace('_', ' ')}"
             text += f" [{unit}]"
@@ -7591,6 +7625,13 @@ class MainWindow(QMainWindow):
             self.project.loco_config = self._collect_loco_configuration()
             request = LocoRunRequest.from_project(self.project)
             workflow = self.fit_recipe if len(self.fit_recipe.stages) > 1 else None
+            if workflow is not None:
+                workflow = deepcopy(workflow)
+                for stage in workflow.stages:
+                    mapping = stage.configuration.get("backend_mapping", stage.configuration)
+                    for section, key in (("RMConfig", "rfStep"), ("FitInitConfig", "rfStep"), ("FixedParameters", "rfstep")):
+                        if mapping.get(section, {}).get(key) is not None and bool(mapping.get("RMConfig", {}).get("bidirectional", True)):
+                            mapping[section][key] = abs(float(mapping[section][key]))
             continuation = Path(self._pending_continue_results) if self._pending_continue_results else None
             if continuation is not None:
                 workflow = self._apply_continuation_to_request(request, workflow, continuation)

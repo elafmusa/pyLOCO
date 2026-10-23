@@ -107,7 +107,7 @@ class ResponseMatrixConfig:
     dkick_v: float = 1e-5
     bidirectional: bool = True
     includeDispersion: bool = False
-    rfStep: float = -3000.0
+    rfStep: float = 3000.0
     delta_coupling: float = 1e-6
     coupling_orm: bool = False
     calculator: str = "Linear"
@@ -385,7 +385,7 @@ class ParameterSelectionConfig:
     init_policy: str = ""
     init_policy_overrides: dict[str, str] = field(default_factory=dict)
     cmstep: CMStepConfig = field(default_factory=CMStepConfig)
-    rfStep: float = -3000.0
+    rfStep: float = 3000.0
     init: str = ""
     quads_attr: str = "PolynomB"
     quads_attr_index: int = 1
@@ -554,7 +554,7 @@ class FixedParameterConfig:
 
     Frequency: str = "499664399.4230182"
     HarmNumber: int = 3840
-    rfstep: float = -3000.0
+    rfstep: float = 3000.0
     dk: str = ""
     delta_skew: float = 1e-3
     delta_q_tilt: float = 1e-6
@@ -782,8 +782,13 @@ class LocoConfiguration:
         for key, label in (("dkick_h", "horizontal response-matrix kick step"), ("dkick_v", "vertical response-matrix kick step")):
             if key in response_matrix:
                 response_matrix[key] = _parse_float(response_matrix[key], label)
+        bipolar_rf = bool(response_matrix.get("bidirectional", True))
+        if "rfStep" in response_matrix and bipolar_rf:
+            response_matrix["rfStep"] = abs(_parse_float(response_matrix["rfStep"], "total RF separation"))
 
         parameters = dict(data.get("parameters", {}))
+        if "rfStep" in parameters and bipolar_rf:
+            parameters["rfStep"] = abs(_parse_float(parameters["rfStep"], "total RF separation"))
         rejection = dict(data.get("rejection", {}))
         if "orm_terms" not in rejection:
             rejection["orm_terms"] = (
@@ -818,6 +823,8 @@ class LocoConfiguration:
                 machine_data.get("normal_quadrupole_ords", [])
             )
         fixed_parameters = dict(data.get("fixed_parameters", {}))
+        if "rfstep" in fixed_parameters and bipolar_rf:
+            fixed_parameters["rfstep"] = abs(_parse_float(fixed_parameters["rfstep"], "total RF separation"))
         if "HarmNumber" in fixed_parameters:
             try:
                 fixed_parameters["HarmNumber"] = int(fixed_parameters["HarmNumber"])
@@ -1217,7 +1224,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "vertical": kick_v,
             "file": steps if isinstance(steps, str) else "",
         },
-        "rfStep": rf.get("step_hz", -3000.0),
+        "rfStep": abs(float(rf.get("step_hz", 3000.0))),
         "skew_attr": str(loco.get("skew_attribute", "PolynomA")),
         "skew_attr_index": int(loco.get("skew_attribute_index", 1)),
         "individuals": str(
@@ -1253,7 +1260,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "calculator": measurement.get("response_matrix_calculator", "Linear"),
             "dkick_h": kick_h,
             "dkick_v": kick_v,
-            "rfStep": rf.get("step_hz", -3000.0),
+            "rfStep": abs(float(rf.get("step_hz", 3000.0))),
             "includeDispersion": bool(loco.get("include_dispersion", False)),
         },
         "solver": {key: loco[key] for key in ("algorithm", "nIter", "nLMIter", "Starting_Lambda", "max_lm_lambda", "scaled") if key in loco},
@@ -1308,7 +1315,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
         "constraints": constraints,
         "fixed_parameters": {
             "Frequency": str(rf.get("frequency_hz", 499664399.4230182)),
-            "rfstep": rf.get("step_hz", -3000.0),
+            "rfstep": abs(float(rf.get("step_hz", 3000.0))),
         },
         "output_directory": output_directory,
         "run_name": run_name,

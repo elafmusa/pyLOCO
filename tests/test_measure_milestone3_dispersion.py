@@ -26,6 +26,7 @@ from pyLOCO.measure.main_window import MeasureMainWindow, build_mock_adapter, de
 from pyLOCO.measure.automatic import AutomaticDispersionAcquirer
 from pyLOCO.measure.dispersion import physical_dispersion, relative_momentum_deviation
 from pyLOCO.measure.project import load_measure_project, save_measure_project
+from pyLOCO.dispersion_convention import canonical_dispersion_convention
 
 
 @pytest.fixture(scope="module")
@@ -56,8 +57,8 @@ def test_mock_recovers_known_rf_orbit_response_without_writes():
     expected_y=-np.arange(1,5)*0.7e-9
     np.testing.assert_allclose(result.response_x_m_per_hz,expected_x,rtol=0,atol=1e-18)
     np.testing.assert_allclose(result.response_y_m_per_hz,expected_y,rtol=0,atol=1e-18)
-    np.testing.assert_allclose(result.measured_eta_x,-expected_x*3000.0,rtol=0,atol=1e-18)
-    assert result.canonical_rf_step_hz == -3000.0
+    np.testing.assert_allclose(result.measured_eta_x,expected_x*3000.0,rtol=0,atol=1e-18)
+    assert result.canonical_rf_step_hz == 3000.0
     assert AdapterCapability.RF_WRITE not in adapter.capabilities
     assert all(operation=="read" for operation,_,_ in adapter.history)
 
@@ -67,9 +68,9 @@ def test_physical_dispersion_uses_actual_full_bipolar_frequency_span():
     deltas=relative_momentum_deviation([f0+100.0,f0-100.0],f0,eta)
     expected=np.array([0.12,-0.03])
     x_minus=np.array([1e-3,2e-3]); x_plus=x_minus+expected*(deltas[0]-deltas[1])
-    measured,span=physical_dispersion(x_minus,x_plus,deltas[1],deltas[0])
+    measured,span=physical_dispersion(x_plus,x_minus,deltas[0],deltas[1])
     np.testing.assert_allclose(measured,expected,rtol=0,atol=1e-14)
-    assert span==pytest.approx(0.004)
+    assert span==pytest.approx(-0.004)
 
 
 def test_dispersion_save_schema_session_and_importer_compatibility(app,tmp_path):
@@ -84,15 +85,15 @@ def test_dispersion_save_schema_session_and_importer_compatibility(app,tmp_path)
         np.testing.assert_allclose(handle["raw/rf_readback_hz"][:],[state.actual_rf_hz for state in result.states])
         assert handle.attrs["restoration_status"]=="confirmed_by_operator"
         assert handle.attrs["measured_eta_unit"]=="m"
-        assert handle.attrs["rf_step_hz"]==-3000.0
-        assert handle.attrs["rf_difference_sign_convention"]=="negative_minus_positive"
-        assert "mean_orbit_negative - mean_orbit_positive" in handle.attrs["measured_eta_definition"]
+        assert handle.attrs["rf_step_hz"]==3000.0
+        assert handle.attrs["rf_difference_sign_convention"]=="positive_minus_negative"
+        assert "mean_orbit_positive - mean_orbit_negative" in handle.attrs["measured_eta_definition"]
         assert handle.attrs["rf_bipolar_separation_hz"]==3000.0
-        assert handle.attrs["rf_signed_step_hz"]==-3000.0
-        assert handle.attrs["delta_span_definition"]=="delta_negative - delta_positive"
+        assert handle.attrs["rf_signed_step_hz"]==3000.0
+        assert handle.attrs["delta_span_definition"]=="delta_positive - delta_negative"
         labels=[x.decode() if isinstance(x,bytes) else x for x in handle["raw/state_labels"][:]]
         means=handle["raw/mean_orbits_x_m"][:]
-        np.testing.assert_allclose(handle["measured_eta_x"][:],means[labels.index("negative")]-means[labels.index("positive")])
+        np.testing.assert_allclose(handle["measured_eta_x"][:],means[labels.index("positive")]-means[labels.index("negative")])
         assert bool(handle.attrs["bidirectional"])
         assert handle.attrs["momentum_compaction_factor"]==pytest.approx(1e-4)
         assert handle.attrs["relativistic_correction_inverse_gamma_squared"]==pytest.approx(1e-8)
@@ -112,6 +113,50 @@ def test_dispersion_save_schema_session_and_importer_compatibility(app,tmp_path)
     session=load_session(window.saved_session_path)
     assert session.files[0].role=="dispersion"
     window.close()
+
+
+def test_legacy_and_canonical_bipolar_files_import_identically_without_rewrite(app, tmp_path):
+    _, result = _mock_result()
+    result = replace(result, states=tuple(
+        replace(state, actual_rf_hz=state.requested_rf_hz) for state in result.states
+    ))
+    adapter = build_mock_adapter(result.devices, readings=8)
+    adapter.backend_metadata = _lattice_metadata()
+    window = MeasureMainWindow(devices=result.devices, adapter=adapter)
+    window._restored_rf_readback = result.nominal_rf_hz
+    window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion"))
+    window.output_directory.setText(str(tmp_path)); window.measurement_name.setText("canonical")
+    window._save_result(result)
+    canonical = window.saved_measurement_path
+    legacy = tmp_path / "legacy-dispersion.h5"
+    legacy.write_bytes(canonical.read_bytes())
+    with h5py.File(legacy, "r+") as handle:
+        handle["measured_eta_x"][:] *= -1
+        handle["measured_eta_y"][:] *= -1
+        handle.attrs["rf_step_hz"] = -abs(float(handle.attrs["rf_step_hz"]))
+        handle.attrs["rf_signed_step_hz"] = -abs(float(handle.attrs["rf_signed_step_hz"]))
+        handle.attrs["rf_difference_sign_convention"] = "negative_minus_positive"
+        handle.attrs["measured_eta_definition"] = "mean_orbit_negative - mean_orbit_positive"
+    before = legacy.read_bytes()
+    orm = tmp_path / "orm-equivalence.h5"
+    with h5py.File(orm, "w") as handle:
+        handle["response_matrix"] = np.zeros((8, 2))
+    new = _load_measurements({"orm": str(orm), "dispersion": str(canonical)})
+    old = _load_measurements({"orm": str(orm), "dispersion": str(legacy)})
+    np.testing.assert_allclose(old["eta_x"], new["eta_x"])
+    np.testing.assert_allclose(old["eta_y"], new["eta_y"])
+    assert legacy.read_bytes() == before
+    window.close()
+
+
+def test_ambiguous_or_inconsistent_bipolar_metadata_is_rejected():
+    with pytest.raises(ValueError, match="missing or ambiguous"):
+        canonical_dispersion_convention({"bidirectional": True, "rf_step_hz": 200.0})
+    with pytest.raises(ValueError, match="Inconsistent"):
+        canonical_dispersion_convention({
+            "bidirectional": True, "rf_step_hz": 200.0,
+            "rf_difference_sign_convention": "negative_minus_positive",
+        })
 
 
 def test_new_measure_window_does_not_merge_an_unrelated_stale_session(app,tmp_path):
@@ -225,7 +270,7 @@ def test_restored_reference_is_saved_separately_and_excluded_from_dispersion(app
     before=next(state for state in states if state.label=="reference")
     after=replace(before,label="reference_after",orbits_x_m=before.orbits_x_m+2e-6,orbits_y_m=before.orbits_y_m-3e-6)
     result=replace(base,states=states+(after,))
-    expected_x=result.state("negative").mean_x_m-result.state("positive").mean_x_m
+    expected_x=result.state("positive").mean_x_m-result.state("negative").mean_x_m
     adapter=build_mock_adapter(result.devices,readings=8); adapter.backend_metadata=_lattice_metadata()
     window=MeasureMainWindow(devices=result.devices,adapter=adapter); window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion")); window.nominal_rf.setText(str(result.nominal_rf_hz)); window.output_directory.setText(str(tmp_path)); window.measurement_name.setText("restored-reference"); window._restored_rf_readback=result.nominal_rf_hz; window._save_result(result)
     np.testing.assert_allclose(result.measured_eta_x,expected_x)
@@ -237,14 +282,14 @@ def test_restored_reference_is_saved_separately_and_excluded_from_dispersion(app
     window.close()
 
 
-def test_validate_for_pyloco_rejects_positive_minus_negative_dispersion(app,tmp_path):
+def test_validate_for_pyloco_rejects_array_opposite_to_recorded_dispersion_sign(app,tmp_path):
     _,result=_mock_result(step=100.0)
     result=replace(result,states=tuple(replace(state,actual_rf_hz=state.requested_rf_hz) for state in result.states))
     adapter=build_mock_adapter(result.devices,readings=8); adapter.backend_metadata=_lattice_metadata()
     window=MeasureMainWindow(devices=result.devices,adapter=adapter); window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion")); window.nominal_rf.setText(str(result.nominal_rf_hz)); window.output_directory.setText(str(tmp_path)); window.measurement_name.setText("sign-check"); window._restored_rf_readback=result.nominal_rf_hz; window._save_result(result)
     with h5py.File(window.saved_measurement_path,"r+") as handle:
         handle["measured_eta_x"][:] *= -1
-    with pytest.raises(ValueError,match="negative-minus-positive"):
+    with pytest.raises(ValueError,match="recorded bipolar subtraction convention"):
         validate_measurement_file(window.saved_measurement_path)
     window.close()
 

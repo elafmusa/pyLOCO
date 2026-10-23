@@ -249,8 +249,11 @@ def inspect_measurement_files(measurements: dict[str, str],
                         raise ValueError("BPM identities are absent and the file does not match a recipe-pinned checksum")
                     if role == "dispersion":
                         entry["unit"] = str(handle.attrs.get("measured_eta_unit", metadata.get("canonical_measured_eta_unit", "")))
-                        entry["rf_step_hz"] = float(handle.attrs.get("rf_bipolar_separation_hz",
-                                                         abs(handle.attrs.get("rf_step_hz", 0.0))))
+                        from pyLOCO.dispersion_convention import canonical_dispersion_convention
+                        convention = canonical_dispersion_convention(handle.attrs)
+                        entry["rf_step_hz"] = convention.rf_step_hz
+                        entry["rf_difference_sign_convention"] = "positive_minus_negative"
+                        entry["source_rf_difference_sign_convention"] = convention.source_sign
                         if not entry["unit"] and legacy_trusted:
                             entry["unit"] = trusted_identity.get("units", {}).get("dispersion", "")
                             entry["rf_step_hz"] = abs(float(options.get(role, {}).get("rf_step_hz", 0.0)))

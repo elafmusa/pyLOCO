@@ -384,12 +384,24 @@ def write_dispersion(
         handle.attrs["rf_step_hz"] = float(rf_step_hz)
         handle.attrs["bidirectional"] = bool(bidirectional)
         handle.attrs["restoration_status"] = str(restoration_status)
+        default_sign = "positive_minus_negative" if float(rf_step_hz) > 0 else "negative_minus_positive"
+        default_definition = (
+            "mean_orbit_positive - mean_orbit_negative"
+            if default_sign == "positive_minus_negative" else
+            "mean_orbit_negative - mean_orbit_positive"
+        )
         handle.attrs["measured_eta_definition"] = str((metadata or {}).get(
-            "canonical_measured_eta_definition", "orbit difference for rf_step_hz"
+            "canonical_measured_eta_definition", default_definition
         ))
         handle.attrs["measured_eta_unit"] = "m"
-        if metadata and metadata.get("rf_difference_sign_convention") is not None:
-            handle.attrs["rf_difference_sign_convention"] = str(metadata["rf_difference_sign_convention"])
+        handle.attrs["rf_difference_sign_convention"] = str(
+            (metadata or {}).get("rf_difference_sign_convention", default_sign)
+        )
+        if bool(bidirectional):
+            handle.attrs["rf_response_convention_version"] = (
+                "positive_total_separation_v1" if default_sign == "positive_minus_negative"
+                else "legacy_negative_step_v1"
+            )
         if metadata and metadata.get("momentum_compaction_factor") is not None:
             handle.attrs["momentum_compaction_factor"] = float(metadata["momentum_compaction_factor"])
             handle.attrs["relativistic_correction_inverse_gamma_squared"] = float(metadata["relativistic_correction_inverse_gamma_squared"])
@@ -412,7 +424,7 @@ def write_dispersion(
                     float(metadata["rf_positive_hz"]) - float(metadata["rf_negative_hz"])
                 )
                 handle.attrs["rf_signed_step_hz"] = (
-                    float(metadata["rf_negative_hz"]) - float(metadata["rf_positive_hz"])
+                    float(metadata["rf_positive_hz"]) - float(metadata["rf_negative_hz"])
                 )
             if metadata.get("delta_span_definition") is not None:
                 handle.attrs["delta_span_definition"] = str(metadata["delta_span_definition"])
@@ -635,20 +647,24 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
                         negative, positive = labels.index("negative"), labels.index("positive")
                         means_x = raw_x[:] if raw_x.ndim == 2 else np.mean(raw_x[:], axis=1)
                         means_y = raw_y[:] if raw_y.ndim == 2 else np.mean(raw_y[:], axis=1)
-                        expected_x = means_x[negative] - means_x[positive]
-                        expected_y = means_y[negative] - means_y[positive]
+                        try:
+                            from pyLOCO.dispersion_convention import canonical_dispersion_convention
+                            convention = canonical_dispersion_convention(handle.attrs)
+                        except ValueError as exc:
+                            errors.append(str(exc)); convention = None
+                        scale = convention.array_scale if convention is not None else 1.0
+                        expected_x = (means_x[positive] - means_x[negative]) / scale
+                        expected_y = (means_y[positive] - means_y[negative]) / scale
                         if not np.allclose(handle["measured_eta_x"][:], expected_x, rtol=1e-12, atol=1e-15):
-                            errors.append("measured_eta_x is not the historical negative-minus-positive RF orbit difference")
+                            errors.append("measured_eta_x does not match its recorded bipolar subtraction convention")
                         if not np.allclose(handle["measured_eta_y"][:], expected_y, rtol=1e-12, atol=1e-15):
-                            errors.append("measured_eta_y is not the historical negative-minus-positive RF orbit difference")
-                        if str(handle.attrs.get("rf_difference_sign_convention", "")) != "negative_minus_positive":
-                            errors.append("missing or invalid RF difference sign convention")
+                            errors.append("measured_eta_y does not match its recorded bipolar subtraction convention")
                         frequencies = handle["raw/rf_readback_hz"][:]
                         if np.isfinite(frequencies[[negative, positive]]).all():
-                            signed_step = float(frequencies[negative] - frequencies[positive])
-                            if not np.isclose(float(handle.attrs.get("rf_step_hz", np.nan)), signed_step,
+                            signed_step = float(frequencies[positive] - frequencies[negative])
+                            if convention is not None and not np.isclose(convention.rf_step_hz, signed_step,
                                               rtol=0.0, atol=1e-9):
-                                errors.append("rf_step_hz does not equal the historical signed step f- minus f+")
+                                errors.append("canonical RF separation does not equal f+ minus f-")
     if errors:
         raise ValueError(f"Invalid pyLOCO measurement file {source}: " + "; ".join(errors))
     return {"path": str(source), "kind": kind, "schema_version": SCHEMA_VERSION}

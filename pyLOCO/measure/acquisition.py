@@ -177,17 +177,14 @@ class DispersionResult:
     @property
     def canonical_rf_step_hz(self) -> float:
         if self.direction == "bipolar":
-            # Historical PETRA III / pyLOCO convention: the RF response
-            # column is orbit(f-) - orbit(f+), hence its signed RF step is
-            # likewise f- - f+.
-            return -2.0 * self.requested_offset_hz
+            return 2.0 * self.requested_offset_hz
         return self.requested_offset_hz if self.direction == "positive" else -self.requested_offset_hz
 
     def _difference(self, plane: str) -> np.ndarray:
         attr = f"mean_{plane}_m"
         reference = getattr(self.state("reference"), attr)
         if self.direction == "bipolar":
-            return getattr(self.state("negative"), attr) - getattr(self.state("positive"), attr)
+            return getattr(self.state("positive"), attr) - getattr(self.state("negative"), attr)
         if self.direction == "positive":
             return getattr(self.state("positive"), attr) - reference
         return getattr(self.state("negative"), attr) - reference

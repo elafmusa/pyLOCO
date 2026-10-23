@@ -59,7 +59,7 @@ def inspect_measurement_metadata(path: str | Path, role: str) -> dict[str, Any]:
         if bidirectional is not None:
             metadata["bidirectional"] = bool(bidirectional)
     elif role == "dispersion":
-        step = scalar("rf_bipolar_separation_hz", "rf_full_step", "rf_step_hz", "delta_f_hz", "df_hz")
+        step = scalar("rf_step_hz", "rf_signed_step_hz", "rf_bipolar_separation_hz", "rf_full_step", "delta_f_hz", "df_hz")
         if step is None and "dispersion_difference" in attrs:
             import re
             description = str(attrs["dispersion_difference"])
@@ -72,6 +72,14 @@ def inspect_measurement_metadata(path: str | Path, role: str) -> dict[str, Any]:
         bidirectional = scalar("bidirectional")
         if bidirectional is not None:
             metadata["bidirectional"] = bool(bidirectional)
+        if bool(metadata.get("bidirectional")):
+            from pyLOCO.dispersion_convention import canonical_dispersion_convention
+            convention = canonical_dispersion_convention(attrs)
+            metadata["rf_step_hz"] = convention.rf_step_hz
+            metadata["horizontal_scale"] = convention.array_scale
+            metadata["vertical_scale"] = convention.array_scale
+            metadata["source_rf_difference_sign_convention"] = convention.source_sign
+            metadata["rf_difference_sign_convention"] = "positive_minus_negative"
     return metadata
 
 

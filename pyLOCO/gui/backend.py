@@ -177,6 +177,8 @@ def run_loco_request(
         indices = _derive_indices(ring, measured)
         fit_cfg = config_module.FitInitConfig(**request.backend_mapping["FitInitConfig"])
         rm_cfg = config_module.RMConfig(**request.backend_mapping["RMConfig"])
+        if bool(rm_cfg.includeDispersion):
+            _validate_configured_rf_against_lattice(ring, config_module.fixed_parameters)
         # Establish the user's complete machine selection before applying bad
         # BPM positions.  Reapplying the complete selection afterwards would
         # restore removed BPMs and make the ORM row count inconsistent.
@@ -430,7 +432,7 @@ def _make_gui_config(mapping: dict[str, Any]):
     class GUIFixedParameters:
         Frequency: float = 499664399.4230182
         HarmNumber: int = 3840
-        rfstep: float = -3000.0
+        rfstep: float = 3000.0
         dk: Any = None
         delta_skew: float = 1e-3
         delta_q_tilt: float = 1e-6
@@ -497,6 +499,34 @@ def _prepare_loco_lattice(ring):
     return prepared
 
 
+def _validate_configured_rf_against_lattice(ring, fixed_parameters) -> None:
+    """Fail closed when FIT RF metadata disagrees with the reference lattice."""
+    import numpy as np
+    cavities = [element for element in ring if hasattr(element, "Frequency")]
+    frequencies = [float(element.Frequency) for element in cavities if float(element.Frequency) > 0]
+    if not frequencies or not np.allclose(frequencies, frequencies[0], rtol=1e-12, atol=1e-6):
+        raise ValueError("Reference lattice RF frequency is missing or inconsistent across cavities.")
+    lattice_frequency = frequencies[0]
+    configured_frequency = float(fixed_parameters.Frequency)
+    if not np.isclose(configured_frequency, lattice_frequency, rtol=1e-12, atol=1e-3):
+        raise ValueError(
+            f"Configured FIT RF frequency {configured_frequency:.12g} Hz does not match the "
+            f"reference lattice {lattice_frequency:.12g} Hz. Reload the lattice to use its authoritative RF settings."
+        )
+    explicit = getattr(ring, "harmonic_number", None)
+    cavity_harmonics = [int(element.HarmNumber) for element in cavities if getattr(element, "HarmNumber", None)]
+    lattice_harmonic = int(explicit) if explicit else (
+        cavity_harmonics[0] if cavity_harmonics and len(set(cavity_harmonics)) == 1 else None
+    )
+    if lattice_harmonic is None:
+        raise ValueError("Reference lattice harmonic number is missing or inconsistent.")
+    if int(fixed_parameters.HarmNumber) != lattice_harmonic:
+        raise ValueError(
+            f"Configured FIT harmonic number {int(fixed_parameters.HarmNumber)} does not match "
+            f"the reference lattice {lattice_harmonic}."
+        )
+
+
 def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     import numpy as np
 
@@ -516,7 +546,22 @@ def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]]
     n_bpms = data["orm"].shape[0] // 2
     if "dispersion" in paths:
         arrays = _load_array_mapping(paths["dispersion"])
-        dispersion_options = options.get("dispersion", {})
+        dispersion_options = dict(options.get("dispersion", {}))
+        if Path(paths["dispersion"]).suffix.lower() in {".h5", ".hdf5"}:
+            import h5py
+            from pyLOCO.dispersion_convention import canonical_dispersion_convention
+            with h5py.File(paths["dispersion"], "r") as handle:
+                is_pyloco_measurement = bool(handle.attrs.get("pyloco_file_type"))
+                has_rf_metadata = "rf_step_hz" in handle.attrs or "rf_signed_step_hz" in handle.attrs
+                convention = canonical_dispersion_convention(handle.attrs) if (is_pyloco_measurement or has_rf_metadata) else None
+            if convention is not None:
+                already_canonicalized = (
+                    dispersion_options.get("rf_difference_sign_convention") == "positive_minus_negative"
+                    and dispersion_options.get("source_rf_difference_sign_convention") is not None
+                )
+                if not already_canonicalized:
+                    dispersion_options["horizontal_scale"] = float(dispersion_options.get("horizontal_scale", 1.0)) * convention.array_scale
+                    dispersion_options["vertical_scale"] = float(dispersion_options.get("vertical_scale", 1.0)) * convention.array_scale
         names = dispersion_options.get("datasets", {})
         if not isinstance(names, dict):
             names = {}

@@ -15,10 +15,10 @@ def relative_momentum_deviation(frequency_hz, nominal_hz: float, slip_factor_eta
     return -(np.asarray(frequency_hz, dtype=float)-nominal_hz)/(slip_factor_eta*nominal_hz)
 
 
-def physical_dispersion(orbit_negative_m, orbit_positive_m, delta_negative: float, delta_positive: float):
-    """Return dispersion using the pyLOCO-compatible negative-minus-positive convention."""
-    delta_span=float(delta_negative-delta_positive)
+def physical_dispersion(orbit_positive_m, orbit_negative_m, delta_positive: float, delta_negative: float):
+    """Return dispersion using matching positive-minus-negative RF states."""
+    delta_span=float(delta_positive-delta_negative)
     if not np.isfinite(delta_span) or delta_span == 0:
         raise ValueError("The recorded RF states do not provide a non-zero momentum separation")
-    return ((np.asarray(orbit_negative_m)-np.asarray(orbit_positive_m))/delta_span,
+    return ((np.asarray(orbit_positive_m)-np.asarray(orbit_negative_m))/delta_span,
             delta_span)
