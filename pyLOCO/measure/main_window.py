@@ -548,9 +548,7 @@ class MeasureMainWindow(QMainWindow):
             load.triggered.connect(lambda _=False,r=role:self._load_measurement_role(r,replace=False)); replace_action.triggered.connect(lambda _=False,r=role:self._load_measurement_role(r,replace=True)); remove.triggered.connect(lambda _=False,r=role:self._remove_measurement_role(r))
             manage.setMenu(menu); self.role_manage_buttons[role]=manage; self.role_manage_actions[role]={"load":load,"replace":replace_action,"remove":remove}; roles_layout.addWidget(manage,row,2)
         roles_layout.setColumnStretch(1,1); saved_layout.addWidget(roles_group)
-        review_actions=QHBoxLayout(); review_actions.setSpacing(10); self.review_validate_button=QPushButton("Validate measurements for pyLOCO"); self.review_validate_button.setEnabled(False); self.review_validate_button.clicked.connect(self.validate_saved); back_button=QPushButton("Back to active measurement"); back_button.clicked.connect(lambda:self.tabs.setCurrentIndex(self.measurement_tab_indices[self._active_selection_kind])); review_actions.addWidget(self.review_validate_button); review_actions.addWidget(back_button); review_actions.addStretch(1); saved_layout.addLayout(review_actions)
-        # Keep one authoritative Open in FIT action in the primary toolbar.
-        self.review_open_button=self.session_toolbar_buttons["Open in FIT"]
+        review_actions=QHBoxLayout(); review_actions.setSpacing(10); self.review_validate_button=QPushButton("Validate measurements for pyLOCO"); self.review_validate_button.setEnabled(False); self.review_validate_button.clicked.connect(self.validate_saved); self.review_open_button=QPushButton("Open in FIT"); self.review_open_button.setObjectName("measurePrimary"); self.review_open_button.setEnabled(False); self.review_open_button.setToolTip("Open this loaded full measurement session in pyLOCO FIT"); self.review_open_button.clicked.connect(self.explain_open); back_button=QPushButton("Back to active measurement"); back_button.clicked.connect(lambda:self.tabs.setCurrentIndex(self.measurement_tab_indices[self._active_selection_kind])); review_actions.addWidget(self.review_validate_button); review_actions.addWidget(self.review_open_button); review_actions.addWidget(back_button); review_actions.addStretch(1); saved_layout.addLayout(review_actions)
         saved_layout.addStretch()
         self.review_scroll=self._scroll_page(saved)
         saved.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Preferred)
@@ -2476,6 +2474,7 @@ class MeasureMainWindow(QMainWindow):
         self.session_toolbar_buttons["Save"].setEnabled(save_enabled)
         if not session_exists:
             self.review_validate_button.setEnabled(False); self.review_open_button.setEnabled(False)
+            self.session_toolbar_buttons["Open in FIT"].setEnabled(False)
             self.review_status.setText("No measurements acquired yet")
             self.review_details.setText("<b>BPM noise</b> &nbsp; Missing<br><b>Dispersion</b> &nbsp; Missing<br><b>ORM</b> &nbsp; Missing<br><b>FIT readiness</b> &nbsp; Incomplete")
             self.review_paths.setText("Active measurement HDF5: —\nFull session manifest: Not saved yet")
@@ -2502,6 +2501,7 @@ class MeasureMainWindow(QMainWindow):
             session=None
         has_measurements=bool(roles)
         self.review_validate_button.setEnabled(has_measurements); self.review_open_button.setEnabled(has_measurements)
+        self.session_toolbar_buttons["Open in FIT"].setEnabled(has_measurements)
         def role_state(role):
             state=self._measurement_restore_status.get(role,{})
             if role not in roles:return "Missing —"

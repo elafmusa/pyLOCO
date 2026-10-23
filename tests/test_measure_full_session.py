@@ -388,7 +388,9 @@ def test_review_page_scroll_layout_keeps_manage_actions_readable(size,theme):
         for button in window.role_manage_buttons.values():
             assert button.height()>=30 and button.isVisible()
         assert window.review_scroll.verticalScrollBar().maximum()>=0
-        assert window.review_open_button is window.session_toolbar_buttons["Open in FIT"]
+        assert window.review_open_button is not window.session_toolbar_buttons["Open in FIT"]
+        assert window.review_open_button.text()=="Open in FIT"
+        assert window.review_open_button.isVisible()
     finally:window.close(); app.processEvents()
 
 
