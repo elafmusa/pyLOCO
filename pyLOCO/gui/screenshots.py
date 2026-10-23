@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from PySide6.QtCore import QObject, QSettings, QTimer, Slot
+from PySide6.QtCore import QObject, QSettings, QTimer, Qt, Slot
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QToolBar, QToolButton
 
@@ -89,7 +89,8 @@ class WindowScreenshotController(QObject):
 def install_window_screenshot_actions(window: QMainWindow, toolbar: QToolBar, *,
                                       application_slug: str,
                                       directory_provider: Callable[[], str | Path | None],
-                                      file_menu=None) -> WindowScreenshotController:
+                                      file_menu=None,
+                                      compact: bool = False) -> WindowScreenshotController:
     """Install the common camera split-button and optional File-menu actions."""
     controller = WindowScreenshotController(
         window, application_slug=application_slug,
@@ -102,7 +103,15 @@ def install_window_screenshot_actions(window: QMainWindow, toolbar: QToolBar, *,
     menu.addAction(controller.save_as_action)
     button = QToolButton(toolbar)
     button.setObjectName("screenshotButton")
-    button.setDefaultAction(controller.save_action)
+    if compact:
+        # QAction text is deliberately retained for menus and global search;
+        # the toolbar uses only the familiar camera glyph.
+        button.setText("📷")
+        button.clicked.connect(controller.save_screenshot)
+        button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        button.setAccessibleName("Save Screenshot")
+    else:
+        button.setDefaultAction(controller.save_action)
     button.setMenu(menu)
     button.setPopupMode(QToolButton.MenuButtonPopup)
     button.setAccessibleName("Save Screenshot")

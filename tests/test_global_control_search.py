@@ -40,6 +40,53 @@ def test_fit_uses_one_always_advanced_interface(app, tmp_path):
     window.close()
 
 
+def test_fit_toolbar_reflows_secondary_controls_without_hiding_primary_actions(app):
+    window = MainWindow(); window.show(); app.processEvents(); window.resize(1600, 900); app.processEvents()
+    toolbar = window.findChild(QToolBar, "mainToolbar")
+    assert not window.more_toolbar_action.isVisible()
+    assert window.appearance_toolbar_action.isVisible()
+    assert window.screenshot_toolbar_action.isVisible()
+    assert window.search_button_action.isVisible()
+    assert window.search_box_action is None
+    assert not window.control_search.search_editor.isVisible()
+    assert window.screenshot_controller.button.text() == "📷"
+    assert window.screenshot_controller.button.accessibleName() == "Save Screenshot"
+    assert window.appearance_button.accessibleName() == "Appearance"
+    assert window.control_search.search_button.accessibleName() == "Find Setting or Action"
+
+    window.resize(900, 700); app.processEvents()
+    assert window.more_toolbar_action.isVisible()
+    assert not window.appearance_toolbar_action.isVisible()
+    assert not window.screenshot_toolbar_action.isVisible()
+    assert not window.search_button_action.isVisible()
+    for action in (
+        window.new_project_action, window.open_project_action,
+        window.save_project_action, window.validate_project_action,
+        window.run_loco_action,
+    ):
+        button = toolbar.widgetForAction(action)
+        assert action.isVisible() and button is not None and button.isVisible()
+        assert button.geometry().right() <= toolbar.width()
+    assert window.continue_loco_action in toolbar.actions()
+    tabs = window._workspace.tabBar()
+    assert tabs.tabRect(tabs.count() - 1).right() <= tabs.width()
+    window.project.modified = False; window.close()
+
+
+def test_fit_compact_search_and_more_menu_preserve_existing_actions(app):
+    window = MainWindow(); window.show(); app.processEvents(); window.resize(900, 700); app.processEvents()
+    labels = [action.text().replace("&", "") for action in window.more_menu.actions()]
+    assert "📷 Save Screenshot" in labels
+    assert "Save Screenshot As…" in labels
+    assert "Appearance" in labels
+    assert "Find Setting or Action…" in labels
+    window.find_control_action.trigger()
+    app.processEvents()
+    assert window.control_search.search_box.isVisible()
+    assert window.control_search.search_box.hasFocus()
+    window.project.modified = False; window.close()
+
+
 def test_fit_search_finds_documented_examples_and_navigates_without_activation(app):
     window = MainWindow()
     window.show()

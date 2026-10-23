@@ -1469,6 +1469,7 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         """Keep the central workspace usable while the whole window shrinks."""
         super().resizeEvent(event)
+        self._update_toolbar_responsive()
         timer = getattr(self, "_geometry_save_timer", None)
         if timer is not None and self.isVisible() and not self._restoring_startup_geometry:
             timer.start()
@@ -3604,6 +3605,7 @@ class MainWindow(QMainWindow):
 
     def _create_toolbar(self) -> None:
         toolbar = QToolBar("Main Toolbar", self)
+        self.main_toolbar = toolbar
         toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
         toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -3614,16 +3616,68 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.run_loco_action)
         toolbar.addAction(self.continue_loco_action)
         toolbar.addSeparator()
-        toolbar.addAction(self.toggle_theme_action)
-        self.accent_combo=QComboBox(); self.accent_combo.setToolTip("Shared suite accent color")
+        # Keep the compatibility combo as the single source used by the
+        # existing appearance handler, but present theme and accent choices in
+        # one compact palette menu instead of two large toolbar controls.
+        self.accent_combo=QComboBox(toolbar); self.accent_combo.setToolTip("Shared suite accent color")
         for key,values in ACCENTS.items():self.accent_combo.addItem(values[0],key)
         self.accent_combo.setCurrentIndex(max(0,self.accent_combo.findData(self.current_accent)))
-        self.accent_combo.currentIndexChanged.connect(self._on_accent_changed); toolbar.addWidget(self.accent_combo)
+        self.accent_combo.currentIndexChanged.connect(self._on_accent_changed)
+        self.accent_combo.hide()
+        self.appearance_menu = QMenu("Appearance", self)
+        theme_menu = self.appearance_menu.addMenu("Theme")
+        for action in self.theme_actions.values(): theme_menu.addAction(action)
+        accent_menu = self.appearance_menu.addMenu("Accent color")
+        self.accent_toolbar_actions = QActionGroup(self, exclusive=True)
+        for key, values in ACCENTS.items():
+            action = QAction(values[0], self, checkable=True); action.setData(key)
+            action.setChecked(key == self.current_accent)
+            action.triggered.connect(lambda _checked=False, value=key: self._select_toolbar_accent(value))
+            self.accent_toolbar_actions.addAction(action); accent_menu.addAction(action)
+        self.appearance_button = QToolButton(toolbar)
+        self.appearance_button.setObjectName("appearanceButton")
+        self.appearance_button.setText("🎨")
+        self.appearance_button.setAccessibleName("Appearance")
+        self.appearance_button.setToolTip("Choose the application theme and accent color")
+        self.appearance_button.setMenu(self.appearance_menu)
+        self.appearance_button.setPopupMode(QToolButton.InstantPopup)
+        self.appearance_toolbar_action = toolbar.addWidget(self.appearance_button)
         self.screenshot_controller=install_window_screenshot_actions(
             self,toolbar,application_slug="fit",
             directory_provider=self._screenshot_project_directory,file_menu=self.file_menu,
+            compact=True,
         )
-        self.control_search=install_control_search(self, toolbar)
+        self.control_search=install_control_search(self, toolbar, compact=True)
+        self.search_button_action = self.control_search.search_button_action
+        self.search_box_action = self.control_search.search_box_action
+        self.screenshot_toolbar_action = next(
+            action for action in toolbar.actions()
+            if toolbar.widgetForAction(action) is self.screenshot_controller.button
+        )
+        self.more_menu = QMenu("More", self)
+        self.more_menu.addAction(self.screenshot_controller.save_action)
+        self.more_menu.addAction(self.screenshot_controller.save_as_action)
+        more_appearance = self.more_menu.addMenu("Appearance")
+        more_theme = more_appearance.addMenu("Theme")
+        for action in self.theme_actions.values(): more_theme.addAction(action)
+        more_accent = more_appearance.addMenu("Accent color")
+        for action in self.accent_toolbar_actions.actions(): more_accent.addAction(action)
+        self.find_control_action = QAction("Find Setting or Action…", self)
+        # A menu returns focus to its parent while closing; defer focus until
+        # that close event has completed.
+        self.find_control_action.triggered.connect(
+            lambda: QTimer.singleShot(0, self.control_search.focus_search)
+        )
+        self.more_menu.addAction(self.find_control_action)
+        self.more_button = QToolButton(toolbar)
+        self.more_button.setObjectName("moreToolbarButton")
+        self.more_button.setText("More ▾")
+        self.more_button.setAccessibleName("More actions")
+        self.more_button.setToolTip("Screenshot, appearance, and search actions")
+        self.more_button.setMenu(self.more_menu)
+        self.more_button.setPopupMode(QToolButton.InstantPopup)
+        self.more_toolbar_action = toolbar.addWidget(self.more_button)
+        self.more_toolbar_action.setVisible(False)
         toolbar_spacer = QWidget(); toolbar_spacer.setObjectName("toolbarSpacer")
         toolbar_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(toolbar_spacer)
@@ -3642,6 +3696,34 @@ class MainWindow(QMainWindow):
         continue_button = toolbar.widgetForAction(self.continue_loco_action)
         if continue_button is not None:
             continue_button.setObjectName("secondaryToolbarAction")
+        QTimer.singleShot(0, self._update_toolbar_responsive)
+
+    def _select_toolbar_accent(self, key: str) -> None:
+        index = self.accent_combo.findData(key)
+        if index >= 0:
+            self.accent_combo.setCurrentIndex(index)
+
+    def _update_toolbar_responsive(self) -> None:
+        """Move secondary header controls behind More at narrow widths."""
+        if not hasattr(self, "more_toolbar_action"):
+            return
+        narrow = self.width() < 1180
+        for action in (
+            self.appearance_toolbar_action,
+            self.screenshot_toolbar_action,
+            self.search_button_action,
+        ):
+            action.setVisible(not narrow)
+        self.more_toolbar_action.setVisible(narrow)
+        workspace = getattr(self, "_workspace", None)
+        if workspace is not None:
+            workspace.tabBar().setStyleSheet(
+                "QTabBar::tab { padding: 8px 9px; margin-right: 2px; }" if narrow else ""
+            )
+        if hasattr(self, "header_brand_action"):
+            brand_visible = self.width() >= 1500
+            self.header_brand_action.setVisible(brand_visible)
+            self.header_brand.setVisible(brand_visible)
 
     def _screenshot_project_directory(self):
         """Return the directory of the active saved FIT project."""
@@ -7036,6 +7118,9 @@ class MainWindow(QMainWindow):
         key = self.accent_combo.currentData()
         if not key:return
         self.current_accent=str(key); self._settings.setValue("fit/appearance/accent",self.current_accent); self._settings.sync()
+        if hasattr(self, "accent_toolbar_actions"):
+            for action in self.accent_toolbar_actions.actions():
+                action.setChecked(action.data() == self.current_accent)
         apply_application_theme(QApplication.instance(),self.current_theme,self.current_accent)
         if hasattr(self,"results_workspace"):self.results_workspace.apply_theme()
         self._refresh_ui(f"{self.accent_combo.currentText()} accent selected")

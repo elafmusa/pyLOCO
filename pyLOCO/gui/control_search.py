@@ -9,11 +9,13 @@ from PySide6.QtCore import QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QApplication,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
     QFrame,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -24,6 +26,7 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QTabWidget,
     QToolBar,
+    QToolButton,
     QWidget,
 )
 
@@ -136,6 +139,7 @@ class ControlSearchController(QObject):
         advanced_mode_getter: Callable[[], bool] | None = None,
         switch_to_advanced: Callable[[], None] | None = None,
         aliases: dict[str, Iterable[str]] | None = None,
+        compact: bool = False,
     ) -> None:
         super().__init__(window)
         self.window = window
@@ -145,6 +149,7 @@ class ControlSearchController(QObject):
         if aliases:
             self.aliases.update({key: tuple(values) for key, values in aliases.items()})
         self.results: list[ControlSearchResult] = []
+        self.compact = compact
         self.search_box = QLineEdit(toolbar)
         self.search_box.setObjectName("globalControlSearch")
         self.search_box.setAccessibleName("Find Setting or Action")
@@ -153,7 +158,28 @@ class ControlSearchController(QObject):
         self.search_box.setMaximumWidth(250)
         self.search_box.setMinimumWidth(170)
         self.search_box.setToolTip("Find a setting or action (⌘F). Search never activates a control.")
-        toolbar.addWidget(self.search_box)
+        self.search_button = None
+        if compact:
+            self.search_button = QToolButton(toolbar)
+            self.search_button.setObjectName("globalControlSearchButton")
+            self.search_button.setText("🔍")
+            self.search_button.setAccessibleName("Find Setting or Action")
+            self.search_button.setToolTip("Find a setting or action (⌘F / Ctrl+F)")
+            self.search_button.clicked.connect(self.focus_search)
+            self.search_button_action = toolbar.addWidget(self.search_button)
+            self.search_editor = QFrame(window)
+            self.search_editor.setObjectName("compactControlSearchEditor")
+            editor_layout = QHBoxLayout(self.search_editor)
+            editor_layout.setContentsMargins(6, 6, 6, 6)
+            self.search_box.setParent(self.search_editor)
+            editor_layout.addWidget(self.search_box)
+            self.search_editor.resize(300, self.search_box.sizeHint().height() + 12)
+            self.search_editor.hide()
+            self.search_box_action = None
+        else:
+            self.search_button_action = None
+            self.search_editor = None
+            self.search_box_action = toolbar.addWidget(self.search_box)
 
         self.popup = QFrame(window, Qt.Popup)
         self.popup.setObjectName("controlSearchPopup")
@@ -176,6 +202,29 @@ class ControlSearchController(QObject):
         self.shortcut.activated.connect(self.focus_search)
 
     def focus_search(self) -> None:
+        was_visible = self.search_box.isVisible()
+        if self.search_editor is not None:
+            anchor = self.search_button or self.window
+            point = anchor.mapTo(self.window, QPoint(0, anchor.height() + 4))
+            x = min(point.x(), max(0, self.window.width() - self.search_editor.width() - 12))
+            self.search_editor.move(x, point.y())
+            self.search_editor.show()
+            self.search_editor.raise_()
+        elif self.search_box_action is not None:
+            self.search_box_action.setVisible(True)
+        self.search_box.show()
+        if not was_visible:
+            # QWidgetAction needs one layout pass before its embedded editor
+            # can reliably accept focus on Qt/macOS.
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents()
+        self.window.raise_()
+        self.window.activateWindow()
+        self.search_box.setFocus(Qt.ShortcutFocusReason)
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
         self.search_box.setFocus(Qt.ShortcutFocusReason)
         self.search_box.selectAll()
         if self.search_box.text().strip():
