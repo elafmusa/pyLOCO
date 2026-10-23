@@ -1782,13 +1782,15 @@ class MainWindow(QMainWindow):
         self.create_measurement_mapping_template_button = QPushButton("Create Machine Mapping template…")
         self.measurement_mapping_python_helper_button = QPushButton("Python Mapping Helper…")
         self.load_measurement_mapping_button = QPushButton("Load Machine Mapping…")
-        self.measurement_mapping_details_button = QPushButton("Mapping Details")
+        self.measurement_mapping_details_button = QPushButton("Measurement Mapping Details")
+        self.machine_mapping_details_button = QPushButton("Complete Machine Mapping…")
         self.save_measurement_mapping_button = QPushButton("Save validated Machine Mapping…")
         self.find_measurement_mappings_button.clicked.connect(self.find_measurement_mappings)
         self.create_measurement_mapping_template_button.clicked.connect(self.create_measurement_mapping_template)
         self.measurement_mapping_python_helper_button.clicked.connect(self.show_measurement_mapping_python_helper)
         self.load_measurement_mapping_button.clicked.connect(self.load_measurement_mapping)
         self.measurement_mapping_details_button.clicked.connect(self.show_measurement_mapping_details)
+        self.machine_mapping_details_button.clicked.connect(self.show_complete_machine_mapping_details)
         self.save_measurement_mapping_button.clicked.connect(self.save_validated_measurement_mapping)
         for button in (self.find_measurement_mappings_button, self.load_measurement_mapping_button,
                        self.create_measurement_mapping_template_button, self.measurement_mapping_python_helper_button):
@@ -1796,6 +1798,7 @@ class MainWindow(QMainWindow):
         mapping_actions.addStretch(1); measurement_mapping_layout.addLayout(mapping_actions)
         mapping_review_actions=QHBoxLayout()
         mapping_review_actions.addWidget(self.measurement_mapping_details_button)
+        mapping_review_actions.addWidget(self.machine_mapping_details_button)
         mapping_review_actions.addWidget(self.save_measurement_mapping_button)
         mapping_review_actions.addStretch(1); measurement_mapping_layout.addLayout(mapping_review_actions)
         self.measurement_mapping_feedback = QLabel("Not run yet — load modern Measure data and a reference lattice.")
@@ -6197,11 +6200,26 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "measurement_mapping_feedback"): return
         mapping = self.project.measurement_device_mapping or {}
         counts = measurement_mapping_counts(mapping)
+        master = self.project.machine_mapping or {}
+        master_rows = master.get("mappings", ()) if is_machine_mapping(master) else ()
+        master_total = len(master_rows)
+        master_measurement_total = sum(
+            1 for row in master_rows
+            if row.get("role") in ("bpm", "horizontal_corrector", "vertical_corrector")
+        )
+        if hasattr(self, "machine_mapping_details_button"):
+            self.machine_mapping_details_button.setEnabled(bool(master_rows))
+        scope = (
+            f"Machine Mapping: {master_total:,} configured devices · "
+            f"Measurement Mapping: {master_measurement_total:,} available BPM/H/V devices. "
+            if master_rows else
+            "No complete Machine Mapping is stored. "
+        )
         if not counts["total"]:
             ready = bool(self.project.measurements.get("orm") and self.project.lattice.path)
             self.measurement_mapping_feedback.setText(
-                "Ready. Step 1: Find device mappings."
-                if ready else "Load measurements and a reference lattice to begin."
+                scope + ("Ready. Step 1: Find measured-device mappings."
+                if ready else "Load measurements and a reference lattice to begin.")
             )
             self.save_measurement_mapping_button.setEnabled(False)
             self.measurement_mapping_details_button.setEnabled(False)
@@ -6226,7 +6244,7 @@ class MainWindow(QMainWindow):
             )
         else:
             text = f"{counts['mapped']}/{counts['total']} devices mapped. Next: Use mappings in FIT."
-        self.measurement_mapping_feedback.setText(text)
+        self.measurement_mapping_feedback.setText(scope + text)
         self.measurement_mapping_details_button.setEnabled(True)
         self.save_measurement_mapping_button.setEnabled(not unresolved)
         self.use_measurement_mappings_button.setEnabled(not unresolved)
@@ -6247,6 +6265,49 @@ class MainWindow(QMainWindow):
         self.measurement_mapping_search.clear(); self._refresh_measurement_mapping_table()
         self.measurement_mapping_table.setFocus(Qt.OtherFocusReason)
         self.measurement_mapping_table.scrollToTop()
+
+    @Slot()
+    def show_complete_machine_mapping_details(self) -> None:
+        document=self.project.machine_mapping or {}
+        rows=document.get("mappings",()) if is_machine_mapping(document) else ()
+        if not rows:
+            QMessageBox.information(self,"Complete Machine Mapping unavailable",
+                "No complete Machine Mapping is stored in this FIT project. Import a Full Measure Session or load a shared Machine Mapping file.")
+            return
+        counts={}
+        for row in rows:
+            role=str(row.get("role","") or "unclassified"); counts[role]=counts.get(role,0)+1
+        dialog=QDialog(self); dialog.setWindowTitle("Complete Machine Mapping — imported configured devices")
+        dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.resize(1250,700)
+        layout=QVBoxLayout(dialog)
+        measured=sum(counts.get(role,0) for role in ("bpm","horizontal_corrector","vertical_corrector"))
+        summary=QLabel(f"Machine Mapping: {len(rows):,} configured devices · Measurement Mapping: {measured:,} available BPM/H/V devices. FIT element selections remain independent.")
+        summary.setWordWrap(True); layout.addWidget(summary)
+        role_filter=QComboBox(); role_filter.addItem("All configured device roles","")
+        for role in sorted(counts):role_filter.addItem(f"{role.replace('_',' ').title()} ({counts[role]:,})",role)
+        layout.addWidget(role_filter,0,Qt.AlignLeft)
+        table=CopyableMappingTable(0,9); table.setHorizontalHeaderLabels(
+            ("pyAML device","Role","AT FamName","AT Device","AT index (0-based)","Match method","Component","Physical element type","Status"))
+        configure_mapping_table(table,("Configured pyAML control/device identity.","Automatically derived device role.",
+            "AT FamName.","AT Device attribute.","Zero-based AT lattice ordinal.","Recorded exact identity method.",
+            "Applicable control or measurement component.","Actual AT element class.","Mapping state; unresolved targets are never guessed."))
+        def populate():
+            selected=role_filter.currentData(); visible=[row for row in rows if not selected or row.get("role")==selected]
+            table.setSortingEnabled(False); table.setRowCount(len(visible))
+            for index,row in enumerate(visible):
+                values=(row.get("pyaml_device") or "Not available",row.get("role") or "Not available",
+                    row.get("lattice_fam_name") or "Not available",row.get("lattice_device") or "Not available",
+                    row.get("lattice_ordinal") if row.get("lattice_ordinal") is not None else "Not available",
+                    identity_match_label(row.get("identity_match")),row.get("component") or "Not applicable",
+                    row.get("physical_element_type") or "Not available",str(row.get("status") or "Not available").replace("_"," ").title())
+                identity=(str(row.get("role","") or ""),str(row.get("pyaml_device","") or ""),row.get("lattice_ordinal"))
+                for column,value in enumerate(values):
+                    cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,identity); cell.setToolTip(str(value)); table.setItem(index,column,cell)
+            table.setSortingEnabled(True)
+        role_filter.currentIndexChanged.connect(populate); populate(); layout.addWidget(table,1)
+        buttons=QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        self.complete_machine_mapping_dialog=dialog; self.complete_machine_mapping_table=table
+        dialog.exec()
 
     def _refresh_measurement_mapping_table(self, *_args) -> None:
         if not hasattr(self, "measurement_mapping_table"): return

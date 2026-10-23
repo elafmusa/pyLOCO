@@ -782,7 +782,7 @@ class MeasureMainWindow(QMainWindow):
         self.mapping_template_button=QPushButton("Create Machine Mapping template…"); self.mapping_template_button.clicked.connect(self._save_mapping_template)
         self.mapping_python_helper_button=QPushButton("Python Mapping Helper…"); self.mapping_python_helper_button.clicked.connect(self._show_python_mapping_helper)
         self.save_mapping_button=QPushButton("Save validated Machine Mapping…"); self.save_mapping_button.setEnabled(False); self.save_mapping_button.clicked.connect(self._save_validated_mapping)
-        self.alignment_details_button=QPushButton("Mapping details…"); self.alignment_details_button.setEnabled(False)
+        self.alignment_details_button=QPushButton("Machine Mapping details…"); self.alignment_details_button.setEnabled(False)
         self.alignment_details_button.clicked.connect(self._show_alignment_details)
         alignment_actions=QWidget(); aal=QGridLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button,0,0); aal.addWidget(self.load_mapping_button,0,1); aal.addWidget(self.mapping_template_button,1,0); aal.addWidget(self.mapping_python_helper_button,1,1); aal.addWidget(self.save_mapping_button,2,0); aal.addWidget(self.alignment_details_button,0,2,3,1); aal.setColumnStretch(3,1)
         self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then find or load an exact Machine Mapping."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -880,6 +880,40 @@ class MeasureMainWindow(QMainWindow):
             "configuration_sha256":session_file_sha256(configuration) if configuration.is_file() else ""}
         return document
 
+    def _ensure_complete_machine_mapping(self):
+        """Rebuild and validate the master from the active pyAML configuration.
+
+        This is the single serialization gate used by mapping export and full
+        session save.  It deliberately does not derive scope from the selected
+        measurement devices, so a legacy 896-row mapping is upgraded instead
+        of being re-exported as though it were the complete machine mapping.
+        """
+        if self.adapter_combo.currentData()!="pyaml":
+            return self.machine_mapping_document or self.measurement_device_alignment
+        if self.reference_model is None:raise ValueError("Load the authoritative AT reference lattice first.")
+        configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        if not configuration.is_file():raise ValueError("The active pyAML configuration file is unavailable.")
+        proposal=reconcile_configured(self.machine_mapping_document,self._complete_machine_mapping_template())
+        configured=self._pyaml_named_inventories()
+        measurement_inventory={role:list(configured.get(role,())) for role in
+            ("bpm","horizontal_corrector","vertical_corrector")}
+        checked=find_exact_device_mappings(self.reference_model.ring,measurement_inventory,
+            lattice_path=self.reference_model.path,configuration_path=configuration,
+            provenance="Measure complete configured pyAML inventory matched to authoritative AT lattice")
+        master=merge_measurement(proposal,checked)
+        expected=sum(len(names) for names in configured.values())
+        if len(master.get("mappings",()))!=expected:
+            raise ValueError(f"Complete Machine Mapping serialization mismatch: expected {expected} configured devices, got {len(master.get('mappings',()))}.")
+        self.machine_mapping_document=master
+        return master
+
+    @staticmethod
+    def _master_mapping_counts(document):
+        roles={}
+        for row in (document or {}).get("mappings",()):
+            role=str(row.get("role","") or "unclassified"); roles[role]=roles.get(role,0)+1
+        return len((document or {}).get("mappings",())),roles
+
     def _invalidate_device_alignment(self,reason="Device inventory changed — validate the device mapping again."):
         self.measurement_device_alignment=None; self._model_orm_cache=None
         if hasattr(self,"device_alignment_status"):
@@ -911,14 +945,11 @@ class MeasureMainWindow(QMainWindow):
             document=find_exact_device_mappings(self.reference_model.ring,inventory,
                 lattice_path=self.reference_model.path,configuration_path=configuration,
                 provenance="Measure exact AT Device identity")
-            master=reconcile_configured(self.machine_mapping_document,self._complete_machine_mapping_template())
-            full_inventory=self._pyaml_named_inventories()
-            full_measurement={role:list(full_inventory.get(role,())) for role in ("bpm","horizontal_corrector","vertical_corrector")}
-            full_checked=find_exact_device_mappings(self.reference_model.ring,full_measurement,
-                lattice_path=self.reference_model.path,configuration_path=configuration,
-                provenance="Measure complete pyAML inventory matched to authoritative AT lattice")
-            self.machine_mapping_document=merge_measurement(master,full_checked)
+            self._ensure_complete_machine_mapping()
             counts=mapping_counts(document)
+            master_total,_roles=self._master_mapping_counts(self.machine_mapping_document)
+            measurement_total=sum(len(self._pyaml_named_inventories().get(role,())) for role in
+                                  ("bpm","horizontal_corrector","vertical_corrector"))
             if counts["mapped"]!=counts["total"]:
                 self.measurement_device_alignment=document
                 self.device_alignment_status.setText(
@@ -928,7 +959,8 @@ class MeasureMainWindow(QMainWindow):
             else:
                 self.measurement_device_alignment=document
                 self.device_alignment_status.setText(
-                    f"Device mapping validated — {counts['mapped']}/{counts['total']} identities matched by the recorded exact Device, exact FamName, or legacy-suffix method "
+                    f"Machine Mapping: {master_total:,} configured devices · Measurement Mapping: {measurement_total:,} available BPM/H/V devices · "
+                    f"Selected measurement subset: {counts['mapped']}/{counts['total']} identities matched by the recorded exact Device, exact FamName, or legacy-suffix method "
                     "(including validated legacy component-suffix interpretation where recorded). "
                     "Measured BPM/corrector order will be preserved in model calculations.")
             self.alignment_details_button.setEnabled(True)
@@ -964,7 +996,6 @@ class MeasureMainWindow(QMainWindow):
                 # Legacy shared files may contain only the measurement subset.
                 # Reconcile them with the active configured inventory, then
                 # validate every configured measurement device afresh.
-                source_complete=present==expected
                 proposal=reconcile_configured(source,self._complete_machine_mapping_template())
                 projected=measurement_projection(proposal)
                 if template:projected={**projected,"mapping_provenance":"Externally completed complete Machine Mapping template"}
@@ -983,8 +1014,16 @@ class MeasureMainWindow(QMainWindow):
                     configuration_path=configuration,require_provenance=bool(projected.get("schema")) and not template)
                 self.machine_mapping_document=merge_measurement(None,checked)
             counts=mapping_counts(checked); self.measurement_device_alignment=checked
+            master_total,_roles=self._master_mapping_counts(self.machine_mapping_document)
+            measurement_total=sum(len(self._pyaml_named_inventories().get(role,())) for role in
+                                  ("bpm","horizontal_corrector","vertical_corrector"))
             kind="Filled template validated" if template else "Loaded mapping"
-            self.device_alignment_status.setText(f"{kind} — {counts['mapped']}/{counts['total']} mapped; {counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate, {counts['invalid']} invalid.")
+            self.device_alignment_status.setText(
+                f"{kind} · Machine Mapping: {master_total:,} configured devices · "
+                f"Measurement Mapping: {measurement_total:,} available BPM/H/V devices · "
+                f"selected subset {counts['mapped']}/{counts['total']} mapped; "
+                f"{counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, "
+                f"{counts['duplicate']} duplicate, {counts['invalid']} invalid.")
             self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(counts["mapped"]==counts["total"])
             self._update_reference_comparison_enabled()
         except Exception as exc:QMessageBox.warning(self,"Cannot load Machine Mapping",str(exc))
@@ -1029,14 +1068,15 @@ class MeasureMainWindow(QMainWindow):
             counts=mapping_counts(checked)
             if counts["mapped"]!=counts["total"]:raise ValueError("Only a complete, currently valid mapping can be saved as validated.")
         except Exception as exc:QMessageBox.warning(self,"Cannot save validated mapping",str(exc)); return
-        shared=self.machine_mapping_document
-        if not is_machine_mapping(shared or {}):shared=merge_measurement(None,checked)
+        try:shared=self._ensure_complete_machine_mapping()
+        except Exception as exc:QMessageBox.warning(self,"Cannot save validated mapping",str(exc)); return
         path=QFileDialog.getSaveFileName(self,"Save validated Machine Mapping","machine-mapping.json","JSON (*.json)")[0]
         if not path:return
         if Path(path).exists() and QMessageBox.question(self,"Replace mapping file?",f"Replace the existing mapping file?\n{path}",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
         try:self._write_json_atomic(path,shared)
         except Exception as exc:QMessageBox.warning(self,"Cannot save validated mapping",str(exc)); return
-        self.statusBar().showMessage(f"Saved validated mapping: {path}")
+        total,_roles=self._master_mapping_counts(shared)
+        self.statusBar().showMessage(f"Saved complete Machine Mapping — {total:,} configured devices: {path}")
 
     def _validated_alignment_ordinals(self):
         if self.adapter_combo.currentData()!="pyaml":return None
@@ -1075,42 +1115,51 @@ class MeasureMainWindow(QMainWindow):
         return provenance
 
     def _show_alignment_details(self):
-        document=self.measurement_device_alignment
-        if not document:return
+        if self.measurement_device_alignment is None:return
         # Revalidate the raw records before presenting a document as
         # validated. This distinguishes source corruption from table sorting.
         if self.reference_model is not None and self.adapter_combo.currentData()=="pyaml":
             try:
                 inventory,configuration=self._mapping_context()
-                document=validate_mapping(document,self.reference_model.ring,inventory,
+                selected_document=validate_mapping(self.measurement_device_alignment,self.reference_model.ring,inventory,
                     lattice_path=self.reference_model.path,configuration_path=configuration,require_provenance=True)
             except Exception as exc:
                 self._invalidate_device_alignment(f"Mapping integrity failure: {exc}")
                 QMessageBox.warning(self,"Cannot display validated mapping",f"The stored mapping records failed revalidation and were not presented as validated:\n{exc}")
                 return
-            self.measurement_device_alignment=document
-        dialog=QDialog(self); dialog.setWindowTitle("Validated Machine Mapping — measurement devices"); dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.setMinimumSize(900,520); dialog.resize(1250,700)
+            self.measurement_device_alignment=selected_document
+        try:document=self._ensure_complete_machine_mapping()
+        except Exception as exc:QMessageBox.warning(self,"Cannot display Machine Mapping",str(exc)); return
+        dialog=QDialog(self); dialog.setWindowTitle("Complete Machine Mapping — configured pyAML devices"); dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.setMinimumSize(900,520); dialog.resize(1250,700)
         layout=QVBoxLayout(dialog)
-        explanation=QLabel("Measured identities come from the active pyAML inventory. AT FamName, AT Device and AT index (0-based) come from the checksummed reference lattice; Match method is the recorded identity_match provenance.")
+        total,roles=self._master_mapping_counts(document)
+        measurement_total=sum(roles.get(role,0) for role in ("bpm","horizontal_corrector","vertical_corrector"))
+        explanation=QLabel(f"Machine Mapping: {total:,} configured devices. Measurement Mapping: {measurement_total:,} available BPM/H/V devices. Rows come from the selected pyAML configuration; AT fields come from the checksummed reference lattice. Measurement selections are stored separately.")
         explanation.setWordWrap(True); layout.addWidget(explanation)
+        role_filter=QComboBox(); role_filter.addItem("All configured device roles","")
+        for role in sorted(roles):role_filter.addItem(f"{role.replace('_',' ').title()} ({roles[role]:,})",role)
+        layout.addWidget(role_filter,0,Qt.AlignLeft)
         table=CopyableMappingTable(0,9); table.setHorizontalHeaderLabels(("Measured device (pyAML)","Role","AT FamName","AT Device","AT index (0-based)","Match method","Component / steering capability","Mapping status","Evidence / problem"))
         configure_mapping_table(table,(
             "Exact device name from the selected pyAML measurement inventory.","Measurement role and plane.","FamName attribute on the selected AT lattice element.","Device attribute on the selected AT lattice element; distinct from a pyAML control name.","AT element index (0-based) in the active lattice.","Recorded identity_match method; never inferred by this dialog.","Required component and whether role compatibility passed.","Validated mapping state.","Detailed identity and steering evidence or actionable problem."
         ))
-        rows=document.get("mappings",()); table.setSortingEnabled(False); table.setRowCount(len(rows))
-        for row,item in enumerate(rows):
-            status=item.get("status","")
-            missing_evidence=[field for field in ("measured_name","role","lattice_name","lattice_ordinal","identity_match") if item.get(field) in (None,"")]
-            reason=item.get("reason","") or "Not available"
-            if status=="mapped" and missing_evidence:
-                status="invalid"
-                reason="Mapped status has incomplete evidence fields: "+", ".join(missing_evidence)
-            capability=(item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated")
-            values=(item.get("measured_name","") or "Not available",item.get("role","") or "Not available",item.get("lattice_name","") or "Not available",item.get("lattice_device","") or "Not available",item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",identity_match_label(item.get("identity_match")),capability,status.capitalize() or "Not available",reason)
-            record_identity=(row,str(item.get("role","") or ""),str(item.get("measured_name","") or ""),item.get("lattice_ordinal"))
-            for column,value in enumerate(values):
-                cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,record_identity); cell.setToolTip(str(value)); table.setItem(row,column,cell)
-        table.setSortingEnabled(True)
+        rows=document.get("mappings",())
+        def populate():
+            selected_role=role_filter.currentData(); visible=[item for item in rows if not selected_role or item.get("role")==selected_role]
+            table.setSortingEnabled(False); table.setRowCount(len(visible))
+            for row,item in enumerate(visible):
+                status=str(item.get("status","") or "Not available")
+                capability=item.get("component") or "BPM position"
+                evidence=item.get("evidence") or item.get("identity_evidence") or "Exact configured identity checked against active lattice"
+                values=(item.get("pyaml_device") or "Not available",item.get("role") or "Not available",
+                    item.get("lattice_fam_name") or "Not available",item.get("lattice_device") or "Not available",
+                    item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",
+                    identity_match_label(item.get("identity_match")),capability,status.replace("_"," ").title(),evidence)
+                record_identity=(row,str(item.get("role","") or ""),str(item.get("pyaml_device","") or ""),item.get("lattice_ordinal"))
+                for column,value in enumerate(values):
+                    cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,record_identity); cell.setToolTip(str(value)); table.setItem(row,column,cell)
+            table.setSortingEnabled(True)
+        role_filter.currentIndexChanged.connect(populate); populate()
         layout.addWidget(table,1); self.alignment_details_dialog=dialog; self.alignment_details_table=table
         buttons=QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons); dialog.exec()
 
@@ -4622,11 +4671,13 @@ class MeasureMainWindow(QMainWindow):
             except Exception as exc:QMessageBox.warning(self,"Cannot create session",str(exc)); return False
             self.saved_session_path=target; self._fresh_measurement_session=False; created_manifest=True
         try:
+            serialized_mapping=(self._ensure_complete_machine_mapping()
+                if self.machine_mapping_document is not None or self.measurement_device_alignment is not None else None)
             bundle=save_full_session_state(self.saved_session_path,project=self._collect_project(),
                 reference_lattice=self.reference_model.path if self.reference_model is not None else None,
                 reference_mat_variable=self.reference_model.mat_variable if self.reference_model is not None else "",
                 reference_element_count=len(self.reference_model.ring) if self.reference_model is not None else None,
-                mapping=self.machine_mapping_document or self.measurement_device_alignment)
+                mapping=serialized_mapping)
         except Exception as exc:
             if created_manifest:
                 self.saved_session_path.unlink(missing_ok=True); self.saved_session_path=None; self._fresh_measurement_session=True
@@ -4713,11 +4764,13 @@ class MeasureMainWindow(QMainWindow):
         if config:
             include_yaml=QMessageBox.question(self,"Include approved pyAML configuration?","By default the bundle records the external pyAML configuration path and checksum only. Include this file only if it is approved, contains no credentials or private endpoints, and may be redistributed.",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)==QMessageBox.Yes
         try:
+            serialized_mapping=(self._ensure_complete_machine_mapping()
+                if self.machine_mapping_document is not None or self.measurement_device_alignment is not None else None)
             bundle=save_full_session_bundle(destination,project=self._collect_project(),session_manifest=self.saved_session_path,
                 reference_lattice=self.reference_model.path if self.reference_model is not None else None,
                 reference_mat_variable=self.reference_model.mat_variable if self.reference_model is not None else "",
                 reference_element_count=len(self.reference_model.ring) if self.reference_model is not None else None,
-                mapping=self.machine_mapping_document or self.measurement_device_alignment,include_pyaml_configuration=include_yaml)
+                mapping=serialized_mapping,include_pyaml_configuration=include_yaml)
         except Exception as exc:QMessageBox.warning(self,"Cannot export portable session",str(exc)); return
         message=f"Exported portable measurement session: {bundle.root}"
         if bundle.warnings:message+=" — dependencies require attention: "+" ".join(bundle.warnings)
