@@ -188,6 +188,7 @@ class RejectionConfig:
     fixedpathlength: bool = False
     individuals: bool = True
     remove_coupling_: bool = True
+    orm_terms: str = "diagonal"
     plot_fit_parameters: bool = False
     skew_individuals: bool = True
     tilt_individuals: bool = True
@@ -596,6 +597,9 @@ class LocoConfiguration:
         """Return a serializable mapping of backend-compatible constructor data."""
 
         options = asdict(self.solver) | asdict(self.svd) | asdict(self.rejection)
+        # Preserve the legacy backend flag while making the three-way block
+        # selection authoritative for new projects and FIT stages.
+        options["remove_coupling_"] = self.rejection.orm_terms == "diagonal"
         options["fit_list"] = self.parameters.fit_list()
         options["includeDispersion"] = self.rejection.includeDispersion
         self._sync_response_matrix_elements()
@@ -644,7 +648,7 @@ class LocoConfiguration:
             state = "fitted" if enabled else "not fitted"
             element_summary.append(f"{label}: {state} by {mode} — {count} parameters / {len(ords)} physical magnets")
         return [
-            f"Response matrix: {self.response_matrix.calculator}, dispersion={self.response_matrix.includeDispersion}, coupling={self.response_matrix.coupling_orm}, bidirectional={self.response_matrix.bidirectional}",
+            f"Response matrix: {self.response_matrix.calculator}, dispersion={self.response_matrix.includeDispersion}, model coupling={self.response_matrix.coupling_orm}, ORM terms fitted={self.rejection.orm_terms}, bidirectional={self.response_matrix.bidirectional}",
             f"Solver: {self.solver.algorithm.upper()}, iterations={self.solver.nIter}, LM inner={self.solver.nLMIter}, scaled={self.solver.scaled}",
             f"SVD: method={self.svd.svd_selection_method}, threshold={self.svd.svd_threshold:g}, rank={self.svd.cut_}",
             f"Outliers: enabled={self.rejection.outlier_rejection}, sigma={self.rejection.sigma_outlier:g}, normalization={self.rejection.normalization_mode if self.rejection.apply_normalization else 'off'}",
@@ -679,6 +683,7 @@ class LocoConfiguration:
             "auto_correct_delta": self.rejection.auto_correct_delta,
             "fixedpathlength": self.rejection.fixedpathlength,
             "remove_coupling": self.rejection.remove_coupling_,
+            "orm_terms": self.rejection.orm_terms,
             "plot_fit_parameters": self.rejection.plot_fit_parameters,
             "skew_individuals": self.rejection.skew_individuals,
             "tilt_individuals": self.rejection.tilt_individuals,
@@ -780,6 +785,11 @@ class LocoConfiguration:
 
         parameters = dict(data.get("parameters", {}))
         rejection = dict(data.get("rejection", {}))
+        if "orm_terms" not in rejection:
+            rejection["orm_terms"] = (
+                "diagonal" if rejection.get("remove_coupling_", True) else "full"
+            )
+        rejection["remove_coupling_"] = rejection["orm_terms"] == "diagonal"
         legacy_individuals = parameters.get("individuals", rejection.get("individuals", True))
         parameters.setdefault("individuals", bool(legacy_individuals))
         rejection.setdefault("skew_individuals", bool(legacy_individuals))
@@ -923,6 +933,17 @@ class ProjectMetadata:
             messages.append("LM lambda values must be non-negative.")
         if self.loco_config.svd.svd_selection_method not in {"threshold", "rank", "user_input", "interactive"}:
             messages.append("SVD selection method is invalid.")
+        orm_terms = self.loco_config.rejection.orm_terms
+        if orm_terms not in {"full", "diagonal", "off_diagonal"}:
+            messages.append("ORM terms to fit must be Full ORM, Diagonal only, or Off-diagonal only.")
+        if (
+            str(self.loco_config.response_matrix.calculator).strip().lower() == "analytical"
+            and orm_terms != "diagonal"
+        ):
+            messages.append(
+                "The Analytical response calculator is uncoupled and cannot fit transverse off-diagonal ORM terms. "
+                "Use Linear or Numerical, or select Diagonal only (XX, YY)."
+            )
         if self.loco_config.constraints.enable:
             c = self.loco_config.constraints
             if c.quad_sigma_mode == "relative" and c.quad_relative_sigma <= 0:
@@ -1249,6 +1270,10 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "hor_dispersion_weight": loco.get("horizontal_dispersion_weight", 1.0),
             "ver_dispersion_weight": loco.get("vertical_dispersion_weight", 1.0),
             "remove_coupling_": loco.get("remove_coupling", True),
+            "orm_terms": loco.get(
+                "orm_terms",
+                "diagonal" if loco.get("remove_coupling", True) else "full",
+            ),
             "auto_correct_delta": loco.get("auto_correct_delta", True),
             "fixedpathlength": loco.get("fixedpathlength", False),
             "plot_fit_parameters": loco.get("plot_fit_parameters", False),
@@ -1311,7 +1336,7 @@ _EDITABLE_YAML_PATHS.update(f"loco.{name}" for name in (
     "svd_selection_method", "svd_threshold", "cut", "show_svd_plot",
     "outlier_rejection", "sigma_outlier", "apply_normalization", "normalization_mode",
     "include_dispersion", "horizontal_dispersion_weight", "vertical_dispersion_weight",
-    "remove_coupling", "skew_individuals", "tilt_individuals", "skew_attribute",
+    "remove_coupling", "orm_terms", "skew_individuals", "tilt_individuals", "skew_attribute",
     "plot_fit_parameters", "auto_correct_delta", "fixedpathlength", "calculate_delta_chi2",
     "quad_jacobian_calculator", "skew_jacobian_calculator",
     "analytical_thick_quadrupole", "analytical_thick_steerers",

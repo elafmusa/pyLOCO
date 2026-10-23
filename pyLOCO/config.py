@@ -83,6 +83,7 @@ class LOCOOptions:
     fixedpathlength: bool = False
     individuals: bool = True
     remove_coupling_: bool = True
+    orm_terms: str | None = None
 
 
 loco_options = LOCOOptions()

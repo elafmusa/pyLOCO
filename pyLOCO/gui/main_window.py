@@ -2211,8 +2211,11 @@ class MainWindow(QMainWindow):
         dispersion_weight_form.addRow(
             "Vertical dispersion weight", self.loco_ver_dispersion_weight
         )
-        self.rm_coupling = QCheckBox("Include coupling ORM terms")
-        self.rm_coupling.setToolTip("Include cross-plane response blocks in the ORM.")
+        self.rm_coupling = QCheckBox("Calculate cross-plane ORM terms in the model (advanced)")
+        self.rm_coupling.setToolTip(
+            "Backend model-calculation option coupling_orm. This controls whether the response calculator "
+            "computes cross-plane terms; it is separate from which ORM blocks contribute to the fit objective."
+        )
         self.rm_bidirectional = QCheckBox("Bidirectional (+/- delta kick)")
         self.rm_bidirectional.setToolTip("Compute the ORM using positive and negative perturbations (central difference) instead of a single perturbation. This generally improves numerical accuracy.")
         self.rm_vectorized = QCheckBox("Use vectorized response calculation")
@@ -2234,7 +2237,7 @@ class MainWindow(QMainWindow):
         self.rm_frequency = QLineEdit()
         self.rm_harm_number = QLineEdit()
         self.rm_rf_attr = QLineEdit("Frequency")
-        self.rm_fixedpath = QCheckBox("Apply fixed-circumference correction")
+        self.rm_fixedpath = QCheckBox("fixedpathlength")
         self.rm_fixedpath.setToolTip(
             "Modify corrector-response columns by the dispersive momentum correction required to keep the closed-orbit path length at the reference circumference. "
             "This is separate from fitting the RF-dispersion column. This setting applies to the selected stage."
@@ -2402,9 +2405,17 @@ class MainWindow(QMainWindow):
         self.norm_mode = QComboBox()
         self.norm_mode.addItems(["component", "global", "none"])
         self.auto_delta = QCheckBox("Automatically optimize Jacobian step sizes")
-        self.loco_fixedpath = QCheckBox("Keep path length fixed")
+        self.loco_fixedpath = QCheckBox("fixedpathlength")
         self.loco_individuals = QCheckBox("individuals")
         self.loco_remove_coupling = QCheckBox("Exclude cross-plane ORM responses from the fit")
+        self.orm_terms_to_fit = QComboBox()
+        self.orm_terms_to_fit.addItem("Full ORM (XX, XY, YX, YY)", "full")
+        self.orm_terms_to_fit.addItem("Diagonal only (XX, YY)", "diagonal")
+        self.orm_terms_to_fit.addItem("Off-diagonal only (XY, YX)", "off_diagonal")
+        self.orm_terms_to_fit.setToolTip(
+            "Select the transverse ORM blocks used by residuals, Jacobian rows, weights, outlier rejection and χ². "
+            "RF dispersion remains independent and is retained when enabled."
+        )
         self.loco_plot_fit_parameters = QCheckBox("Generate fitted-parameter plots")
         rej_layout = QVBoxLayout()
         outlier_group = QGroupBox("Outlier rejection")
@@ -2421,13 +2432,15 @@ class MainWindow(QMainWindow):
         calculation_form = QFormLayout(calculation_group)
         self.loco_individuals.hide()  # compatibility state; superseded by explicit modes
         self.auto_delta.setToolTip("Adapt finite-difference perturbations to obtain a numerically useful ORM change.")
-        self.loco_fixedpath.setText("Apply fixed-circumference correction")
+        self.loco_fixedpath.setText("fixedpathlength")
         self.loco_fixedpath.setToolTip("Modify corrector-response columns by the dispersive momentum correction required by a fixed ring circumference. This does not add the RF-dispersion column. Applies to this stage.")
         self.loco_remove_coupling.setToolTip("Exclude H→Y and V→X from residuals, Jacobian, outlier selection and χ² for this stage. Raw measurement arrays remain unchanged.")
         self.loco_plot_fit_parameters.setToolTip("Generate parameter-history plots; this changes output only, not fitted values.")
         self.loco_fixedpath.hide()  # compatibility mirror; the Response Matrix control is authoritative in the UI
-        for widget in (self.auto_delta, self.loco_remove_coupling, self.loco_plot_fit_parameters):
+        calculation_form.addRow("ORM terms to fit", self.orm_terms_to_fit)
+        for widget in (self.auto_delta, self.loco_plot_fit_parameters):
             calculation_form.addRow(widget)
+        self.loco_remove_coupling.hide()  # compatibility mirror for old project files
         rej_layout.addWidget(outlier_group); rej_layout.addWidget(normalization_group); rej_layout.addWidget(calculation_group)
         rej_group = QGroupBox("Fit data treatment and diagnostics")
         rej_group.setLayout(rej_layout)
@@ -2773,6 +2786,10 @@ class MainWindow(QMainWindow):
                     target[key] = str(value) if isinstance(target[key], str) and value is not None else value
 
         options = dict(mapping.get("LOCOOptions", {}))
+        if "orm_terms" not in options:
+            options["orm_terms"] = (
+                "diagonal" if options.get("remove_coupling_", True) else "full"
+            )
         for section in ("solver", "svd", "rejection"):
             update_known(section, options)
 
@@ -3664,7 +3681,7 @@ class MainWindow(QMainWindow):
             self.svd_plot, self.outlier_enabled, self.outlier_sigma, self.norm_enabled,
             self.norm_mode, self.loco_hor_dispersion_weight,
             self.loco_ver_dispersion_weight, self.auto_delta, self.loco_fixedpath, self.loco_individuals,
-            self.loco_remove_coupling, self.loco_plot_fit_parameters, self.constraint_enabled,
+            self.loco_remove_coupling, self.orm_terms_to_fit, self.loco_plot_fit_parameters, self.constraint_enabled,
             self.constraint_quad_sigma, self.constraint_skew_sigma,
             self.constraint_quad_weights, self.constraint_skew_weights,
             self.constraint_quad_sigma_mode, self.constraint_quad_relative_sigma,
@@ -4164,6 +4181,8 @@ class MainWindow(QMainWindow):
         self.loco_fixedpath.setChecked(cfg.rejection.fixedpathlength)
         self.loco_individuals.setChecked(cfg.parameters.individuals)
         self.loco_remove_coupling.setChecked(cfg.rejection.remove_coupling_)
+        orm_terms_index = self.orm_terms_to_fit.findData(cfg.rejection.orm_terms)
+        self.orm_terms_to_fit.setCurrentIndex(max(0, orm_terms_index))
         self.loco_plot_fit_parameters.setChecked(cfg.rejection.plot_fit_parameters)
         self.quad_jacobian_calculator.setCurrentText(cfg.rejection.quad_jacobian_calculator)
         self.skew_jacobian_calculator.setCurrentText(cfg.rejection.skew_jacobian_calculator)
@@ -4315,7 +4334,9 @@ class MainWindow(QMainWindow):
         cfg.rejection.fixedpathlength = self.loco_fixedpath.isChecked() or self.rm_fixedpath.isChecked()
         cfg.response_matrix.fixedpathlength = cfg.rejection.fixedpathlength
         cfg.rejection.individuals = self.parameterization_radios["quads"][0].isChecked()
-        cfg.rejection.remove_coupling_ = self.loco_remove_coupling.isChecked()
+        cfg.rejection.orm_terms = self.orm_terms_to_fit.currentData() or "diagonal"
+        cfg.rejection.remove_coupling_ = cfg.rejection.orm_terms == "diagonal"
+        self.loco_remove_coupling.setChecked(cfg.rejection.remove_coupling_)
         cfg.rejection.plot_fit_parameters = self.loco_plot_fit_parameters.isChecked()
         cfg.rejection.quad_jacobian_calculator = self.quad_jacobian_calculator.currentText()
         cfg.rejection.skew_jacobian_calculator = self.skew_jacobian_calculator.currentText()
@@ -4471,6 +4492,7 @@ class MainWindow(QMainWindow):
             }.get(stage.start_from, stage.start_from)
             differences = (
                 f"{stage_cfg.response_matrix.calculator} ORM; "
+                f"terms {stage_cfg.rejection.orm_terms}; "
                 f"{stage_cfg.solver.algorithm.upper()} solver; "
                 f"SVD {stage_cfg.svd.svd_selection_method}"
             )
@@ -4518,7 +4540,8 @@ class MainWindow(QMainWindow):
         readable_rows = (
             f"<tr><td><b>Response matrix</b></td><td>{escape(cfg.response_matrix.calculator)}; "
             f"dispersion {'included' if cfg.response_matrix.includeDispersion else 'not included'}; "
-            f"coupling {'included' if cfg.response_matrix.coupling_orm else 'not included'}</td></tr>"
+            f"model coupling option {'enabled' if cfg.response_matrix.coupling_orm else 'disabled'}; "
+            f"ORM terms fitted: {escape(cfg.rejection.orm_terms)}</td></tr>"
             f"<tr><td><b>Solver</b></td><td>{escape(cfg.solver.algorithm.upper())}; "
             f"{cfg.solver.nIter} outer iterations; {cfg.solver.nLMIter} LM inner iterations</td></tr>"
             f"<tr><td><b>SVD selection</b></td><td>{escape(cfg.svd.svd_selection_method)}; "
@@ -7007,8 +7030,8 @@ class MainWindow(QMainWindow):
             return
         advanced = self.project.mode == "Advanced"
         widgets = (
-            self.rm_fixedpath, self.rm_log_info,
-            self.loco_remove_coupling, self.loco_plot_fit_parameters,
+            self.rm_coupling, self.rm_fixedpath, self.rm_log_info,
+            self.loco_plot_fit_parameters,
             self.params_cmstep_h, self.params_cmstep_v, self.params_cmstep_file_row, self.params_rfstep,
             self.params_quads_attr, self.params_quads_attr_index, self.params_skew_attr,
             self.params_skew_attr_index, self.params_tilt_attr_r1, self.params_tilt_attr_r2,
@@ -7022,6 +7045,7 @@ class MainWindow(QMainWindow):
         self.params_init_policy.hide()
         self.params_init.hide()
         self.loco_fixedpath.setVisible(False)
+        self.loco_remove_coupling.setVisible(False)
         # Legacy configuration compatibility only: the generic Individuals
         # checkbox has been replaced by the three explicit parameterization
         # controls and must never become a free-floating visible widget.

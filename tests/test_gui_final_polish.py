@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
 import pyLOCO.gui.main_window as main_window_module
 from pyLOCO.gui.main_window import ElementSelectionDialog, MainWindow
 from pyLOCO.gui.fit_workflow import FitRecipe
-from pyLOCO.gui.models.project import CompletedRunReference, ImportedDataset, ProjectMetadata, json_safe
+from pyLOCO.gui.models.project import (
+    CompletedRunReference, ImportedDataset, LocoConfiguration, ProjectMetadata, json_safe,
+)
 
 
 @pytest.fixture(scope="module")
@@ -418,9 +420,11 @@ def test_case_c_all_stages_keep_scientific_mapping_and_show_parameter_summary(ap
             assert "not fitted" in window.normal_step_resolution.text()
     window._store_active_fit_stage()
     stored = window.fit_recipe.to_dict()["stages"]
-    assert [item["configuration"]["backend_mapping"] for item in stored] == [
-        item["configuration"]["backend_mapping"] for item in source_stages
-    ]
+    expected_mappings = [item["configuration"]["backend_mapping"] for item in source_stages]
+    for mapping in expected_mappings:
+        legacy = mapping["LOCOOptions"].get("remove_coupling_", True)
+        mapping["LOCOOptions"]["orm_terms"] = "diagonal" if legacy else "full"
+    assert [item["configuration"]["backend_mapping"] for item in stored] == expected_mappings
     window.project.modified = False; window.close()
 
 
@@ -478,7 +482,12 @@ def test_fit_workflow_plain_language_and_fixed_circumference_control(app):
     window = MainWindow()
     assert window.fit_workflow_table.horizontalHeaderItem(2).text() == "Parameters fitted in this stage"
     assert window.fit_workflow_table.horizontalHeaderItem(4).text() == "Starting model"
-    assert window.loco_remove_coupling.text() == "Exclude cross-plane ORM responses from the fit"
+    assert window.rm_fixedpath.text() == "fixedpathlength"
+    assert window.loco_fixedpath.text() == "fixedpathlength"
+    assert [window.orm_terms_to_fit.itemData(index) for index in range(window.orm_terms_to_fit.count())] == [
+        "full", "diagonal", "off_diagonal"
+    ]
+    assert "model" in window.rm_coupling.text().lower()
     assert window.loco_plot_fit_parameters.text() == "Generate fitted-parameter plots"
     assert window.loco_fixedpath.isHidden()
 
@@ -486,6 +495,27 @@ def test_fit_workflow_plain_language_and_fixed_circumference_control(app):
     assert window._collect_loco_configuration().response_matrix.fixedpathlength is True
     window.rm_fixedpath.setChecked(False); app.processEvents()
     assert window._collect_loco_configuration().response_matrix.fixedpathlength is False
+    window.project.modified = False; window.close()
+
+
+def test_orm_terms_are_stage_specific_and_analytical_coupling_fails_closed(app):
+    window = MainWindow()
+    window.orm_terms_to_fit.setCurrentIndex(window.orm_terms_to_fit.findData("diagonal"))
+    window._store_active_fit_stage()
+    window._add_fit_stage(name="Coupling", start_from="previous_stage")
+    window.orm_terms_to_fit.setCurrentIndex(window.orm_terms_to_fit.findData("off_diagonal"))
+    window._store_active_fit_stage()
+
+    first = window._configuration_for_fit_stage(window.fit_recipe.stages[0])
+    second = window._configuration_for_fit_stage(window.fit_recipe.stages[1])
+    assert first.rejection.orm_terms == "diagonal"
+    assert second.rejection.orm_terms == "off_diagonal"
+    assert first.to_backend_mapping()["LOCOOptions"]["remove_coupling_"] is True
+    assert second.to_backend_mapping()["LOCOOptions"]["remove_coupling_"] is False
+
+    second.response_matrix.calculator = "Analytical"
+    window.project.loco_config = second
+    assert any("uncoupled" in message and "off-diagonal" in message for message in window.project.validation_messages())
     window.project.modified = False; window.close()
 
 
@@ -534,6 +564,17 @@ def test_run_monitor_is_visible_when_run_preparation_fails(app, monkeypatch):
     assert window._run_thread is None
     window.project.modified = False
     window.close()
+
+
+@pytest.mark.parametrize("legacy_value,expected", [(True, "diagonal"), (False, "full")])
+def test_legacy_remove_coupling_configuration_migrates_to_orm_terms(legacy_value, expected):
+    configuration = LocoConfiguration.from_dict({
+        "rejection": {"remove_coupling_": legacy_value},
+    })
+    assert configuration.rejection.orm_terms == expected
+    backend = configuration.to_backend_mapping()["LOCOOptions"]
+    assert backend["orm_terms"] == expected
+    assert backend["remove_coupling_"] is legacy_value
 
 
 def test_run_switches_to_results_before_stage_snapshot(app, monkeypatch):
