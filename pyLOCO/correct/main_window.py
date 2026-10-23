@@ -21,6 +21,7 @@ from pyLOCO.control_system import AdapterCapability,InterfaceRegistry
 from .application import CorrectionApplicationService
 from .model import CorrectionReview,load_review,save_review,save_review_csv
 from .petra_readonly import apply_explicit_mapping,load_mapping
+from pyLOCO.machine_mapping import SCHEMA as MACHINE_MAPPING_SCHEMA, VERSION as MACHINE_MAPPING_VERSION, entry as machine_mapping_entry
 
 AMBER_QSS="""
 QLabel#correctBrand { color:#E88B22; font-size:24pt; font-weight:850; padding:2px 8px; }
@@ -184,7 +185,7 @@ class CorrectMainWindow(QMainWindow):
         connection_group.hide()
         self.offline_connection_group=QGroupBox("1. Machine connection"); offline_layout=QVBoxLayout(self.offline_connection_group); offline_text=QLabel("Mock is an offline, read-only review backend. It has no machine connection or live device inventory."); offline_text.setWordWrap(True); offline_layout.addWidget(offline_text); layout.addWidget(self.offline_connection_group)
 
-        mapping_group=QGroupBox("2. Match fitted magnets to machine devices"); mapping_group.setObjectName("machineMappingSection"); mapping_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        mapping_group=QGroupBox("2. Machine Mapping"); mapping_group.setObjectName("machineMappingSection"); mapping_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
         self.mapping_summary=QLabel("No correction source loaded"); self.mapping_file_status=QLabel("—"); self.mapped_status=QLabel("—"); self.unmapped_status=QLabel("—"); self.ambiguous_status=QLabel("—")
         mapping_grid=status_grid(mapping_group,(("Mapping status",self.mapping_summary),("Mapping file",self.mapping_file_status),("Mapped magnets",self.mapped_status),("Unmapped magnets",self.unmapped_status),("Ambiguous mappings",self.ambiguous_status)))
         self.mapping_source_notice=QLabel("Load a correction source first to configure PETRA magnet mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,5,0,1,2)
@@ -195,9 +196,9 @@ class CorrectMainWindow(QMainWindow):
         manual_group=QGroupBox("B. Manual mapping"); manual_layout=QVBoxLayout(manual_group)
         self.manual_mapping_help=QLabel("Create a JSON template containing immutable FIT identities. Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded. Creating a template does not complete or validate the mapping."); self.manual_mapping_help.setWordWrap(True); manual_layout.addWidget(self.manual_mapping_help)
         mapping_actions=QHBoxLayout()
-        self.generate_mapping_button=QPushButton("Create mapping template…"); self.generate_mapping_button.clicked.connect(self.generate_mapping_template); self.generate_mapping_button.setEnabled(False)
-        self.mapping_button=QPushButton("Load completed mapping…"); self.mapping_button.setMinimumWidth(210); self.mapping_button.clicked.connect(self.load_petra_mapping); self.mapping_button.setEnabled(False)
-        self.save_validated_mapping_button=QPushButton("Save validated mapping…"); self.save_validated_mapping_button.setEnabled(False)
+        self.generate_mapping_button=QPushButton("Create Machine Mapping template…"); self.generate_mapping_button.clicked.connect(self.generate_mapping_template); self.generate_mapping_button.setEnabled(False)
+        self.mapping_button=QPushButton("Load Machine Mapping…"); self.mapping_button.setMinimumWidth(210); self.mapping_button.clicked.connect(self.load_petra_mapping); self.mapping_button.setEnabled(False)
+        self.save_validated_mapping_button=QPushButton("Save validated Machine Mapping…"); self.save_validated_mapping_button.setEnabled(False)
         mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.save_validated_mapping_button); mapping_actions.addStretch(1); manual_layout.addLayout(mapping_actions)
         self.manual_mapping_feedback=QLabel("No manual mapping loaded."); self.manual_mapping_feedback.setWordWrap(True); self.manual_mapping_feedback.setObjectName("mappingHelpText"); manual_layout.addWidget(self.manual_mapping_feedback); mapping_grid.addWidget(manual_group,7,0,1,2)
         self.mapping_feedback=QLabel(); self.mapping_feedback.hide()
@@ -220,7 +221,7 @@ class CorrectMainWindow(QMainWindow):
         example=QLabel('<b>Minimal unvalidated example:</b> {"lattice_name":"QD3J", "lattice_ordinal":27, "control_name":""}<br><b>Instruction:</b> Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded.'); example.setWordWrap(True); help_grid.addWidget(example,len(help_rows),0,1,2)
         mapping_help_layout.addWidget(self.mapping_help_body); self.mapping_help_body.setVisible(False); mapping_help.toggled.connect(self.mapping_help_body.setVisible)
 
-        mapping_details=QGroupBox("3. Review mapping"); details_layout=QVBoxLayout(mapping_details)
+        mapping_details=QGroupBox("3. Review Machine Mapping"); details_layout=QVBoxLayout(mapping_details)
         mapping_origin=QLabel("Fitted magnet identity and AT index (0-based) come from the FIT result. AT Device is shown only when preserved by authoritative lattice provenance. The pyAML target/control, component and units come from the separately validated machine mapping."); mapping_origin.setWordWrap(True); details_layout.addWidget(mapping_origin)
         filter_row=QHBoxLayout(); self.mapping_filter=QLineEdit(); self.mapping_filter.setPlaceholderText("Search fitted magnet or machine device"); self.mapping_filter.textChanged.connect(self._refresh_mapping_details)
         self.mapping_attention_filter=QComboBox(); self.mapping_attention_filter.addItem("All mappings","all"); self.mapping_attention_filter.addItem("Needs attention","attention"); self.mapping_attention_filter.addItem("Validated only","validated"); self.mapping_attention_filter.currentIndexChanged.connect(self._refresh_mapping_details); filter_row.addWidget(self.mapping_filter,1); filter_row.addWidget(self.mapping_attention_filter); details_layout.addLayout(filter_row)
@@ -1314,7 +1315,7 @@ class CorrectMainWindow(QMainWindow):
         if not path:
             return
         target = Path(path).expanduser()
-        target.write_text(json.dumps({
+        template_document={
             "description": (
                 "Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded."
             ),
@@ -1323,7 +1324,17 @@ class CorrectMainWindow(QMainWindow):
             "derived_on_load": ["component", "unit", "mapping_status"],
             "correction_representation": "integrated_delta_k_times_length" if integrated else "gradient_delta_k",
             "mappings": entries,
-        }, indent=2), encoding="utf-8")
+        }
+        if pyaml:
+            template_document={"schema":MACHINE_MAPPING_SCHEMA,"schema_version":MACHINE_MAPPING_VERSION,"template":True,
+                "description":"Complete pyaml_device only where unavailable. Roles and lattice identities come from FIT.",
+                "user_fields":["pyaml_device","identity_evidence"],
+                "derived_on_load":["status","evidence"],
+                "mappings":[machine_mapping_entry(role=item.correction_type,pyaml_device=item.control_name or "",
+                    lattice_ordinal=item.lattice_ordinal,lattice_fam_name=item.name,
+                    lattice_device=item.metadata.get("lattice_device") or item.metadata.get("at_device") or "")
+                    for item in self.review.items if item.correction_type in {"normal_quadrupole","skew_quadrupole"}]}
+        target.write_text(json.dumps(template_document, indent=2), encoding="utf-8")
         self._remember_browse("mapping", target)
         if pyaml:
             self.mapping_action_message="template"
@@ -1343,7 +1354,7 @@ class CorrectMainWindow(QMainWindow):
         )
 
     def load_petra_mapping(self):
-        path=QFileDialog.getOpenFileName(self,"Load explicit magnet mapping",self._browse_start("mapping"),"Mapping files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
+        path=QFileDialog.getOpenFileName(self,"Load Machine Mapping",self._browse_start("mapping"),"Machine Mapping (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
         if not path or not self.review:return
         self._remember_browse("mapping",path)
         if self.backend_combo.currentData() == "pyaml":

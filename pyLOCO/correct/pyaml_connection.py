@@ -12,6 +12,8 @@ from types import SimpleNamespace
 import yaml
 
 from .petra_readonly import load_mapping as load_machine_mapping, apply_explicit_mapping, MagnetMapping
+from pyLOCO.machine_mapping import (correction_projection,
+    is_document as is_shared_machine_mapping)
 
 
 FAMILIES = ("normal_quadrupole", "skew_quadrupole")
@@ -124,6 +126,8 @@ def item_identity(item):
 
 def load_mapping(path):
     data = mapping_document(path)
+    if isinstance(data,dict) and is_shared_machine_mapping(data):
+        return correction_projection(data)
     entries = data.get("mappings") if isinstance(data, dict) else data
     if isinstance(entries, list) and entries and all(isinstance(row, dict) and "magnet_name" in row for row in entries):
         return entries
@@ -149,6 +153,7 @@ def make_mapping_bundle(review, connection, entries, lattice_path, *, provenance
         rows.append(dict(
             correction_type=family,
             lattice_name=key[2], lattice_ordinal=key[1],
+            lattice_device=str(getattr(ring[key[1]],"Device","") or ""),
             control_name=entry.get("control_name", entry.get("magnet_name")),
             component="B2L" if family == FAMILIES[0] else "A2L", unit="m^-1",
             provenance=str(provenance),
@@ -196,7 +201,8 @@ def validate_mapping_entries(review, connection, entries, ring):
     sources, targets = set(), set()
     selected = []
     wanted = {item_identity(item) for item in review.items}
-    for entry in entries:
+    for original in entries:
+        entry=dict(original)
         family = _entry_family(entry, review)
         ordinal = entry.get("lattice_ordinal")
         lattice_name = str(entry.get("lattice_name") or "")
@@ -204,11 +210,17 @@ def validate_mapping_entries(review, connection, entries, ring):
         if type(ordinal) is not int or not 0 <= ordinal < len(ring):
             raise ValueError(f"Invalid source lattice ordinal for {lattice_name!r}: {ordinal!r}")
         actual = str(getattr(ring[ordinal], "FamName", ""))
+        if not lattice_name:
+            lattice_name=actual; entry["lattice_name"]=actual
         if actual != lattice_name:
             raise ValueError(
                 f"Reference lattice identity mismatch at ordinal {ordinal}: "
                 f"mapping has {lattice_name!r}, lattice has {actual!r}"
             )
+        declared_device=str(entry.get("lattice_device") or "")
+        actual_device=str(getattr(ring[ordinal],"Device","") or "")
+        if declared_device and declared_device!=actual_device:
+            raise ValueError(f"Reference lattice Device mismatch at ordinal {ordinal}: mapping has {declared_device!r}, lattice has {actual_device!r}")
         source = (family, ordinal, lattice_name)
         if source in sources:
             raise ValueError(f"Duplicate mapping source: {source}")
@@ -239,17 +251,18 @@ def validate_mapping_bundle(review, connection, path, lattice_path):
     lattice, ring = lattice_identity(lattice_path)
     provenance = "authoritative legacy mapping — revalidated"
     if isinstance(document, dict) and document.get("schema") == MAPPING_BUNDLE_SCHEMA:
-        if document.get("schema_version") != MAPPING_BUNDLE_VERSION:
+        shared=is_shared_machine_mapping(document)
+        if not shared and document.get("schema_version") != MAPPING_BUNDLE_VERSION:
             raise ValueError("Unsupported reusable mapping-bundle version")
         expected_lattice = document.get("reference_lattice", {})
         if expected_lattice.get("sha256") != lattice["sha256"] or expected_lattice.get("element_count") != lattice["element_count"]:
             raise ValueError("Reusable mapping belongs to a different reference lattice")
         profile = document.get("machine_profile", {})
         expected_options = {key: connection.options[key] for key in ("mode", "normal_array", "skew_array")}
-        if profile.get("configuration_sha256") != connection.config_hash or any(profile.get(k) != v for k, v in expected_options.items()):
+        if profile.get("configuration_sha256") != connection.config_hash or any(k in profile and profile.get(k) != v for k, v in expected_options.items()):
             raise ValueError("Reusable mapping belongs to a different machine configuration/profile")
-        inventory = document.get("inventory", {})
-        if inventory.get("sha256") != inventory_fingerprint(connection.inventory) or inventory.get("device_count") != len(connection.inventory):
+        inventory = document.get("inventories",{}).get("correction",{}) if shared else document.get("inventory", {})
+        if inventory and (inventory.get("sha256") != inventory_fingerprint(connection.inventory) or inventory.get("device_count") != len(connection.inventory)):
             raise ValueError("Reusable mapping inventory has changed; revalidation is required")
         provenance = "revalidated saved mapping"
     rows = validate_mapping_entries(review, connection, entries, ring)
@@ -260,9 +273,11 @@ def validate_mapping_bundle(review, connection, path, lattice_path):
     wanted = {item_identity(item) for item in review.items}
     for entry in entries:
         family = _entry_family(entry, review)
-        key = (family, entry.get("lattice_ordinal"), entry.get("lattice_name"))
+        ordinal=entry.get("lattice_ordinal"); lattice_name=entry.get("lattice_name")
+        if not lattice_name and type(ordinal) is int and 0<=ordinal<len(ring):lattice_name=str(getattr(ring[ordinal],"FamName","") or "")
+        key = (family, ordinal, lattice_name)
         if key in wanted:
-            selected.append(dict(entry, correction_type=family,
+            selected.append(dict(entry, lattice_name=lattice_name, correction_type=family,
                                  component="B2L" if family == FAMILIES[0] else "A2L",
                                  unit="m^-1"))
     return selected, rows, provenance, lattice

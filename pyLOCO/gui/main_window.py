@@ -74,6 +74,9 @@ from .measurement_mapping import (
     validate_mapping as validate_measurement_mapping,
 )
 from .mapping_table import CopyableMappingTable, configure_mapping_table, identity_match_label
+from pyLOCO.machine_mapping import (is_document as is_machine_mapping,
+    is_template as is_machine_mapping_template, measurement_projection,
+    merge_measurement, template as machine_mapping_template)
 
 from .backend import LocoRunError, LocoRunRequest, LocoRunResult, run_loco_request, _load_bad_bpm_positions, _load_measurements
 from .machine_detection import detect_machine_elements
@@ -1756,17 +1759,17 @@ class MainWindow(QMainWindow):
             exclusion_form.addRow(label, edit); edit.editingFinished.connect(self._store_exclusions)
         exclusion_form.addRow("Counts", self.exclusion_counts)
         content_layout.addWidget(exclusion_group)
-        measurement_mapping_group = QGroupBox("Measurement-device mapping")
+        measurement_mapping_group = QGroupBox("Machine Mapping")
         measurement_mapping_layout = QVBoxLayout(measurement_mapping_group)
         mapping_intro = QLabel(
             "Measured identities come from imported HDF5 metadata. AT FamName, AT Device and zero-based ordinal "
             "come from the active reference lattice. The recorded match method and steering compatibility are "
             "reviewed separately; array position is never identity. "
-            "Find machine mappings verifies identities only — it does not change the FIT selections."
+            "Find Machine Mapping verifies identities only — it does not change the FIT selections."
         )
         mapping_intro.setWordWrap(True); measurement_mapping_layout.addWidget(mapping_intro)
         self.measurement_mapping_steps = QLabel(
-            "<b>Step 1 — Find device mappings</b><br>Match measured BPMs and correctors with the reference AT lattice.<br>"
+            "<b>Step 1 — Find Machine Mapping</b><br>Match measured BPMs and correctors with the reference AT lattice.<br>"
             "<b>Step 2 — Review results</b><br>Check matched devices and resolve unmatched or ambiguous entries.<br>"
             "<b>Step 3 — Use mappings in FIT</b><br>Preview and confirm the BPM and corrector selections for the measured ORM.<br>"
             "<b>Step 4 — Validate</b><br>Verify the complete configuration before running LOCO."
@@ -1775,10 +1778,10 @@ class MainWindow(QMainWindow):
         self.measurement_mapping_steps.setObjectName("mappingHelpText")
         measurement_mapping_layout.addWidget(self.measurement_mapping_steps)
         mapping_actions = QHBoxLayout()
-        self.find_measurement_mappings_button = QPushButton("Find machine mappings")
-        self.create_measurement_mapping_template_button = QPushButton("Create mapping template…")
-        self.load_measurement_mapping_button = QPushButton("Load completed mapping…")
-        self.save_measurement_mapping_button = QPushButton("Save validated mapping…")
+        self.find_measurement_mappings_button = QPushButton("Find Machine Mapping")
+        self.create_measurement_mapping_template_button = QPushButton("Create Machine Mapping template…")
+        self.load_measurement_mapping_button = QPushButton("Load Machine Mapping…")
+        self.save_measurement_mapping_button = QPushButton("Save validated Machine Mapping…")
         self.find_measurement_mappings_button.clicked.connect(self.find_measurement_mappings)
         self.create_measurement_mapping_template_button.clicked.connect(self.create_measurement_mapping_template)
         self.load_measurement_mapping_button.clicked.connect(self.load_measurement_mapping)
@@ -5970,13 +5973,13 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Mapping template unavailable", str(exc)); return False
         filename = QFileDialog.getSaveFileName(
-            self, "Create measurement-device mapping template", "measurement-device-mapping.json",
+            self, "Create Machine Mapping template", "machine-mapping-template.json",
             "JSON mapping (*.json)", options=QFileDialog.DontUseNativeDialog,
         )[0]
         if not filename: return False
         target = Path(filename).expanduser()
         if target.suffix.lower() != ".json": target = target.with_suffix(".json")
-        target.resolve().write_text(json.dumps(measurement_mapping_template(inventory), indent=2), encoding="utf-8")
+        target.resolve().write_text(json.dumps(machine_mapping_template(inventory), indent=2), encoding="utf-8")
         self.measurement_mapping_feedback.setText(
             f"Template saved — not validated: {target.name}. Fill in only lattice_ordinal for unresolved devices, then load it."
         )
@@ -5985,19 +5988,21 @@ class MainWindow(QMainWindow):
     @Slot()
     def load_measurement_mapping(self) -> bool:
         filename = QFileDialog.getOpenFileName(
-            self, "Load completed measurement-device mapping", "",
+            self, "Load Machine Mapping", "",
             "Mapping files (*.json *.yaml *.yml)", options=QFileDialog.DontUseNativeDialog,
         )[0]
         if not filename: return False
         try:
             lattice, lattice_path, _payload, inventory, configuration = self._measurement_mapping_context()
-            document = load_measurement_mapping_document(filename)
-            strict = bool(document.get("reference_lattice") and document.get("inventory"))
+            source = load_measurement_mapping_document(filename)
+            common=is_machine_mapping(source); document=measurement_projection(source) if common else source
+            strict = bool(document.get("reference_lattice") and document.get("inventory")) and not (common and is_machine_mapping_template(source))
             mapping = validate_measurement_mapping(
                 document, lattice, inventory, lattice_path=lattice_path,
                 configuration_path=configuration, require_provenance=strict,
             )
             mapping["mapping_provenance"] = f"loaded and revalidated from {Path(filename).name}"
+            self._loaded_machine_mapping_document=source if common else None
         except Exception as exc:
             QMessageBox.warning(self, "Measurement mapping is incompatible", str(exc)); return False
         self.project.measurement_device_mapping = mapping
@@ -6025,13 +6030,14 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.warning(self, "Mapping could not be revalidated", str(exc)); return False
         filename = QFileDialog.getSaveFileName(
-            self, "Save validated measurement-device mapping", "measurement-device-mapping.validated.json",
+            self, "Save validated Machine Mapping", "machine-mapping.validated.json",
             "JSON mapping (*.json)", options=QFileDialog.DontUseNativeDialog,
         )[0]
         if not filename: return False
         target = Path(filename).expanduser()
         if target.suffix.lower() != ".json": target = target.with_suffix(".json")
-        target.resolve().write_text(json.dumps(mapping, indent=2), encoding="utf-8")
+        shared=merge_measurement(getattr(self,"_loaded_machine_mapping_document",None),mapping)
+        target.resolve().write_text(json.dumps(shared, indent=2), encoding="utf-8")
         self.project.measurement_device_mapping = mapping
         self.measurement_mapping_feedback.setText(f"Validated reusable mapping saved — {counts['mapped']} devices: {target.name}")
         return True

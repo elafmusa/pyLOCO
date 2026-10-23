@@ -212,15 +212,15 @@ def test_shared_workflow_and_backend_switch(window, setup):
 
 
 def test_shared_mapping_import_export(window, setup, tmp_path, monkeypatch):
-    from pyLOCO.correct.petra_readonly import load_mapping
+    from pyLOCO.correct.pyaml_connection import load_mapping
     widget = connect_workspace(window, setup)
     widget.refresh()
     path = tmp_path / "mapping.json"
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(path), ""))
     window.generate_mapping_template()
     mappings = load_mapping(path)
-    assert [entry.control_name for entry in mappings] == ["M1", "M2", "S1"]
-    assert [entry.component for entry in mappings] == [None, None, None]
+    assert [entry["control_name"] for entry in mappings] == ["M1", "M2", "S1"]
+    assert [entry["component"] for entry in mappings] == ["B2L", "B2L", "A2L"]
     widget.clear_mapping()
     monkeypatch.setattr(pyaml_widget, "find_reference_lattice", lambda *_: setup.source)
     def validate(review, connection, selected, lattice):
@@ -244,13 +244,10 @@ def test_unmapped_template_is_saved_but_not_loaded_or_trusted(window, setup, tmp
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(path), ""))
     window.generate_mapping_template()
     data = __import__("json").loads(path.read_text())
-    assert [row["control_name"] for row in data["mappings"]] == ["", "", ""]
-    assert all(set(row) == {"lattice_name", "lattice_ordinal", "control_name"}
-               for row in data["mappings"])
-    assert data["description"] == (
-        "Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded."
-    )
-    assert data["derived_on_load"] == ["component", "unit", "mapping_status"]
+    assert [row["pyaml_device"] for row in data["mappings"]] == ["", "", ""]
+    assert [row["role"] for row in data["mappings"]] == ["normal_quadrupole","normal_quadrupole","skew_quadrupole"]
+    assert data["schema"] == "pyloco.machine_mapping"
+    assert data["derived_on_load"] == ["status", "evidence"]
     assert widget.mapping_path is None
     assert widget.explicit == []
     assert "not loaded" in window.mapping_file_status.text().lower()
@@ -292,8 +289,8 @@ def test_mapping_help_and_details_are_self_explanatory(window, setup):
     mapping_page = window.tabs.widget(1).widget()
     assert mapping_page.layout().itemAt(0).widget().title() == "ⓘ Mapping workflow and template format"
     assert widget.clear_mapping_button.text() == "Find machine mappings"
-    assert window.generate_mapping_button.text() == "Create mapping template…"
-    assert window.mapping_button.text() == "Load completed mapping…"
+    assert window.generate_mapping_button.text() == "Create Machine Mapping template…"
+    assert window.mapping_button.text() == "Load Machine Mapping…"
     assert window.mapping_details_table.columnCount() == 9
     assert window.mapping_details_table.horizontalHeaderItem(0).text() == "Fitted magnet (AT FamName)"
     assert window.mapping_details_table.horizontalHeaderItem(4).text() == "pyAML target / control"
@@ -325,7 +322,7 @@ def test_backend_neutral_disconnected_and_zero_match_states(window, setup):
     assert widget.inventory_result.text() == "Inventory not discovered"
     assert not widget.writes.isChecked()
     window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
-    assert window.mapping_group.title() == "2. Match fitted magnets to machine devices"
+    assert window.mapping_group.title() == "2. Machine Mapping"
     assert window.mapping_details_table.horizontalHeaderItem(4).text() == "pyAML target / control"
     assert window.automatic_mapping_group.isHidden()
     assert not window.offline_connection_group.isHidden()

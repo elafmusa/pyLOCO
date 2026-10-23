@@ -55,6 +55,9 @@ from pyLOCO.gui.measurement_mapping import (
 )
 from pyLOCO.gui.mapping_table import (CopyableMappingTable, configure_mapping_table,
                                       identity_match_label)
+from pyLOCO.machine_mapping import (is_document as is_machine_mapping,
+    is_template as is_machine_mapping_template, measurement_projection,
+    merge_measurement, template as machine_mapping_template)
 from pyLOCO.gui.lattice_loader import MultipleMatLatticesError, mat_lattice_candidates
 from pyLOCO.gui.themes import ACCENTS, accent_for_key, apply_application_theme, theme_for_key
 from pyLOCO.gui.suite import launch_suite_application,present_single_about_dialog
@@ -404,6 +407,7 @@ class MeasureMainWindow(QMainWindow):
         self.saved_session_path: Path | None = None
         self.reference_model = None
         self.measurement_device_alignment = None
+        self.machine_mapping_document = None
         self.last_mapping_template_path: Path | None = None
         self._pending_full_bundle = None
         self._session_dirty = True
@@ -747,17 +751,17 @@ class MeasureMainWindow(QMainWindow):
         self.reference_model_requirement=QLabel("AT is installed — reference-model calculations are available." if find_spec("at") is not None else "AT is not installed — reference-model calculations and physical dispersion are unavailable."); self.reference_model_requirement.setWordWrap(True)
         self.compare_reference=QCheckBox("Compare measurements with reference model (diagnostic only)"); self.compare_reference.setChecked(True)
         self.compare_reference.toggled.connect(self._reference_comparison_changed)
-        self.verify_alignment_button=QPushButton("Find device mappings")
+        self.verify_alignment_button=QPushButton("Find Machine Mapping")
         self.verify_alignment_button.clicked.connect(self._verify_device_alignment)
-        self.load_mapping_button=QPushButton("Load mapping…"); self.load_mapping_button.clicked.connect(self._load_device_mapping)
-        self.mapping_template_button=QPushButton("Create mapping template…"); self.mapping_template_button.clicked.connect(self._save_mapping_template)
+        self.load_mapping_button=QPushButton("Load Machine Mapping…"); self.load_mapping_button.clicked.connect(self._load_device_mapping)
+        self.mapping_template_button=QPushButton("Create Machine Mapping template…"); self.mapping_template_button.clicked.connect(self._save_mapping_template)
         self.mapping_python_helper_button=QPushButton("Python Mapping Helper…"); self.mapping_python_helper_button.clicked.connect(self._show_python_mapping_helper)
-        self.save_mapping_button=QPushButton("Save validated mapping…"); self.save_mapping_button.setEnabled(False); self.save_mapping_button.clicked.connect(self._save_validated_mapping)
+        self.save_mapping_button=QPushButton("Save validated Machine Mapping…"); self.save_mapping_button.setEnabled(False); self.save_mapping_button.clicked.connect(self._save_validated_mapping)
         self.alignment_details_button=QPushButton("Mapping details…"); self.alignment_details_button.setEnabled(False)
         self.alignment_details_button.clicked.connect(self._show_alignment_details)
         alignment_actions=QWidget(); aal=QGridLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button,0,0); aal.addWidget(self.load_mapping_button,0,1); aal.addWidget(self.mapping_template_button,1,0); aal.addWidget(self.mapping_python_helper_button,1,1); aal.addWidget(self.save_mapping_button,2,0); aal.addWidget(self.alignment_details_button,0,2,3,1); aal.setColumnStretch(3,1)
-        self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then find or load an exact device mapping."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("Lattice elements",self.reference_model_element_count); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Device mapping",alignment_actions); reference_layout.addRow("Mapping status",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
+        self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then find or load an exact Machine Mapping."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("Lattice elements",self.reference_model_element_count); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Machine Mapping",alignment_actions); reference_layout.addRow("Mapping status",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
         layout.addWidget(reference_group); return self._scroll_page(content)
 
     def _choose_reference_model(self):
@@ -809,6 +813,18 @@ class MeasureMainWindow(QMainWindow):
             "vertical_corrector":[device.name for device in self.selected_vcorrectors],
         }
 
+    def _pyaml_fitted_magnet_inventory(self):
+        """Read role-bearing pyAML groups without connecting or authorizing writes."""
+        if self.adapter_combo.currentData()!="pyaml":return {}
+        path=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        if not path.is_file():return {}
+        try:
+            import yaml
+            document=yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            arrays={str(row.get("name")):list(row.get("elements") or ()) for row in document.get("arrays",()) if isinstance(row,dict)}
+        except Exception:return {}
+        return {"normal_quadrupole":arrays.get("Quads",[]),"skew_quadrupole":arrays.get("SkewQuads",[])}
+
     def _invalidate_device_alignment(self,reason="Device inventory changed — validate the device mapping again."):
         self.measurement_device_alignment=None; self._model_orm_cache=None
         if hasattr(self,"device_alignment_status"):
@@ -840,6 +856,7 @@ class MeasureMainWindow(QMainWindow):
             document=find_exact_device_mappings(self.reference_model.ring,inventory,
                 lattice_path=self.reference_model.path,configuration_path=configuration,
                 provenance="Measure exact AT Device identity")
+            self.machine_mapping_document=merge_measurement(self.machine_mapping_document,document)
             counts=mapping_counts(document)
             if counts["mapped"]!=counts["total"]:
                 self.measurement_device_alignment=document
@@ -875,25 +892,27 @@ class MeasureMainWindow(QMainWindow):
         temporary.replace(target)
 
     def _load_device_mapping(self):
-        path=QFileDialog.getOpenFileName(self,"Load measurement-device mapping","","pyLOCO mapping (*.json *.yaml *.yml);;All files (*)")[0]
+        path=QFileDialog.getOpenFileName(self,"Load Machine Mapping","","pyLOCO Machine Mapping (*.json *.yaml *.yml);;All files (*)")[0]
         if not path:return
         try:
             inventory,configuration=self._mapping_context(); source=load_document(path)
-            template=is_unvalidated_mapping_template(source)
-            if template:source={**source,"mapping_provenance":"Externally completed Measure mapping template, validated against the active lattice and inventory"}
-            checked=validate_mapping(source,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
-                configuration_path=configuration,require_provenance=bool(source.get("schema")) and not template)
+            common=is_machine_mapping(source); projected=measurement_projection(source) if common else source
+            template=is_machine_mapping_template(source) if common else is_unvalidated_mapping_template(source)
+            if template:projected={**projected,"mapping_provenance":"Externally completed Machine Mapping template, validated against the active lattice and inventory"}
+            checked=validate_mapping(projected,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
+                configuration_path=configuration,require_provenance=bool(projected.get("schema")) and not template)
+            self.machine_mapping_document=merge_measurement(source if common else None,checked)
             counts=mapping_counts(checked); self.measurement_device_alignment=checked
             kind="Filled template validated" if template else "Loaded mapping"
             self.device_alignment_status.setText(f"{kind} — {counts['mapped']}/{counts['total']} mapped; {counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate, {counts['invalid']} invalid.")
             self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(counts["mapped"]==counts["total"])
             self._update_reference_comparison_enabled()
-        except Exception as exc:QMessageBox.warning(self,"Cannot load device mapping",str(exc))
+        except Exception as exc:QMessageBox.warning(self,"Cannot load Machine Mapping",str(exc))
 
     def _save_mapping_template(self):
-        path=QFileDialog.getSaveFileName(self,"Create device-mapping template","measurement-device-mapping-template.json","JSON (*.json)")[0]
+        path=QFileDialog.getSaveFileName(self,"Create Machine Mapping template","machine-mapping-template.json","JSON (*.json)")[0]
         if not path:return
-        try:self._write_json_atomic(path,mapping_template(self._alignment_inventory()))
+        try:self._write_json_atomic(path,machine_mapping_template(self._alignment_inventory(),self._pyaml_fitted_magnet_inventory()))
         except Exception as exc:QMessageBox.warning(self,"Cannot create mapping template",str(exc)); return
         self.last_mapping_template_path=Path(path).expanduser().resolve()
         self.statusBar().showMessage(f"Created mapping template: {path}")
@@ -904,7 +923,7 @@ class MeasureMainWindow(QMainWindow):
         template=QLineEdit(str(self.last_mapping_template_path or "")); lattice=QLineEdit(str(self.reference_model.path) if self.reference_model is not None else "")
         variable=QLineEdit(self.reference_model.mat_variable or "" if self.reference_model is not None else "")
         default_parent=self.last_mapping_template_path.parent if self.last_mapping_template_path is not None else Path.cwd()
-        output=QLineEdit(str(default_parent/"measurement-device-mapping-completed.json"))
+        output=QLineEdit(str(default_parent/"machine-mapping-completed.json"))
         form.addRow("Mapping template JSON",template); form.addRow("AT lattice",lattice); form.addRow("MAT variable",variable); form.addRow("Output JSON",output)
         editor=QPlainTextEdit(); editor.setLineWrapMode(QPlainTextEdit.NoWrap); layout.addWidget(editor,1)
         def refresh_script(*_):editor.setPlainText(python_mapping_helper_script(template.text(),lattice.text(),variable.text(),output.text()))
@@ -930,10 +949,11 @@ class MeasureMainWindow(QMainWindow):
             counts=mapping_counts(checked)
             if counts["mapped"]!=counts["total"]:raise ValueError("Only a complete, currently valid mapping can be saved as validated.")
         except Exception as exc:QMessageBox.warning(self,"Cannot save validated mapping",str(exc)); return
-        path=QFileDialog.getSaveFileName(self,"Save validated device mapping","measurement-device-mapping.json","JSON (*.json)")[0]
+        shared=merge_measurement(self.machine_mapping_document,checked)
+        path=QFileDialog.getSaveFileName(self,"Save validated Machine Mapping","machine-mapping.json","JSON (*.json)")[0]
         if not path:return
         if Path(path).exists() and QMessageBox.question(self,"Replace mapping file?",f"Replace the existing mapping file?\n{path}",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
-        try:self._write_json_atomic(path,checked)
+        try:self._write_json_atomic(path,shared)
         except Exception as exc:QMessageBox.warning(self,"Cannot save validated mapping",str(exc)); return
         self.statusBar().showMessage(f"Saved validated mapping: {path}")
 
@@ -988,7 +1008,7 @@ class MeasureMainWindow(QMainWindow):
                 QMessageBox.warning(self,"Cannot display validated mapping",f"The stored mapping records failed revalidation and were not presented as validated:\n{exc}")
                 return
             self.measurement_device_alignment=document
-        dialog=QDialog(self); dialog.setWindowTitle("Validated measurement-device mapping"); dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.setMinimumSize(900,520); dialog.resize(1250,700)
+        dialog=QDialog(self); dialog.setWindowTitle("Validated Machine Mapping — measurement devices"); dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.setMinimumSize(900,520); dialog.resize(1250,700)
         layout=QVBoxLayout(dialog)
         explanation=QLabel("Measured identities come from the active pyAML inventory. AT FamName, AT Device and AT index (0-based) come from the checksummed reference lattice; Match method is the recorded identity_match provenance.")
         explanation.setWordWrap(True); layout.addWidget(explanation)

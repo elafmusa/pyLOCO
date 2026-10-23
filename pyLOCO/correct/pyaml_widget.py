@@ -13,6 +13,8 @@ from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from .pyaml_connection import (PyAMLCorrectionConnection, load_mapping,
     resolve_mapping, approved_mapping_candidates, find_reference_lattice,
     file_hash, make_mapping_bundle, validate_mapping_bundle)
+from pyLOCO.machine_mapping import (is_document as is_shared_machine_mapping,
+    load as load_shared_mapping, merge_corrections)
 from .pyaml_transaction import PyAMLCorrectionTransaction
 
 
@@ -285,9 +287,16 @@ class PyAMLCorrectionWidget(QWidget):
             self.owner.review, self.connection, entries, lattice,
             provenance="validated in pyLOCO Correct",
         )
+        preserved=None
+        if self.mapping_path:
+            try:
+                candidate=load_shared_mapping(self.mapping_path)
+                if is_shared_machine_mapping(candidate):preserved=candidate
+            except Exception:pass
+        bundle=merge_corrections(preserved,bundle)
         suggested = Path(self.connection.options["config_path"]).with_suffix(".mapping.json")
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save validated reusable mapping", str(suggested), "JSON mapping (*.json)"
+            self, "Save validated Machine Mapping", str(suggested), "JSON mapping (*.json)"
         )
         if not path:
             return

@@ -16,6 +16,7 @@ from pyLOCO.correct.pyaml_connection import (
     validate_mapping_bundle,
 )
 from pyLOCO.data_schema import load_correction_plan
+from pyLOCO.machine_mapping import merge_corrections, template as machine_mapping_template
 
 
 _fixture_root = os.environ.get("PYLOCO_EBS_MAPPING_FIXTURES")
@@ -118,3 +119,27 @@ def test_versioned_bundle_revalidates_checksums_and_never_uses_status(tmp_path):
     target.write_text(json.dumps(stale))
     with pytest.raises(ValueError, match="wrong-family mapping target"):
         validate_mapping_bundle(state, conn, target, LATTICE)
+
+
+def test_shared_machine_mapping_filters_and_validates_all_802_correction_entries(tmp_path):
+    state=review(FULL_PLAN); conn=connection()
+    entries,_rows,_provenance,_lattice=validate_mapping_bundle(state,conn,MAPPING,LATTICE)
+    bundle=make_mapping_bundle(state,conn,entries,LATTICE,provenance="shared EBS mapping")
+    shared=machine_mapping_template({"bpm":["preserved-bpm"]})
+    shared=merge_corrections(shared,bundle)
+    # This is the form produced by the external Python Mapping Helper: it fills
+    # authoritative ordinals, while pyLOCO derives and validates FamName from
+    # the active lattice rather than trusting user-authored provenance.
+    for row in shared["mappings"]:
+        if row["role"] in {"normal_quadrupole", "skew_quadrupole"}:
+            row["lattice_fam_name"] = ""
+    target=tmp_path/"machine-mapping.json"; target.write_text(json.dumps(shared))
+    selected,rows,provenance,identity=validate_mapping_bundle(state,conn,target,LATTICE)
+    assert len(selected)==len(rows)==802 and all(row["status"]=="mapped" for row in rows)
+    assert any(row["role"]=="bpm" for row in shared["mappings"])
+    assert identity["element_count"]==4434 and provenance=="revalidated saved mapping"
+    stale=deepcopy(shared); stale["inventories"]["correction"]["sha256"]="0"*64; target.write_text(json.dumps(stale))
+    with pytest.raises(ValueError,match="inventory has changed"):validate_mapping_bundle(state,conn,target,LATTICE)
+    invalid=deepcopy(shared); next(row for row in invalid["mappings"] if row["role"]=="normal_quadrupole")["unit"]="A"
+    target.write_text(json.dumps(invalid))
+    with pytest.raises(ValueError,match="Unsupported pyAML unit"):validate_mapping_bundle(state,conn,target,LATTICE)

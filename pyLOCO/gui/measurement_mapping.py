@@ -254,10 +254,11 @@ def exact_hits(attribute, identity):
             if str(getattr(element, attribute, "") or "") == identity]
 
 def find_hits(row):
-    name = str(row["measured_name"])
+    name = str(row.get("pyaml_device", row.get("measured_name", "")))
     role = str(row["role"])
     identities = [("Device", name), ("FamName", name)]
-    suffix = {{"horizontal_corrector": "-B1L", "vertical_corrector": "-A1L"}}.get(role)
+    suffix = {{"horizontal_corrector": "-B1L", "vertical_corrector": "-A1L",
+               "normal_quadrupole": "-B2L", "skew_quadrupole": "-A2L"}}.get(role)
     if suffix and name.endswith(suffix):
         base = name[:-len(suffix)]
         identities += [("Device", base), ("FamName", base)]
@@ -276,7 +277,7 @@ for row in d["mappings"]:
     else:
         row["lattice_ordinal"] = None
         label = "missing" if not hits else "ambiguous"
-        print(f"{{label}}: {{row['role']}} {{row['measured_name']}} ({{len(hits)}} matches)")
+        print(f"{{label}}: {{row['role']}} {{row.get('pyaml_device', row.get('measured_name'))}} ({{len(hits)}} matches)")
 
 with open(OUTPUT_PATH, "w", encoding="utf-8") as stream:
     json.dump(d, stream, indent=2)
