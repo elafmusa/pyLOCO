@@ -41,6 +41,7 @@ from pyLOCO.data_schema.session import SESSION_FILE_TYPE
 from pyLOCO.gui.branding import DISPLAY_ASSET, application_icon, set_asset
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from pyLOCO.gui.screenshots import install_window_screenshot_actions
+from pyLOCO.gui.control_search import install_control_search
 from pyLOCO.gui.project_info import (
     PROJECT_ACKNOWLEDGEMENTS, PROJECT_CONTRIBUTORS, PROJECT_DOCUMENTATION,
     PROJECT_ISSUES, PROJECT_LICENSE, PROJECT_PAPER_TITLE, PROJECT_PAPER_URL,
@@ -487,6 +488,7 @@ class MeasureMainWindow(QMainWindow):
             self,toolbar,application_slug="measure",
             directory_provider=self._screenshot_session_directory,file_menu=file_menu,
         )
+        self.control_search=install_control_search(self, toolbar)
         spacer=QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(spacer)
         self.theme_button=QPushButton("☀ Light"); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         logo_container=QFrame(); logo_container.setObjectName("measureLogoContainer"); logo_layout=QHBoxLayout(logo_container); logo_layout.setContentsMargins(4,2,4,2)

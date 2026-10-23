@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
 )
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from pyLOCO.gui.screenshots import install_window_screenshot_actions
+from pyLOCO.gui.control_search import install_control_search
 from pyLOCO.gui.lattice_loader import (
     NoMatLatticeError, load_project_lattice, mat_lattice_candidates,
 )
@@ -3628,6 +3629,11 @@ class MainWindow(QMainWindow):
             self,toolbar,application_slug="fit",
             directory_provider=self._screenshot_project_directory,file_menu=self.file_menu,
         )
+        self.control_search=install_control_search(
+            self, toolbar,
+            advanced_mode_getter=lambda: self.project.mode == "Advanced",
+            switch_to_advanced=lambda: self.advanced_mode_action.trigger(),
+        )
         toolbar_spacer = QWidget(); toolbar_spacer.setObjectName("toolbarSpacer")
         toolbar_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(toolbar_spacer)
@@ -7038,6 +7044,7 @@ class MainWindow(QMainWindow):
             self.params_tilt_method, self.fixed_group,
         )
         for widget in widgets:
+            widget.setProperty("pyLOCORequiresAdvanced", True)
             widget.setVisible(advanced)
         # Raw Python-literal storage is intentionally never shown.  Showing a
         # parentless QLineEdit made it appear as the blank macOS window seen in
@@ -7046,12 +7053,15 @@ class MainWindow(QMainWindow):
         self.params_init.hide()
         self.loco_fixedpath.setVisible(False)
         self.loco_remove_coupling.setVisible(False)
+        self.loco_fixedpath.setProperty("pyLOCOSearchExclude", True)
+        self.loco_remove_coupling.setProperty("pyLOCOSearchExclude", True)
         # Legacy configuration compatibility only: the generic Individuals
         # checkbox has been replaced by the three explicit parameterization
         # controls and must never become a free-floating visible widget.
         self.loco_individuals.setVisible(False)
         self.fit_init_group.setVisible(advanced)
         for form, field in self._advanced_form_rows:
+            field.setProperty("pyLOCORequiresAdvanced", True)
             if hasattr(form, "setRowVisible"):
                 form.setRowVisible(field, advanced)
             else:

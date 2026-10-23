@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBo
 from pyLOCO.gui import __version__ as PYLOCO_VERSION
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from pyLOCO.gui.screenshots import install_window_screenshot_actions
+from pyLOCO.gui.control_search import install_control_search
 from pyLOCO.gui.branding import DISPLAY_ASSET,set_asset,application_icon
 from pyLOCO.gui.project_info import (PROJECT_ACKNOWLEDGEMENTS,PROJECT_CONTRIBUTORS,PROJECT_DOCUMENTATION,PROJECT_ISSUES,PROJECT_LICENSE,PROJECT_PAPER_TITLE,PROJECT_PAPER_URL,PROJECT_REPOSITORY,bibtex_text,citation_text)
 from pyLOCO.gui.suite import present_single_about_dialog
@@ -112,6 +113,7 @@ class CorrectMainWindow(QMainWindow):
             self,toolbar,application_slug="correct",
             directory_provider=self._screenshot_project_directory,
         )
+        self.control_search=install_control_search(self,toolbar)
         spacer=QWidget(); spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding,spacer.sizePolicy().verticalPolicy()); toolbar.addWidget(spacer)
         self.backend_combo=QComboBox()
         for descriptor in self.registry.descriptors():
