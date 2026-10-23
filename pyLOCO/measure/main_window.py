@@ -4144,14 +4144,25 @@ class MeasureMainWindow(QMainWindow):
     def _orm_colormap(self):
         return "RdBu_r" if self.orm_palette.currentData()=="red_blue" else "viridis"
 
-    def _heatmap(self,canvas,data,title,unit,*,row_devices=None,column_devices=None):
+    def _heatmap(self,canvas,data,title,unit,*,row_devices=None,column_devices=None,row_axis_label="BPM index"):
         values=np.asarray(data); finite=np.abs(values[np.isfinite(values)]); limit=float(np.max(finite)) if finite.size else 1.0; limit=limit or 1.0; canvas.clear(); self._orm_plot_state.pop(canvas,None); surface=hasattr(self,"orm_view_mode") and self.orm_view_mode.currentData()=="3d"; ax=canvas.figure.add_subplot(111,projection="3d" if surface else None); cmap=self._orm_colormap()
         signed_limits={"vmin":-limit,"vmax":limit} if self.orm_palette.currentData()=="red_blue" else {}
         if surface:
             columns,rows=np.meshgrid(np.arange(values.shape[1]),np.arange(values.shape[0])); artist=ax.plot_surface(columns,rows,values,cmap=cmap,linewidth=0,antialiased=False,rcount=values.shape[0],ccount=values.shape[1],**signed_limits); ax.set_zlabel(f"Response [{unit}]")
         else:
-            artist=ax.imshow(values,aspect="auto",origin="upper",cmap=cmap,interpolation="nearest",**signed_limits)
-        ax.set_title(title); ax.set_xlabel("Corrector index"); ax.set_ylabel("BPM index")
+            # Explicit half-bin boundaries keep pixel centres aligned with
+            # their zero-based scientific indices. Masked cells are pending,
+            # not measured zeros, and receive an intentionally neutral color.
+            rendered=np.ma.masked_invalid(values)
+            from matplotlib import colormaps
+            display_cmap=colormaps.get_cmap(cmap).with_extremes(bad="#596174")
+            artist=ax.imshow(rendered,aspect="auto",origin="upper",cmap=display_cmap,
+                             interpolation="nearest",
+                             extent=(-.5,values.shape[1]-.5,values.shape[0]-.5,-.5),
+                             **signed_limits)
+        ax.set_title(title); ax.set_xlabel("Corrector index"); ax.set_ylabel(row_axis_label)
+        if not surface and values.shape[1] <= 20:
+            ax.set_xticks(np.arange(values.shape[1]))
         colorbar=canvas.figure.colorbar(artist,ax=ax,label=f"Response [{unit}]",shrink=.9,pad=.018,fraction=.045)
         # Keep zero explicitly identifiable for signed ORM data even when the
         # FIT-compatible viridis view uses the data range instead of a
@@ -4170,7 +4181,7 @@ class MeasureMainWindow(QMainWindow):
     def _orm_cell(self,canvas,event):
         state=self._orm_plot_state.get(canvas)
         if state is None or event.inaxes is not state["axis"] or event.xdata is None or event.ydata is None:return None
-        column=int(round(event.xdata)); row=int(round(event.ydata))
+        column=int(np.floor(event.xdata+.5)); row=int(np.floor(event.ydata+.5))
         if not (0<=row<state["values"].shape[0] and 0<=column<state["values"].shape[1]):return None
         if not np.isfinite(state["values"][row,column]):return "incomplete"
         return state,row,column
@@ -4217,14 +4228,24 @@ class MeasureMainWindow(QMainWindow):
 
         finite = np.where(np.isfinite(matrix), matrix, np.nan)
         bpms=tuple(("X",i,d.name) for i,d in enumerate(self.selected_devices))+tuple(("Y",i,d.name) for i,d in enumerate(self.selected_devices)); nh=len(self.selected_hcorrectors); correctors=tuple(("H",i,d.name) for i,d in enumerate(self.selected_hcorrectors))+tuple(("V",nh+i,d.name) for i,d in enumerate(self.selected_vcorrectors))
-        self._heatmap(
+        acquired=int(np.count_nonzero(np.any(np.isfinite(finite),axis=0)))
+        total=int(finite.shape[1])
+        ax=self._heatmap(
             self.x_plot,
             finite,
-            "Evolving ORM heatmap",
+            f"Evolving ORM heatmap — {acquired}/{total} corrector columns acquired",
             "m",
             row_devices=bpms,
             column_devices=correctors,
+            row_axis_label=f"ORM row index (0–{len(self.selected_devices)-1}: X; {len(self.selected_devices)}–{2*len(self.selected_devices)-1}: Y)",
         )
+        nb=len(self.selected_devices)
+        if nh and len(self.selected_vcorrectors):ax.axvline(nh-.5,color="white",linewidth=1.6,linestyle="--")
+        ax.axhline(nb-.5,color="white",linewidth=1.6,linestyle="--")
+        if acquired < total:
+            ax.text(.995,.015,"Gray = not acquired",transform=ax.transAxes,ha="right",va="bottom",
+                    fontsize=8,color="white",bbox={"facecolor":"#303548","edgecolor":"none","alpha":.85,"pad":2})
+        self.x_plot.apply_theme()
         self.orm_element_info.setVisible(True)
 
         self.orm_column_plot.clear()
@@ -4257,13 +4278,13 @@ class MeasureMainWindow(QMainWindow):
         matrix=stored_matrix/result.effective_kicks_rad[np.newaxis,:] if analysis else stored_matrix; unit="m/rad" if result.scaled or analysis else "m"
         self._displayed_orm_matrix=matrix; self._displayed_orm_unit=unit
         bpm_rows=tuple(("X",i,d.name) for i,d in enumerate(result.bpms))+tuple(("Y",i,d.name) for i,d in enumerate(result.bpms)); corrector_columns=tuple(("H",i,d.name) for i,d in enumerate(result.horizontal_correctors))+tuple(("V",nh+i,d.name) for i,d in enumerate(result.vertical_correctors)); x_rows=bpm_rows[:nb]; y_rows=bpm_rows[nb:]; h_columns=corrector_columns[:nh]; v_columns=corrector_columns[nh:]
-        full_ax=self._heatmap(self.x_plot,matrix,"Full orbit response matrix",unit,row_devices=bpm_rows,column_devices=corrector_columns); self._heatmap(self.y_plot,matrix[:nb,:nh],"H corrector → X BPM",unit,row_devices=x_rows,column_devices=h_columns); self._heatmap(self.mean_x_plot,matrix[:nb,nh:],"V corrector → X BPM (cross-plane)",unit,row_devices=x_rows,column_devices=v_columns); self._heatmap(self.mean_y_plot,matrix[nb:,:nh],"H corrector → Y BPM (cross-plane)",unit,row_devices=y_rows,column_devices=h_columns); self._heatmap(self.orm_vv_plot,matrix[nb:,nh:],"V corrector → Y BPM",unit,row_devices=y_rows,column_devices=v_columns)
+        full_ax=self._heatmap(self.x_plot,matrix,"Full orbit response matrix",unit,row_devices=bpm_rows,column_devices=corrector_columns,row_axis_label=f"ORM row index (0–{nb-1}: X; {nb}–{2*nb-1}: Y)"); self._heatmap(self.y_plot,matrix[:nb,:nh],"H corrector → X BPM",unit,row_devices=x_rows,column_devices=h_columns); self._heatmap(self.mean_x_plot,matrix[:nb,nh:],"V corrector → X BPM (cross-plane)",unit,row_devices=x_rows,column_devices=v_columns); self._heatmap(self.mean_y_plot,matrix[nb:,:nh],"H corrector → Y BPM (cross-plane)",unit,row_devices=y_rows,column_devices=h_columns); self._heatmap(self.orm_vv_plot,matrix[nb:,nh:],"V corrector → Y BPM",unit,row_devices=y_rows,column_devices=v_columns)
         if self.orm_view_mode.currentData()=="2d":
             if nh and len(result.vertical_correctors):full_ax.axvline(nh-.5,color="white",linewidth=2,linestyle="--")
             full_ax.axhline(nb-.5,color="white",linewidth=2,linestyle="--")
             for x,y,label in (((nh-1)/2,(nb-1)/2,"H → X"),(nh+(len(result.vertical_correctors)-1)/2,(nb-1)/2,"V → X"),((nh-1)/2,nb+(nb-1)/2,"H → Y"),(nh+(len(result.vertical_correctors)-1)/2,nb+(nb-1)/2,"V → Y")):
                 if x>=0:full_ax.text(x,y,label,ha="center",va="center",color="black",bbox={"facecolor":"white","edgecolor":"none","alpha":.7,"pad":2},fontsize=8,zorder=4)
-        full_ax.set_xlabel("Corrector index"); full_ax.set_ylabel("BPM index"); self.x_plot.apply_theme()
+        full_ax.set_xlabel("Corrector index"); self.x_plot.apply_theme()
         self._displayed_orm_result=result; self.orm_column_selector.blockSignals(True); self.orm_column_selector.clear()
         for index,device in enumerate(result.correctors):self.orm_column_selector.addItem(f"{index}: {device.name} ({device.plane})",index)
         self.orm_column_selector.setCurrentIndex(len(result.correctors)-1); self.orm_column_selector.blockSignals(False); self._update_selected_orm_column()

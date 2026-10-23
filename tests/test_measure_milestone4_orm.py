@@ -221,10 +221,10 @@ def test_orm_gui_context_preview_kicks_and_project_roundtrip(app,tmp_path):
 @pytest.mark.parametrize("theme",["light","dark"])
 def test_orm_heatmap_remains_readable_in_both_themes(app,theme,size):
     bpms,h,v,_,adapter=setup(); result=ORMAcquirer(adapter,bpms,h,v).acquire([80e-6,100e-6,130e-6],[90e-6,120e-6],readings=2,delay_seconds=0)
-    window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v); window.resize(*size); window.apply_theme(theme); window.measurement_type.setCurrentIndex(2); window._show_result(result); window.result=result; window._update_diagnostics_visibility(); window.tabs.setCurrentIndex(2); window.show(); app.processEvents()
+    window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v); window.resize(*size); window.apply_theme(theme); window.measurement_type.setCurrentIndex(2); window._show_result(result); window.result=result; window._update_diagnostics_visibility(); window.tabs.setCurrentIndex(4); window.show(); app.processEvents()
     axis=window.x_plot.figure.axes[0]; image=axis.images[0]
     assert image.origin=="upper" and image.get_cmap().name=="viridis"
-    assert axis.get_xlabel()=="Corrector index" and axis.get_ylabel()=="BPM index"
+    assert axis.get_xlabel()=="Corrector index" and axis.get_ylabel().startswith("ORM row index")
     assert axis.get_position().width>.55
     assert window.x_plot.figure.axes[1].get_ylabel()=="Response [m]"
     assert window.orm_element_info.isVisible()
@@ -253,7 +253,7 @@ def test_all_orm_views_keep_titles_and_exact_identity_mapping_after_interaction(
     for canvas,row,column,block,bpm_name,corrector_name in cases:
         state=window._orm_plot_state[canvas]; title=state["axis"].get_title(); event=type("Event",(),{"inaxes":state["axis"],"xdata":float(column),"ydata":float(row)})()
         window._on_orm_plot_hover(canvas,event); text=window.orm_element_info.text(); assert bpm_name in text and corrector_name in text and block in text and "zero-based" in text
-        window._on_orm_plot_click(canvas,event); canvas.canvas.draw(); assert state["axis"].get_title()==title and state["axis"].get_xlabel()=="Corrector index" and state["axis"].get_ylabel()=="BPM index"
+        window._on_orm_plot_click(canvas,event); canvas.canvas.draw(); expected_y="ORM row index" if canvas is window.x_plot else "BPM index"; assert state["axis"].get_title()==title and state["axis"].get_xlabel()=="Corrector index" and state["axis"].get_ylabel().startswith(expected_y)
     window.resize(1600,1000); window.results_tabs.setCurrentIndex(4); window.results_tabs.setCurrentIndex(0); app.processEvents()
     for canvas,*_ in cases:
         assert callback_counts[canvas]==(len(canvas.canvas.callbacks.callbacks.get("motion_notify_event",{})),len(canvas.canvas.callbacks.callbacks.get("button_press_event",{})))
@@ -285,6 +285,15 @@ def test_evolving_orm_does_not_invent_identity_for_unacquired_cells(app):
     matrix=np.full((2*len(bpms),len(h)+len(v)),np.nan); matrix[:,0]=np.arange(2*len(bpms))*1e-6; window._show_orm_progress(matrix,matrix[:,0]); state=window._orm_plot_state[window.x_plot]
     valid=type("Event",(),{"inaxes":state["axis"],"xdata":0.0,"ydata":1.0})(); window._on_orm_plot_hover(window.x_plot,valid); assert bpms[1].name in window.orm_element_info.text() and h[0].name in window.orm_element_info.text()
     missing=type("Event",(),{"inaxes":state["axis"],"xdata":1.0,"ydata":1.0})(); window._on_orm_plot_hover(window.x_plot,missing); assert "not been acquired" in window.orm_element_info.text() and bpms[1].name not in window.orm_element_info.text()
+    axis=state["axis"]; image=axis.images[0]
+    assert axis.get_title().endswith("1/5 corrector columns acquired")
+    assert axis.get_xlim()==pytest.approx((-.5,4.5))
+    assert axis.get_ylim()==pytest.approx((7.5,-.5))
+    assert np.array_equal(axis.get_xticks(),np.arange(5))
+    assert axis.get_ylabel()=="ORM row index (0–3: X; 4–7: Y)"
+    assert np.ma.getmaskarray(image.get_array())[:,1:].all()
+    assert image.get_cmap().get_bad()[:3]==pytest.approx((89/255,97/255,116/255),abs=.01)
+    assert len(axis.lines)==2  # H/V and X/Y half-bin boundaries.
     window.close()
 
 def test_measurement_specific_device_selections_and_project_roundtrip(app,tmp_path):
