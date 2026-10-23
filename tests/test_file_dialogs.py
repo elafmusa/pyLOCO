@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QLineEdit, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog, QLineEdit, QPushButton, QWidget
 
 from pyLOCO.gui.file_dialogs import FileDialog, _accepted_path, _build_dialog
 
@@ -33,6 +33,14 @@ def test_shared_dialog_is_non_native_theme_inheriting_and_path_editable(app, tmp
     assert Path(dialog.directory().absolutePath()).resolve() == initial.resolve()
     filename_fields = [field for field in dialog.findChildren(QLineEdit) if field.objectName() == "fileNameEdit"]
     assert filename_fields and "absolute path" in filename_fields[0].placeholderText()
+    folder_path=dialog.findChild(QLineEdit,"currentFolderPath")
+    copy_button=dialog.findChild(QPushButton,"copyFolderPathButton")
+    assert folder_path is not None and folder_path.isReadOnly()
+    assert Path(folder_path.text()).resolve()==initial.resolve()
+    QApplication.clipboard().clear(); copy_button.click()
+    assert Path(QApplication.clipboard().text()).resolve()==initial.resolve()
+    changed=tmp_path/"another folder"; changed.mkdir(); dialog.setDirectory(str(changed)); dialog.directoryEntered.emit(str(changed))
+    assert Path(folder_path.text()).resolve()==changed.resolve()
     if mode != "directory":
         assert Path(dialog.selectedFiles()[0]).name == "café result.json"
     dialog.close(); parent.close()

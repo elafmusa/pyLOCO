@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QDialog, QFileDialog as _QFileDialog, QLineEdit
+from PySide6.QtWidgets import QApplication, QDialog, QFileDialog as _QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget
 
 _ORIGINAL_GET_OPEN = _QFileDialog.__dict__.get("getOpenFileName")
 _ORIGINAL_GET_SAVE = _QFileDialog.__dict__.get("getSaveFileName")
@@ -79,6 +79,18 @@ def _build_dialog(parent, caption: str, directory: str, name_filter: str, *,
     for edit in dialog.findChildren(QLineEdit):
         if not edit.placeholderText():
             edit.setPlaceholderText("Type or paste an absolute path")
+    # QFileDialog's "Look in" control is not selectable on every platform.
+    # Expose the current directory as ordinary text and provide an explicit
+    # clipboard action so operators can reuse long scientific-data paths.
+    folder_row=QWidget(dialog); folder_row.setObjectName("copyFolderPathRow")
+    folder_layout=QHBoxLayout(folder_row); folder_layout.setContentsMargins(0,0,0,0)
+    folder_layout.addWidget(QLabel("Current folder",folder_row))
+    folder_path=QLineEdit(folder_row); folder_path.setObjectName("currentFolderPath"); folder_path.setReadOnly(True); folder_path.setText(dialog.directory().absolutePath()); folder_path.setToolTip("Current folder path. Select the text or use Copy folder path.")
+    copy_folder=QPushButton("Copy folder path",folder_row); copy_folder.setObjectName("copyFolderPathButton")
+    copy_folder.clicked.connect(lambda: QApplication.clipboard().setText(folder_path.text()))
+    dialog.directoryEntered.connect(folder_path.setText)
+    folder_layout.addWidget(folder_path,1); folder_layout.addWidget(copy_folder)
+    dialog.layout().addWidget(folder_row,dialog.layout().rowCount(),0,1,dialog.layout().columnCount())
     dialog.setSizeGripEnabled(True)
     dialog.resize(900, 620)
     return dialog
