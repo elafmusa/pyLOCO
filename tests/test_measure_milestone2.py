@@ -35,7 +35,10 @@ def test_application_launches_offline_without_doocs(app):
     assert window.windowTitle().startswith("pyLOCO Measure")
     assert window.status_badge.text() == "MOCK • READ ONLY"
     assert AdapterCapability.WRITE not in window.adapter.capabilities
-    assert window.tabs.count() == 4
+    assert window.tabs.count() == 6
+    assert [window.tabs.tabText(index).removeprefix("✓ ").replace("&&", "&") for index in range(6)] == [
+        "Machine", "Devices", "BPM Noise", "RF Dispersion", "ORM", "Review & Save",
+    ]
     assert window.plan_group.isCheckable() and not window.plan_group.isChecked()
     assert window.plan_body.isHidden()
     window.plan_group.setChecked(True)
@@ -78,7 +81,7 @@ def test_persistent_status_header_is_visible_and_paths_are_tooltipped(app, tmp_p
         assert not widget.isHidden()
     assert window.header_configuration.toolTip() == str(window.project_path)
     assert window.header_output.toolTip().endswith("nested/output")
-    window.tabs.setCurrentIndex(3); app.processEvents()
+    window.tabs.setCurrentIndex(5); app.processEvents()
     assert not window.header_configuration.isHidden()
     window.close()
 
@@ -156,7 +159,7 @@ def test_saved_measurement_session_and_existing_importer(app, tmp_path):
     with h5py.File(orm, "w") as handle: handle["response_matrix"] = np.zeros((4, 2))
     loaded = _load_measurements({"orm": str(orm), "bpm_noise": str(window.saved_measurement_path)})
     np.testing.assert_allclose(loaded["noise_x"], result.noise_x_m)
-    window.tabs.setCurrentIndex(3); app.processEvents()
+    window.tabs.setCurrentIndex(5); app.processEvents()
     assert window.review_status.text() == "✓ BPM noise saved — measurement session incomplete"
     assert "<b>BPM noise</b>" in window.review_details.text() and "Present" in window.review_details.text()
     assert "<b>Dispersion</b>" in window.review_details.text() and "<b>ORM</b>" in window.review_details.text()
@@ -237,7 +240,7 @@ def test_responsive_measure_pages_do_not_overlap_or_elide(app, size, theme):
     window = MeasureMainWindow(devices=default_mock_devices(12))
     window.resize(*size); window.apply_theme(theme); window.show(); app.processEvents()
     tab_bar = window.tabs.tabBar()
-    for index, expected in enumerate(("Machine", "Devices", "Measurement", "Review & Save")):
+    for index, expected in enumerate(("Machine", "Devices", "BPM Noise", "RF Dispersion", "ORM", "Review & Save")):
         actual = window.tabs.tabText(index).replace("&&", "&").removeprefix("✓ ")
         assert actual == expected
         required = tab_bar.fontMetrics().horizontalAdvance(window.tabs.tabText(index)) + 32
@@ -337,7 +340,7 @@ def test_measurement_tab_contains_visible_start_and_measurement_specific_plan(ap
     assert window.rect().contains(window.start_button.mapTo(window,window.start_button.rect().center()))
     assert window.start_button.isEnabled(); assert window.start_block_reason.text().startswith("Ready to acquire")
     assert all(widget.isHidden() for widget in window.dispersion_plan_widgets)
-    window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion")); window.nominal_rf.setText("500000000"); window.rf_step.setValue(1500); window.refresh_plan(); app.processEvents()
+    window.tabs.setCurrentIndex(window.measurement_tab_indices["dispersion"]); window.nominal_rf.setText("500000000"); window.rf_step.setValue(1500); window.refresh_plan(); app.processEvents()
     assert all(not widget.isHidden() for widget in window.dispersion_plan_widgets)
     assert window.plan_values["rf_step_±δf"].text()=="750 Hz per side"
     assert window.plan_values["bipolar_separation"].text()=="1500 Hz total"

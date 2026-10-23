@@ -58,7 +58,9 @@ pyloco-measure
    selection configuration → Load selection…**. Review the identities and
    counts after loading. This file is a Measure selection file, not a FIT
    mapping.
-5. Acquire BPM noise, RF dispersion, then ORM. For ORM, confirm the kick
+5. Use the directly visible **BPM Noise**, **RF Dispersion** and **ORM** tabs to
+   acquire each role. Their settings and ordered selections are independent and
+   persist when switching tabs. For ORM, confirm the kick
    direction, kick separation and the separate corrector settling delay.
 6. After every write-capable acquisition, review restoration status. Stop if
    restoration is mismatched, unreadable or unresolved. For a verified

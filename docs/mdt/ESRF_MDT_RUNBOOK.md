@@ -88,13 +88,13 @@ pyloco-measure
 4. Check target/mode, BPM/H/V corrector inventories, RF readback, backend permissions and output directory.
 4. **Only for approved acquisition**, enable the minimum necessary corrector or RF write capability after confirming the target.
 
-For Measure's model comparison, select the reference lattice. MAT files are inspected for valid AT lattices: the modern EBS file selects `betamodel` and must show **4,434 elements**. If more than one valid lattice exists, choose it explicitly. Then select the BPM/H/V inventory and click **Verify device alignment**. The shared FIT/Measure mapper requires exact AT `Device` identities, unique ordinals and the correct `B1L`/`A1L` steering components; it preserves measurement order and fails closed. The full simulator inventory was verified at **896/896**. Changing the lattice, MAT variable, YAML or device inventory invalidates alignment.
+For Measure's model comparison, select the reference lattice. MAT files are inspected for valid AT lattices: the modern EBS file selects `betamodel` and must show **4,434 elements**. If more than one valid lattice exists, choose it explicitly. Then select the BPM/H/V inventory and click **Verify device alignment**. The shared FIT/Measure mapper uses exact AT `Device` first, then exact `FamName`, with the legacy `-B1L`/`-A1L` name convention supported but not required. Steering capability is validated separately; ordinals must be unique, measurement order is preserved, and ambiguous identities fail closed. The full simulator inventory was verified at **896/896**. Changing the lattice, MAT variable, YAML or device inventory invalidates alignment.
 
 **Pass:** correct identity and expected readbacks. **If not:** do not enable writes; check connection/YAML and consult the ESRF expert. Simulator success does not authorize real-machine writes.
 
 ## 5. Measure and save
 
-Navigate **Machine → Devices → Measurement → Review & Save**. **Keep the BPM and corrector order**; it determines ORM row/column identity.
+Navigate the six visible workspaces: **Machine → Devices → BPM Noise → RF Dispersion → ORM → Review & Save**. Each measurement has its own saved settings and device selection while reusing the same acquisition implementation. **Keep the BPM and corrector order**; it determines ORM row/column identity.
 
 | Measurement | What to do | Evidence of success |
 |---|---|---|

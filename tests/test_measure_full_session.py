@@ -138,7 +138,7 @@ def test_ordinary_open_project_redirects_measurement_session_to_full_session_act
     try:
         window.open_project(); app.processEvents()
         assert window.project is original
-        assert messages and "Open Full Measurement Session…" in messages[0][1]
+        assert messages and "Use Open to restore the full measurement session" in messages[0][1]
         assert "measurement-session manifest" in messages[0][1]
     finally:
         window.close(); app.processEvents()
