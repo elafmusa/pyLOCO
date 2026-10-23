@@ -59,6 +59,7 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
+from pyLOCO.gui.screenshots import install_window_screenshot_actions
 from pyLOCO.gui.lattice_loader import (
     NoMatLatticeError, load_project_lattice, mat_lattice_candidates,
 )
@@ -3427,6 +3428,7 @@ class MainWindow(QMainWindow):
 
     def _create_menu_bar(self) -> None:
         file_menu = self.menuBar().addMenu("&File")
+        self.file_menu = file_menu
         for action in (
             self.new_project_action,
             self.open_project_action,
@@ -3484,6 +3486,10 @@ class MainWindow(QMainWindow):
         for key,values in ACCENTS.items():self.accent_combo.addItem(values[0],key)
         self.accent_combo.setCurrentIndex(max(0,self.accent_combo.findData(self.current_accent)))
         self.accent_combo.currentIndexChanged.connect(self._on_accent_changed); toolbar.addWidget(self.accent_combo)
+        self.screenshot_controller=install_window_screenshot_actions(
+            self,toolbar,application_slug="fit",
+            directory_provider=self._screenshot_project_directory,file_menu=self.file_menu,
+        )
         toolbar_spacer = QWidget(); toolbar_spacer.setObjectName("toolbarSpacer")
         toolbar_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         toolbar.addWidget(toolbar_spacer)
@@ -3499,6 +3505,12 @@ class MainWindow(QMainWindow):
         run_button = toolbar.widgetForAction(self.run_loco_action)
         if run_button is not None:
             run_button.setObjectName("primaryToolbarAction")
+
+    def _screenshot_project_directory(self):
+        """Return the directory of the active saved FIT project."""
+        if self.project.path:
+            return Path(self.project.path).expanduser().resolve(strict=False).parent
+        return None
 
     def _create_status_bar(self) -> None:
         status_bar = QStatusBar(self)

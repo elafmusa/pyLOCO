@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBo
 
 from pyLOCO.gui import __version__ as PYLOCO_VERSION
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
+from pyLOCO.gui.screenshots import install_window_screenshot_actions
 from pyLOCO.gui.branding import DISPLAY_ASSET,set_asset,application_icon
 from pyLOCO.gui.project_info import (PROJECT_ACKNOWLEDGEMENTS,PROJECT_CONTRIBUTORS,PROJECT_DOCUMENTATION,PROJECT_ISSUES,PROJECT_LICENSE,PROJECT_PAPER_TITLE,PROJECT_PAPER_URL,PROJECT_REPOSITORY,bibtex_text,citation_text)
 from pyLOCO.gui.suite import present_single_about_dialog
@@ -107,6 +108,10 @@ class CorrectMainWindow(QMainWindow):
         self.toolbar_file_buttons=[]
         for text,tip,slot,width in (("Load FIT results…","Open a current pyLOCO FIT Results directory",self.open_results,140),("Load correction plan…","Open a saved correction plan or explicit legacy correction JSON",self.open_file,165),("Save correction plan…","Save the current correction plan as JSON or YAML",self.save_plan,165)):
             button=QPushButton(text); button.setMinimumWidth(width); button.setToolTip(tip); button.setAccessibleName(text.replace("…","")); button.clicked.connect(slot); toolbar.addWidget(button); self.toolbar_file_buttons.append(button)
+        self.screenshot_controller=install_window_screenshot_actions(
+            self,toolbar,application_slug="correct",
+            directory_provider=self._screenshot_project_directory,
+        )
         spacer=QWidget(); spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding,spacer.sizePolicy().verticalPolicy()); toolbar.addWidget(spacer)
         self.backend_combo=QComboBox()
         for descriptor in self.registry.descriptors():
@@ -138,6 +143,16 @@ class CorrectMainWindow(QMainWindow):
         self.backend_combo.currentIndexChanged.connect(self.quadrupole_workspace.invalidate)
         self.quadrupole_workspace.profile.currentIndexChanged.connect(self._pysc_profile_selected)
         self.statusBar().showMessage("Load a correction file; control-system writes remain confirmation-gated")
+
+    def _screenshot_project_directory(self):
+        """Return the directory containing the active correction source."""
+        if not hasattr(self,"source_path"):
+            return None
+        value=self.source_path.text().strip()
+        if not value or value=="No source loaded":
+            return None
+        source=Path(value).expanduser().resolve(strict=False)
+        return source if source.is_dir() else source.parent
 
     def closeEvent(self, event):
         if self.pyaml_workspace.thread is not None:

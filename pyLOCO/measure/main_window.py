@@ -40,6 +40,7 @@ from pyLOCO.data_schema import (
 from pyLOCO.data_schema.session import SESSION_FILE_TYPE
 from pyLOCO.gui.branding import DISPLAY_ASSET, application_icon, set_asset
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
+from pyLOCO.gui.screenshots import install_window_screenshot_actions
 from pyLOCO.gui.project_info import (
     PROJECT_ACKNOWLEDGEMENTS, PROJECT_CONTRIBUTORS, PROJECT_DOCUMENTATION,
     PROJECT_ISSUES, PROJECT_LICENSE, PROJECT_PAPER_TITLE, PROJECT_PAPER_URL,
@@ -447,6 +448,14 @@ class MeasureMainWindow(QMainWindow):
         active_theme=QApplication.instance().property("pyLOCOTheme") if QApplication.instance() is not None else None
         self.apply_theme(str(active_theme or self.project.theme)); self.refresh_preview(); self.refresh_plan()
 
+    def _screenshot_session_directory(self):
+        """Return the active saved session/project directory, if one exists."""
+        if self.saved_session_path is not None:
+            return self.saved_session_path.parent
+        if self.project_path is not None:
+            return self.project_path.parent
+        return None
+
     def _build_ui(self):
         self.menuBar().setNativeMenuBar(True)
         file_menu=self.menuBar().addMenu("File")
@@ -474,6 +483,10 @@ class MeasureMainWindow(QMainWindow):
         for text,handler in (("New",self.new_project),("Open",self.open_full_measurement_session),("Save",self.save_active_session),("Open in FIT",self.explain_open)):
             button=QPushButton(text); button.clicked.connect(handler); toolbar.addWidget(button); self.session_toolbar_buttons[text]=button
         self.session_toolbar_buttons["Save"].setEnabled(True); self.session_toolbar_buttons["Open in FIT"].setEnabled(False)
+        self.screenshot_controller=install_window_screenshot_actions(
+            self,toolbar,application_slug="measure",
+            directory_provider=self._screenshot_session_directory,file_menu=file_menu,
+        )
         spacer=QWidget(); spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred); toolbar.addWidget(spacer)
         self.theme_button=QPushButton("☀ Light"); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         logo_container=QFrame(); logo_container.setObjectName("measureLogoContainer"); logo_layout=QHBoxLayout(logo_container); logo_layout.setContentsMargins(4,2,4,2)
