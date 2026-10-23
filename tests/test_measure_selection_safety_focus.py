@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from pyLOCO.control_system.backends import AbstractInterfaceAdapter
 from pyLOCO.measure.acquisition import AcquisitionCancelled, BpmDevice, CorrectorDevice
 from pyLOCO.measure.automatic import AutomaticDispersionAcquirer
-from pyLOCO.measure.main_window import MeasureMainWindow
+from pyLOCO.measure.main_window import MeasureMainWindow, _device_filter_terms, _device_matches_filter
 from pyLOCO.measure.project import load_measure_project, save_measure_project
 
 
@@ -33,6 +33,21 @@ def _highlight_rows(table, rows):
     table.clearSelection()
     for row in rows:
         table.selectionModel().select(table.model().index(row,0),QItemSelectionModel.Select|QItemSelectionModel.Rows)
+
+
+@pytest.mark.parametrize(("text","expected"),[
+    ("c04",("c04",)),("c04,",("c04",)),(" c04, c05 ",("c04","c05")),(",,",()),
+])
+def test_comma_separated_filter_terms_ignore_spaces_and_empty_trailing_terms(text,expected):
+    assert _device_filter_terms(text)==expected
+
+
+@pytest.mark.parametrize(("query","matched"),[
+    ("c04",True),("C04,",True),("c05, c04",True),("missing, C05",True),
+    ("SF*, SJ*",True),("SJ*, qd*",False),("",True),(" , ",True),
+])
+def test_device_filter_is_case_insensitive_or_match_with_wildcards(query,matched):
+    assert _device_matches_filter("SF-C04","srmag/SF-C05",query) is matched
 
 
 def test_bpm_clear_highlight_three_and_add_has_one_authoritative_ordered_selection(app,monkeypatch):
@@ -207,6 +222,37 @@ def test_uniform_subset_uses_filter_and_preserves_inventory_order(app):
     assert [item.name for item in window.selected_hcorrectors]==["H-1"]
     data["search"].clear(); window._select_device_subset("hcor","uniform",3)
     assert [item.name for item in window.selected_hcorrectors]==["H-0","H-3","H-7"]
+    window.close()
+
+
+def test_comma_filter_visibility_replace_and_helpers_share_one_ordered_match_set(app):
+    window=_window(); data=window.corrector_selection_widgets["hcor"]
+    original=[device.name for device in window.selected_hcorrectors]
+    data["search"].setText("H-1,")
+    assert _visible_names(data["table"])==["H-1"]
+    assert [device.name for device in window.selected_hcorrectors]==original
+    assert "8 / 8 selected for measurement" in data["count"].text() and "1 shown by filter" in data["count"].text()
+    data["search"].setText("h-1, H-3, h-1")
+    assert _visible_names(data["table"])==["H-1","H-3"]
+    window._select_filtered_correctors("hcor")
+    assert [device.name for device in window.selected_hcorrectors]==["H-1","H-3"]
+    data["search"].setText("H-[024]"); window._select_device_subset("hcor","first",2)
+    assert [device.name for device in window.selected_hcorrectors]==["H-0","H-2"]
+    window._select_device_subset("hcor","uniform",2)
+    assert [device.name for device in window.selected_hcorrectors]==["H-0","H-4"]
+    window.close()
+
+
+def test_bpm_and_vertical_filters_use_commas_wildcards_without_changing_selection(app):
+    window=_window(); bpm_before=[device.name for device in window.selected_devices]
+    window.bpm_search.setText("BPM-1, bpm-3,")
+    assert _visible_names(window.preview_table)==["BPM-1","BPM-3"]
+    assert [device.name for device in window.selected_devices]==bpm_before
+    assert "6 / 6 BPMs selected for measurement" in window.selection_message.text() and "Shown by filter: 2" in window.selection_message.text()
+    window._select_filtered_bpms(); assert [device.name for device in window.selected_devices]==["BPM-1","BPM-3"]
+    vertical=window.corrector_selection_widgets["vcor"]; vertical["search"].setText("V-1, V-3, V-5")
+    window._select_device_subset("vcor","uniform",2)
+    assert [device.name for device in window.selected_vcorrectors]==["V-1","V-5"]
     window.close()
 
 

@@ -74,6 +74,24 @@ from .dispersion import MOMENTUM_RELATION, physical_dispersion, relative_momentu
 from pyLOCO.reference_model import comparison_metrics, load_reference_model, model_dispersion, model_orm, reference_model_for_pysc, store_reference_model_arrays
 
 
+def _device_filter_terms(text):
+    """Return nonempty comma-separated search terms in case-insensitive form."""
+    return tuple(term.strip().casefold() for term in str(text or "").split(",") if term.strip())
+
+
+def _device_matches_filter(name, identifier, text):
+    """Match any plain substring or shell-style wildcard term without reordering."""
+    terms=_device_filter_terms(text)
+    if not terms:return True
+    fields=(str(name or "").casefold(),str(identifier or "").casefold())
+    combined=" ".join(fields)
+    for term in terms:
+        if any(char in term for char in "*?["):
+            if any(fnmatchcase(field,term) for field in fields) or fnmatchcase(combined,term):return True
+        elif term in combined:return True
+    return False
+
+
 MEASURE_COMMON_QSS = """
 QToolBar#mainToolbar { spacing: 5px; padding: 6px 8px; }
 QToolBar#mainToolbar QPushButton { font-size: 10pt; min-height: 27px; padding: 4px 8px; }
@@ -1099,7 +1117,7 @@ class MeasureMainWindow(QMainWindow):
         self.names_row=QWidget(); nr=QHBoxLayout(self.names_row); nr.setContentsMargins(0,0,0,0); self.names_file=QLineEdit(); browse=QPushButton("Browse…"); browse.clicked.connect(self.browse_names); nr.addWidget(self.names_file,1); nr.addWidget(browse); form.addRow("BPM names file",self.names_row); self.names_label=form.labelForField(self.names_row)
         self.manual_input=QLineEdit(); self.manual_input.setPlaceholderText("BPM-001, BPM-004 or positions 0, 3"); form.addRow("Manual selection",self.manual_input); self.manual_label=form.labelForField(self.manual_input)
         self.bpm_exclusions=QLineEdit(); self.bpm_exclusions.setPlaceholderText("Selected-list positions to exclude, e.g. 1, 4"); form.addRow("Excluded BPM positions",self.bpm_exclusions); self.bpm_exclusions_label=form.labelForField(self.bpm_exclusions); self.bpm_exclusions.textChanged.connect(self.refresh_preview)
-        self.bpm_search=QLineEdit(); self.bpm_search.setPlaceholderText("Filter preview by BPM name or identifier…"); self.bpm_search.textChanged.connect(self._filter_bpm_table); form.addRow("Search / filter",self.bpm_search)
+        self.bpm_search=QLineEdit(); self.bpm_search.setPlaceholderText("Name/identifier patterns, comma separated (for example c04, c05 or SF*)…"); self.bpm_search.textChanged.connect(self._filter_bpm_table); form.addRow("Search / filter",self.bpm_search)
         self.bpm_visibility=QComboBox(); self.bpm_visibility.addItem("All devices","all"); self.bpm_visibility.addItem("Selected only","selected"); self.bpm_visibility.addItem("Unselected only","unselected"); self.bpm_visibility.currentIndexChanged.connect(self._filter_bpm_table); form.addRow("Show devices",self.bpm_visibility)
         quick=QHBoxLayout(); select_all=QPushButton("Select All"); select_all.clicked.connect(self._select_all_bpms); clear=QPushButton("Clear"); clear.clicked.connect(self._clear_bpms); select_filtered=QPushButton("Replace with filtered"); select_filtered.clicked.connect(self._select_filtered_bpms); self.bpm_select_only_highlighted_button=QPushButton("Select only highlighted"); self.bpm_select_only_highlighted_button.setEnabled(False); self.bpm_select_only_highlighted_button.setToolTip("Replace the checked BPM selection with the highlighted rows"); self.bpm_select_only_highlighted_button.clicked.connect(lambda:self._select_only_highlighted("bpm")); self.bpm_add_highlighted_button=QPushButton("Add highlighted to selection"); self.bpm_add_highlighted_button.setEnabled(False); self.bpm_add_highlighted_button.setToolTip("Keep checked BPMs and add highlighted rows without duplicates"); self.bpm_add_highlighted_button.clicked.connect(lambda:self._select_highlighted("bpm")); preview=QPushButton("Refresh"); preview.clicked.connect(self.refresh_preview); quick.addWidget(select_all); quick.addWidget(clear); quick.addWidget(select_filtered); quick.addWidget(self.bpm_select_only_highlighted_button); quick.addWidget(self.bpm_add_highlighted_button); quick.addStretch(); quick.addWidget(preview); form.addRow("",quick)
         subset=QHBoxLayout(); self.bpm_subset_n=NoWheelSpinBox(); self.bpm_subset_n.setRange(1,100000); self.bpm_subset_n.setValue(20); first_n=QPushButton("First N"); first_n.clicked.connect(lambda:self._select_device_subset("bpm","first",self.bpm_subset_n.value())); uniform_n=QPushButton("Uniform N"); uniform_n.clicked.connect(lambda:self._select_device_subset("bpm","uniform",self.bpm_subset_n.value())); subset.addWidget(self.bpm_subset_n); subset.addWidget(first_n); subset.addWidget(uniform_n); subset.addStretch(); form.addRow("Selection helpers",subset); layout.addWidget(group)
@@ -1116,7 +1134,7 @@ class MeasureMainWindow(QMainWindow):
             box=QGroupBox(title); form=QFormLayout(box); self._configure_form(form); method=QComboBox(); method.addItem("All available","all"); method.addItem("Load names file","names_file"); method.addItem("Manual names / positions","manual")
             manual=QLineEdit(); manual.setPlaceholderText("Exact names, positions, or comma-separated wildcards such as SF*, SJ*"); file_edit=QLineEdit(); browse=QPushButton("Browse…"); file_row=QWidget(); fr=QHBoxLayout(file_row); fr.setContentsMargins(0,0,0,0); fr.addWidget(file_edit,1); fr.addWidget(browse)
             exclusion=QLineEdit(); exclusion.setPlaceholderText("Selected-list positions to exclude, e.g. 1, 4")
-            search=QLineEdit(); search.setPlaceholderText("Filter corrector names / identifiers…"); visibility=QComboBox(); visibility.addItem("All devices","all"); visibility.addItem("Selected only","selected"); visibility.addItem("Unselected only","unselected"); preview=QPushButton("Refresh"); table=QTableWidget(0,8); table.setMinimumHeight(150); table.setHorizontalHeaderLabels(["Selection position","Device name","Adapter/device identifier","Plane","Kick setpoint","Kick readback","Current setpoint","Current readback"]); table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
+            search=QLineEdit(); search.setPlaceholderText("Name/identifier patterns, comma separated (for example c04, c05 or SF*)…"); visibility=QComboBox(); visibility.addItem("All devices","all"); visibility.addItem("Selected only","selected"); visibility.addItem("Unselected only","unselected"); preview=QPushButton("Refresh"); table=QTableWidget(0,8); table.setMinimumHeight(150); table.setHorizontalHeaderLabels(["Selection position","Device name","Adapter/device identifier","Plane","Kick setpoint","Kick readback","Current setpoint","Current readback"]); table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
             diagnostic_header_tooltips=(
                 "KICK.SP — requested kick/strength setpoint. The displayed numeric value remains in the unit supplied by the component adapter.",
                 "KICK.RBV — independently reported kick/strength readback value. It is not an electrical-current value.",
@@ -1731,12 +1749,11 @@ class MeasureMainWindow(QMainWindow):
 
     def _filter_bpm_table(self, text=""):
         if not hasattr(self,"preview_table"):return
-        query=self.bpm_search.text().strip().lower(); mode=self.bpm_visibility.currentData() if hasattr(self,"bpm_visibility") else "all"; selected={device.name for device in self.selected_devices}; visible=0
+        query=self.bpm_search.text(); mode=self.bpm_visibility.currentData() if hasattr(self,"bpm_visibility") else "all"; selected={device.name for device in self.selected_devices}; visible=0
         source={"all":"adapter discovery","names_file":"names file","manual":"manual selection"}.get(self.selection_method.currentData(),"selection")
         for row in range(self.preview_table.rowCount()):
-            hay=" ".join(self.preview_table.item(row,col).text() for col in (1,2) if self.preview_table.item(row,col))
-            name=self.preview_table.item(row,1).text() if self.preview_table.item(row,1) else ""; selected_row=name in selected
-            hidden=bool(query and query not in hay.lower()) or mode=="selected" and not selected_row or mode=="unselected" and selected_row
+            name=self.preview_table.item(row,1).text() if self.preview_table.item(row,1) else ""; identifier=self.preview_table.item(row,2).text() if self.preview_table.item(row,2) else ""; selected_row=name in selected
+            hidden=not _device_matches_filter(name,identifier,query) or mode=="selected" and not selected_row or mode=="unselected" and selected_row
             self.preview_table.setRowHidden(row,hidden); visible+=not hidden
         if hasattr(self,"selection_message"):
             highlighted=len(self.preview_table.selectionModel().selectedRows()) if self.preview_table.selectionModel() is not None else 0
@@ -1747,7 +1764,7 @@ class MeasureMainWindow(QMainWindow):
             if error:self.selection_message.setText(prefix+f"Selection is not valid: {error}")
             elif mode=="selected" and not selected:self.selection_message.setText(prefix+"No BPMs are selected. Choose All devices to highlight devices, or use Clear to return to All devices automatically.")
             elif visible==0:self.selection_message.setText(prefix+"No BPM devices match the current search and visibility filters.")
-            else:self.selection_message.setText(prefix+f"Showing {visible} devices. Highlighted rows do not change the checked selection. Source: {source}.")
+            else:self.selection_message.setText(prefix+f"Shown by filter: {visible}. Highlighted rows do not change the checked selection. Source: {source}.")
 
     def _select_all_bpms(self):
         self.selection_method.setCurrentIndex(self.selection_method.findData("all")); self.refresh_preview()
@@ -1771,8 +1788,8 @@ class MeasureMainWindow(QMainWindow):
         self._restore_table_highlights(self.preview_table,highlighted); self._filter_bpm_table()
 
     def _select_filtered_bpms(self):
-        query=self.bpm_search.text().strip().lower()
-        matches=[device.name for device in self.devices if not query or query in (device.name+" "+device.identifier).lower()]
+        query=self.bpm_search.text()
+        matches=[device.name for device in self.devices if _device_matches_filter(device.name,device.identifier,query)]
         self.selection_method.setCurrentIndex(self.selection_method.findData("manual")); self.manual_input.setText(", ".join(matches)); self.refresh_preview()
 
     @staticmethod
@@ -1788,8 +1805,8 @@ class MeasureMainWindow(QMainWindow):
         else:
             data=self.corrector_selection_widgets[key]; devices=tuple(data["devices"]); method=data["method"]; manual=data["manual"]
         search=self.bpm_search if key=="bpm" else self.corrector_selection_widgets[key]["search"]
-        query=search.text().strip().lower()
-        candidates=tuple(device for device in devices if not query or query in (device.name+" "+device.identifier).lower())
+        query=search.text()
+        candidates=tuple(device for device in devices if _device_matches_filter(device.name,device.identifier,query))
         selected=tuple(candidates[:min(count,len(candidates))]) if mode=="first" else self._uniform_devices(candidates,count)
         method.setCurrentIndex(method.findData("manual")); manual.setText(", ".join(device.name for device in selected))
         self.refresh_preview() if key=="bpm" else self._refresh_corrector_preview(key,read_diagnostics=False)
@@ -1804,7 +1821,7 @@ class MeasureMainWindow(QMainWindow):
         self._restore_table_highlights(data["table"],highlighted); self._filter_corrector_table(key)
 
     def _select_filtered_correctors(self,key):
-        data=self.corrector_selection_widgets[key]; query=data["search"].text().strip().lower(); matches=[device.name for device in data["devices"] if not query or query in (device.name+" "+device.identifier).lower()]
+        data=self.corrector_selection_widgets[key]; query=data["search"].text(); matches=[device.name for device in data["devices"] if _device_matches_filter(device.name,device.identifier,query)]
         data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText(", ".join(matches)); self._refresh_corrector_preview(key,read_diagnostics=False)
 
     def _select_highlighted(self,key):
@@ -1977,15 +1994,14 @@ class MeasureMainWindow(QMainWindow):
         data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText("0"); self._refresh_corrector_preview(key)
 
     def _filter_corrector_table(self,key):
-        data=self.corrector_selection_widgets[key]; query=data["search"].text().strip().lower(); mode=data["visibility"].currentData(); table=data["table"]; selected={device.name for device in (self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors)}; visible=0
+        data=self.corrector_selection_widgets[key]; query=data["search"].text(); mode=data["visibility"].currentData(); table=data["table"]; selected={device.name for device in (self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors)}; visible=0
         for row in range(table.rowCount()):
-            hay=" ".join(table.item(row,col).text() for col in (1,2) if table.item(row,col))
-            name=table.item(row,1).text() if table.item(row,1) else ""; selected_row=name in selected
-            hidden=bool(query and query not in hay.lower()) or mode=="selected" and not selected_row or mode=="unselected" and selected_row
+            name=table.item(row,1).text() if table.item(row,1) else ""; identifier=table.item(row,2).text() if table.item(row,2) else ""; selected_row=name in selected
+            hidden=not _device_matches_filter(name,identifier,query) or mode=="selected" and not selected_row or mode=="unselected" and selected_row
             table.setRowHidden(row,hidden); visible+=not hidden
         highlighted=len(table.selectionModel().selectedRows()) if table.selectionModel() is not None else 0
         data["select_only_highlighted"].setEnabled(highlighted>0); data["add_highlighted"].setEnabled(highlighted>0)
-        data["count"].setText(f"{len(selected)} / {len(data['devices'])} selected • {highlighted} highlighted • {visible} shown")
+        data["count"].setText(f"{len(selected)} / {len(data['devices'])} selected for measurement • {highlighted} highlighted • {visible} shown by filter")
         if mode=="selected" and not selected:data["empty"].setText("No correctors are selected. Choose All devices to highlight devices, or use Clear to return to All devices automatically."); data["empty"].setVisible(True)
         elif visible==0:data["empty"].setText("No devices match the current search and visibility filters."); data["empty"].setVisible(True)
         else:data["empty"].setVisible(False)
