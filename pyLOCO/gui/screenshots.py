@@ -26,7 +26,9 @@ class WindowScreenshotController(QObject):
         self.directory_provider = directory_provider
         self.settings = QSettings("pyLOCO", "pyLOCO")
         self.save_action = QAction("📷 Save Screenshot", window)
-        self.save_action.setToolTip("Save the currently visible application window as PNG")
+        self.save_action.setToolTip(
+            "Save the visible application window now using the automatic screenshots folder"
+        )
         self.save_action.triggered.connect(self.save_screenshot)
         self.save_as_action = QAction("Save Screenshot As…", window)
         self.save_as_action.setToolTip("Choose another PNG filename and folder")
@@ -94,7 +96,9 @@ def install_window_screenshot_actions(window: QMainWindow, toolbar: QToolBar, *,
         directory_provider=directory_provider,
     )
     menu = QMenu(window)
-    menu.addAction(controller.save_action)
+    # The main half of the split button already performs the immediate save.
+    # Repeating that action in the arrow menu made the two choices look like
+    # duplicates, so the menu contains only the alternative destination flow.
     menu.addAction(controller.save_as_action)
     button = QToolButton(toolbar)
     button.setObjectName("screenshotButton")
@@ -102,7 +106,10 @@ def install_window_screenshot_actions(window: QMainWindow, toolbar: QToolBar, *,
     button.setMenu(menu)
     button.setPopupMode(QToolButton.MenuButtonPopup)
     button.setAccessibleName("Save Screenshot")
-    button.setToolTip("Save the visible pyLOCO window. Use the arrow for Save Screenshot As…")
+    button.setToolTip(
+        "Click the camera to save now in the automatic screenshots folder. "
+        "Use the arrow to choose another location or filename."
+    )
     toolbar.addWidget(button)
     if file_menu is not None:
         file_menu.addSeparator()

@@ -118,3 +118,14 @@ def test_one_click_creates_timestamped_session_screenshot_folder(tmp_path):
     assert saved.suffix == ".png"
     assert saved.is_file()
     window.close()
+
+
+def test_split_button_has_one_clear_alternative_action():
+    window = MeasureMainWindow()
+    controller = window.screenshot_controller
+    assert controller.button.defaultAction() is controller.save_action
+    assert controller.button.text() == "📷 Save Screenshot"
+    assert controller.button.menu().actions() == [controller.save_as_action]
+    assert controller.save_as_action.text() == "Save Screenshot As…"
+    assert "automatic screenshots folder" in controller.button.toolTip()
+    window.close()
