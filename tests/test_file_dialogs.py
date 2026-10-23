@@ -39,6 +39,9 @@ def test_shared_dialog_is_non_native_theme_inheriting_and_path_editable(app, tmp
     assert Path(folder_path.text()).resolve()==initial.resolve()
     QApplication.clipboard().clear(); copy_button.click()
     assert Path(QApplication.clipboard().text()).resolve()==initial.resolve()
+    assert folder_path.selectedText()==folder_path.text()
+    assert copy_button.text()=="Copied ✓"
+    assert str(initial.resolve()) in copy_button.toolTip()
     changed=tmp_path/"another folder"; changed.mkdir(); dialog.setDirectory(str(changed)); dialog.directoryEntered.emit(str(changed))
     assert Path(folder_path.text()).resolve()==changed.resolve()
     if mode != "directory":

@@ -11,7 +11,7 @@ import hashlib
 from pathlib import Path
 import re
 
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QTimer
 from PySide6.QtWidgets import QApplication, QDialog, QFileDialog as _QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QWidget
 
 _ORIGINAL_GET_OPEN = _QFileDialog.__dict__.get("getOpenFileName")
@@ -87,7 +87,14 @@ def _build_dialog(parent, caption: str, directory: str, name_filter: str, *,
     folder_layout.addWidget(QLabel("Current folder",folder_row))
     folder_path=QLineEdit(folder_row); folder_path.setObjectName("currentFolderPath"); folder_path.setReadOnly(True); folder_path.setText(dialog.directory().absolutePath()); folder_path.setToolTip("Current folder path. Select the text or use Copy folder path.")
     copy_folder=QPushButton("Copy folder path",folder_row); copy_folder.setObjectName("copyFolderPathButton")
-    copy_folder.clicked.connect(lambda: QApplication.clipboard().setText(folder_path.text()))
+    def copy_current_folder():
+        text=folder_path.text()
+        QApplication.clipboard().setText(text)
+        folder_path.setFocus(); folder_path.selectAll()
+        copy_folder.setText("Copied ✓")
+        copy_folder.setToolTip(f"Copied to clipboard: {text}")
+        QTimer.singleShot(1800,lambda: copy_folder.setText("Copy folder path"))
+    copy_folder.clicked.connect(copy_current_folder)
     dialog.directoryEntered.connect(folder_path.setText)
     folder_layout.addWidget(folder_path,1); folder_layout.addWidget(copy_folder)
     dialog.layout().addWidget(folder_row,dialog.layout().rowCount(),0,1,dialog.layout().columnCount())
