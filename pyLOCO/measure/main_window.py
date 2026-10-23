@@ -739,6 +739,7 @@ class MeasureMainWindow(QMainWindow):
         reference_row=QWidget(); rr=QHBoxLayout(reference_row); rr.setContentsMargins(0,0,0,0); rr.addWidget(self.reference_model_path,1); choose=QPushButton("Change Reference Lattice…"); choose.clicked.connect(self._choose_reference_model); rr.addWidget(choose)
         self.reference_model_summary=QLabel("No reference model loaded."); self.reference_model_summary.setObjectName("referenceModelCard"); self.reference_model_summary.setWordWrap(True); self.reference_model_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.reference_model_variable=QLabel("Not applicable"); self.reference_model_variable.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.reference_model_element_count=QLabel("Not available"); self.reference_model_element_count.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.change_reference_variable_button=QPushButton("Change MAT variable…"); self.change_reference_variable_button.setEnabled(False); self.change_reference_variable_button.clicked.connect(self._change_reference_mat_variable)
         variable_row=QWidget(); vrl=QHBoxLayout(variable_row); vrl.setContentsMargins(0,0,0,0); vrl.addWidget(self.reference_model_variable,1); vrl.addWidget(self.change_reference_variable_button)
         self.reference_model_requirement=QLabel("AT is installed — reference-model calculations are available." if find_spec("at") is not None else "AT is not installed — reference-model calculations and physical dispersion are unavailable."); self.reference_model_requirement.setWordWrap(True)
@@ -753,7 +754,7 @@ class MeasureMainWindow(QMainWindow):
         self.alignment_details_button.clicked.connect(self._show_alignment_details)
         alignment_actions=QWidget(); aal=QGridLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button,0,0); aal.addWidget(self.load_mapping_button,0,1); aal.addWidget(self.mapping_template_button,1,0); aal.addWidget(self.save_mapping_button,1,1); aal.addWidget(self.alignment_details_button,0,2,2,1); aal.setColumnStretch(3,1)
         self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then find or load an exact device mapping."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Device mapping",alignment_actions); reference_layout.addRow("Mapping status",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
+        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("Lattice elements",self.reference_model_element_count); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Device mapping",alignment_actions); reference_layout.addRow("Mapping status",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
         layout.addWidget(reference_group); return self._scroll_page(content)
 
     def _choose_reference_model(self):
@@ -996,6 +997,7 @@ class MeasureMainWindow(QMainWindow):
 
     def _display_reference_model(self):
         model=self.reference_model; self.reference_model_path.setText(str(model.path))
+        self.reference_model_element_count.setText(f"{len(model.ring):,}")
         harmonic=str(model.harmonic_number) if model.harmonic_number is not None else "Not available"
         rf=f"{model.nominal_rf_hz/1e6:.9f} MHz" if model.nominal_rf_hz is not None else "Not available"
         residual=f"{model.rf_harmonic_residual_hz:.6g} Hz" if model.rf_harmonic_residual_hz is not None else "Not available"
@@ -1017,14 +1019,14 @@ class MeasureMainWindow(QMainWindow):
         self.reference_model_summary.setText(
             f"<h3 style='color:#12BFC4;margin:0 0 8px 0'>Reference-lattice quantities</h3>"
             f"<div><b>Calculation source:</b> Accelerator Toolbox, using the loaded 4D reference lattice.</div>"
-            f"<div><b>Lattice:</b> {escape(model.path.name)} &nbsp; <b>SHA-256:</b> {escape(model.checksum_sha256[:12])}…</div>"
+            f"<div><b>Lattice:</b> {escape(model.path.name)} &nbsp; <b>Elements:</b> {len(model.ring):,} &nbsp; <b>SHA-256:</b> {escape(model.checksum_sha256[:12])}…</div>"
             f"<div><b>File selection:</b> {selection}</div><br>"
             f"<table cellspacing='0' cellpadding='4' width='100%'><tr><th align='left'>Quantity</th><th align='left'>Value</th><th align='left'>Source</th></tr>{body}</table>")
 
     def _load_profile_reference_model(self):
         self._model_orm_cache=None
         try:self.reference_model=reference_model_for_pysc(self.pysc_profile_combo.currentData())
-        except Exception as exc:self.reference_model=None; self.reference_model_summary.setText(f"Automatic profile reference model unavailable: {exc}"); return
+        except Exception as exc:self.reference_model=None; self.reference_model_element_count.setText("Not available"); self.reference_model_summary.setText(f"Automatic profile reference model unavailable: {exc}"); return
         self.reference_model_path.setText(str(self.reference_model.path))
         self.reference_model_variable.setText(self.reference_model.mat_variable or "Not applicable")
         self.change_reference_variable_button.setEnabled(False)
@@ -1102,7 +1104,7 @@ class MeasureMainWindow(QMainWindow):
         self.pyaml_group.setVisible(key == "pyaml")
         self.reference_model=None
         if hasattr(self,"reference_model_path"):
-            self.reference_model_path.clear(); self.reference_model_variable.setText("Not applicable"); self.change_reference_variable_button.setEnabled(False)
+            self.reference_model_path.clear(); self.reference_model_variable.setText("Not applicable"); self.reference_model_element_count.setText("Not available"); self.change_reference_variable_button.setEnabled(False)
             self.reference_model_summary.setText("Not available — select an authoritative reference lattice." if petra else "No reference model loaded.")
         self._model_orm_cache=None
         for widget in self.pysc_profile_row: widget.setVisible(pysc)

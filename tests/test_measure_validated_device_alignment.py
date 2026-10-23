@@ -117,6 +117,8 @@ def test_measure_prompts_for_multiple_valid_mat_variables(qapp, tmp_path, monkey
     assert window._load_reference_model(source, "test")
     assert calls == [None, "second"]
     assert window.reference_model_variable.text() == "second"
+    assert window.reference_model_element_count.text() == "5"
+    assert "<b>Elements:</b> 5" in window.reference_model_summary.text()
     assert window.measurement_device_alignment is None
     window.close()
 
