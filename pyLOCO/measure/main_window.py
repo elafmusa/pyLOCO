@@ -945,6 +945,18 @@ class MeasureMainWindow(QMainWindow):
     def _show_alignment_details(self):
         document=self.measurement_device_alignment
         if not document:return
+        # Revalidate the raw records before presenting a document as
+        # validated. This distinguishes source corruption from table sorting.
+        if self.reference_model is not None and self.adapter_combo.currentData()=="pyaml":
+            try:
+                inventory,configuration=self._mapping_context()
+                document=validate_mapping(document,self.reference_model.ring,inventory,
+                    lattice_path=self.reference_model.path,configuration_path=configuration,require_provenance=True)
+            except Exception as exc:
+                self._invalidate_device_alignment(f"Mapping integrity failure: {exc}")
+                QMessageBox.warning(self,"Cannot display validated mapping",f"The stored mapping records failed revalidation and were not presented as validated:\n{exc}")
+                return
+            self.measurement_device_alignment=document
         dialog=QDialog(self); dialog.setWindowTitle("Validated measurement-device mapping"); dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.setMinimumSize(900,520); dialog.resize(1250,700)
         layout=QVBoxLayout(dialog)
         explanation=QLabel("Measured identities come from the active pyAML inventory. AT FamName, AT Device and AT index (0-based) come from the checksummed reference lattice; Match method is the recorded identity_match provenance.")
@@ -953,7 +965,7 @@ class MeasureMainWindow(QMainWindow):
         configure_mapping_table(table,(
             "Exact device name from the selected pyAML measurement inventory.","Measurement role and plane.","FamName attribute on the selected AT lattice element.","Device attribute on the selected AT lattice element; distinct from a pyAML control name.","AT element index (0-based) in the active lattice.","Recorded identity_match method; never inferred by this dialog.","Required component and whether role compatibility passed.","Validated mapping state.","Detailed identity and steering evidence or actionable problem."
         ))
-        rows=document.get("mappings",()); table.setRowCount(len(rows))
+        rows=document.get("mappings",()); table.setSortingEnabled(False); table.setRowCount(len(rows))
         for row,item in enumerate(rows):
             status=item.get("status","")
             missing_evidence=[field for field in ("measured_name","role","lattice_name","lattice_ordinal","identity_match") if item.get(field) in (None,"")]
@@ -963,8 +975,10 @@ class MeasureMainWindow(QMainWindow):
                 reason="Mapped status has incomplete evidence fields: "+", ".join(missing_evidence)
             capability=(item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated")
             values=(item.get("measured_name","") or "Not available",item.get("role","") or "Not available",item.get("lattice_name","") or "Not available",item.get("lattice_device","") or "Not available",item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",identity_match_label(item.get("identity_match")),capability,status.capitalize() or "Not available",reason)
+            record_identity=(row,str(item.get("role","") or ""),str(item.get("measured_name","") or ""),item.get("lattice_ordinal"))
             for column,value in enumerate(values):
-                cell=QTableWidgetItem(str(value)); cell.setToolTip(str(value)); table.setItem(row,column,cell)
+                cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,record_identity); cell.setToolTip(str(value)); table.setItem(row,column,cell)
+        table.setSortingEnabled(True)
         layout.addWidget(table,1); self.alignment_details_dialog=dialog; self.alignment_details_table=table
         buttons=QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons); dialog.exec()
 

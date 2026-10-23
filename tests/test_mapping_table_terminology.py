@@ -27,6 +27,27 @@ def _mapping_row(**overrides):
     return row
 
 
+def _display_values(item):
+    status=item["status"]
+    return (
+        item["measured_name"],item["role"],item["lattice_name"],item["lattice_device"],
+        str(item["lattice_ordinal"]),identity_match_label(item["identity_match"]),
+        (item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated"),
+        status.capitalize(),item["reason"],
+    )
+
+
+def _assert_complete_rows(table,expected):
+    assert table.rowCount()==len(expected)
+    for visual_row in range(table.rowCount()):
+        cells=[table.item(visual_row,column) for column in range(table.columnCount())]
+        assert all(cell is not None and cell.text() for cell in cells)
+        identities={cell.data(Qt.UserRole) for cell in cells}
+        assert len(identities)==1
+        identity=identities.pop()
+        assert tuple(cell.text() for cell in cells)==expected[identity]
+
+
 def test_measure_alignment_separates_at_famname_device_and_recorded_match(monkeypatch):
     app=QApplication.instance() or QApplication([]); window=MeasureMainWindow(devices=default_mock_devices(2))
     window.measurement_device_alignment={"mappings":[_mapping_row()]}
@@ -71,3 +92,42 @@ def test_match_labels_are_exactly_the_recorded_methods():
     assert identity_match_label("exact_device")=="Exact AT Device"
     assert identity_match_label("exact_fam_name")=="Exact AT FamName"
     assert identity_match_label("legacy_component_fam_name")=="Legacy suffix → exact AT FamName"
+
+
+def test_measure_mapping_rows_remain_atomic_through_every_sort_filter_and_reopen(monkeypatch):
+    app=QApplication.instance() or QApplication([]); window=MeasureMainWindow(devices=default_mock_devices(2))
+    records=[
+        _mapping_row(measured_name="srmag/hst-sh3/c03-e-B1L",role="horizontal_corrector",lattice_name="SH3E",lattice_device="srmag/hst-sh3/c03-e",lattice_ordinal=4429,component="B1L",reason="H record"),
+        _mapping_row(measured_name="srdiag/beam-position/c01-01",role="bpm",lattice_name="BPM",lattice_device="srdiag/beam-position/c01-01",lattice_ordinal=17,identity_match="exact_device",component="",reason="BPM record"),
+        _mapping_row(measured_name="srmag/vst-sh3/c03-e-A1L",role="vertical_corrector",lattice_name="SH3E",lattice_device="srmag/vst-sh3/c03-e",lattice_ordinal=4430,component="A1L",reason="V record"),
+        _mapping_row(measured_name="srdiag/beam-position/c02-02-with-a-very-long-identity",role="bpm",lattice_name="BPM",lattice_device="srdiag/beam-position/c02-02",lattice_ordinal=101,identity_match="exact_device",component="",reason="Second BPM record"),
+    ]
+    window.measurement_device_alignment={"mappings":records}; monkeypatch.setattr(QDialog,"exec",lambda _dialog:0)
+    expected={(index,item["role"],item["measured_name"],item["lattice_ordinal"]):_display_values(item) for index,item in enumerate(records)}
+    for _reopen in range(2):
+        window._show_alignment_details(); table=window.alignment_details_table; _assert_complete_rows(table,expected)
+        for column in range(table.columnCount()):
+            for order in (Qt.AscendingOrder,Qt.DescendingOrder):table.sortItems(column,order); _assert_complete_rows(table,expected)
+        for row in range(table.rowCount()):table.setRowHidden(row,"corrector" in table.item(row,1).text())
+        table.sortItems(0,Qt.AscendingOrder); _assert_complete_rows(table,expected)
+        assert {table.item(row,1).text() for row in range(table.rowCount()) if not table.isRowHidden(row)}=={"bpm"}
+        table.setColumnWidth(0,420); assert table.columnWidth(0)>=400
+    window.close(); app.processEvents()
+
+
+def test_measure_mapping_dialog_populates_all_896_mixed_roles_without_blanks(monkeypatch):
+    app=QApplication.instance() or QApplication([]); window=MeasureMainWindow(devices=default_mock_devices(2)); records=[]
+    for position in range(320):records.append(_mapping_row(measured_name=f"BPM-{position:03d}",role="bpm",lattice_name=f"BPM{position}",lattice_device=f"device/bpm/{position}",lattice_ordinal=position,identity_match="exact_device",component="",reason="BPM mapped"))
+    for position in range(288):
+        records.append(_mapping_row(measured_name=f"H-{position:03d}-B1L",role="horizontal_corrector",lattice_name=f"S{position}",lattice_device=f"device/h/{position}",lattice_ordinal=320+position,component="B1L",reason="H mapped"))
+        records.append(_mapping_row(measured_name=f"V-{position:03d}-A1L",role="vertical_corrector",lattice_name=f"S{position}",lattice_device=f"device/v/{position}",lattice_ordinal=608+position,component="A1L",reason="V mapped"))
+    records=records[320::2]+records[:320]+records[321::2]
+    window.measurement_device_alignment={"mappings":records}; monkeypatch.setattr(QDialog,"exec",lambda _dialog:0)
+    window._show_alignment_details(); table=window.alignment_details_table; assert table.rowCount()==896; table.sortItems(0,Qt.AscendingOrder)
+    for row in range(table.rowCount()):
+        cells=[table.item(row,column) for column in range(table.columnCount())]
+        assert all(cell is not None and cell.text() for cell in cells)
+        role,measured=cells[1].text(),cells[0].text()
+        assert (role=="bpm" and measured.startswith("BPM-")) or (role=="horizontal_corrector" and measured.startswith("H-")) or (role=="vertical_corrector" and measured.startswith("V-"))
+        assert len({cell.data(Qt.UserRole) for cell in cells})==1
+    window.close(); app.processEvents()

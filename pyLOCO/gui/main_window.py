@@ -6101,8 +6101,9 @@ class MainWindow(QMainWindow):
                       identity_match_label(item.get("identity_match")), capability,
                       "Validated" if status == "mapped" else status.capitalize(), item.get("reason", "") or "Not available")
             row = table.rowCount(); table.insertRow(row)
+            record_identity=(displayed,str(item.get("role","") or ""),str(item.get("measured_name","") or ""),item.get("lattice_ordinal"))
             for column, value in enumerate(values):
-                cell = QTableWidgetItem(str(value)); cell.setToolTip(str(value)); table.setItem(row, column, cell)
+                cell = QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,record_identity); cell.setToolTip(str(value)); table.setItem(row, column, cell)
             displayed += 1
         table.setSortingEnabled(True)
         if not rows:

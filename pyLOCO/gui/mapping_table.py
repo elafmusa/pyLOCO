@@ -51,11 +51,15 @@ def configure_mapping_table(table: QTableWidget, header_help: tuple[str, ...], *
     table.setSelectionMode(QAbstractItemView.ExtendedSelection)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
     table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
-    table.setSortingEnabled(True)
+    # Callers must populate the whole table before enabling sorting. Qt can
+    # relocate a partially populated row as soon as the value in the active
+    # sort column is inserted, which mixes cells from different records.
+    table.setSortingEnabled(False)
     # Resize-to-contents makes long identities effectively impossible to
     # inspect on laptop displays.  Start with useful widths, then leave every
     # section under direct operator control.
     table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+    table.horizontalHeader().setMinimumSectionSize(80)
     table.horizontalHeader().setStretchLastSection(False)
     table.resizeColumnsToContents()
     for column in range(table.columnCount()):
