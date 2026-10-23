@@ -71,7 +71,7 @@ def test_exact_device_precedes_famname_and_duplicate_identity_is_ambiguous(tmp_p
     result=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
     rows=result["mappings"]
     assert rows[0]["lattice_ordinal"]==1 and rows[0]["identity_match"]=="exact_device"
-    assert rows[1]["status"]=="ambiguous" and "ordinals [2, 3]" in rows[1]["reason"]
+    assert rows[1]["status"]=="ambiguous" and "AT index 2" in rows[1]["reason"] and "AT index 3" in rows[1]["reason"]
 
 
 def test_manual_ordinal_accepts_exact_famname_without_suffix_and_reports_wrong_identity(tmp_path):
@@ -88,7 +88,7 @@ def test_manual_ordinal_accepts_exact_famname_without_suffix_and_reports_wrong_i
     row=checked["mappings"][0]
     assert row["status"]=="invalid"
     assert "measured H corrector 'H-CORRECTOR'" in row["reason"]
-    assert "AT ordinal 1" in row["reason"] and "FamName='V-CORRECTOR'" in row["reason"]
+    assert "AT index 1 (0-based)" in row["reason"] and "FamName='V-CORRECTOR'" in row["reason"]
 
 
 def test_suffixless_corrector_names_match_exact_device(tmp_path):
@@ -107,9 +107,12 @@ def test_duplicate_famname_can_be_manually_disambiguated_by_exact_ordinal(tmp_pa
     automatic=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
     row=automatic["mappings"][0]
     assert row["status"]=="ambiguous" and row["lattice_ordinal"] is None
-    assert "AT ordinals [0, 1]" in row["reason"] and "Enter the intended" in row["reason"]
+    assert "AT index 0" in row["reason"] and "AT index 1" in row["reason"] and "Enter the intended" in row["reason"]
 
     manual=mapping_template(inventory); manual["mappings"][0]["lattice_ordinal"]=1
+    unresolved=validate_mapping(manual,ring,inventory,lattice_path=lattice,require_provenance=False)
+    assert mapping_counts(unresolved)["ambiguous"]==1
+    manual["mappings"][0]["identity_evidence"]="Operator-verified control-system/lattice record MDT-42"
     checked=validate_mapping(manual,ring,inventory,lattice_path=lattice,require_provenance=False)
     assert mapping_counts(checked)["mapped"]==1
     assert checked["mappings"][0]["lattice_ordinal"]==1

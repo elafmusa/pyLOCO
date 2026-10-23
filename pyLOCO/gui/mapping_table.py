@@ -52,8 +52,14 @@ def configure_mapping_table(table: QTableWidget, header_help: tuple[str, ...], *
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
     table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
     table.setSortingEnabled(True)
-    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+    # Resize-to-contents makes long identities effectively impossible to
+    # inspect on laptop displays.  Start with useful widths, then leave every
+    # section under direct operator control.
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
     table.horizontalHeader().setStretchLastSection(False)
+    table.resizeColumnsToContents()
+    for column in range(table.columnCount()):
+        table.setColumnWidth(column, min(max(table.columnWidth(column), 105), 360))
     for column, help_text in enumerate(header_help):
         header = table.horizontalHeaderItem(column)
         if header is not None:

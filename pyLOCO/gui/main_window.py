@@ -574,7 +574,7 @@ class ElementSelectionDialog(QDialog):
         self.name_file_row_widget=QWidget(); name_file_row = QHBoxLayout(self.name_file_row_widget); name_file_row.setContentsMargins(0,0,0,0); name_file_row.addWidget(self.name_file_edit); name_file_row.addWidget(self.name_file_button)
         self.manual_edit = QPlainTextEdit(", ".join(str(i) for i in current))
         self.manual_edit.setMaximumHeight(105)
-        self.manual_edit.setPlaceholderText("Enter integer lattice ordinals separated by commas, spaces, or new lines.")
+        self.manual_edit.setPlaceholderText("Enter integer AT indices (0-based) separated by commas, spaces, or new lines.")
         form.addRow("AT class/type contains", self.type_edit)
         form.addRow("Family/name patterns", self.pattern_widget)
         self.pattern_edit.setToolTip(
@@ -584,7 +584,7 @@ class ElementSelectionDialog(QDialog):
         form.addRow("Element-name file", self.name_file_row_widget)
         form.addRow("Name attribute", self.name_attribute)
         form.addRow("Index file", self.file_row_widget)
-        form.addRow("Manual lattice ordinals", self.manual_edit)
+        form.addRow("Manual AT indices (0-based)", self.manual_edit)
         layout.addLayout(form)
 
         self.provenance_summary = QLabel()
@@ -609,7 +609,7 @@ class ElementSelectionDialog(QDialog):
             button = QPushButton(text); button.clicked.connect(callback); filter_row.addWidget(button)
         layout.addLayout(filter_row)
         self.table = QTableWidget(0, 6)
-        self.table.setHorizontalHeaderLabels(["Use / position", "Lattice ordinal", "Element name", "AT class/type", "Family name", "Current value"])
+        self.table.setHorizontalHeaderLabels(["Use / position", "AT index (0-based)", "Element name", "AT class/type", "Family name", "Current value"])
         configure_item_view(self.table)
         self.table.setMinimumHeight(250)
         header=self.table.horizontalHeader(); header.setSectionResizeMode(0,QHeaderView.ResizeToContents); header.setSectionResizeMode(1,QHeaderView.ResizeToContents); header.setSectionResizeMode(2,QHeaderView.Stretch); header.setSectionResizeMode(3,QHeaderView.ResizeToContents); header.setSectionResizeMode(4,QHeaderView.Stretch); header.setSectionResizeMode(5,QHeaderView.Stretch)
@@ -870,11 +870,11 @@ class ElementSelectionDialog(QDialog):
             return self._load_index_file(Path(self.file_edit.text()).expanduser())
         text = self.manual_edit.toPlainText().strip()
         if not text:
-            raise ValueError("Enter at least one lattice ordinal before previewing the selection.")
+            raise ValueError("Enter at least one AT index (0-based) before previewing the selection.")
         tokens = [token for token in re.split(r"[,\s]+", text) if token]
         invalid = [token for token in tokens if re.fullmatch(r"[-+]?\d+", token) is None]
         if invalid:
-            raise ValueError("Manual lattice ordinals must be integers; invalid value(s): " + ", ".join(invalid))
+            raise ValueError("Manual AT indices must be integers; invalid value(s): " + ", ".join(invalid))
         return [int(token) for token in tokens]
 
     def _load_index_file(self, path: Path) -> list[int]:
@@ -1101,7 +1101,7 @@ class FamilyGroupDialog(QDialog):
         layout=QVBoxLayout(self)
         note=QLabel("Family membership is explicit. Names are displayed for inspection only and never used to infer groups."); note.setWordWrap(True); layout.addWidget(note)
         row=QHBoxLayout(); self.path=QLineEdit(); browse=QPushButton("Load family groups…"); browse.clicked.connect(self._browse); row.addWidget(self.path,1); row.addWidget(browse); layout.addLayout(row)
-        self.table=QTableWidget(0,4); self.table.setHorizontalHeaderLabels(["Parameter", "Members", "Lattice ordinals", "Element names"]); configure_item_view(self.table); layout.addWidget(self.table,1)
+        self.table=QTableWidget(0,4); self.table.setHorizontalHeaderLabels(["Parameter", "Members", "AT indices (0-based)", "Element names"]); configure_item_view(self.table); layout.addWidget(self.table,1)
         buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel); buttons.accepted.connect(self._accept); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
         self._populate()
 
@@ -1138,7 +1138,7 @@ class ExclusionSelectionDialog(QDialog):
         self.excluded_positions = sorted(set(int(value) for value in excluded))
         lattice = parent._load_current_lattice()
         layout = QVBoxLayout(self)
-        note = QLabel("Check rows to exclude. ‘Selected-list position’ is zero-based within the current component selection; ‘lattice ordinal’ identifies the corresponding pyAT element.")
+        note = QLabel("Check rows to exclude. ‘Selected-list position’ is zero-based within the current component selection; ‘AT index (0-based)’ identifies the corresponding pyAT element.")
         note.setWordWrap(True); layout.addWidget(note)
         actions = QHBoxLayout(); load_button = QPushButton("Load exclusion file…")
         load_button.setToolTip("Supported: .txt, .npy, .npz, .h5/.hdf5, .mat; values are zero-based selected-list positions.")
@@ -1146,7 +1146,7 @@ class ExclusionSelectionDialog(QDialog):
         clear_button = QPushButton("Clear all"); clear_button.clicked.connect(self._clear)
         actions.addWidget(load_button); actions.addWidget(clear_button); actions.addStretch(1); layout.addLayout(actions)
         self.table = QTableWidget(len(self.ordinals), 4)
-        self.table.setHorizontalHeaderLabels(["Exclude", "Selected-list position", "Lattice ordinal", "Element name / class"])
+        self.table.setHorizontalHeaderLabels(["Exclude", "Selected-list position", "AT index (0-based)", "Element name / class"])
         configure_item_view(self.table)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
@@ -1718,7 +1718,7 @@ class MainWindow(QMainWindow):
             self.element_edit_buttons[key] = button
             elements_layout.addWidget(row_widget)
             table = QTableWidget(0, 4)
-            table.setHorizontalHeaderLabels(["Selection position", "Lattice ordinal", "Element name(s)", "Element class"])
+            table.setHorizontalHeaderLabels(["Selection position", "AT index (0-based)", "Element name(s)", "Element class"])
             configure_item_view(table)
             table.setMinimumHeight(90)
             table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1806,7 +1806,7 @@ class MainWindow(QMainWindow):
         measurement_mapping_layout.addLayout(mapping_filters)
         self.measurement_mapping_table = CopyableMappingTable(0, 9)
         self.measurement_mapping_table.setHorizontalHeaderLabels(
-            ["Measured device (HDF5)", "Role / plane", "AT FamName", "AT Device", "AT ordinal (0-based)", "Match method", "Component / steering capability", "Mapping status", "Evidence / problem"]
+            ["Measured device (HDF5)", "Role / plane", "AT FamName", "AT Device", "AT index (0-based)", "Match method", "Component / steering capability", "Mapping status", "Evidence / problem"]
         )
         configure_mapping_table(self.measurement_mapping_table,(
             "Exact ordered identity stored in imported ORM HDF5 metadata.","Measured role and plane.","FamName attribute from the selected AT lattice element.","Device attribute from the selected AT lattice element.","Zero-based ordinal in the active AT lattice.","Recorded identity_match method, including explicit legacy suffix interpretation.","Required component and independently validated physical steering capability.","Revalidated mapping state.","Separate identity and steering evidence or an actionable validation error."

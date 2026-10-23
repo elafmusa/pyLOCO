@@ -8,6 +8,7 @@ import re
 import csv
 import json
 import shutil
+from fnmatch import fnmatchcase
 from html import escape
 from datetime import datetime
 from pathlib import Path
@@ -48,7 +49,8 @@ from pyLOCO.gui import __version__ as PYLOCO_VERSION
 from pyLOCO.data_schema import SCHEMA_VERSION as MEASUREMENT_SCHEMA_VERSION
 from pyLOCO.gui.results.plot_canvas import PlotCanvas
 from pyLOCO.gui.measurement_mapping import (
-    find_exact_device_mappings, mapping_counts, ordered_ordinals, validate_mapping,
+    find_exact_device_mappings, load_document, mapping_counts, mapping_template,
+    ordered_ordinals, validate_mapping,
 )
 from pyLOCO.gui.mapping_table import (CopyableMappingTable, configure_mapping_table,
                                       identity_match_label)
@@ -57,7 +59,7 @@ from pyLOCO.gui.themes import ACCENTS, accent_for_key, apply_application_theme, 
 from pyLOCO.gui.suite import launch_suite_application,present_single_about_dialog
 from .acquisition import (
     AcquisitionCancelled, BpmDevice, BpmNoiseAcquirer, BpmNoiseResult, CorrectorDevice,
-    DispersionResult, DispersionStateAcquirer, ORMAcquirer, ORMAcquisitionError,
+    DispersionResult, DispersionStateAcquirer, DispersionStateResult, ORMAcquirer, ORMAcquisitionError,
     ORMInterrupted, ORMResult,
 )
 from .project import MeasureProject, load_measure_project, save_measure_project
@@ -742,13 +744,16 @@ class MeasureMainWindow(QMainWindow):
         self.reference_model_requirement=QLabel("AT is installed — reference-model calculations are available." if find_spec("at") is not None else "AT is not installed — reference-model calculations and physical dispersion are unavailable."); self.reference_model_requirement.setWordWrap(True)
         self.compare_reference=QCheckBox("Compare measurements with reference model (diagnostic only)"); self.compare_reference.setChecked(True)
         self.compare_reference.toggled.connect(self._reference_comparison_changed)
-        self.verify_alignment_button=QPushButton("Verify device alignment")
+        self.verify_alignment_button=QPushButton("Find device mappings")
         self.verify_alignment_button.clicked.connect(self._verify_device_alignment)
-        self.alignment_details_button=QPushButton("Details…"); self.alignment_details_button.setEnabled(False)
+        self.load_mapping_button=QPushButton("Load mapping…"); self.load_mapping_button.clicked.connect(self._load_device_mapping)
+        self.mapping_template_button=QPushButton("Create mapping template…"); self.mapping_template_button.clicked.connect(self._save_mapping_template)
+        self.save_mapping_button=QPushButton("Save validated mapping…"); self.save_mapping_button.setEnabled(False); self.save_mapping_button.clicked.connect(self._save_validated_mapping)
+        self.alignment_details_button=QPushButton("Mapping details…"); self.alignment_details_button.setEnabled(False)
         self.alignment_details_button.clicked.connect(self._show_alignment_details)
-        alignment_actions=QWidget(); aal=QHBoxLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button); aal.addWidget(self.alignment_details_button); aal.addStretch(1)
-        self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then verify device alignment."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Device alignment",alignment_actions); reference_layout.addRow("",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
+        alignment_actions=QWidget(); aal=QGridLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button,0,0); aal.addWidget(self.load_mapping_button,0,1); aal.addWidget(self.mapping_template_button,1,0); aal.addWidget(self.save_mapping_button,1,1); aal.addWidget(self.alignment_details_button,0,2,2,1); aal.setColumnStretch(3,1)
+        self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then find or load an exact device mapping."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Device mapping",alignment_actions); reference_layout.addRow("Mapping status",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
         layout.addWidget(reference_group); return self._scroll_page(content)
 
     def _choose_reference_model(self):
@@ -800,11 +805,12 @@ class MeasureMainWindow(QMainWindow):
             "vertical_corrector":[device.name for device in self.selected_vcorrectors],
         }
 
-    def _invalidate_device_alignment(self,reason="Device inventory changed — verify device alignment again."):
+    def _invalidate_device_alignment(self,reason="Device inventory changed — validate the device mapping again."):
         self.measurement_device_alignment=None; self._model_orm_cache=None
         if hasattr(self,"device_alignment_status"):
             self.device_alignment_status.setText(reason)
             self.alignment_details_button.setEnabled(False)
+            if hasattr(self,"save_mapping_button"):self.save_mapping_button.setEnabled(False)
         self._update_reference_comparison_enabled()
 
     def _update_reference_comparison_enabled(self):
@@ -813,7 +819,7 @@ class MeasureMainWindow(QMainWindow):
         counts=mapping_counts(self.measurement_device_alignment) if self.measurement_device_alignment else {}
         ready=(not required or bool(counts) and counts["mapped"]==counts["total"])
         self.compare_reference.setEnabled(ready)
-        if required and not ready:self.compare_reference.setToolTip("Verify exact pyAML device alignment before calculating a reference-model comparison.")
+        if required and not ready:self.compare_reference.setToolTip("Validate the exact pyAML device mapping before calculating a reference-model comparison.")
         else:self.compare_reference.setToolTip("Read-only diagnostic comparison; acquisition and saved measurements are unchanged.")
 
     def _verify_device_alignment(self):
@@ -834,32 +840,83 @@ class MeasureMainWindow(QMainWindow):
             if counts["mapped"]!=counts["total"]:
                 self.measurement_device_alignment=document
                 self.device_alignment_status.setText(
-                    f"Alignment incomplete — {counts['mapped']}/{counts['total']} mapped; "
+                    f"Mapping incomplete — {counts['mapped']}/{counts['total']} mapped; "
                     f"{counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, "
                     f"{counts['duplicate']} duplicate, {counts['invalid']} invalid. Comparison remains disabled.")
             else:
                 self.measurement_device_alignment=document
                 self.device_alignment_status.setText(
-                    f"Device alignment verified — {counts['mapped']}/{counts['total']} exact AT Device/FamName identities "
+                    f"Device mapping validated — {counts['mapped']}/{counts['total']} identities matched by the recorded exact Device, exact FamName, or legacy-suffix method "
                     "(including validated legacy component-suffix interpretation where recorded). "
                     "Measured BPM/corrector order will be preserved in model calculations.")
             self.alignment_details_button.setEnabled(True)
+            self.save_mapping_button.setEnabled(counts["mapped"]==counts["total"])
         except Exception as exc:
-            self._invalidate_device_alignment(f"Device alignment unavailable: {exc}"); return
+            self._invalidate_device_alignment(f"Device mapping unavailable: {exc}"); return
         self._update_reference_comparison_enabled()
         if self.compare_reference.isEnabled():self._refresh_completed_reference_comparison()
+
+    def _mapping_context(self):
+        if self.reference_model is None:raise ValueError("Load the authoritative AT reference lattice first.")
+        configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        if self.adapter_combo.currentData()=="pyaml" and not configuration.is_file():
+            raise ValueError("The active pyAML configuration file is unavailable.")
+        return self._alignment_inventory(),configuration
+
+    @staticmethod
+    def _write_json_atomic(path,document):
+        target=Path(path).expanduser().resolve(); target.parent.mkdir(parents=True,exist_ok=True)
+        temporary=target.with_name(target.name+".tmp")
+        temporary.write_text(json.dumps(document,indent=2)+"\n",encoding="utf-8")
+        temporary.replace(target)
+
+    def _load_device_mapping(self):
+        path=QFileDialog.getOpenFileName(self,"Load measurement-device mapping","","pyLOCO mapping (*.json *.yaml *.yml);;All files (*)")[0]
+        if not path:return
+        try:
+            inventory,configuration=self._mapping_context(); source=load_document(path)
+            checked=validate_mapping(source,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
+                configuration_path=configuration,require_provenance=source.get("schema") is not None)
+            counts=mapping_counts(checked); self.measurement_device_alignment=checked
+            self.device_alignment_status.setText(f"Loaded mapping — {counts['mapped']}/{counts['total']} mapped; {counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate, {counts['invalid']} invalid.")
+            self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(counts["mapped"]==counts["total"])
+            self._update_reference_comparison_enabled()
+        except Exception as exc:QMessageBox.warning(self,"Cannot load device mapping",str(exc))
+
+    def _save_mapping_template(self):
+        path=QFileDialog.getSaveFileName(self,"Create device-mapping template","measurement-device-mapping-template.json","JSON (*.json)")[0]
+        if not path:return
+        try:self._write_json_atomic(path,mapping_template(self._alignment_inventory()))
+        except Exception as exc:QMessageBox.warning(self,"Cannot create mapping template",str(exc)); return
+        self.statusBar().showMessage(f"Created mapping template: {path}")
+
+    def _save_validated_mapping(self):
+        if self.measurement_device_alignment is None:return
+        try:
+            inventory,configuration=self._mapping_context()
+            checked=validate_mapping(self.measurement_device_alignment,self.reference_model.ring,inventory,
+                lattice_path=self.reference_model.path,configuration_path=configuration,require_provenance=True)
+            counts=mapping_counts(checked)
+            if counts["mapped"]!=counts["total"]:raise ValueError("Only a complete, currently valid mapping can be saved as validated.")
+        except Exception as exc:QMessageBox.warning(self,"Cannot save validated mapping",str(exc)); return
+        path=QFileDialog.getSaveFileName(self,"Save validated device mapping","measurement-device-mapping.json","JSON (*.json)")[0]
+        if not path:return
+        if Path(path).exists() and QMessageBox.question(self,"Replace mapping file?",f"Replace the existing mapping file?\n{path}",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
+        try:self._write_json_atomic(path,checked)
+        except Exception as exc:QMessageBox.warning(self,"Cannot save validated mapping",str(exc)); return
+        self.statusBar().showMessage(f"Saved validated mapping: {path}")
 
     def _validated_alignment_ordinals(self):
         if self.adapter_combo.currentData()!="pyaml":return None
         if self.reference_model is None or self.measurement_device_alignment is None:
-            raise ValueError("Verify exact device alignment before comparing with the reference model")
+            raise ValueError("Validate the exact device mapping before comparing with the reference model")
         configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
         checked=validate_mapping(self.measurement_device_alignment,self.reference_model.ring,
             self._alignment_inventory(),lattice_path=self.reference_model.path,
             configuration_path=configuration,require_provenance=True)
         counts=mapping_counts(checked)
         if counts["mapped"]!=counts["total"]:
-            raise ValueError(f"Device alignment is incomplete: {counts['mapped']}/{counts['total']} mapped")
+            raise ValueError(f"Device mapping is incomplete: {counts['mapped']}/{counts['total']} mapped")
         return {role:ordered_ordinals(checked,role) for role in ("bpm","horizontal_corrector","vertical_corrector")}
 
     def _model_mapping_kwargs(self):
@@ -888,22 +945,27 @@ class MeasureMainWindow(QMainWindow):
     def _show_alignment_details(self):
         document=self.measurement_device_alignment
         if not document:return
-        dialog=QDialog(self); dialog.setWindowTitle("Validated measurement-device alignment"); dialog.resize(1250,560)
+        dialog=QDialog(self); dialog.setWindowTitle("Validated measurement-device mapping"); dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); dialog.setSizeGripEnabled(True); dialog.setMinimumSize(900,520); dialog.resize(1250,700)
         layout=QVBoxLayout(dialog)
-        explanation=QLabel("Measured identities come from the active pyAML inventory. AT FamName, AT Device and zero-based ordinal come from the checksummed reference lattice; Match method is the recorded identity_match provenance.")
+        explanation=QLabel("Measured identities come from the active pyAML inventory. AT FamName, AT Device and AT index (0-based) come from the checksummed reference lattice; Match method is the recorded identity_match provenance.")
         explanation.setWordWrap(True); layout.addWidget(explanation)
-        table=CopyableMappingTable(0,9); table.setHorizontalHeaderLabels(("Measured device (pyAML)","Role","AT FamName","AT Device","AT ordinal (0-based)","Match method","Component / steering capability","Mapping status","Evidence / problem"))
+        table=CopyableMappingTable(0,9); table.setHorizontalHeaderLabels(("Measured device (pyAML)","Role","AT FamName","AT Device","AT index (0-based)","Match method","Component / steering capability","Mapping status","Evidence / problem"))
         configure_mapping_table(table,(
-            "Exact device name from the selected pyAML measurement inventory.","Measurement role and plane.","FamName attribute on the selected AT lattice element.","Device attribute on the selected AT lattice element; distinct from a pyAML control name.","Zero-based element ordinal in the active AT lattice.","Recorded identity_match method; never inferred by this dialog.","Required component and whether role compatibility passed.","Validated mapping state.","Detailed identity and steering evidence or actionable problem."
+            "Exact device name from the selected pyAML measurement inventory.","Measurement role and plane.","FamName attribute on the selected AT lattice element.","Device attribute on the selected AT lattice element; distinct from a pyAML control name.","AT element index (0-based) in the active lattice.","Recorded identity_match method; never inferred by this dialog.","Required component and whether role compatibility passed.","Validated mapping state.","Detailed identity and steering evidence or actionable problem."
         ))
         rows=document.get("mappings",()); table.setRowCount(len(rows))
         for row,item in enumerate(rows):
             status=item.get("status","")
+            missing_evidence=[field for field in ("measured_name","role","lattice_name","lattice_ordinal","identity_match") if item.get(field) in (None,"")]
+            reason=item.get("reason","") or "Not available"
+            if status=="mapped" and missing_evidence:
+                status="invalid"
+                reason="Mapped status has incomplete evidence fields: "+", ".join(missing_evidence)
             capability=(item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated")
-            values=(item.get("measured_name","") or "Not available",item.get("role","") or "Not available",item.get("lattice_name","") or "Not available",item.get("lattice_device","") or "Not available",item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",identity_match_label(item.get("identity_match")),capability,status.capitalize() or "Not available",item.get("reason","") or "Not available")
+            values=(item.get("measured_name","") or "Not available",item.get("role","") or "Not available",item.get("lattice_name","") or "Not available",item.get("lattice_device","") or "Not available",item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",identity_match_label(item.get("identity_match")),capability,status.capitalize() or "Not available",reason)
             for column,value in enumerate(values):
                 cell=QTableWidgetItem(str(value)); cell.setToolTip(str(value)); table.setItem(row,column,cell)
-        layout.addWidget(table); self.alignment_details_dialog=dialog; self.alignment_details_table=table
+        layout.addWidget(table,1); self.alignment_details_dialog=dialog; self.alignment_details_table=table
         buttons=QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons); dialog.exec()
 
     def _reference_comparison_changed(self,*_):
@@ -986,7 +1048,7 @@ class MeasureMainWindow(QMainWindow):
         demo=QHBoxLayout(); one=QPushButton("Demo: 1 H + 1 V"); one.clicked.connect(self._select_demo_one_each); small=QPushButton("Demo: small uniform ORM"); small.clicked.connect(self._select_demo_small_orm); demo.addWidget(one); demo.addWidget(small); demo.addStretch(); cg.addLayout(demo)
         for key,title,devices in (("hcor","Horizontal correctors",self.horizontal_correctors),("vcor","Vertical correctors",self.vertical_correctors)):
             box=QGroupBox(title); form=QFormLayout(box); self._configure_form(form); method=QComboBox(); method.addItem("All available","all"); method.addItem("Load names file","names_file"); method.addItem("Manual names / positions","manual")
-            manual=QLineEdit(); manual.setPlaceholderText("Names or selected-list positions, comma separated"); file_edit=QLineEdit(); browse=QPushButton("Browse…"); file_row=QWidget(); fr=QHBoxLayout(file_row); fr.setContentsMargins(0,0,0,0); fr.addWidget(file_edit,1); fr.addWidget(browse)
+            manual=QLineEdit(); manual.setPlaceholderText("Exact names, positions, or comma-separated wildcards such as SF*, SJ*"); file_edit=QLineEdit(); browse=QPushButton("Browse…"); file_row=QWidget(); fr=QHBoxLayout(file_row); fr.setContentsMargins(0,0,0,0); fr.addWidget(file_edit,1); fr.addWidget(browse)
             exclusion=QLineEdit(); exclusion.setPlaceholderText("Selected-list positions to exclude, e.g. 1, 4")
             search=QLineEdit(); search.setPlaceholderText("Filter corrector names / identifiers…"); visibility=QComboBox(); visibility.addItem("All devices","all"); visibility.addItem("Selected only","selected"); visibility.addItem("Unselected only","unselected"); preview=QPushButton("Refresh"); table=QTableWidget(0,8); table.setMinimumHeight(150); table.setHorizontalHeaderLabels(["Selection position","Device name","Adapter/device identifier","Plane","Kick setpoint","Kick readback","Current setpoint","Current readback"]); table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch)
             diagnostic_header_tooltips=(
@@ -1010,6 +1072,10 @@ class MeasureMainWindow(QMainWindow):
             method.currentIndexChanged.connect(lambda _=0,k=key:self._corrector_method_changed(k)); preview.clicked.connect(lambda _=False,k=key:self._refresh_corrector_preview(k)); search.textChanged.connect(lambda _="",k=key:self._filter_corrector_table(k)); visibility.currentIndexChanged.connect(lambda _=0,k=key:self._filter_corrector_table(k)); table.itemSelectionChanged.connect(lambda k=key:self._filter_corrector_table(k)); browse.clicked.connect(lambda _=False,e=file_edit:self._browse_into(e)); exclusion.textChanged.connect(self.refresh_plan)
             cg.addWidget(box); self._corrector_method_changed(key); self._refresh_corrector_preview(key)
         layout.addWidget(self.orm_corrector_group)
+        self.device_selection_reviewed=QCheckBox("I reviewed the ordered BPM, H-corrector and V-corrector selections")
+        self.device_selection_reviewed.setToolTip("This confirms the selection workflow only; reference-model mapping remains a separate validation.")
+        self.device_selection_reviewed.toggled.connect(lambda *_:self._update_workflow_tabs())
+        layout.addWidget(self.device_selection_reviewed)
         self._selection_method_changed(); return self._scroll_page(content)
 
     @staticmethod
@@ -1725,7 +1791,7 @@ class MeasureMainWindow(QMainWindow):
                 reason=candidates[0].get("reason","No validated A1L counterpart") if candidates else "No A1L device maps to the same AT element"
                 preview.append({"horizontal":device.name,"vertical":"","status":"Missing","reason":reason}); continue
             target=valid[0]; matched.add(target["measured_name"])
-            preview.append({"horizontal":device.name,"vertical":target["measured_name"],"status":"Matched","reason":f"Exact Device identity; AT ordinal {source['lattice_ordinal']} (B1L → A1L)"})
+            preview.append({"horizontal":device.name,"vertical":target["measured_name"],"status":"Matched","reason":f"Exact Device identity; AT index {source['lattice_ordinal']} (0-based; B1L → A1L)"})
         ordered=tuple(device for device in self.vertical_correctors if device.name in matched)
         return {"rows":preview,"devices":ordered}
 
@@ -1873,14 +1939,26 @@ class MeasureMainWindow(QMainWindow):
         if method=="all": selected=list(devices)
         else:
             tokens=[line.strip() for line in self._resolved_resource_path(data["file"].text()).read_text().splitlines() if line.strip()] if method=="names_file" else [t.strip() for t in re.split(r"[,;\n]+",data["manual"].text()) if t.strip()]
-            selected=[]; invalid=[]
+            selected=[]; invalid=[]; selected_names=set(); used_pattern=False
             for token in tokens:
-                if token in lookup:selected.append(lookup[token]); continue
+                if token in lookup:
+                    if token not in selected_names:selected.append(lookup[token]); selected_names.add(token)
+                    continue
+                if any(character in token for character in "*?["):
+                    used_pattern=True
+                    matches=[device for device in devices if fnmatchcase(device.name,token)]
+                    if not matches:invalid.append(f"unmatched pattern {token!r}"); continue
+                    for device in matches:
+                        if device.name not in selected_names:selected.append(device); selected_names.add(device.name)
+                    continue
                 try:index=int(token)
                 except ValueError:invalid.append(token); continue
-                if 0<=index<len(devices):selected.append(devices[index])
+                if 0<=index<len(devices):
+                    device=devices[index]
+                    if device.name not in selected_names:selected.append(device); selected_names.add(device.name)
                 else:invalid.append(token)
             if invalid: raise ValueError("Unknown corrector names/positions: "+", ".join(invalid))
+            if used_pattern:selected=[device for device in devices if device.name in selected_names]
         excluded=self._positions(data["exclusion"].text()); invalid=sorted(pos for pos in excluded if pos<0 or pos>=len(selected))
         if invalid: raise ValueError("Excluded positions outside selection: "+", ".join(map(str,invalid)))
         return tuple(device for pos,device in enumerate(selected) if pos not in excluded)
@@ -1913,6 +1991,7 @@ class MeasureMainWindow(QMainWindow):
         previous=self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors
         if tuple(device.name for device in previous)!=tuple(device.name for device in selected):
             self._invalidate_device_alignment("Corrector inventory changed — verify device alignment again.")
+            if hasattr(self,"device_selection_reviewed"):self.device_selection_reviewed.setChecked(False)
         if key=="hcor":self.selected_hcorrectors=selected
         else:self.selected_vcorrectors=selected
         table=data["table"]; table.setRowCount(len(devices)); table.setToolTip(f"{len(selected)} selected; highlighting rows does not change the checked selection")
@@ -2245,9 +2324,9 @@ class MeasureMainWindow(QMainWindow):
     def _refresh_review_page(self):
         if not hasattr(self,"review_status"):return
         session_exists=self.saved_session_path is not None
-        self.session_save_action.setEnabled(self._session_dirty or not session_exists)
+        self.session_save_action.setEnabled(True)
         self.session_save_as_action.setEnabled(True); self.session_export_action.setEnabled(session_exists)
-        self.session_toolbar_buttons["Save"].setEnabled(self._session_dirty or not session_exists)
+        self.session_toolbar_buttons["Save"].setEnabled(True)
         if not session_exists:
             self.review_validate_button.setEnabled(False); self.review_open_button.setEnabled(False)
             self.review_status.setText("No measurements acquired yet")
@@ -2298,6 +2377,47 @@ class MeasureMainWindow(QMainWindow):
             entry=entries.get(role); label.setText(f"Available — {Path(entry.path).name}" if entry else "Missing")
             actions=self.role_manage_actions[role]; actions["load"].setEnabled(entry is None); actions["replace"].setEnabled(entry is not None); actions["remove"].setEnabled(entry is not None)
 
+    @staticmethod
+    def _h5_strings(dataset):
+        return tuple(value.decode() if isinstance(value,bytes) else str(value) for value in dataset[:])
+
+    def _restore_saved_result(self,kind,path):
+        """Rebuild plot inputs read-only from recorded HDF5 arrays."""
+        import h5py
+        validate_measurement_file(path)
+        with h5py.File(path,"r") as handle:
+            metadata=json.loads(handle["metadata/json"][()]) if "metadata/json" in handle else {}
+            names=self._h5_strings(handle["names/bpms"])
+            bpms=tuple(BpmDevice(name,"saved HDF5 X","saved HDF5 Y") for name in names)
+            if kind=="bpm_noise":
+                return BpmNoiseResult(bpms,np.asarray(handle["raw/orbits_x_m"]),np.asarray(handle["raw/orbits_y_m"]),float(metadata.get("elapsed_seconds",0.0)),int(handle.attrs.get("noise_standard_deviation_ddof",0)))
+            if kind=="dispersion":
+                labels=self._h5_strings(handle["raw/state_labels"]); requested=np.asarray(handle["raw/rf_setpoint_hz"]); actual=np.asarray(handle["raw/rf_readback_hz"]); raw_x=np.asarray(handle["raw/orbits_x_m"]); raw_y=np.asarray(handle["raw/orbits_y_m"])
+                direction=str(metadata.get("dispersion_direction",handle.attrs.get("direction","bipolar")))
+                required={"reference","negative","positive"} if direction=="bipolar" else {"reference",direction}
+                if not required.issubset(labels):raise ValueError("historical RF-state labels required to reconstruct the dispersion plots were not recorded")
+                confirmed=np.asarray(handle["raw/operator_confirmed"]) if "raw/operator_confirmed" in handle else np.ones(len(labels),dtype=bool)
+                verified=np.asarray(handle["raw/rf_readback_verified"]) if "raw/rf_readback_verified" in handle else np.zeros(len(labels),dtype=bool)
+                sources=self._h5_strings(handle["raw/rf_actual_sources"]) if "raw/rf_actual_sources" in handle else tuple("not recorded" for _ in labels)
+                timestamps=np.asarray(handle["raw/sample_timestamps_s"]) if "raw/sample_timestamps_s" in handle else None; states=[]
+                for index,label in enumerate(labels):
+                    x=raw_x[index]; y=raw_y[index]
+                    if x.ndim==1:x=x[np.newaxis,:]; y=y[np.newaxis,:]
+                    states.append(DispersionStateResult(label,float(requested[index]),float(actual[index]),bool(confirmed[index]),x,y,timestamps[index] if timestamps is not None else np.asarray([],dtype=float),names,sources[index],bool(verified[index])))
+                nominal=next(state.actual_rf_hz for state in states if state.label=="reference"); offset=abs(float(handle.attrs.get("rf_step_hz",metadata.get("rf_step_hz",0.0))))/(2 if direction=="bipolar" else 1)
+                return DispersionResult(bpms,tuple(states),direction,nominal,offset,str(handle.attrs.get("restoration_status","not_recorded")),float(metadata.get("elapsed_seconds",0.0)))
+            if kind=="orm":
+                h_names=self._h5_strings(handle["names/horizontal_correctors"]); v_names=self._h5_strings(handle["names/vertical_correctors"]); h=tuple(CorrectorDevice(name,"saved HDF5 setpoint","saved HDF5 readback","H") for name in h_names); v=tuple(CorrectorDevice(name,"saved HDF5 setpoint","saved HDF5 readback","V") for name in v_names); count=len(h)+len(v)
+                required=("setpoints/original","setpoints/requested_state_a","setpoints/requested_state_b","setpoints/actual_state_a","setpoints/actual_state_b","setpoints/intermediate_restored","setpoints/final","setpoints/restoration_status","setpoints/intermediate_restoration_status","raw/reference_before_m","raw/reference_intermediate_m","raw/reference_final_m")
+                missing=[name for name in required if name not in handle]
+                if missing:raise ValueError("historical ORM diagnostics required to reconstruct all plots were not recorded: "+", ".join(missing))
+                raw_a=np.asarray(handle["raw/orbit_plus_m"]); raw_b=np.asarray(handle["raw/orbit_minus_m"])
+                def array(name):return np.asarray(handle[name])
+                def strings(name):return self._h5_strings(handle[name])
+                requested=np.concatenate((np.asarray(handle["kicks/horizontal/requested"]),np.asarray(handle["kicks/vertical/requested"]))); actual=np.concatenate((np.asarray(handle["kicks/horizontal/actual"]),np.asarray(handle["kicks/vertical/actual"])))
+                return ORMResult(bpms,h,v,np.asarray(handle["response_matrix"]),str(handle.attrs.get("direction","bipolar")),bool(handle.attrs.get("scaled",False)),requested,actual,array("setpoints/original"),array("setpoints/requested_state_a"),array("setpoints/requested_state_b"),array("setpoints/actual_state_a"),array("setpoints/actual_state_b"),array("setpoints/intermediate_restored"),strings("setpoints/intermediate_restoration_status"),array("setpoints/final"),raw_a,raw_b,array("raw/reference_before_m"),array("raw/reference_intermediate_m"),array("raw/reference_final_m"),np.asarray(handle["raw/timestamps_plus_s"]) if "raw/timestamps_plus_s" in handle else np.empty((0,0)),np.asarray(handle["raw/timestamps_minus_s"]) if "raw/timestamps_minus_s" in handle else np.empty((0,0)),strings("setpoints/restoration_status"),float(metadata.get("elapsed_seconds",0.0)))
+        raise ValueError("unsupported saved measurement kind")
+
     def _measurement_type_changed(self, *_):
         if not hasattr(self,"measurement_type"): return
         kind=self.measurement_type.currentData()
@@ -2335,6 +2455,9 @@ class MeasureMainWindow(QMainWindow):
         self._reset_measurement_display(clear_session=False)
         self.result=self._measurement_results.get(kind)
         self.saved_measurement_path=self._measurement_result_paths.get(kind)
+        if self.result is None and self.saved_measurement_path is not None:
+            try:self.result=self._restore_saved_result(kind,self.saved_measurement_path); self._measurement_results[kind]=self.result
+            except Exception as exc:self.statusBar().showMessage(f"{kind.replace('_',' ').title()} plot not available in saved data: {exc}")
         if self.result is not None:
             self._show_result(self.result); self._set_completed_result_view(True)
         if hasattr(self,"repeat_button"):self.repeat_button.setVisible(False)
@@ -2748,6 +2871,7 @@ class MeasureMainWindow(QMainWindow):
         except Exception as exc:selected=(); self._bpm_selection_error=str(exc)
         if tuple(device.name for device in self.selected_devices)!=tuple(device.name for device in selected):
             self._invalidate_device_alignment("BPM inventory changed — verify device alignment again.")
+            if hasattr(self,"device_selection_reviewed"):self.device_selection_reviewed.setChecked(False)
         self.selected_devices=tuple(selected); self.preview_table.setRowCount(len(self.devices)); selected_positions={device.name:position for position,device in enumerate(selected)}
         for row,device in enumerate(self.devices):
             for column,value in enumerate((selected_positions.get(device.name,"—"),device.name,device.identifier)):
@@ -4105,13 +4229,19 @@ class MeasureMainWindow(QMainWindow):
     def _update_workflow_tabs(self):
         if not hasattr(self,"tabs") or self.tabs.count()<6:return
         machine_done=self.connection_verified
-        bpms_done=bool(self.selected_devices)
-        review_done=self.saved_session_path is not None
+        bpms_done=bool(self.selected_devices) and bool(self.device_selection_reviewed.isChecked())
+        review_done=self.saved_session_path is not None and not self._session_dirty
         roles=set()
         if self.saved_session_path is not None:
             try:roles={entry.role for entry in load_session(self.saved_session_path,validate_files=False).files}
             except Exception:pass
-        completed={kind:(kind in roles or self._measurement_results.get(kind) is not None) for kind in ("bpm_noise","dispersion","orm")}
+        completed={kind:False for kind in ("bpm_noise","dispersion","orm")}
+        for kind in completed:
+            if self._measurement_results.get(kind) is not None:completed[kind]=True; continue
+            path=self._measurement_result_paths.get(kind)
+            if kind in roles and path is not None:
+                try:completed[kind]=validate_measurement_file(path)["kind"]==kind
+                except Exception:completed[kind]=False
         labels=((machine_done,"Machine"),(bpms_done,"Devices"),(completed["bpm_noise"],"BPM Noise"),
                 (completed["dispersion"],"RF Dispersion"),(completed["orm"],"ORM"),(review_done,"Review && Save"))
         for index,(done,label) in enumerate(labels): self.tabs.setTabText(index,("✓ " if done else "")+label)
@@ -4167,7 +4297,8 @@ class MeasureMainWindow(QMainWindow):
         missing=", ".join(session.missing_roles) or "none"; self.statusBar().showMessage(f"Opening session in pyLOCO Fit ({detail}); missing roles: {missing}")
 
     def _collect_project(self):
-        self.project.metadata["pyaml_options"] = {**{key: editor.text().strip() for key, editor in self.pyaml_fields.items()}, "orbit_correction_enabled": self.pyaml_orbit_correction.isChecked()}
+        self.project.metadata["pyaml_options"] = {**{key: editor.text().strip() for key, editor in self.pyaml_fields.items()}, "orbit_correction_enabled": self.pyaml_orbit_correction.isChecked(), "requested_magnet_writes": self.pyaml_magnet_writes.isChecked(), "requested_rf_writes": self.pyaml_rf_writes.isChecked()}
+        self.project.metadata["device_selection_reviewed"]=bool(self.device_selection_reviewed.isChecked())
         self._store_active_selection(); self._store_measurement_view_state(self._active_selection_kind)
         reverse={value:key for key,value in getattr(self,"measurement_tab_indices",{}).items()}
         active_index=self.tabs.currentIndex()
@@ -4178,11 +4309,13 @@ class MeasureMainWindow(QMainWindow):
         return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),bpm_noise_ddof=int(self.bpm_noise_convention.currentData()),delay_seconds=self.delay.value(),settling_delay_seconds=active_settling,verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),rf_restoration_tolerance_hz=self.rf_restoration_tolerance.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=False,reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",reference_model_mat_variable=self.reference_model.mat_variable if self.reference_model is not None and self.reference_model.mat_variable else "",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta,"orm_normalized_analysis":self.orm_normalized_analysis.isChecked(),"measurement_view_states":deepcopy(self._measurement_view_states),"active_workspace":workspace})
 
     def _load_project_widgets(self):
-        # Opening either a project or a full session never restores write
-        # authorization. The operator must explicitly authorize a new connection.
-        self.pyaml_magnet_writes.setChecked(False)
-        self.pyaml_rf_writes.setChecked(False)
-        self.pyaml_orbit_correction.setChecked(bool(self.project.metadata.get("pyaml_options", {}).get("orbit_correction_enabled", False)))
+        # Restore requested capabilities, never connection/write authorization.
+        # Test Connection still presents the target and requires confirmation.
+        saved_pyaml=self.project.metadata.get("pyaml_options", {})
+        for widget,value in ((self.pyaml_magnet_writes,bool(saved_pyaml.get("requested_magnet_writes",False))),(self.pyaml_rf_writes,bool(saved_pyaml.get("requested_rf_writes",False)))):
+            widget.blockSignals(True); widget.setChecked(value); widget.blockSignals(False)
+        self.pyaml_orbit_correction.setChecked(bool(saved_pyaml.get("orbit_correction_enabled", False)))
+        self.device_selection_reviewed.blockSignals(True); self.device_selection_reviewed.setChecked(bool(self.project.metadata.get("device_selection_reviewed",False))); self.device_selection_reviewed.blockSignals(False)
         self.pyaml_simulator_identity_status.setText("Project opened — Test connection to confirm pyAML capabilities and restoration evidence.")
         for key, editor in self.pyaml_fields.items():
             editor.setText(self.project.metadata.get("pyaml_options", {}).get(key, {"mode": "live", "bpm_group": "BPM", "hcor_group": "HCorr", "vcor_group": "VCorr", "rf_name": "RF"}.get(key, "")))
@@ -4232,14 +4365,24 @@ class MeasureMainWindow(QMainWindow):
         self.setWindowTitle(f"pyLOCO Measure — {name}{' *' if self._session_dirty else ''}")
 
     def save_active_session(self):
+        suggested=(self.saved_session_path if self.saved_session_path is not None else Path(self.output_directory.text()).expanduser()/"measurement-session.pyloco-session.json")
+        target_text=QFileDialog.getSaveFileName(self,"Save Full Measurement Session — choose destination",str(suggested),"Measurement session (*.pyloco-session.json)")[0]
+        if not target_text:return False
+        target=Path(target_text).expanduser().resolve(); current=self.saved_session_path
+        if current is not None and target==current:
+            if QMessageBox.question(self,"Save to current session?",f"Update the session metadata at the current location?\n{target}\n\nExisting HDF5 measurements will not be rewritten.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return False
+        elif target.exists():
+            QMessageBox.warning(self,"Session already exists","Save will not silently overwrite another session. Choose a new path, or explicitly choose the current session location."); return False
+        elif current is not None:
+            source=load_session(current,validate_files=True); resolved=source.resolve(current); entries=[]
+            try:
+                for entry in source.files:entries.append(SessionFile(entry.role,resolved[entry.role].relative_to(target.parent).as_posix(),dict(entry.metadata)))
+            except ValueError:
+                QMessageBox.information(self,"Use Export Portable Session","The selected destination cannot reference the existing HDF5 files relatively. Use File → Export Portable Session… when dependencies must be copied."); return False
+            save_session(target,MeasurementSession(source.session_id,tuple(entries),deepcopy(source.metadata)))
+            self.saved_session_path=target
         created_manifest=False
         if self.saved_session_path is None:
-            suggested=Path(self.output_directory.text()).expanduser()
-            if not suggested.is_dir():suggested=Path.cwd()
-            target_text=QFileDialog.getSaveFileName(self,"Save Full Measurement Session",str(suggested/"measurement-session.pyloco-session.json"),"Measurement session (*.pyloco-session.json)")[0]
-            if not target_text:return False
-            target=Path(target_text).expanduser().resolve()
-            if target.exists():QMessageBox.warning(self,"Session already exists","Open the existing session or choose a new manifest path. Save never overwrites an unrelated session."); return False
             try:
                 session_id=f"measure-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid4().hex[:8]}"
                 save_session(target,MeasurementSession(session_id,(),{"created":datetime.now().astimezone().isoformat()}))
@@ -4262,20 +4405,6 @@ class MeasureMainWindow(QMainWindow):
         return True
 
     def save_session_as(self):
-        if self.saved_session_path is None:return self.save_active_session()
-        target_text=QFileDialog.getSaveFileName(self,"Save Measurement Session As",str(self.saved_session_path.with_name("measurement-session-copy.pyloco-session.json")),"Measurement session (*.pyloco-session.json)")[0]
-        if not target_text:return False
-        target=Path(target_text).expanduser().resolve()
-        if target.exists():QMessageBox.warning(self,"Cannot save session as","The target already exists; choose a new manifest name."); return False
-        source=load_session(self.saved_session_path,validate_files=True); resolved=source.resolve(self.saved_session_path); entries=[]
-        try:
-            for entry in source.files:
-                relative=resolved[entry.role].relative_to(target.parent).as_posix()
-                entries.append(SessionFile(entry.role,relative,dict(entry.metadata)))
-        except ValueError:
-            QMessageBox.information(self,"Use Export Portable Session","Save Session As does not copy HDF5 files. Choose a manifest beside the existing measurements, or use File → Export Portable Session… for relocation."); return False
-        save_session(target,MeasurementSession(source.session_id,tuple(entries),deepcopy(source.metadata)))
-        self.saved_session_path=target; self._session_dirty=True
         return self.save_active_session()
 
     @staticmethod
@@ -4395,7 +4524,9 @@ class MeasureMainWindow(QMainWindow):
             QMessageBox.warning(self,"Cannot open full session",f"The modern full session failed integrity validation and was not opened:\n{exc}"); return
         self._clear_session_role_caches()
         self.project=bundle.project; self.project_path=bundle.project_path; self._pending_full_bundle=bundle; self._load_project_widgets()
-        self.pyaml_magnet_writes.setChecked(False); self.pyaml_rf_writes.setChecked(False); self.connection_verified=False
+        # Requested write preferences were restored above, but authorization is
+        # always absent until the operator confirms a new Test Connection.
+        self.connection_verified=False
         self.saved_session_path=bundle.manifest_path; self.saved_measurement_path=next(iter(bundle.measurement_paths.values()),None); self._fresh_measurement_session=False
         self._measurement_result_paths.update(bundle.measurement_paths)
         self._session_dirty=False; self._update_session_title()

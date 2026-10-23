@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QHeaderView
 
 from pyLOCO.correct.main_window import CorrectMainWindow
 from pyLOCO.correct.model import CorrectItem, CorrectionReview
@@ -32,10 +32,12 @@ def test_measure_alignment_separates_at_famname_device_and_recorded_match(monkey
     window.measurement_device_alignment={"mappings":[_mapping_row()]}
     monkeypatch.setattr(QDialog,"exec",lambda _dialog:0)
     window._show_alignment_details(); table=window.alignment_details_table
-    assert _headers(table)==["Measured device (pyAML)","Role","AT FamName","AT Device","AT ordinal (0-based)","Match method","Component / steering capability","Mapping status","Evidence / problem"]
+    assert _headers(table)==["Measured device (pyAML)","Role","AT FamName","AT Device","AT index (0-based)","Match method","Component / steering capability","Mapping status","Evidence / problem"]
     assert table.item(0,2).text()=="SD1" and table.item(0,3).text()=="srmag/m-sd1/c04-a"
     assert table.item(0,5).text()=="Legacy suffix → exact AT Device"
     assert table.horizontalHeaderItem(3).toolTip().startswith("Device attribute")
+    assert window.alignment_details_dialog.isSizeGripEnabled()
+    assert table.horizontalHeader().sectionResizeMode(0)==QHeaderView.Interactive
     window.close(); app.processEvents()
 
 
@@ -56,7 +58,7 @@ def test_correct_distinguishes_fit_at_identity_from_pyaml_target_and_copies_rows
     app=QApplication.instance() or QApplication([]); window=CorrectMainWindow()
     item=CorrectItem(0,"normal_quadrupole","QD3J",27,"m⁻²",1.0,1.1,.1,-.1,"test",control_name="srmag/m-qd3/c04-a-B2L",metadata={"lattice_device":"EBS/QD3J/04","element_class":"Quadrupole","mapping_status":"mapped","match_source":"identity","control_component":"B2L","control_unit":"m^-1"})
     window.review=CorrectionReview([item],"test"); window.refresh_all(); table=window.mapping_details_table
-    assert _headers(table)[:7]==["Fitted magnet (AT FamName)","AT Device","AT ordinal (0-based)","Magnet class / type","pyAML target / control","Strength component","Units"]
+    assert _headers(table)[:7]==["Fitted magnet (AT FamName)","AT Device","AT index (0-based)","Magnet class / type","pyAML target / control","Strength component","Units"]
     assert table.item(0,0).text()=="QD3J" and table.item(0,1).text()=="EBS/QD3J/04"
     assert table.item(0,4).text()=="srmag/m-qd3/c04-a-B2L" and table.item(0,5).text()=="B2L"
     table.selectRow(0); QTest.keyClick(table,Qt.Key_C,Qt.ControlModifier)

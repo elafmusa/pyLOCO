@@ -120,6 +120,20 @@ def _role_compatibility(element: Any, role: str) -> tuple[bool, str]:
     return bool(compatible), str(representation)
 
 
+def _candidate_description(ring, hits: list[int], role: str) -> str:
+    details = []
+    for index in hits:
+        element = ring[index]
+        family, element_class = _element_identity(element)
+        device = str(getattr(element, "Device", "") or "Not available")
+        compatible, representation = _role_compatibility(element, role)
+        details.append(
+            f"AT index {index}: FamName={family!r}, Device={device!r}, "
+            f"type={element_class}, capability={'supported' if compatible else 'not supported'} ({representation})"
+        )
+    return "; ".join(details)
+
+
 def find_exact_device_mappings(ring, inventory: dict[str, list[str]], *,
                                lattice_path: str | Path,
                                configuration_path: str | Path | None = None,
@@ -138,7 +152,8 @@ def find_exact_device_mappings(ring, inventory: dict[str, list[str]], *,
             ordinal = hits[0] if len(hits) == 1 else None
             reason = _match_label(match_method) if status == "mapped" else (
                 f"Ambiguous identity for measured {role_label} {measured_name!r}: {_match_label(match_method)} "
-                f"matches AT ordinals {hits}. Enter the intended zero-based ordinal manually; it will be "
+                f"matches several candidates. {_candidate_description(ring, hits, role)}. Enter the intended "
+                "AT index (0-based) and document authoritative identity evidence; the choice will be "
                 "revalidated for exact identity and steering capability."
                 if status == "ambiguous" else
                 f"No exact identity match for measured {role_label} {measured_name!r}: no AT Device or "
@@ -151,7 +166,7 @@ def find_exact_device_mappings(ring, inventory: dict[str, list[str]], *,
                 if not compatible:
                     status, reason = "invalid", (
                         f"Identity passed via {_match_label(match_method)} for measured {role_label} "
-                        f"{measured_name!r} at AT ordinal {ordinal} (FamName={lattice_name!r}, "
+                        f"{measured_name!r} at AT index {ordinal} (0-based; FamName={lattice_name!r}, "
                         f"Device={lattice_device!r}), but steering compatibility failed for "
                         f"{component or 'BPM'}: {representation}. Select an element that supports the "
                         "required steering plane."
@@ -161,7 +176,7 @@ def find_exact_device_mappings(ring, inventory: dict[str, list[str]], *,
                 key = (role, ordinal)
                 if status == "mapped" and key in used:
                     status, reason = "duplicate", (
-                        f"AT ordinal {ordinal} (FamName={lattice_name!r}, Device={lattice_device!r}) is "
+                        f"AT index {ordinal} (0-based; FamName={lattice_name!r}, Device={lattice_device!r}) is "
                         f"assigned more than once to measured {role_label} devices. Choose unique elements."
                     )
                 if status == "mapped":
@@ -192,12 +207,12 @@ def find_exact_device_mappings(ring, inventory: dict[str, list[str]], *,
 
 def mapping_template(inventory: dict[str, list[str]]) -> dict[str, Any]:
     return {
-        "description": "Fill in only lattice_ordinal for unresolved devices. pyLOCO validates every identity when loaded.",
+        "description": "Fill in lattice_ordinal (AT index, 0-based). For duplicate identities also record identity_evidence. pyLOCO revalidates every entry when loaded.",
         "schema": SCHEMA, "schema_version": VERSION,
-        "user_field": "lattice_ordinal",
+        "user_fields": ["lattice_ordinal", "identity_evidence"],
         "derived_on_load": ["lattice_name", "lattice_device", "element_class", "component", "unit", "status"],
         "mappings": [
-            {"measured_name": name, "role": role, "lattice_ordinal": None}
+            {"measured_name": name, "role": role, "lattice_ordinal": None, "identity_evidence": ""}
             for role in ROLES for name in inventory.get(role, ())
         ],
     }
@@ -260,28 +275,39 @@ def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[s
                 lattice_device = str(getattr(ring[ordinal], "Device", ""))
                 match_method, _identity = _identity_match_for_element(name, role, ring[ordinal])
                 compatible, representation = _role_compatibility(ring[ordinal], role)
+                evidence = str(source.get("identity_evidence", "")).strip() if source else ""
+                lookup = _device_lookup(ring)
+                identity_hits, _ = _identity_hits(lookup, name, role)
+                ambiguous_identity = len(identity_hits) > 1 and ordinal in identity_hits
                 if not match_method:
                     status, reason = "invalid", (
-                        f"No exact identity match: measured {role_label} {name!r}; selected AT ordinal {ordinal}; "
+                        f"No exact identity match: measured {role_label} {name!r}; selected AT index {ordinal} (0-based); "
                         f"FamName={lattice_name!r}; Device={lattice_device!r}. Exact Device, exact FamName, "
                         "and optional legacy -B1L/-A1L component interpretation all failed. Select the AT "
                         "element with the matching Device or FamName."
                     )
+                elif ambiguous_identity and not evidence:
+                    status, reason = "ambiguous", (
+                        f"The measured {role_label} identity {name!r} matches multiple AT elements. "
+                        f"{_candidate_description(ring, identity_hits, role)}. Record authoritative "
+                        "identity_evidence for the explicitly selected AT index; a manual index alone is not proof."
+                    )
                 elif not compatible:
                     status, reason = "invalid", (
                         f"Identity passed via {_match_label(match_method)} for measured {role_label} {name!r} at AT "
-                        f"ordinal {ordinal} (FamName={lattice_name!r}, Device={lattice_device!r}), but steering "
+                        f"index {ordinal} (0-based; FamName={lattice_name!r}, Device={lattice_device!r}), but steering "
                         f"compatibility failed for {component or 'BPM'}: {representation}. Select an element "
                         "that supports the required steering plane."
                     )
                 elif (role, ordinal) in targets:
-                    status, reason = "duplicate", f"AT ordinal {ordinal} is assigned more than once in role {role}"
+                    status, reason = "duplicate", f"AT index {ordinal} (0-based) is assigned more than once in role {role}"
                 else:
                     status, reason = "mapped", f"Identity: {_match_label(match_method)}; steering compatibility: {representation}"
+                    if evidence: reason += f"; operator identity evidence: {evidence}"
                     targets.add((role, ordinal))
             elif ordinal is not None:
                 status, reason = "invalid", (
-                    f"Invalid manual ordinal for measured {role_label} {name!r}: {ordinal!r} is not a valid "
+                    f"Invalid manual AT index for measured {role_label} {name!r}: {ordinal!r} is not a valid "
                     f"zero-based AT element index for this {len(ring)}-element lattice."
                 )
             rows.append({"measured_name": name, "role": role, "lattice_name": lattice_name,
@@ -290,6 +316,7 @@ def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[s
                          "component": component, "unit": "rad" if component else "m",
                          "identity_match": match_method if type(ordinal) is int and 0 <= ordinal < len(ring) else "",
                          "status": status, "reason": reason,
+                         "identity_evidence": str(source.get("identity_evidence", "")) if source else "",
                          "provenance": str(source.get("provenance", "manual")) if source else ""})
     # Extra source rows must not be silently ignored.
     wanted = {(role, name) for role in ROLES for name in inventory.get(role, ())}

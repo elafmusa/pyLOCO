@@ -172,6 +172,31 @@ def test_gui_opens_full_session_disconnected_with_writes_disabled(tmp_path,monke
         window.close(); app.processEvents()
 
 
+def test_full_session_restores_requested_write_preferences_without_authorization(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([])
+    configured,_=project(tmp_path); configured.metadata["pyaml_options"].update(requested_magnet_writes=True,requested_rf_writes=True)
+    bundle=save_full_session_bundle(tmp_path/"requested.pyloco-measure-session",project=configured,session_manifest=source_session(tmp_path,("bpm_noise",)),reference_lattice=None)
+    window=MeasureMainWindow(); monkeypatch.setattr(QMessageBox,"information",lambda *args:QMessageBox.Ok)
+    try:
+        window.open_full_measurement_session(bundle.manifest_path); app.processEvents()
+        assert window.pyaml_magnet_writes.isChecked() and window.pyaml_rf_writes.isChecked()
+        assert not window.connection_verified
+        assert "requires reconnection" in window.statusBar().currentMessage()
+    finally:window.close(); app.processEvents()
+
+
+def test_saved_bpm_noise_result_is_reconstructed_read_only_for_plots(tmp_path):
+    app=QApplication.instance() or QApplication([]); files=measurement_files(tmp_path); window=MeasureMainWindow()
+    try:
+        result=window._restore_saved_result("bpm_noise",files["bpm_noise"])
+        assert tuple(device.name for device in result.devices)==("B1","B2")
+        assert result.orbits_x_m.shape==(2,2) and result.orbits_y_m.shape==(2,2)
+        before=files["bpm_noise"].read_bytes(); window._measurement_result_paths["bpm_noise"]=files["bpm_noise"]; window._measurement_results["bpm_noise"]=None
+        window._measurement_type_changed(); assert window._measurement_results["bpm_noise"] is not None
+        assert files["bpm_noise"].read_bytes()==before
+    finally:window.close(); app.processEvents()
+
+
 def test_ordinary_open_project_redirects_measurement_session_to_full_session_action(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([]); manifest=source_session(tmp_path,("bpm_noise",)); window=MeasureMainWindow(); original=window.project
     messages=[]

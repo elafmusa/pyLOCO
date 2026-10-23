@@ -78,6 +78,19 @@ def test_bpm_add_highlighted_to_existing_selection_uses_inventory_order(app):
     window.close()
 
 
+def test_corrector_manual_selection_accepts_comma_separated_wildcards_in_inventory_order(app):
+    bpms=(BpmDevice("BPM-0","x0","y0"),)
+    horizontal=tuple(CorrectorDevice(name,name+".SP",name+".RBV","H") for name in ("SF-2","QF-1","SJ-3","SF-1"))
+    window=MeasureMainWindow(devices=bpms,horizontal_correctors=horizontal,vertical_correctors=())
+    data=window.corrector_selection_widgets["hcor"]
+    data["method"].setCurrentIndex(data["method"].findData("manual")); data["manual"].setText("SF*, SJ*, SF*")
+    window._refresh_corrector_preview("hcor",read_diagnostics=False)
+    assert [device.name for device in window.selected_hcorrectors]==["SF-2","SJ-3","SF-1"]
+    data["manual"].setText("SF*, MISSING*"); window._refresh_corrector_preview("hcor",read_diagnostics=False)
+    assert "unmatched pattern 'MISSING*'" in data["table"].toolTip()
+    window.close()
+
+
 def test_bpm_select_only_highlighted_replaces_all_selected_and_buttons_follow_highlights(app):
     window=_window()
     assert len(window.selected_devices)==6 and not window.bpm_select_only_highlighted_button.isEnabled() and not window.bpm_add_highlighted_button.isEnabled()
