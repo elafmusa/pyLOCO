@@ -177,6 +177,8 @@ class CorrectionReview:
     def __init__(self, items: Iterable[CorrectItem], source_result: str, *, global_scale: float = .1,
                  thresholds: WarningThresholds | None = None, comments: str = "") -> None:
         self.items=list(items); self.source_result=str(source_result); self.global_scale=float(global_scale)
+        self.machine_mapping=(self.items[0].metadata.get("machine_mapping") or {}) if self.items else {}
+        for item in self.items:item.metadata.pop("machine_mapping",None)
         self.thresholds=thresholds or WarningThresholds(); self.comments=comments
         for item in self.items: item.global_scale=self.global_scale
         self._raw_snapshot=tuple(item.raw_fitted_delta for item in self.items)
@@ -230,7 +232,7 @@ class CorrectionReview:
 
 
 def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
-    loader=ResultsLoader(path,iteration=iteration); result=[]; correction=loader.quadrupole_corrections; provenance={"source_results_directory":str(loader.result_dir),"source_iteration":iteration,"source_state":"Final" if iteration is None else f"Iteration {iteration}","fit_timestamp":loader.summary.get("completed_utc",loader.summary.get("timestamp")),"measurement_session":loader.request.get("measurement_session",{})}
+    loader=ResultsLoader(path,iteration=iteration); result=[]; correction=loader.quadrupole_corrections; provenance={"source_results_directory":str(loader.result_dir),"source_iteration":iteration,"source_state":"Final" if iteration is None else f"Iteration {iteration}","fit_timestamp":loader.summary.get("completed_utc",loader.summary.get("timestamp")),"measurement_session":loader.request.get("measurement_session",{}),"machine_mapping":loader.request.get("machine_mapping",{})}
     lengths_by_ordinal: dict[int, float] = {}
     common_names_by_ordinal: dict[int, str] = {}
     skew_lengths: list[float] = []

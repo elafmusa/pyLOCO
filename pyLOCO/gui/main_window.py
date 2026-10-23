@@ -5318,7 +5318,9 @@ class MainWindow(QMainWindow):
                     candidate.lattice=LatticeSelection(path=str(lattice_path),file_type=lattice_path.suffix.lower().lstrip("."),element_count=lattice_info.get("element_count"),mat_variable=str(lattice_info.get("mat_variable", "")))
                     saved_mapping=full.get("mapping") or {}
                     if saved_mapping and orm:
-                        if is_machine_mapping(saved_mapping):imported_machine_mapping_document=deepcopy(saved_mapping)
+                        if is_machine_mapping(saved_mapping):
+                            imported_machine_mapping_document=deepcopy(saved_mapping)
+                            candidate.machine_mapping=deepcopy(saved_mapping)
                         mapping_document=measurement_projection(saved_mapping) if is_machine_mapping(saved_mapping) else saved_mapping
                         inventory=measurement_inventory({"files":{"orm":orm}}); configuration=None
                         wanted={(role,name) for role,names in inventory.items() for name in names}
@@ -6135,6 +6137,13 @@ class MainWindow(QMainWindow):
             lattice, lattice_path, _payload, inventory, configuration = self._measurement_mapping_context()
             source = load_measurement_mapping_document(filename)
             common=is_machine_mapping(source); document=measurement_projection(source) if common else source
+            if common:
+                wanted={(role,name) for role,names in inventory.items() for name in names}
+                document=deepcopy(document)
+                document["mappings"]=[row for row in document.get("mappings",())
+                    if (row.get("role"),row.get("measured_name")) in wanted]
+                document["inventory"]={"sha256":measurement_inventory_fingerprint(inventory),
+                    "counts":{role:len(names) for role,names in inventory.items()}}
             strict = bool(document.get("reference_lattice") and document.get("inventory")) and not (common and is_machine_mapping_template(source))
             mapping = validate_measurement_mapping(
                 document, lattice, inventory, lattice_path=lattice_path,
@@ -6142,6 +6151,7 @@ class MainWindow(QMainWindow):
             )
             mapping["mapping_provenance"] = f"loaded and revalidated from {Path(filename).name}"
             self._loaded_machine_mapping_document=source if common else None
+            self.project.machine_mapping=deepcopy(source) if common else {}
         except Exception as exc:
             QMessageBox.warning(self, "Measurement mapping is incompatible", str(exc)); return False
         self.project.measurement_device_mapping = mapping
@@ -6175,9 +6185,11 @@ class MainWindow(QMainWindow):
         if not filename: return False
         target = Path(filename).expanduser()
         if target.suffix.lower() != ".json": target = target.with_suffix(".json")
-        shared=merge_measurement(getattr(self,"_loaded_machine_mapping_document",None),mapping)
+        base=self.project.machine_mapping or getattr(self,"_loaded_machine_mapping_document",None)
+        shared=merge_measurement(base,mapping)
         target.resolve().write_text(json.dumps(shared, indent=2), encoding="utf-8")
         self.project.measurement_device_mapping = mapping
+        self.project.machine_mapping = shared
         self.measurement_mapping_feedback.setText(f"Validated reusable mapping saved — {counts['mapped']} devices: {target.name}")
         return True
 

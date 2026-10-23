@@ -868,6 +868,7 @@ class ProjectMetadata:
     machine_configuration_override: dict[str, Any] = field(default_factory=dict)
     compatibility_validation: dict[str, Any] = field(default_factory=dict)
     measurement_device_mapping: dict[str, Any] = field(default_factory=dict)
+    machine_mapping: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_saved(self) -> bool:
@@ -1044,6 +1045,10 @@ class ProjectMetadata:
             reference["path"] = portable(reference["path"])
         if profile.get("configuration_path"):
             profile["configuration_path"] = portable(profile["configuration_path"])
+        master = data.get("machine_mapping") or {}
+        master_reference=master.get("reference_lattice") or {}; master_profile=master.get("machine_profile") or {}
+        if master_reference.get("path"):master_reference["path"]=portable(master_reference["path"])
+        if master_profile.get("configuration_path"):master_profile["configuration_path"]=portable(master_profile["configuration_path"])
         return data
 
     @classmethod
@@ -1071,6 +1076,7 @@ class ProjectMetadata:
             machine_configuration_override=deepcopy(data.get("machine_configuration_override", {})),
             compatibility_validation=deepcopy(data.get("compatibility_validation", {})),
             measurement_device_mapping=deepcopy(data.get("measurement_device_mapping", {})),
+            machine_mapping=deepcopy(data.get("machine_mapping", {})),
         )
         return project
 
@@ -1131,6 +1137,10 @@ class ProjectMetadata:
             reference["path"] = resolve_project_path(reference["path"])
         if profile.get("configuration_path"):
             profile["configuration_path"] = resolve_project_path(profile["configuration_path"])
+        master = project.machine_mapping or {}
+        master_reference=master.get("reference_lattice") or {}; master_profile=master.get("machine_profile") or {}
+        if master_reference.get("path"):master_reference["path"]=resolve_project_path(master_reference["path"])
+        if master_profile.get("configuration_path"):master_profile["configuration_path"]=resolve_project_path(master_profile["configuration_path"])
         project.path = str(source)
         project.base_directory = str(source.parent)
         project.modified = False

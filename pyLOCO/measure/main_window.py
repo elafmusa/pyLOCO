@@ -50,14 +50,16 @@ from pyLOCO.data_schema import SCHEMA_VERSION as MEASUREMENT_SCHEMA_VERSION
 from pyLOCO.gui.results.plot_canvas import PlotCanvas
 from pyLOCO.gui.measurement_mapping import (
     find_exact_device_mappings, is_unvalidated_mapping_template, load_document,
-    mapping_counts, mapping_template, ordered_ordinals,
+    inventory_fingerprint, mapping_counts, mapping_template, ordered_ordinals,
     python_mapping_helper_script, validate_mapping,
 )
 from pyLOCO.gui.mapping_table import (CopyableMappingTable, configure_mapping_table,
                                       identity_match_label)
 from pyLOCO.machine_mapping import (is_document as is_machine_mapping,
     is_template as is_machine_mapping_template, measurement_projection,
-    merge_measurement, template as machine_mapping_template)
+    complete_template as complete_machine_mapping_template,
+    merge_measurement, pyaml_configuration_inventory, reconcile_configured,
+    template as machine_mapping_template)
 from pyLOCO.gui.lattice_loader import MultipleMatLatticesError, mat_lattice_candidates
 from pyLOCO.gui.themes import ACCENTS, accent_for_key, apply_application_theme, theme_for_key
 from pyLOCO.gui.suite import launch_suite_application,present_single_about_dialog
@@ -836,17 +838,47 @@ class MeasureMainWindow(QMainWindow):
             "vertical_corrector":[device.name for device in self.selected_vcorrectors],
         }
 
-    def _pyaml_fitted_magnet_inventory(self):
-        """Read role-bearing pyAML groups without connecting or authorizing writes."""
+    def _pyaml_named_inventories(self):
+        """Read every supported physical device configured in pyAML."""
         if self.adapter_combo.currentData()!="pyaml":return {}
         path=Path(self.pyaml_fields["config_path"].text()).expanduser()
         if not path.is_file():return {}
         try:
             import yaml
             document=yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            arrays={str(row.get("name")):list(row.get("elements") or ()) for row in document.get("arrays",()) if isinstance(row,dict)}
         except Exception:return {}
-        return {"normal_quadrupole":arrays.get("Quads",[]),"skew_quadrupole":arrays.get("SkewQuads",[])}
+        return pyaml_configuration_inventory(document)[0]
+
+    def _pyaml_inventory_metadata(self):
+        if self.adapter_combo.currentData()!="pyaml":return {}
+        path=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        if not path.is_file():return {}
+        try:
+            import yaml
+            document=yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            return pyaml_configuration_inventory(document)[1]
+        except Exception:return {}
+
+    def _pyaml_fitted_magnet_inventory(self):
+        inventories=self._pyaml_named_inventories()
+        return {role:list(inventories.get(role,())) for role in
+                ("normal_quadrupole","skew_quadrupole","sextupole","octupole","dipole")}
+
+    def _complete_machine_mapping_template(self):
+        if self.reference_model is None:raise ValueError("Load the authoritative AT reference lattice first.")
+        inventories=self._pyaml_named_inventories()
+        measured={role:list(inventories.get(role,())) for role in
+                  ("bpm","horizontal_corrector","vertical_corrector")}
+        document=complete_machine_mapping_template(self.reference_model.ring,measured,
+            self._pyaml_fitted_magnet_inventory(),self._pyaml_inventory_metadata())
+        configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        document["reference_lattice"]={"path":str(self.reference_model.path),
+            "sha256":self.reference_model.checksum_sha256,
+            "element_count":self.reference_model.element_count,
+            "mat_variable":self.reference_model.mat_variable or ""}
+        document["machine_profile"]={"configuration_path":str(configuration),
+            "configuration_sha256":session_file_sha256(configuration) if configuration.is_file() else ""}
+        return document
 
     def _invalidate_device_alignment(self,reason="Device inventory changed — validate the device mapping again."):
         self.measurement_device_alignment=None; self._model_orm_cache=None
@@ -879,7 +911,13 @@ class MeasureMainWindow(QMainWindow):
             document=find_exact_device_mappings(self.reference_model.ring,inventory,
                 lattice_path=self.reference_model.path,configuration_path=configuration,
                 provenance="Measure exact AT Device identity")
-            self.machine_mapping_document=merge_measurement(self.machine_mapping_document,document)
+            master=reconcile_configured(self.machine_mapping_document,self._complete_machine_mapping_template())
+            full_inventory=self._pyaml_named_inventories()
+            full_measurement={role:list(full_inventory.get(role,())) for role in ("bpm","horizontal_corrector","vertical_corrector")}
+            full_checked=find_exact_device_mappings(self.reference_model.ring,full_measurement,
+                lattice_path=self.reference_model.path,configuration_path=configuration,
+                provenance="Measure complete pyAML inventory matched to authoritative AT lattice")
+            self.machine_mapping_document=merge_measurement(master,full_checked)
             counts=mapping_counts(document)
             if counts["mapped"]!=counts["total"]:
                 self.measurement_device_alignment=document
@@ -921,10 +959,29 @@ class MeasureMainWindow(QMainWindow):
             inventory,configuration=self._mapping_context(); source=load_document(path)
             common=is_machine_mapping(source); projected=measurement_projection(source) if common else source
             template=is_machine_mapping_template(source) if common else is_unvalidated_mapping_template(source)
-            if template:projected={**projected,"mapping_provenance":"Externally completed Machine Mapping template, validated against the active lattice and inventory"}
-            checked=validate_mapping(projected,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
-                configuration_path=configuration,require_provenance=bool(projected.get("schema")) and not template)
-            self.machine_mapping_document=merge_measurement(source if common else None,checked)
+            if common:
+                full=self._pyaml_named_inventories(); full_inventory={role:list(full.get(role,())) for role in ("bpm","horizontal_corrector","vertical_corrector")}
+                # Legacy shared files may contain only the measurement subset.
+                # Reconcile them with the active configured inventory, then
+                # validate every configured measurement device afresh.
+                source_complete=present==expected
+                proposal=reconcile_configured(source,self._complete_machine_mapping_template())
+                projected=measurement_projection(proposal)
+                if template:projected={**projected,"mapping_provenance":"Externally completed complete Machine Mapping template"}
+                full_checked=validate_mapping(projected,self.reference_model.ring,full_inventory,lattice_path=self.reference_model.path,
+                    configuration_path=configuration,require_provenance=False)
+                master=merge_measurement(proposal,full_checked)
+                wanted={(role,name) for role,names in inventory.items() for name in names}
+                selected={**full_checked,"mappings":[row for row in full_checked["mappings"]
+                    if (row.get("role"),row.get("measured_name")) in wanted]}
+                checked=validate_mapping(selected,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
+                    configuration_path=configuration,require_provenance=False)
+                self.machine_mapping_document=master
+            else:
+                if template:projected={**projected,"mapping_provenance":"Externally completed mapping template, validated against the active lattice and inventory"}
+                checked=validate_mapping(projected,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
+                    configuration_path=configuration,require_provenance=bool(projected.get("schema")) and not template)
+                self.machine_mapping_document=merge_measurement(None,checked)
             counts=mapping_counts(checked); self.measurement_device_alignment=checked
             kind="Filled template validated" if template else "Loaded mapping"
             self.device_alignment_status.setText(f"{kind} — {counts['mapped']}/{counts['total']} mapped; {counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate, {counts['invalid']} invalid.")
@@ -935,7 +992,7 @@ class MeasureMainWindow(QMainWindow):
     def _save_mapping_template(self):
         path=QFileDialog.getSaveFileName(self,"Create Machine Mapping template","machine-mapping-template.json","JSON (*.json)")[0]
         if not path:return
-        try:self._write_json_atomic(path,machine_mapping_template(self._alignment_inventory(),self._pyaml_fitted_magnet_inventory()))
+        try:self._write_json_atomic(path,self._complete_machine_mapping_template())
         except Exception as exc:QMessageBox.warning(self,"Cannot create mapping template",str(exc)); return
         self.last_mapping_template_path=Path(path).expanduser().resolve()
         self.statusBar().showMessage(f"Created mapping template: {path}")
@@ -972,7 +1029,8 @@ class MeasureMainWindow(QMainWindow):
             counts=mapping_counts(checked)
             if counts["mapped"]!=counts["total"]:raise ValueError("Only a complete, currently valid mapping can be saved as validated.")
         except Exception as exc:QMessageBox.warning(self,"Cannot save validated mapping",str(exc)); return
-        shared=merge_measurement(self.machine_mapping_document,checked)
+        shared=self.machine_mapping_document
+        if not is_machine_mapping(shared or {}):shared=merge_measurement(None,checked)
         path=QFileDialog.getSaveFileName(self,"Save validated Machine Mapping","machine-mapping.json","JSON (*.json)")[0]
         if not path:return
         if Path(path).exists() and QMessageBox.question(self,"Replace mapping file?",f"Replace the existing mapping file?\n{path}",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)!=QMessageBox.Yes:return
@@ -4779,6 +4837,13 @@ class MeasureMainWindow(QMainWindow):
             source=bundle.mapping
             if source is not None:
                 projected=measurement_projection(source) if is_machine_mapping(source) else source
+                if is_machine_mapping(source):
+                    wanted={(role,name) for role,names in inventory.items() for name in names}
+                    projected=deepcopy(projected)
+                    projected["mappings"]=[row for row in projected.get("mappings",())
+                        if (row.get("role"),row.get("measured_name")) in wanted]
+                    projected["inventory"]={"sha256":inventory_fingerprint(inventory),
+                        "counts":{role:len(names) for role,names in inventory.items()}}
                 checked=validate_mapping(projected,self.reference_model.ring,inventory,
                     lattice_path=self.reference_model.path,configuration_path=configuration if configuration.is_file() else None,
                     require_provenance=True)
@@ -4792,7 +4857,8 @@ class MeasureMainWindow(QMainWindow):
             if counts["mapped"]!=counts["total"]:
                 raise ValueError(f"mapping is incomplete ({counts['mapped']}/{counts['total']} identities mapped)")
             self.measurement_device_alignment=checked
-            self.machine_mapping_document=merge_measurement(source if source is not None and is_machine_mapping(source) else None,checked)
+            self.machine_mapping_document=(deepcopy(source) if source is not None and is_machine_mapping(source)
+                else merge_measurement(None,checked))
             self.device_alignment_status.setText(f"{origin} — {counts['mapped']}/{counts['total']} identities.")
             self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(True)
             self._update_reference_comparison_enabled()
@@ -4821,7 +4887,8 @@ class MeasureMainWindow(QMainWindow):
             counts=mapping_counts(checked)
             if counts["mapped"]!=counts["total"]:raise ValueError("saved device mapping is incomplete")
             self.measurement_device_alignment=checked
-            self.machine_mapping_document=merge_measurement(self.machine_mapping_document,checked)
+            if not is_machine_mapping(self.machine_mapping_document or {}):
+                self.machine_mapping_document=merge_measurement(None,checked)
             self.device_alignment_status.setText(f"Restored and revalidated — {counts['mapped']}/{counts['total']} exact identities; connected inventory matches the saved session.")
             self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(True); self._update_reference_comparison_enabled()
 

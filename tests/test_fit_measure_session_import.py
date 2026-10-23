@@ -110,6 +110,8 @@ def test_full_session_filters_shared_machine_mapping_to_measured_inventory(qapp,
     assert window.open_measurement_session(manifest)
     assert mapping_counts(window.project.measurement_device_mapping)["total"]==4
     assert window.project.loco_config.machine_elements.bpm_ords==[1,0]
+    assert any(row["role"]=="normal_quadrupole" and row["pyaml_device"]=="Q1"
+               for row in window.project.machine_mapping["mappings"])
     window.project.modified=False; window.close()
 
 

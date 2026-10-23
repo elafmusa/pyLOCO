@@ -11,7 +11,8 @@ from PySide6.QtWidgets import QApplication, QDialog
 
 from pyLOCO.gui.measurement_mapping import (is_unvalidated_mapping_template,
     load_document, mapping_counts, mapping_template, python_mapping_helper_script)
-from pyLOCO.machine_mapping import template as machine_mapping_template
+from pyLOCO.machine_mapping import (complete_template as complete_machine_mapping_template,
+    pyaml_configuration_inventory, template as machine_mapping_template)
 
 from pyLOCO.measure.reference_model import ReferenceModel, model_dispersion, model_orm
 from pyLOCO.measure.project import MeasureProject, load_measure_project, save_measure_project
@@ -194,19 +195,26 @@ def test_measure_loads_modern_ebs_betamodel_4434():
 
 
 @pytest.mark.skipif(not all((MODERN_EBS.parent/name).is_file() for name in ("betamodel.mat","betamodel_conf_pyaml.yaml")),reason="Modern EBS mapping inputs unavailable")
-def test_python_mapping_helper_completes_real_1698_entry_ebs_machine_template(tmp_path):
+def test_complete_real_ebs_machine_mapping_contains_every_configured_physical_device(tmp_path):
     import json
     yaml=pytest.importorskip("yaml"); pytest.importorskip("at")
     config=yaml.safe_load((MODERN_EBS.parent/"betamodel_conf_pyaml.yaml").read_text())
-    arrays={row["name"]:row["elements"] for row in config["arrays"]}
-    inventory={"bpm":arrays["BPM"],"horizontal_corrector":arrays["HCorr"],"vertical_corrector":arrays["VCorr"]}
-    magnets={"normal_quadrupole":arrays["Quads"],"skew_quadrupole":arrays["SkewQuads"]}
+    inventory_all,metadata=pyaml_configuration_inventory(config)
+    inventory={role:inventory_all[role] for role in ("bpm","horizontal_corrector","vertical_corrector")}
+    magnets={role:inventory_all[role] for role in ("normal_quadrupole","skew_quadrupole","sextupole","octupole","dipole")}
+    from pyLOCO.measure.reference_model import load_reference_model
+    proposal=complete_machine_mapping_template(load_reference_model(MODERN_EBS).ring,inventory,magnets,metadata)
+    assert len(proposal["mappings"])==1954
+    assert all(type(row["lattice_ordinal"]) is int for row in proposal["mappings"])
+    assert {row["role"] for row in proposal["mappings"]}=={
+        "bpm","horizontal_corrector","vertical_corrector","normal_quadrupole",
+        "skew_quadrupole","sextupole","octupole"}
     template_path=tmp_path/"template.json"; output_path=tmp_path/"completed.json"
-    template_path.write_text(json.dumps(machine_mapping_template(inventory,magnets)),encoding="utf-8")
+    template_path.write_text(json.dumps(proposal),encoding="utf-8")
     script=python_mapping_helper_script(template_path,MODERN_EBS,"betamodel",output_path)
     exec(compile(script,"mapping-helper.py","exec"),{})
     completed=json.loads(output_path.read_text())
-    assert len(completed["mappings"])==1698
+    assert len(completed["mappings"])==1954
     assert all(type(row["lattice_ordinal"]) is int for row in completed["mappings"])
 
 

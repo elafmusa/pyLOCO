@@ -8,7 +8,8 @@ import pytest
 
 from pyLOCO.gui.measurement_mapping import mapping_counts, validate_mapping
 from pyLOCO.machine_mapping import (SCHEMA, VERSION, correction_projection, entry,
-    measurement_projection, merge_corrections, merge_measurement, template)
+    complete_template, measurement_projection, merge_corrections, merge_measurement,
+    pyaml_configuration_inventory, template)
 
 
 def test_shared_template_assigns_roles_and_preserves_same_ordinal_components():
@@ -70,3 +71,61 @@ def test_cross_application_merge_rejects_different_machine_identity():
             "machine_profile":{"configuration_sha256":"config-b"},"mappings":[]}
     with pytest.raises(ValueError,match="configuration fingerprint differs"):
         merge_corrections(shared,bundle)
+
+
+def test_complete_mapping_uses_configured_pyaml_devices_not_lattice_inventory():
+    class BPM:pass
+    class Quadrupole:pass
+    class Sextupole:pass
+    class Drift:pass
+    ring=[]
+    for cls,family,device in ((BPM,"BPM1","BPM1"),(Quadrupole,"Q1","Q1"),
+                              (Sextupole,"S1","S1"),(Drift,"D1","D1"),
+                              (Quadrupole,"Q-not-configured","Q-not-configured")):
+        item=cls(); item.FamName=family; item.Device=device; ring.append(item)
+    configuration={"arrays":[{"name":"CUSTOM_MAGNET_GROUP","elements":["Q1-B2L"]}],"devices":[
+        {"class":"site.bpm.BPM","name":"BPM1"},
+        {"class":"site.magnet.quadrupole.Quadrupole","name":"Q1-B2L",
+         "model":{"unit":"rad","hardware_unit":"str"}},
+        {"class":"site.magnet.sextupole.Sextupole","name":"S1-B3L"},
+        {"class":"site.service.Diagnostics","name":"NOT-A-PHYSICAL-DEVICE"},
+    ]}
+    inventory,metadata=pyaml_configuration_inventory(configuration)
+    document=complete_template(ring,{role:inventory[role] for role in
+        ("bpm","horizontal_corrector","vertical_corrector")},
+        {role:inventory[role] for role in ("normal_quadrupole","skew_quadrupole",
+         "sextupole","octupole","dipole")},metadata)
+    assert [(row["role"],row["pyaml_device"]) for row in document["mappings"]]==[
+        ("bpm","BPM1"),("normal_quadrupole","Q1-B2L"),("sextupole","S1-B3L")]
+    assert all(row["lattice_ordinal"] is not None for row in document["mappings"])
+    assert not any(row["lattice_fam_name"] in {"D1","Q-not-configured"} for row in document["mappings"])
+    quad=document["mappings"][1]
+    assert quad["component"]=="B2L" and quad["configured_unit"]=="rad"
+
+
+def test_configured_device_without_unique_lattice_match_remains_unresolved():
+    ring=[SimpleNamespace(FamName="Q",Device="Q"),SimpleNamespace(FamName="Q",Device="Q")]
+    document=complete_template(ring,{}, {"normal_quadrupole":["Q"]})
+    assert len(document["mappings"])==1
+    assert document["mappings"][0]["lattice_ordinal"] is None
+    assert document["mappings"][0]["status"]=="ambiguous"
+
+
+def test_fit_project_and_run_request_preserve_complete_machine_mapping():
+    from pyLOCO.gui.backend import LocoRunRequest
+    from pyLOCO.gui.models.project import ProjectMetadata
+    master=template({"bpm":["B"]},{"normal_quadrupole":["Q"],"sextupole":["S"]})
+    project=ProjectMetadata(machine_mapping=master)
+    restored=ProjectMetadata.from_dict(project.to_dict())
+    assert restored.machine_mapping==master
+    assert LocoRunRequest.from_project(restored).machine_mapping==master
+
+
+def test_correct_projects_only_supported_fitted_controls_from_master_mapping():
+    master=template({}, {"normal_quadrupole":["Q-B2L"],"sextupole":["S-B3L"]})
+    master["mappings"][0].update(lattice_ordinal=7,lattice_fam_name="Q",lattice_device="Q")
+    master["mappings"][1].update(lattice_ordinal=8,lattice_fam_name="S",lattice_device="S")
+    rows=correction_projection(master)
+    assert rows==[{"correction_type":"normal_quadrupole","lattice_name":"Q",
+        "lattice_ordinal":7,"lattice_device":"Q","physical_element_type":"",
+        "control_name":"Q-B2L","component":"B2L","unit":"m^-1"}]

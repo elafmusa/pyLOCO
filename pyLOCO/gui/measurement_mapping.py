@@ -258,7 +258,9 @@ def find_hits(row):
     role = str(row["role"])
     identities = [("Device", name), ("FamName", name)]
     suffix = {{"horizontal_corrector": "-B1L", "vertical_corrector": "-A1L",
-               "normal_quadrupole": "-B2L", "skew_quadrupole": "-A2L"}}.get(role)
+               "normal_quadrupole": "-B2L", "skew_quadrupole": "-A2L",
+               "sextupole": "-B3L", "octupole": "-B4L",
+               "dipole": "-B1L"}}.get(role)
     if suffix and name.endswith(suffix):
         base = name[:-len(suffix)]
         identities += [("Device", base), ("FamName", base)]

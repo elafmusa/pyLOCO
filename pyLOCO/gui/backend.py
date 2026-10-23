@@ -40,6 +40,7 @@ class LocoRunRequest:
     lattice_mat_variable: str = ""
     measurement_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     measurement_session: dict[str, Any] = field(default_factory=dict)
+    machine_mapping: dict[str, Any] = field(default_factory=dict)
 
     @property
     def results_root(self) -> Path:
@@ -70,6 +71,7 @@ class LocoRunRequest:
             },
             measurement_options={key: dict(dataset.options) for key, dataset in project.measurements.items()},
             measurement_session=copy.deepcopy(project.measurement_session),
+            machine_mapping=copy.deepcopy(project.machine_mapping),
             backend_mapping=backend_mapping,
         )
 

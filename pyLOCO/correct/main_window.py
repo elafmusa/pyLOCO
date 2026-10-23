@@ -20,8 +20,10 @@ from pyLOCO.gui.appearance import ensure_suite_appearance,select_suite_appearanc
 from pyLOCO.control_system import AdapterCapability,InterfaceRegistry
 from .application import CorrectionApplicationService
 from .model import CorrectionReview,load_review,save_review,save_review_csv
-from .petra_readonly import apply_explicit_mapping,load_mapping
-from pyLOCO.machine_mapping import SCHEMA as MACHINE_MAPPING_SCHEMA, VERSION as MACHINE_MAPPING_VERSION, entry as machine_mapping_entry
+from .petra_readonly import MagnetMapping,apply_explicit_mapping,load_mapping
+from pyLOCO.machine_mapping import (SCHEMA as MACHINE_MAPPING_SCHEMA,
+    VERSION as MACHINE_MAPPING_VERSION, correction_projection,
+    entry as machine_mapping_entry, is_document as is_machine_mapping)
 
 AMBER_QSS="""
 QLabel#correctBrand { color:#E88B22; font-size:24pt; font-weight:850; padding:2px 8px; }
@@ -354,8 +356,20 @@ class CorrectMainWindow(QMainWindow):
                 self.pyaml_workspace.transaction.record["status"] = "stale"
         source=Path(path).resolve(); self.machine_snapshot=None; self.badge.setText(self.registry.descriptor(self.backend_combo.currentData()).badge)
         for item in self.review.items:item.metadata.setdefault("mapping_status","mapped" if item.control_name else "unmapped")
+        provenance=self.review.items[0].metadata if self.review.items else {}
+        embedded=getattr(self.review,"machine_mapping",{}) or {}
+        if is_machine_mapping(embedded):
+            entries=[MagnetMapping(row.get("lattice_name",""),row.get("control_name",""),
+                row.get("lattice_ordinal"),row.get("component"),row.get("unit"))
+                for row in correction_projection(embedded) if row.get("control_name")]
+            if entries:
+                counts=apply_explicit_mapping(self.review,entries)
+                self.mapping_file_status.setText(
+                    f"Embedded FIT Machine Mapping — {counts['mapped']} mapped")
         self.correction_changes=(); self.apply_button.setEnabled(False); self.apply_status.setText("Correction loaded — preview machine changes")
-        provenance=self.review.items[0].metadata if self.review.items else {}; session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False); self.mapping_file_status.setText("—"); self._refresh_mapping_status(); self._sync_fraction(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2); self.statusBar().showMessage(f"Loaded {len(self.review.items)} correction item(s)",5000)
+        session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False)
+        if not is_machine_mapping(embedded):self.mapping_file_status.setText("—")
+        self._refresh_mapping_status(); self._sync_fraction(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2); self.statusBar().showMessage(f"Loaded {len(self.review.items)} correction item(s)",5000)
 
     def load_source_responsively(self,path,iteration=None):
         if self._pyaml_locked():
