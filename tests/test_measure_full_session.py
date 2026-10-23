@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -12,7 +13,8 @@ from pyLOCO.measure.full_session import (file_sha256, open_full_session_bundle,
                                          save_full_session_bundle, save_full_session_state)
 from pyLOCO.measure.project import MeasureProject, load_measure_project, save_measure_project
 from pyLOCO.measure.main_window import MeasureMainWindow
-from pyLOCO.measure.acquisition import BpmDevice, DispersionResult, DispersionStateResult
+from pyLOCO.measure.acquisition import BpmDevice, BpmNoiseResult, DispersionResult, DispersionStateResult, ORMResult
+from pyLOCO.gui.measurement_mapping import mapping_counts
 from pyLOCO.gui.suite import inspect_measurement_session
 
 
@@ -165,8 +167,8 @@ def test_gui_opens_full_session_disconnected_with_writes_disabled(tmp_path,monke
         assert not window.connection_verified
         assert not window.pyaml_magnet_writes.isChecked()
         assert not window.pyaml_rf_writes.isChecked()
-        assert window.result is None
-        assert "requires reconnection" in window.statusBar().currentMessage()
+        assert isinstance(window.result,BpmNoiseResult)
+        assert "disconnected review" in window.statusBar().currentMessage()
         assert window.review_open_button.isEnabled()
     finally:
         window.close(); app.processEvents()
@@ -181,7 +183,7 @@ def test_full_session_restores_requested_write_preferences_without_authorization
         window.open_full_measurement_session(bundle.manifest_path); app.processEvents()
         assert window.pyaml_magnet_writes.isChecked() and window.pyaml_rf_writes.isChecked()
         assert not window.connection_verified
-        assert "requires reconnection" in window.statusBar().currentMessage()
+        assert "disconnected review" in window.statusBar().currentMessage()
     finally:window.close(); app.processEvents()
 
 
@@ -194,6 +196,53 @@ def test_saved_bpm_noise_result_is_reconstructed_read_only_for_plots(tmp_path):
         before=files["bpm_noise"].read_bytes(); window._measurement_result_paths["bpm_noise"]=files["bpm_noise"]; window._measurement_results["bpm_noise"]=None
         window._measurement_type_changed(); assert window._measurement_results["bpm_noise"] is not None
         assert files["bpm_noise"].read_bytes()==before
+    finally:window.close(); app.processEvents()
+
+
+def test_tab_switch_does_not_assign_one_measurement_file_to_another_role(tmp_path):
+    app=QApplication.instance() or QApplication([]); files=measurement_files(tmp_path); window=MeasureMainWindow()
+    try:
+        window._measurement_result_paths.update(files)
+        window.saved_measurement_path=files["bpm_noise"]
+        window.result=window._restore_saved_result("bpm_noise",files["bpm_noise"])
+        window._store_measurement_view_state("orm")
+        assert window._measurement_result_paths["orm"]==files["orm"]
+        assert window._measurement_results["orm"] is None
+    finally:window.close(); app.processEvents()
+
+
+def test_october_23_saved_session_restores_all_results_mapping_and_order_read_only(monkeypatch):
+    """Local MDT evidence regression; skipped when the operator fixture is absent."""
+    root=Path(__file__).resolve().parents[1]/"measurements"
+    manifest=root/"measurement-session.pyloco-session.json"
+    expected={
+        "bpm_noise":root/"pyloco-bpm-noise-20261023-174842.h5",
+        "dispersion":root/"pyloco-dispersion-20261023-175303.h5",
+        "orm":root/"pyloco-orm-20261023-175520.h5",
+    }
+    if not manifest.is_file() or not all(path.is_file() for path in expected.values()):
+        pytest.skip("October 23 local MDT measurement fixture is not available")
+    before={role:hashlib.sha256(path.read_bytes()).hexdigest() for role,path in expected.items()}
+    app=QApplication.instance() or QApplication([]); window=MeasureMainWindow()
+    monkeypatch.setattr(QMessageBox,"information",lambda *args:QMessageBox.Ok)
+    try:
+        window.open_full_measurement_session(manifest); app.processEvents()
+        assert window.reference_model is not None
+        assert window.reference_model.mat_variable=="betamodel" and len(window.reference_model.ring)==4434
+        assert isinstance(window._measurement_results["bpm_noise"],BpmNoiseResult)
+        assert isinstance(window._measurement_results["dispersion"],DispersionResult)
+        orm=window._measurement_results["orm"]; assert isinstance(orm,ORMResult)
+        assert orm.response_matrix.shape==(640,10)
+        assert len(orm.horizontal_correctors)==5 and len(orm.vertical_correctors)==5
+        assert tuple(device.name for device in orm.bpms)==tuple(device.name for device in window._measurement_results["dispersion"].devices)
+        assert all(status["validated"] and status["restored"] for status in window._measurement_restore_status.values())
+        assert mapping_counts(window.measurement_device_alignment)=={"total":330,"mapped":330,"unresolved":0,"ambiguous":0,"duplicate":0,"invalid":0}
+        assert not window.connection_verified
+        for role in ("bpm_noise","dispersion","orm"):
+            window.measurement_type.setCurrentIndex(window.measurement_type.findData(role)); app.processEvents()
+            assert window.saved_measurement_path==expected[role]
+            assert window._measurement_restore_status[role]["restored"]
+        assert {role:hashlib.sha256(path.read_bytes()).hexdigest() for role,path in expected.items()}==before
     finally:window.close(); app.processEvents()
 
 
@@ -220,7 +269,7 @@ def test_full_session_action_opens_older_manifest_and_explains_unrecoverable_set
         assert window.saved_session_path==manifest.resolve()
         assert window.saved_measurement_path.is_file()
         assert "BPM noise" in window.review_details.text() and "ORM" in window.review_details.text()
-        assert "Present" in window.review_details.text() and "Missing" in window.review_details.text()
+        assert "File present" in window.review_details.text() and "Missing" in window.review_details.text()
         assert messages and "Older measurement session loaded"==messages[0][0]
         explanation=messages[0][1]
         assert "no Measure project, lattice, selections or mapping" in explanation

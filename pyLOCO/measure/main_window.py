@@ -404,6 +404,10 @@ class MeasureMainWindow(QMainWindow):
         self._active_acquisition_kind = None
         self._measurement_results = {"bpm_noise": None, "dispersion": None, "orm": None}
         self._measurement_result_paths = {"bpm_noise": None, "dispersion": None, "orm": None}
+        self._measurement_restore_status = {
+            role: {"present": False, "validated": False, "restored": False, "error": ""}
+            for role in ("bpm_noise", "dispersion", "orm")
+        }
         self._measurement_view_states = {}
         self._connection_timeout_ms = 15000
         self.project_path: Path | None = None
@@ -2216,8 +2220,20 @@ class MeasureMainWindow(QMainWindow):
     def _store_measurement_view_state(self, kind):
         if hasattr(self,"readings") and kind in ("bpm_noise","dispersion","orm"):
             self._measurement_view_states[kind]=self._measurement_view_snapshot()
-            self._measurement_results[kind]=self.result
-            self._measurement_result_paths[kind]=self.saved_measurement_path
+            expected={"bpm_noise":BpmNoiseResult,"dispersion":DispersionResult,"orm":ORMResult}[kind]
+            # A shared measurement workspace changes ``self.result`` and
+            # ``saved_measurement_path`` when tabs change.  Never let that
+            # transient active state overwrite another role's cached result or
+            # HDF5 path (for example assigning the BPM-noise file to ORM).
+            if isinstance(self.result,expected):
+                self._measurement_results[kind]=self.result
+            path=self.saved_measurement_path
+            if path is not None:
+                try:
+                    if validate_measurement_file(path)["kind"]==kind:
+                        self._measurement_result_paths[kind]=Path(path)
+                except Exception:
+                    pass
 
     def _restore_measurement_view_state(self, kind):
         state=self._measurement_view_states.get(kind)
@@ -2432,9 +2448,10 @@ class MeasureMainWindow(QMainWindow):
     def _refresh_review_page(self):
         if not hasattr(self,"review_status"):return
         session_exists=self.saved_session_path is not None
-        self.session_save_action.setEnabled(True)
+        save_enabled=not session_exists or self._session_dirty
+        self.session_save_action.setEnabled(save_enabled)
         self.session_save_as_action.setEnabled(True); self.session_export_action.setEnabled(session_exists)
-        self.session_toolbar_buttons["Save"].setEnabled(True)
+        self.session_toolbar_buttons["Save"].setEnabled(save_enabled)
         if not session_exists:
             self.review_validate_button.setEnabled(False); self.review_open_button.setEnabled(False)
             self.review_status.setText("No measurements acquired yet")
@@ -2463,18 +2480,28 @@ class MeasureMainWindow(QMainWindow):
             session=None
         has_measurements=bool(roles)
         self.review_validate_button.setEnabled(has_measurements); self.review_open_button.setEnabled(has_measurements)
+        def role_state(role):
+            state=self._measurement_restore_status.get(role,{})
+            if role not in roles:return "Missing —"
+            if state.get("restored"):return "File present · validated · result restored ✓"
+            if state.get("validated"):return "File present · validated · plot unavailable: "+str(state.get("error") or "unknown reason")
+            return "File present · validation failed: "+str(state.get("error") or "not validated")
         role_rows="".join(
-            f"<tr><td><b>{label}</b></td><td>{'Present ✓' if role in roles else 'Missing —'}</td></tr>"
+            f"<tr><td><b>{label}</b></td><td>{role_state(role)}</td></tr>"
             for role,label in (("bpm_noise","BPM noise"),("dispersion","Dispersion"),("orm","ORM"))
         )
-        if complete:self.review_status.setText("✓ Measurement session complete for FIT")
+        restored_complete=complete and all(self._measurement_restore_status.get(role,{}).get("restored") for role in ("bpm_noise","dispersion","orm"))
+        mapping_ready=self.adapter_combo.currentData()!="pyaml" or self.measurement_device_alignment is not None
+        if restored_complete and mapping_ready:self.review_status.setText("✓ Measurement session restored and ready for FIT")
+        elif complete:self.review_status.setText("Measurement files complete; review restoration and device mapping status")
         elif not has_measurements:self.review_status.setText("✓ Session configuration saved — no measurements acquired yet")
         else:self.review_status.setText(f"✓ {kind} saved — measurement session incomplete")
         self.review_details.setText(
             f"<table cellspacing='0' cellpadding='3'>{role_rows}</table>"
             f"<br><b>Latest measurement</b> &nbsp; {kind+' — files and manifest validated' if has_measurements else 'None'}"
             f"<br><b>Restoration</b> &nbsp; {restoration}"
-            f"<br><b>FIT readiness</b> &nbsp; {completeness}"
+            f"<br><b>FIT readiness</b> &nbsp; {completeness}; "
+            f"{'device mapping available' if mapping_ready else 'device mapping requires validation'}"
         )
         display_path=self.saved_measurement_path
         if display_path is None and session is not None:
@@ -2500,7 +2527,12 @@ class MeasureMainWindow(QMainWindow):
             if kind=="bpm_noise":
                 return BpmNoiseResult(bpms,np.asarray(handle["raw/orbits_x_m"]),np.asarray(handle["raw/orbits_y_m"]),float(metadata.get("elapsed_seconds",0.0)),int(handle.attrs.get("noise_standard_deviation_ddof",0)))
             if kind=="dispersion":
-                labels=self._h5_strings(handle["raw/state_labels"]); requested=np.asarray(handle["raw/rf_setpoint_hz"]); actual=np.asarray(handle["raw/rf_readback_hz"]); raw_x=np.asarray(handle["raw/orbits_x_m"]); raw_y=np.asarray(handle["raw/orbits_y_m"])
+                saved_labels=self._h5_strings(handle["raw/state_labels"])
+                # Current acquisitions record both reference_before and
+                # reference_after.  DispersionResult uses the pre-perturbation
+                # reference under its historical canonical label "reference".
+                labels=tuple("reference" if label=="reference_before" else label for label in saved_labels)
+                requested=np.asarray(handle["raw/rf_setpoint_hz"]); actual=np.asarray(handle["raw/rf_readback_hz"]); raw_x=np.asarray(handle["raw/orbits_x_m"]); raw_y=np.asarray(handle["raw/orbits_y_m"])
                 direction=str(metadata.get("dispersion_direction",handle.attrs.get("direction","bipolar")))
                 required={"reference","negative","positive"} if direction=="bipolar" else {"reference",direction}
                 if not required.issubset(labels):raise ValueError("historical RF-state labels required to reconstruct the dispersion plots were not recorded")
@@ -2513,7 +2545,11 @@ class MeasureMainWindow(QMainWindow):
                     if x.ndim==1:x=x[np.newaxis,:]; y=y[np.newaxis,:]
                     states.append(DispersionStateResult(label,float(requested[index]),float(actual[index]),bool(confirmed[index]),x,y,timestamps[index] if timestamps is not None else np.asarray([],dtype=float),names,sources[index],bool(verified[index])))
                 nominal=next(state.actual_rf_hz for state in states if state.label=="reference"); offset=abs(float(handle.attrs.get("rf_step_hz",metadata.get("rf_step_hz",0.0))))/(2 if direction=="bipolar" else 1)
-                return DispersionResult(bpms,tuple(states),direction,nominal,offset,str(handle.attrs.get("restoration_status","not_recorded")),float(metadata.get("elapsed_seconds",0.0)))
+                result=DispersionResult(bpms,tuple(states),direction,nominal,offset,str(handle.attrs.get("restoration_status","not_recorded")),float(metadata.get("elapsed_seconds",0.0)))
+                for dataset,calculated in (("measured_eta_x",result.measured_eta_x),("measured_eta_y",result.measured_eta_y)):
+                    if dataset in handle and not np.allclose(np.asarray(handle[dataset]),calculated,rtol=1e-10,atol=1e-15,equal_nan=True):
+                        raise ValueError(f"stored {dataset} is inconsistent with the recorded RF states/sign convention")
+                return result
             if kind=="orm":
                 h_names=self._h5_strings(handle["names/horizontal_correctors"]); v_names=self._h5_strings(handle["names/vertical_correctors"]); h=tuple(CorrectorDevice(name,"saved HDF5 setpoint","saved HDF5 readback","H") for name in h_names); v=tuple(CorrectorDevice(name,"saved HDF5 setpoint","saved HDF5 readback","V") for name in v_names); count=len(h)+len(v)
                 required=("setpoints/original","setpoints/requested_state_a","setpoints/requested_state_b","setpoints/actual_state_a","setpoints/actual_state_b","setpoints/intermediate_restored","setpoints/final","setpoints/restoration_status","setpoints/intermediate_restoration_status","raw/reference_before_m","raw/reference_intermediate_m","raw/reference_final_m")
@@ -4502,7 +4538,7 @@ class MeasureMainWindow(QMainWindow):
                 reference_lattice=self.reference_model.path if self.reference_model is not None else None,
                 reference_mat_variable=self.reference_model.mat_variable if self.reference_model is not None else "",
                 reference_element_count=len(self.reference_model.ring) if self.reference_model is not None else None,
-                mapping=self.measurement_device_alignment)
+                mapping=self.machine_mapping_document or self.measurement_device_alignment)
         except Exception as exc:
             if created_manifest:
                 self.saved_session_path.unlink(missing_ok=True); self.saved_session_path=None; self._fresh_measurement_session=True
@@ -4593,7 +4629,7 @@ class MeasureMainWindow(QMainWindow):
                 reference_lattice=self.reference_model.path if self.reference_model is not None else None,
                 reference_mat_variable=self.reference_model.mat_variable if self.reference_model is not None else "",
                 reference_element_count=len(self.reference_model.ring) if self.reference_model is not None else None,
-                mapping=self.measurement_device_alignment,include_pyaml_configuration=include_yaml)
+                mapping=self.machine_mapping_document or self.measurement_device_alignment,include_pyaml_configuration=include_yaml)
         except Exception as exc:QMessageBox.warning(self,"Cannot export portable session",str(exc)); return
         message=f"Exported portable measurement session: {bundle.root}"
         if bundle.warnings:message+=" — dependencies require attention: "+" ".join(bundle.warnings)
@@ -4607,6 +4643,42 @@ class MeasureMainWindow(QMainWindow):
         self.result=None; self.saved_measurement_path=None
         self._measurement_results={"bpm_noise":None,"dispersion":None,"orm":None}
         self._measurement_result_paths={"bpm_noise":None,"dispersion":None,"orm":None}
+        self._measurement_restore_status={role:{"present":False,"validated":False,"restored":False,"error":""} for role in ("bpm_noise","dispersion","orm")}
+
+    def _restore_session_measurements(self, paths):
+        """Validate and reconstruct every available result independently."""
+        for role in ("bpm_noise","dispersion","orm"):
+            path=paths.get(role)
+            status={"present":path is not None,"validated":False,"restored":False,"error":""}
+            if path is not None:
+                try:
+                    details=validate_measurement_file(path)
+                    if details["kind"]!=role:raise ValueError(f"file contains {details['kind']}, not {role}")
+                    status["validated"]=True
+                    self._measurement_results[role]=self._restore_saved_result(role,path)
+                    self._measurement_result_paths[role]=Path(path)
+                    status["restored"]=True
+                except Exception as exc:
+                    status["error"]=str(exc)
+            self._measurement_restore_status[role]=status
+
+    def _restore_offline_measurement_inventory(self):
+        """Restore HDF5 identity/order for disconnected, read-only review."""
+        available={role:self._measurement_identities(path) for role,path in self._measurement_result_paths.items() if path is not None}
+        bpm_orders=[tuple(item.get("bpm",())) for item in available.values() if item.get("bpm")]
+        if bpm_orders and any(order!=bpm_orders[0] for order in bpm_orders[1:]):
+            raise ValueError("BPM identity/order differs between saved measurement files")
+        orm=available.get("orm",{})
+        bpm_names=bpm_orders[0] if bpm_orders else ()
+        h_names=tuple(orm.get("horizontal_corrector",()))
+        v_names=tuple(orm.get("vertical_corrector",()))
+        self.devices=tuple(BpmDevice(name,"saved HDF5 X","saved HDF5 Y") for name in bpm_names)
+        self.horizontal_correctors=tuple(CorrectorDevice(name,"saved HDF5 setpoint","saved HDF5 adapter value","H") for name in h_names)
+        self.vertical_correctors=tuple(CorrectorDevice(name,"saved HDF5 setpoint","saved HDF5 adapter value","V") for name in v_names)
+        self.selected_devices=self.devices; self.selected_hcorrectors=self.horizontal_correctors; self.selected_vcorrectors=self.vertical_correctors
+        for widget_name,items in (("bpm_table",self.devices),("hcor_table",self.horizontal_correctors),("vcor_table",self.vertical_correctors)):
+            widget=getattr(self,widget_name,None)
+            if widget is not None and hasattr(widget,"devices"):widget.devices=items
 
     def open_full_measurement_session(self,selected_path=None):
         if isinstance(selected_path,bool):selected_path=None
@@ -4624,6 +4696,9 @@ class MeasureMainWindow(QMainWindow):
             self.project=MeasureProject(); self.project_path=None; self._pending_full_bundle=None; self._load_project_widgets(); self._clear_session_role_caches()
             self.saved_session_path=manifest; self.saved_measurement_path=next(iter(paths.values()),None); self._fresh_measurement_session=False
             self._measurement_result_paths.update(paths)
+            self._restore_session_measurements(paths)
+            self._restore_offline_measurement_inventory()
+            self._measurement_type_changed()
             self._session_dirty=False; self._update_session_title(); self._refresh_review_page(); self._update_workflow_tabs()
             QMessageBox.information(self,"Older measurement session loaded","Measurement files were restored for review and FIT, but this older manifest contains no Measure project, lattice, selections or mapping. Those historical settings cannot be recovered; load authoritative dependencies manually before continuing acquisition."); return
         try:bundle=open_full_session_bundle(manifest)
@@ -4638,25 +4713,81 @@ class MeasureMainWindow(QMainWindow):
         self.connection_verified=False
         self.saved_session_path=bundle.manifest_path; self.saved_measurement_path=next(iter(bundle.measurement_paths.values()),None); self._fresh_measurement_session=False
         self._measurement_result_paths.update(bundle.measurement_paths)
+        self._restore_session_measurements(bundle.measurement_paths)
+        open_warnings=list(bundle.warnings)
+        try:
+            self._restore_offline_measurement_inventory()
+        except Exception as exc:
+            open_warnings.append(f"Measurement inventories are incompatible: {exc}")
+        self._selection_states=deepcopy(bundle.project.measurement_selections)
+        self._active_selection_kind=self.measurement_type.currentData()
+        self._restore_selection(self._active_selection_kind)
         self._session_dirty=False; self._update_session_title()
-        self.measurement_device_alignment=None; self._invalidate_device_alignment("Session loaded — reconnect and revalidate exact device alignment before model comparison.")
+        self.measurement_device_alignment=None
+        self.machine_mapping_document=bundle.mapping if bundle.mapping is not None and is_machine_mapping(bundle.mapping) else None
+        mapping_note=self._restore_offline_bundle_mapping(bundle)
+        self._measurement_type_changed()
+        # Widget synchronization and offline mapping reconstruction are part of
+        # opening the saved session, not operator edits.
+        self._session_dirty=False; self._update_session_title()
         self._refresh_review_page(); self._update_workflow_tabs()
-        state="Loaded but requires reconnection and mapping revalidation"
-        if bundle.warnings:state+=". "+" ".join(bundle.warnings)
+        state="Loaded for disconnected review. "+mapping_note
+        if open_warnings:state+=". "+" ".join(open_warnings)
         self.statusBar().showMessage(state); QMessageBox.information(self,"Full measurement session opened",state+"\nNo machine connection was opened and all write authorizations are disabled.")
+
+    def _restore_offline_bundle_mapping(self,bundle):
+        """Validate saved mapping, or rebuild it from checksummed offline inputs."""
+        if self.reference_model is None:
+            self._invalidate_device_alignment("Session measurements restored; reference lattice is unavailable for mapping validation.")
+            return "Device mapping requires an authoritative reference lattice."
+        configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        if self.adapter_combo.currentData()=="pyaml" and not configuration.is_file():
+            self._invalidate_device_alignment("Session measurements restored; saved pyAML configuration is unavailable for mapping validation.")
+            return "Device mapping requires the saved pyAML configuration."
+        inventory=self._alignment_inventory()
+        try:
+            source=bundle.mapping
+            if source is not None:
+                projected=measurement_projection(source) if is_machine_mapping(source) else source
+                checked=validate_mapping(projected,self.reference_model.ring,inventory,
+                    lattice_path=self.reference_model.path,configuration_path=configuration if configuration.is_file() else None,
+                    require_provenance=True)
+                origin="Saved mapping restored and validated offline"
+            else:
+                checked=find_exact_device_mappings(self.reference_model.ring,inventory,
+                    lattice_path=self.reference_model.path,configuration_path=configuration if configuration.is_file() else None,
+                    provenance="Reconstructed offline from saved HDF5 identities and checksummed session dependencies")
+                origin="No mapping was stored in this session; exact mapping reconstructed and validated offline"
+            counts=mapping_counts(checked)
+            if counts["mapped"]!=counts["total"]:
+                raise ValueError(f"mapping is incomplete ({counts['mapped']}/{counts['total']} identities mapped)")
+            self.measurement_device_alignment=checked
+            self.machine_mapping_document=merge_measurement(source if source is not None and is_machine_mapping(source) else None,checked)
+            self.device_alignment_status.setText(f"{origin} — {counts['mapped']}/{counts['total']} identities.")
+            self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(True)
+            self._update_reference_comparison_enabled()
+            return origin+". A future live connection will revalidate the connected inventory."
+        except Exception as exc:
+            self._invalidate_device_alignment(f"Measurements restored; mapping needs validation: {exc}")
+            return f"Device mapping requires validation: {exc}"
 
     def _restore_full_bundle_inventory(self,bundle):
         inventories={"bpm":self.devices,"hcor":self.horizontal_correctors,"vcor":self.vertical_correctors}; state=bundle.project.measurement_selections; missing=[]
-        for measurement in state.values():
-            for key,devices in inventories.items():
+        for measurement_kind,measurement in state.items():
+            # Corrector inventory is scientifically relevant only to ORM.
+            # Dispersion/BPM-noise projects may retain harmless default
+            # corrector selections that must not invalidate reconnection.
+            keys=("bpm","hcor","vcor") if measurement_kind=="orm" else ("bpm",)
+            for key in keys:
+                devices=inventories[key]
                 available={device.name for device in devices}; missing.extend(name for name in measurement[key].get("resolved_names",()) if name not in available)
         if missing:raise ValueError("missing identities: "+", ".join(dict.fromkeys(missing)))
         self._selection_states=deepcopy(state); self._active_selection_kind=self.measurement_type.currentData(); self._restore_selection(self._active_selection_kind)
-        if bundle.mapping is not None and self.reference_model is not None:
+        if self.measurement_device_alignment is not None and self.reference_model is not None:
             configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
             if self.adapter_combo.currentData()=="pyaml" and not configuration.is_file():raise ValueError("the saved pyAML configuration is unavailable; mapping cannot be revalidated")
             orm=state["orm"]; inventory={"bpm":list(orm["bpm"].get("resolved_names",())),"horizontal_corrector":list(orm["hcor"].get("resolved_names",())),"vertical_corrector":list(orm["vcor"].get("resolved_names",()))}
-            checked=validate_mapping(bundle.mapping,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,configuration_path=configuration if configuration.is_file() else None,require_provenance=True)
+            checked=validate_mapping(self.measurement_device_alignment,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,configuration_path=configuration if configuration.is_file() else None,require_provenance=True)
             counts=mapping_counts(checked)
             if counts["mapped"]!=counts["total"]:raise ValueError("saved device mapping is incomplete")
             self.measurement_device_alignment=checked; self.device_alignment_status.setText(f"Restored and revalidated — {counts['mapped']}/{counts['total']} exact identities."); self.alignment_details_button.setEnabled(True); self._update_reference_comparison_enabled()
