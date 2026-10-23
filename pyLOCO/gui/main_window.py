@@ -1354,6 +1354,7 @@ class MainWindow(QMainWindow):
         self._run_thread: QThread | None = None
         self._run_worker: LocoRunWorker | None = None
         self._run_preparing = False
+        self._pending_continue_results = ""
         self._run_started_at = 0.0
         self._last_loco_result = None
         self._waiting_games_dialog: WaitingGamesDialog | None = None
@@ -3515,6 +3516,12 @@ class MainWindow(QMainWindow):
         self.validate_project_action.triggered.connect(self.validate_project)
         self.run_loco_action = QAction("▶ Run LOCO", self)
         self.run_loco_action.triggered.connect(self.run_loco)
+        self.continue_loco_action = QAction("▶ Continue Last Fit", self)
+        self.continue_loco_action.setToolTip(
+            "Start a separate run from the latest compatible completed fitted state, using the current FIT settings."
+        )
+        self.continue_loco_action.triggered.connect(self.continue_last_fit)
+        self.continue_loco_action.setVisible(False)
         self.compare_reference_action = QAction("Compare imported measurements with initial model…", self)
         self.compare_reference_action.setToolTip(
             "Calculate a read-only reference ORM and RF response before fitting; no optimizer or machine writes."
@@ -3572,6 +3579,7 @@ class MainWindow(QMainWindow):
         project_menu = self.menuBar().addMenu("&Project")
         project_menu.addAction(self.validate_project_action)
         project_menu.addAction(self.run_loco_action)
+        project_menu.addAction(self.continue_loco_action)
         analysis_menu = self.menuBar().addMenu("&Analysis")
         analysis_menu.addAction(self.compare_orms_action)
         suite_menu=self.menuBar().addMenu("pyLOCO &Suite"); suite_menu.addAction(self.open_session_action); suite_menu.addSeparator(); suite_menu.addAction(self.open_measure_action); suite_menu.addAction(self.open_correct_action)
@@ -3604,6 +3612,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.validate_project_action)
         toolbar.addAction(self.run_loco_action)
+        toolbar.addAction(self.continue_loco_action)
         toolbar.addSeparator()
         toolbar.addAction(self.toggle_theme_action)
         self.accent_combo=QComboBox(); self.accent_combo.setToolTip("Shared suite accent color")
@@ -3630,6 +3639,9 @@ class MainWindow(QMainWindow):
         run_button = toolbar.widgetForAction(self.run_loco_action)
         if run_button is not None:
             run_button.setObjectName("primaryToolbarAction")
+        continue_button = toolbar.widgetForAction(self.continue_loco_action)
+        if continue_button is not None:
+            continue_button.setObjectName("secondaryToolbarAction")
 
     def _screenshot_project_directory(self):
         """Return the directory of the active saved FIT project."""
@@ -7233,6 +7245,19 @@ class MainWindow(QMainWindow):
             and self._run_thread is None
             and not self._run_preparing
         )
+        if hasattr(self, "continue_loco_action"):
+            candidate, reason = self._latest_compatible_completed_run()
+            available = bool(candidate) and gui_complete and self._run_thread is None and not self._run_preparing
+            self.continue_loco_action.setVisible(
+                bool(candidate)
+                or bool(self.project.completed_run.results_dir)
+                or not reason.startswith("No completed FIT result")
+            )
+            self.continue_loco_action.setEnabled(available)
+            self.continue_loco_action.setToolTip(
+                f"Continue from {candidate} using the current FIT settings. A separate run will be saved."
+                if candidate else f"Continue unavailable: {reason}"
+            )
         compatibility = self.project.compatibility_validation or {}
         compatibility_ready = self._compatibility_is_validated()
         if hasattr(self, "resume_fit_run_button"):
@@ -7386,11 +7411,154 @@ class MainWindow(QMainWindow):
 
 
 
+    @staticmethod
+    def _resume_mapping_for_results(results_dir: Path) -> dict:
+        return {
+            "enabled": True,
+            "directory": str(results_dir.resolve()),
+            "ring_file": "ring_pyloco.mat",
+            "fit_dict_file": "fit_dict.pkl",
+            "fit_results_file": "fit_results.npy",
+        }
+
+    @staticmethod
+    def _completed_result_state_error(results_dir: Path) -> str:
+        required = ("summary.json", "run_request.json", "ring_pyloco.mat", "fit_dict.pkl", "fit_results.npy")
+        missing = [name for name in required if not (results_dir / name).is_file()]
+        if missing:
+            return "Saved continuation state is incomplete; missing " + ", ".join(missing) + "."
+        try:
+            summary = json.loads((results_dir / "summary.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError) as exc:
+            return f"Saved completion metadata cannot be read: {exc}"
+        if not summary.get("completed_utc"):
+            return "The saved result is not marked as a completed FIT run."
+        return ""
+
+    def _continuation_compatibility_error(self, results_dir: Path) -> str:
+        state_error = self._completed_result_state_error(results_dir)
+        if state_error:
+            return state_error
+        try:
+            saved = json.loads((results_dir / "run_request.json").read_text(encoding="utf-8"))
+            current = LocoRunRequest.from_project(self.project)
+        except Exception as exc:
+            return f"Saved run compatibility metadata cannot be read: {exc}"
+
+        saved_lattice = Path(str(saved.get("lattice_path") or "")).expanduser()
+        current_lattice = Path(current.lattice_path).expanduser()
+        fingerprints = saved.get("input_fingerprints") or {}
+        saved_lattice_hash = str(fingerprints.get("lattice_sha256") or "")
+        if not saved_lattice_hash and not saved_lattice.is_file():
+            return f"The previous run's reference lattice is unavailable: {saved_lattice}"
+        if not current_lattice.is_file():
+            return f"The current reference lattice is unavailable: {current_lattice}"
+        if (saved_lattice_hash or file_sha256(saved_lattice)) != file_sha256(current_lattice):
+            return "The previous run used a different reference lattice checksum."
+        if str(saved.get("lattice_mat_variable") or "") != str(current.lattice_mat_variable or ""):
+            return "The previous run used a different MAT lattice variable."
+
+        saved_measurements = saved.get("measurements") or {}
+        if tuple(saved_measurements) != tuple(current.measurements):
+            return "The previous run used different measurement roles or ordering."
+        for role, current_name in current.measurements.items():
+            old_path = Path(str(saved_measurements.get(role) or "")).expanduser()
+            new_path = Path(current_name).expanduser()
+            saved_hash = str((fingerprints.get("measurement_sha256") or {}).get(role) or "")
+            if (not saved_hash and not old_path.is_file()) or not new_path.is_file():
+                return f"The {role} measurement needed for compatibility checking is unavailable."
+            if (saved_hash or file_sha256(old_path)) != file_sha256(new_path):
+                return f"The {role} measurement content differs from the completed run."
+
+        saved_elements = (saved.get("backend_mapping") or {}).get("MachineElements") or {}
+        current_elements = current.backend_mapping.get("MachineElements") or {}
+        for key, label in (
+            ("bpm_ords", "BPM"),
+            ("horizontal_corrector_ords", "horizontal-corrector"),
+            ("vertical_corrector_ords", "vertical-corrector"),
+        ):
+            if list(saved_elements.get(key) or []) != list(current_elements.get(key) or []):
+                return f"The ordered {label} selection differs from the completed run."
+        return ""
+
+    def _latest_compatible_completed_run(self) -> tuple[Path | None, str]:
+        candidates: set[Path] = set()
+        recorded = str(self.project.completed_run.results_dir or "")
+        if recorded:
+            candidates.add(Path(recorded).expanduser().resolve())
+        try:
+            request = LocoRunRequest.from_project(self.project)
+            root = request.results_root
+            if root.is_dir():
+                candidates.update(path.resolve() for path in root.iterdir() if path.is_dir())
+        except Exception:
+            pass
+        ordered = sorted(
+            candidates,
+            key=lambda path: (path / "summary.json").stat().st_mtime
+            if (path / "summary.json").is_file() else 0.0,
+            reverse=True,
+        )
+        latest_reason = "No completed FIT result is available for this project."
+        for path in ordered:
+            reason = self._continuation_compatibility_error(path)
+            if not reason:
+                return path, ""
+            if latest_reason.startswith("No completed"):
+                latest_reason = f"{path.name}: {reason}"
+        return None, latest_reason
+
+    def _apply_continuation_to_request(self, request, workflow, results_dir: Path):
+        """Apply the existing resume contract without mutating the edited recipe."""
+        if workflow is None:
+            request.backend_mapping["Resume"] = self._resume_mapping_for_results(results_dir)
+            return None
+        continued = deepcopy(workflow)
+        continued.stages[0].start_from = "saved_result"
+        continued.stages[0].saved_result = str(results_dir)
+        return continued
+
+    @staticmethod
+    def _apply_fresh_start_to_request(request, workflow):
+        """Make the primary Run action start from the selected reference lattice."""
+        request.backend_mapping["Resume"] = {"enabled": False}
+        if workflow is None:
+            return None
+        fresh = deepcopy(workflow)
+        fresh.stages[0].start_from = "original_model"
+        fresh.stages[0].saved_result = ""
+        return fresh
+
     @Slot()
     def run_loco(self) -> None:
+        self._start_loco_from(None)
+
+    @Slot()
+    def continue_last_fit(self) -> None:
+        candidate, reason = self._latest_compatible_completed_run()
+        if candidate is None:
+            QMessageBox.information(self, "Continue Last Fit unavailable", reason)
+            self._refresh_ui("Continuation is unavailable")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Continue completed FIT?",
+            "The new run will start from the fitted lattice and saved fitting state below, "
+            "while using the FIT parameters, stages and iteration counts currently shown.\n\n"
+            f"Previous run: {candidate}\n\n"
+            "The previous result directory will not be modified. Continue?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._start_loco_from(candidate)
+
+    def _start_loco_from(self, continuation: Path | None) -> None:
         if self._run_thread is not None or self._run_preparing:
             self.statusBar().showMessage("FIT is already running")
             return
+        self._pending_continue_results = str(continuation) if continuation else ""
         self._run_preparing = True
         self._run_cancel_requested = False
         self._set_waiting_game_status("running")
@@ -7423,6 +7591,12 @@ class MainWindow(QMainWindow):
             self.project.loco_config = self._collect_loco_configuration()
             request = LocoRunRequest.from_project(self.project)
             workflow = self.fit_recipe if len(self.fit_recipe.stages) > 1 else None
+            continuation = Path(self._pending_continue_results) if self._pending_continue_results else None
+            if continuation is not None:
+                workflow = self._apply_continuation_to_request(request, workflow, continuation)
+                self._append_run_log(f"Continue Last Fit: using completed run {continuation}")
+            else:
+                workflow = self._apply_fresh_start_to_request(request, workflow)
             if workflow is not None:
                 lattice = self._load_current_lattice() or []
                 names = [str(getattr(element, "CommonName", None) or getattr(element, "FamName", None) or getattr(element, "Name", "")) for element in lattice]
@@ -7440,6 +7614,7 @@ class MainWindow(QMainWindow):
             import traceback
 
             self._run_preparing = False
+            self._pending_continue_results = ""
             self.results_workspace.fail_run(cancelled=False)
             self.results_workspace.run_status_label.setText("Run preparation failed")
             self.results_workspace.run_iteration_label.setText("Not started")
@@ -7491,6 +7666,7 @@ class MainWindow(QMainWindow):
         # on the worker object after its event loop has started.
         QMetaObject.invokeMethod(self._run_worker, "run", Qt.QueuedConnection)
         self._run_preparing = False
+        self._pending_continue_results = ""
         self._refresh_ui("LOCO run started")
 
     @Slot(object)

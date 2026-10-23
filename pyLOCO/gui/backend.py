@@ -20,12 +20,21 @@ import re
 import copy
 import shutil
 import tempfile
+import hashlib
 from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .models.project import ProjectMetadata, validate_element_groups
+
+
+def _input_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass(slots=True)
@@ -286,8 +295,15 @@ def run_loco_request(
                 "for Results; worker-thread plot windows remain disabled."
             )
         kwargs["output_dir"] = str(results_dir)
+        persisted_request = _jsonable(asdict(request))
+        persisted_request["input_fingerprints"] = {
+            "lattice_sha256": _input_sha256(request.lattice_path),
+            "measurement_sha256": {
+                role: _input_sha256(path) for role, path in request.measurements.items()
+            },
+        }
         (results_dir / "run_request.json").write_text(
-            json.dumps(_jsonable(asdict(request)), indent=2), encoding="utf-8"
+            json.dumps(persisted_request, indent=2), encoding="utf-8"
         )
         log("Starting pyLOCO backend execution...")
         stream = _ProgressStream(log)
@@ -990,7 +1006,11 @@ def _make_results_dir(request: LocoRunRequest) -> Path:
     name = configured or request.project_name
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(name)).strip("_") or "pyloco"
     path = request.results_root / f"{safe}-{stamp}"
-    path.mkdir(parents=True, exist_ok=True)
+    suffix = 2
+    while path.exists():
+        path = request.results_root / f"{safe}-{stamp}-{suffix}"
+        suffix += 1
+    path.mkdir(parents=True, exist_ok=False)
     return path
 
 
