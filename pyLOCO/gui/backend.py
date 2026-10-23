@@ -280,6 +280,11 @@ def run_loco_request(
                 iteration=int(iteration),
                 retain_matrix=retain_full_jacobian,
             )
+        if requested_svd_plot:
+            log(
+                "SVD plot requested: capturing the final numerical Jacobian spectrum "
+                "for Results; worker-thread plot windows remain disabled."
+            )
         kwargs["output_dir"] = str(results_dir)
         (results_dir / "run_request.json").write_text(
             json.dumps(_jsonable(asdict(request)), indent=2), encoding="utf-8"

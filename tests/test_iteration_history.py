@@ -198,6 +198,72 @@ def test_stage_initial_selection_uses_recorded_initial_chi2(tmp_path):
     view.close()
 
 
+def test_final_iteration_uses_root_svd_spectrum_and_reopens_without_refit(tmp_path):
+    """The completed final state owns the root spectrum; earlier states do not."""
+    final_spectrum = np.asarray([9.0, 3.0, 1.0])
+    np.savez_compressed(
+        tmp_path / "loco_results.npz",
+        singular_values=final_spectrum,
+        orm_model=np.zeros((4, 2)),
+        chi2_history=np.asarray([5.0]),
+    )
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "initial_chi2": 10.0, "chi2_history": [5.0], "blocks": {},
+    }))
+    (tmp_path / "run_request.json").write_text(json.dumps({
+        "backend_mapping": {
+            "LOCOOptions": {"show_svd_plot": True, "svd_selection_method": "threshold"},
+            "MachineElements": {},
+        },
+    }))
+    iterations = tmp_path / "iterations"
+    for number in (0, 1):
+        directory = iterations / f"iteration_{number:03d}"
+        directory.mkdir(parents=True)
+        (directory / "iteration.json").write_text(json.dumps({
+            "iteration": number, "completed": True, "chi2_before": 10.0,
+            "chi2_after": 10.0 / (number + 1),
+        }))
+        # A local final-iteration value must not override the authoritative
+        # post-run spectrum saved at the root.
+        arrays = {"orm_model": np.zeros((4, 2))}
+        if number == 1:
+            arrays["singular_values"] = np.asarray([0.25])
+        np.savez_compressed(directory / "loco_results.npz", **arrays)
+    (iterations / "manifest.json").write_text(json.dumps({
+        "run_status": "completed",
+        "iterations": [
+            {"iteration": 0, "directory": "iteration_000"},
+            {"iteration": 1, "directory": "iteration_001"},
+        ],
+    }))
+
+    from pyLOCO.gui.results.results_workspace import ResultsWorkspace
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    workspace = ResultsWorkspace()
+    workspace.load_results(tmp_path)
+    assert workspace.iteration_selector.currentText() == "Iteration 1 / Final"
+    np.testing.assert_array_equal(workspace.loader.svd_metadata["spectrum"], final_spectrum)
+    assert Path(workspace.loader.svd_metadata["spectrum_source"]) == tmp_path / "loco_results.npz"
+    assert "final-run artifact" in workspace.svd.note.text()
+
+    workspace.iteration_selector.setCurrentIndex(0)
+    app.processEvents()
+    assert workspace.loader.iteration == 0
+    assert workspace.loader.svd_metadata["spectrum"] is None
+    assert "not persisted" in workspace.svd.note.text()
+    workspace.close()
+
+    # Reopening the saved result performs no backend calculation and resolves
+    # the same persisted root artifact again.
+    reopened = ResultsWorkspace()
+    reopened.load_results(tmp_path)
+    np.testing.assert_array_equal(reopened.loader.svd_metadata["spectrum"], final_spectrum)
+    assert reopened.iteration_selector.currentText() == "Iteration 1 / Final"
+    reopened.close()
+
+
 def test_results_workspace_selector_switches_all_views(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "at", types.SimpleNamespace(
         save_lattice=lambda ring, path: Path(path).write_text(str(ring.scale))))

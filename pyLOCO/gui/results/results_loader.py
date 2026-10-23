@@ -1260,10 +1260,11 @@ class ResultsLoader:
     @property
     def svd_metadata(self) -> dict[str, Any]:
         config = self.options
-        spectrum = self._npz_value("singular_values")
+        spectrum = self._npz_value("singular_values", final_run_artifact=True)
         return {
             "method": config.get("svd_selection_method"), "threshold": config.get("svd_threshold"),
             "rank": config.get("cut_"), "spectrum": spectrum,
+            "spectrum_source": self._cache.get("npz-source:singular_values"),
             "measurement_values": int(self.fitted_orm.size) if self.fitted_orm is not None else None,
             "fitted_dofs": self.fitted_parameter_count,
         }
@@ -1573,19 +1574,53 @@ class ResultsLoader:
             result.append(("info", "Dispersion was not included in this fit"))
         return result
 
-    def _npz_value(self, name: str):
-        key = f"npz:{name}"
+    def _is_completed_final_iteration(self) -> bool:
+        """Return true only for the manifest-declared final completed state."""
+        if self.iteration is None:
+            return True
+        path = self.result_dir / "iterations" / "manifest.json"
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            iterations = [
+                int(entry["iteration"])
+                for entry in manifest.get("iterations", [])
+                if isinstance(entry, dict) and isinstance(entry.get("iteration"), int)
+            ]
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+        return bool(
+            manifest.get("run_status") == "completed"
+            and iterations
+            and int(self.iteration) == max(iterations)
+        )
+
+    def _npz_value(self, name: str, *, final_run_artifact: bool = False):
+        key = f"npz:{name}:final={int(final_run_artifact)}"
         if key not in self._cache:
-            path = self.artifact_dir / "loco_results.npz"
-            if not path.exists():
-                self._cache[key] = None
-            else:
+            root_path = self.result_dir / "loco_results.npz"
+            artifact_path = self.artifact_dir / "loco_results.npz"
+            paths = [artifact_path]
+            if final_run_artifact and self._is_completed_final_iteration():
+                # The final Jacobian spectrum is produced after the backend run
+                # and intentionally belongs to the run root.  Earlier
+                # iterations must never inherit it.
+                paths = [root_path]
+                if artifact_path != root_path:
+                    paths.append(artifact_path)
+            self._cache[key] = None
+            self._cache[f"npz-source:{name}"] = None
+            for path in paths:
+                if not path.exists():
+                    continue
                 try:
                     import numpy as np
                     with np.load(path, allow_pickle=True) as archive:
-                        self._cache[key] = np.array(archive[name]) if name in archive else None
+                        if name in archive:
+                            self._cache[key] = np.array(archive[name])
+                            self._cache[f"npz-source:{name}"] = str(path)
+                            break
                 except (OSError, ValueError, KeyError):
-                    self._cache[key] = None
+                    continue
         return self._cache[key]
 
     def _combined_limits(self, matrices, *, symmetric: bool):

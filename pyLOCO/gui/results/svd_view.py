@@ -2,6 +2,7 @@
 
 import json
 import shutil
+from pathlib import Path
 from PySide6.QtWidgets import QFormLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from .plot_canvas import PlotCanvas
@@ -28,7 +29,13 @@ class SvdView(QWidget):
         if spectrum is None:
             self.note.setText(f"Exact calculated Jacobian persisted with shape {tuple(loader.jacobian_metadata.get('shape', ()))}." if loader.jacobian_available else "The singular-value spectrum and Jacobian matrix were not persisted in this result directory. This view does not recompute them or substitute another quantity.")
             self.plot.hide(); return
-        self.note.setText("Singular values loaded from the persisted run artifact."); self.plot.show()
+        source = metadata.get("spectrum_source")
+        source_note = (
+            "final-run artifact"
+            if source and Path(source).parent == loader.result_dir
+            else "iteration artifact"
+        )
+        self.note.setText(f"Singular values loaded from the persisted {source_note}."); self.plot.show()
         axis = self.plot.figure.add_subplot(111); axis.semilogy(spectrum, color="#19a974")
         axis.set(xlabel="Singular-value index", ylabel="Singular value", title="Persisted singular-value spectrum")
         axis.grid(True, alpha=.25); self.plot.apply_theme(); self.plot.canvas.draw_idle()
