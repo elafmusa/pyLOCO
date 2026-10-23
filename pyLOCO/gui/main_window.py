@@ -71,7 +71,7 @@ from .measurement_mapping import (
     load_document as load_measurement_mapping_document, mapping_counts as measurement_mapping_counts,
     mapping_template as measurement_mapping_template, measurement_inventory,
     ordered_ordinals as measurement_mapping_ordered_ordinals,
-    validate_mapping as validate_measurement_mapping,
+    validate_mapping as validate_measurement_mapping, python_mapping_helper_script,
 )
 from .mapping_table import CopyableMappingTable, configure_mapping_table, identity_match_label
 from pyLOCO.machine_mapping import (is_document as is_machine_mapping,
@@ -1780,16 +1780,24 @@ class MainWindow(QMainWindow):
         mapping_actions = QHBoxLayout()
         self.find_measurement_mappings_button = QPushButton("Find Machine Mapping")
         self.create_measurement_mapping_template_button = QPushButton("Create Machine Mapping template…")
+        self.measurement_mapping_python_helper_button = QPushButton("Python Mapping Helper…")
         self.load_measurement_mapping_button = QPushButton("Load Machine Mapping…")
+        self.measurement_mapping_details_button = QPushButton("Mapping Details")
         self.save_measurement_mapping_button = QPushButton("Save validated Machine Mapping…")
         self.find_measurement_mappings_button.clicked.connect(self.find_measurement_mappings)
         self.create_measurement_mapping_template_button.clicked.connect(self.create_measurement_mapping_template)
+        self.measurement_mapping_python_helper_button.clicked.connect(self.show_measurement_mapping_python_helper)
         self.load_measurement_mapping_button.clicked.connect(self.load_measurement_mapping)
+        self.measurement_mapping_details_button.clicked.connect(self.show_measurement_mapping_details)
         self.save_measurement_mapping_button.clicked.connect(self.save_validated_measurement_mapping)
-        for button in (self.find_measurement_mappings_button, self.create_measurement_mapping_template_button,
-                       self.load_measurement_mapping_button, self.save_measurement_mapping_button):
+        for button in (self.find_measurement_mappings_button, self.load_measurement_mapping_button,
+                       self.create_measurement_mapping_template_button, self.measurement_mapping_python_helper_button):
             mapping_actions.addWidget(button)
         mapping_actions.addStretch(1); measurement_mapping_layout.addLayout(mapping_actions)
+        mapping_review_actions=QHBoxLayout()
+        mapping_review_actions.addWidget(self.measurement_mapping_details_button)
+        mapping_review_actions.addWidget(self.save_measurement_mapping_button)
+        mapping_review_actions.addStretch(1); measurement_mapping_layout.addLayout(mapping_review_actions)
         self.measurement_mapping_feedback = QLabel("Not run yet — load modern Measure data and a reference lattice.")
         self.measurement_mapping_feedback.setWordWrap(True); self.measurement_mapping_feedback.setObjectName("mappingHelpText")
         measurement_mapping_layout.addWidget(self.measurement_mapping_feedback)
@@ -1872,6 +1880,9 @@ class MainWindow(QMainWindow):
         self.active_measurement_session_label.setObjectName("activeMeasurementSession")
         self.active_measurement_session_label.setWordWrap(True)
         self.active_measurement_session_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.measurement_session_import_summary = QLabel("Session import: none")
+        self.measurement_session_import_summary.setWordWrap(True)
+        self.measurement_session_import_summary.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.measurement_metadata_label = QLabel("No measurement metadata loaded."); self.measurement_metadata_label.setWordWrap(True)
         self.measurement_file_status = QLabel("No measurement files imported.")
         self.measurement_file_status.setObjectName("measurementFileStatus")
@@ -1882,7 +1893,8 @@ class MainWindow(QMainWindow):
         file_status_row = QHBoxLayout()
         file_status_row.addWidget(self.measurement_file_status, 1)
         file_status_row.addWidget(self.locate_missing_measurement_button)
-        layout.addWidget(self.measurement_hint); layout.addWidget(self.active_measurement_session_label); layout.addWidget(self.measurement_metadata_label)
+        layout.addWidget(self.measurement_hint); layout.addWidget(self.active_measurement_session_label)
+        layout.addWidget(self.measurement_session_import_summary); layout.addWidget(self.measurement_metadata_label)
         layout.addLayout(file_status_row)
         layout.addWidget(self.measurement_list)
         page.layout().addWidget(group)
@@ -5203,72 +5215,166 @@ class MainWindow(QMainWindow):
         return self._launch_suite("correct",*arguments)
 
     @Slot()
+    def _choose_measurement_session_import_mode(self, handoff, full: dict | None) -> str | None:
+        # Command-line handoff and offscreen regression tests do not have an
+        # interactive owner. Use the safest useful default; visible GUI opens
+        # always require an explicit choice below.
+        if not self.isVisible():return "full" if isinstance(full,dict) else "measurements_only"
+        dialog=QDialog(self); dialog.setWindowTitle("Import Measure session")
+        layout=QVBoxLayout(dialog)
+        available=", ".join(role.replace("_"," ") for role in handoff.available_roles) or "none"
+        full_available=isinstance(full,dict)
+        summary=QLabel(
+            f"Session: {handoff.session_id}\nMeasurements: {available}\n"
+            f"Saved lattice: {'available' if full_available and (full.get('reference_lattice') or {}).get('path') else 'not available'}\n"
+            f"Saved Machine Mapping: {'available' if full_available and full.get('mapping') else 'not available'}"
+        )
+        summary.setWordWrap(True); summary.setTextInteractionFlags(Qt.TextSelectableByMouse); layout.addWidget(summary)
+        full_choice=QRadioButton("Full Measure session (recommended)")
+        full_choice.setToolTip("Import measurements, saved lattice, Machine Mapping and exact measured BPM/H/V order.")
+        measurements_choice=QRadioButton("Measurements only")
+        measurements_choice.setToolTip("Keep the current FIT lattice, mapping, selections and fitting configuration.")
+        full_choice.setChecked(full_available); measurements_choice.setChecked(not full_available)
+        full_choice.setEnabled(full_available)
+        layout.addWidget(full_choice); layout.addWidget(measurements_choice)
+        note=QLabel(
+            "FIT stages, fitted quadrupoles, weights, SVD and optimizer settings are kept in both modes. "
+            "Cancel leaves the FIT project unchanged."
+        ); note.setWordWrap(True); layout.addWidget(note)
+        buttons=QDialogButtonBox(QDialogButtonBox.Ok|QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        if dialog.exec()!=QDialog.Accepted:return None
+        return "full" if full_choice.isChecked() else "measurements_only"
+
+    def _apply_imported_mapping_to_candidate(self, candidate: ProjectMetadata, recipe: FitRecipe,
+                                             mapping: dict, inventory: dict[str,list[str]]) -> None:
+        roles={"bpm_ords":"bpm","horizontal_corrector_ords":"horizontal_corrector",
+               "vertical_corrector_ords":"vertical_corrector"}
+        config=deepcopy(candidate.loco_config); elements=deepcopy(config.machine_elements)
+        reference=mapping.get("reference_lattice") or {}; inventory_hash=(mapping.get("inventory") or {}).get("sha256","")
+        for field,role in roles.items():
+            values=measurement_mapping_ordered_ordinals(mapping,role)
+            if values is None:raise ValueError(f"The saved {role.replace('_',' ')} mapping is incomplete.")
+            setattr(elements,field,list(values))
+            config.element_selection_state[field]={
+                "version":1,"method":"validated_measurement_mapping","mapping_schema":mapping.get("schema",""),
+                "mapping_provenance":"imported from Measure session and revalidated",
+                "inventory_sha256":inventory_hash,"lattice_sha256":reference.get("sha256",""),
+                "measured_role":role,"measured_names":list(inventory[role]),
+                "generated_ords":list(values),"resolved_ords":list(values),"manual_additions":[],"manual_removals":[],
+            }
+        config.machine_elements=elements
+        config.element_selection_state["measurement_session_names"]={
+            "bpms":list(inventory["bpm"]),"horizontal_correctors":list(inventory["horizontal_corrector"]),
+            "vertical_correctors":list(inventory["vertical_corrector"]),
+        }
+        config._sync_response_matrix_elements(); candidate.loco_config=config
+        override=self._machine_override_from_config(config); self._apply_machine_override_to_recipe(recipe,override)
+        candidate.fit_recipe=recipe.to_dict(); candidate.recipe_machine_policy="current"
+        candidate.machine_configuration_override=deepcopy(override)
+
+    @Slot()
     def open_measurement_session(self,path: Path|None=None):
         filename=str(path) if path else QFileDialog.getOpenFileName(self,"Open Measurement Session","","pyLOCO Measurement Session (*.pyloco-session.json *.json)")[0]
         if not filename:return False
         try:handoff=inspect_measurement_session(filename)
         except Exception as exc:QMessageBox.warning(self,"Cannot import Measurement Session",str(exc)); return False
-        if self.project.measurements:
-            answer=QMessageBox.question(self,"Import Measure session?","Keep the current FIT recipe and replace its measurement bindings with this session?\n\nFitting stages, quadrupole selections, weights, SVD and optimizer settings remain unchanged. Cancel makes no changes.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)
-            if answer!=QMessageBox.Yes:return False
-        self.project.measurements={role:ImportedDataset(role,str(source),source.suffix.lower().lstrip("."),source.stat().st_size,deepcopy(handoff.options[role])) for role,source in handoff.files.items()}
-        self.project.measurement_session=deepcopy(handoff.provenance); self.project.measurement_session["manifest"]=str(handoff.manifest)
-        self.project.measurement_device_mapping={}
-        self._mark_compatibility_stale("Measurement session changed; validation is required.")
+        full=(handoff.provenance.get("session_metadata") or {}).get("full_measure_session")
+        mode=self._choose_measurement_session_import_mode(handoff,full if isinstance(full,dict) else None)
+        if mode is None:return False
+        candidate=deepcopy(self.project); recipe=deepcopy(self.fit_recipe); notices=[]
+        candidate.measurements={role:ImportedDataset(role,str(source),source.suffix.lower().lstrip("."),source.stat().st_size,deepcopy(handoff.options[role])) for role,source in handoff.files.items()}
+        candidate.measurement_session=deepcopy(handoff.provenance); candidate.measurement_session["manifest"]=str(handoff.manifest)
         orm=handoff.options.get("orm",{}); dispersion=handoff.options.get("dispersion",{})
-        if orm:
-            self.project.loco_config.response_matrix.bidirectional=bool(orm.get("bidirectional",False))
+        # Legacy manifests have no full-session state; retain their established
+        # import of interpretation settings. For modern full sessions the
+        # explicit Measurements-only choice leaves FIT configuration intact.
+        import_measurement_settings=mode=="full" or not isinstance(full,dict)
+        if orm and import_measurement_settings:
+            candidate.loco_config.response_matrix.bidirectional=bool(orm.get("bidirectional",False))
             for key,plane in (("requested_kick_h_rad","horizontal"),("requested_kick_v_rad","vertical")):
                 values=np.asarray(orm.get(key,()),dtype=float)
-                if values.size and np.allclose(values,values[0]):
-                    value=float(abs(values[0])); setattr(self.project.loco_config.response_matrix,"dkick_h" if plane=="horizontal" else "dkick_v",value); setattr(self.project.loco_config.parameters.cmstep,plane,value)
-            self.project.loco_config.element_selection_state["measurement_session_names"]={"bpms":orm.get("bpm_names",[]),"horizontal_correctors":orm.get("horizontal_corrector_names",[]),"vertical_correctors":orm.get("vertical_corrector_names",[])}
+                if import_measurement_settings and values.size and np.allclose(values,values[0]):
+                    value=float(abs(values[0])); setattr(candidate.loco_config.response_matrix,"dkick_h" if plane=="horizontal" else "dkick_v",value); setattr(candidate.loco_config.parameters.cmstep,plane,value)
         if dispersion:
-            step=float(dispersion["rf_step_hz"]); self.project.loco_config.response_matrix.rfStep=step; self.project.loco_config.parameters.rfStep=step; self.project.loco_config.fixed_parameters.rfstep=step; self.project.loco_config.response_matrix.includeDispersion=True; self.project.loco_config.rejection.includeDispersion=True
-        full=(handoff.provenance.get("session_metadata") or {}).get("full_measure_session")
-        mapping_ready=False
-        if isinstance(full,dict):
+            step=float(dispersion["rf_step_hz"])
+            if import_measurement_settings:
+                candidate.loco_config.response_matrix.rfStep=step; candidate.loco_config.parameters.rfStep=step
+                candidate.loco_config.fixed_parameters.rfstep=step
+        mapping_ready=False; imported_machine_mapping_document=None
+        mapping_retained=False
+        if mode=="measurements_only":
+            issues=self._reconcile_retained_measurement_mapping(candidate)
+            if issues:notices.extend(issues)
+            mapping_retained=bool(candidate.measurement_device_mapping) and not issues
+        elif isinstance(full,dict):
             lattice_info=full.get("reference_lattice") or {}; relative=lattice_info.get("path")
             if relative:
                 lattice_path=(handoff.manifest.parent/str(relative)).resolve()
                 expected=str(lattice_info.get("sha256", ""))
                 if not lattice_path.is_file() or (expected and file_sha256(lattice_path)!=expected):
-                    QMessageBox.warning(self,"Full Measure session lattice unavailable","The saved reference lattice is missing or its checksum changed. Measurements were imported, but lattice mapping was not reused.")
+                    notices.append("Saved reference lattice is missing or its checksum changed.")
                 else:
-                    replace_lattice=True
-                    if self.project.lattice.path:
-                        current=self.project.resolve_path(self.project.lattice.path)
-                        try:same=current.is_file() and file_sha256(current)==expected
-                        except OSError:same=False
-                        if not same:
-                            replace_lattice=QMessageBox.question(self,"Reference lattice differs","The imported Measure session uses a different reference lattice. Replace the current FIT lattice while preserving the FIT recipe?\n\nCancel leaves the current FIT project unchanged except for the already imported measurements.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)==QMessageBox.Yes
-                    if replace_lattice:
-                        self.project.lattice=LatticeSelection(path=str(lattice_path),file_type=lattice_path.suffix.lower().lstrip("."),element_count=lattice_info.get("element_count"),mat_variable=str(lattice_info.get("mat_variable", "")))
-                        saved_mapping=full.get("mapping") or {}
-                        if saved_mapping and orm:
-                            inventory=measurement_inventory({"files":{"orm":orm}}); configuration=None
-                            config_info=full.get("pyaml_configuration") or {}; config_value=config_info.get("path") if config_info.get("included") else config_info.get("external_path")
-                            if config_value:
-                                candidate=(handoff.manifest.parent/str(config_value)).resolve() if not Path(str(config_value)).is_absolute() else Path(str(config_value)).expanduser().resolve()
-                                if candidate.is_file() and (not config_info.get("sha256") or file_sha256(candidate)==config_info.get("sha256")):configuration=candidate
-                            requires_config=bool((saved_mapping.get("machine_profile") or {}).get("configuration_sha256"))
-                            if not requires_config or configuration is not None:
-                                try:
-                                    ring=load_project_lattice(lattice_path,self.project.lattice.mat_variable or None)
-                                    self.project.measurement_device_mapping=validate_measurement_mapping(saved_mapping,ring,inventory,lattice_path=lattice_path,configuration_path=configuration,require_provenance=True)
-                                    mapping_ready=measurement_mapping_counts(self.project.measurement_device_mapping)["mapped"]==measurement_mapping_counts(self.project.measurement_device_mapping)["total"]
-                                except Exception as exc:
-                                    self.project.measurement_device_mapping={}; self._append_run_log(f"Saved Measure mapping requires revalidation: {exc}")
-                            else:
-                                self.project.measurement_device_mapping={}; self._append_run_log("Saved Measure mapping requires the checksummed pyAML configuration before it can be reused.")
-        self.project.modified=True; self._load_config_to_widgets(); self._refresh_ui(f"Imported Measurement Session {handoff.session_id}")
-        if mapping_ready:self.use_measurement_mappings_for_fit()
+                    candidate.lattice=LatticeSelection(path=str(lattice_path),file_type=lattice_path.suffix.lower().lstrip("."),element_count=lattice_info.get("element_count"),mat_variable=str(lattice_info.get("mat_variable", "")))
+                    saved_mapping=full.get("mapping") or {}
+                    if saved_mapping and orm:
+                        if is_machine_mapping(saved_mapping):imported_machine_mapping_document=deepcopy(saved_mapping)
+                        mapping_document=measurement_projection(saved_mapping) if is_machine_mapping(saved_mapping) else saved_mapping
+                        inventory=measurement_inventory({"files":{"orm":orm}}); configuration=None
+                        wanted={(role,name) for role,names in inventory.items() for name in names}
+                        source_keys={(row.get("role"),row.get("measured_name")) for row in mapping_document.get("mappings",())}
+                        # A saved whole-machine mapping legitimately contains
+                        # more devices than a restricted ORM. Project only the
+                        # exact measured identities; missing requested entries
+                        # remain unresolved in the strict validator below.
+                        if source_keys!=wanted:
+                            mapping_document=deepcopy(mapping_document)
+                            mapping_document["mappings"]=[row for row in mapping_document.get("mappings",())
+                                if (row.get("role"),row.get("measured_name")) in wanted]
+                            mapping_document["inventory"]={
+                                "sha256":measurement_inventory_fingerprint(inventory),
+                                "counts":{role:len(names) for role,names in inventory.items()},
+                            }
+                        config_info=full.get("pyaml_configuration") or {}; config_value=config_info.get("path") if config_info.get("included") else config_info.get("external_path")
+                        if config_value:
+                            config_candidate=(handoff.manifest.parent/str(config_value)).resolve() if not Path(str(config_value)).is_absolute() else Path(str(config_value)).expanduser().resolve()
+                            if config_candidate.is_file() and (not config_info.get("sha256") or file_sha256(config_candidate)==config_info.get("sha256")):configuration=config_candidate
+                        try:
+                            ring=load_project_lattice(lattice_path,candidate.lattice.mat_variable or None)
+                            validated=validate_measurement_mapping(mapping_document,ring,inventory,lattice_path=lattice_path,configuration_path=configuration,require_provenance=True)
+                            mapping_ready=measurement_mapping_counts(validated)["mapped"]==measurement_mapping_counts(validated)["total"]
+                            if not mapping_ready:raise ValueError("Saved mapping is incomplete.")
+                            candidate.measurement_device_mapping=validated
+                            self._apply_imported_mapping_to_candidate(candidate,recipe,validated,inventory)
+                            if (mapping_document.get("machine_profile") or {}).get("configuration_sha256") and configuration is None:
+                                notices.append("Machine Mapping lattice and ordered inventory were revalidated offline; machine-configuration identity will be checked after connection.")
+                        except Exception as exc:
+                            candidate.measurement_device_mapping={}; notices.append(f"Saved Machine Mapping requires revalidation: {exc}. Use Load Machine Mapping to locate another saved mapping.")
+                    else:
+                        candidate.measurement_device_mapping={}; notices.append("No Machine Mapping was saved in this Measure session. Use Load Machine Mapping if a separate file is available.")
+            else:notices.append("No reference lattice was saved in this Measure session.")
+        candidate.compatibility_validation={"required":True,"status":"validation_required",
+            "issues":notices or ["Imported Measure session must be validated before running FIT."]}
+        if mode=="measurements_only":
+            mapping_source=("Kept from FIT project / Revalidated" if mapping_retained else
+                            ("Invalidated — incompatible with imported measurements" if notices else "No existing FIT mapping"))
+        else:mapping_source="Imported from Measure session / Revalidated" if mapping_ready else "Not restored"
+        candidate.measurement_session["fit_import"]={"mode":mode,"source":str(handoff.manifest),
+            "measurements":"Imported from Measure session",
+            "reference_lattice":"Imported from Measure session" if mode=="full" and candidate.lattice.path else "Kept from FIT project",
+            "machine_mapping":mapping_source,
+            "device_selections":"Imported from Measure session" if mapping_ready else ("Kept from FIT project" if mode=="measurements_only" else "Not restored")}
+        candidate.modified=True
+        self.project=candidate; self.fit_recipe=recipe; self._load_config_to_widgets(); self._refresh_fit_workflow_table(0)
+        if imported_machine_mapping_document is not None:self._loaded_machine_mapping_document=imported_machine_mapping_document
+        self._refresh_ui(f"Imported Measurement Session {handoff.session_id}")
         available="\n".join(f"✓ {role.replace('_',' ').title()}" for role in handoff.available_roles) or "—"
         missing="\n".join(f"✗ {role.replace('_',' ').title()}" for role in handoff.missing_roles) or "None"
         message=f"Measurement Session: {handoff.session_id}\n\nAvailable:\n{available}\n\nMissing:\n{missing}"
         if "orm" in handoff.missing_roles:message+="\n\nA LOCO fit cannot run until an ORM is supplied. Existing measurements were imported without fabrication."
         self.statusBar().showMessage(f"Measurement session imported • {handoff.session_id}")
-        if "orm" in handoff.missing_roles:self._append_run_log(message)
+        if notices:message+="\n\nAttention:\n"+"\n".join(f"• {item}" for item in notices)
+        if "orm" in handoff.missing_roles or notices:self._append_run_log(message)
         return True
 
     def _snapshot_project_from_widgets(self) -> None:
@@ -5983,7 +6089,40 @@ class MainWindow(QMainWindow):
         self.measurement_mapping_feedback.setText(
             f"Template saved — not validated: {target.name}. Fill in only lattice_ordinal for unresolved devices, then load it."
         )
+        self._last_measurement_mapping_template = target.resolve()
         return True
+
+    @Slot()
+    def show_measurement_mapping_python_helper(self) -> None:
+        dialog=QDialog(self); dialog.setWindowTitle("Python Mapping Helper")
+        dialog.setMinimumSize(820,620); dialog.resize(980,760); dialog.setSizeGripEnabled(True)
+        layout=QVBoxLayout(dialog); form=QFormLayout(); layout.addLayout(form)
+        template_path=getattr(self,"_last_measurement_mapping_template",None)
+        template=QLineEdit(str(template_path or ""))
+        lattice=QLineEdit(str(self.project.resolve_path(self.project.lattice.path)) if self.project.lattice.path else "")
+        variable=QLineEdit(self.project.lattice.mat_variable or "")
+        output_parent=template_path.parent if template_path is not None else Path.cwd()
+        output=QLineEdit(str(output_parent/"machine-mapping-completed.json"))
+        form.addRow("Mapping template JSON",template); form.addRow("AT lattice",lattice)
+        form.addRow("MAT variable",variable); form.addRow("Output JSON",output)
+        editor=QPlainTextEdit(); editor.setLineWrapMode(QPlainTextEdit.NoWrap); layout.addWidget(editor,1)
+        def refresh_script(*_):
+            editor.setPlainText(python_mapping_helper_script(template.text(),lattice.text(),variable.text(),output.text()))
+        for field in (template,lattice,variable,output):field.textChanged.connect(refresh_script)
+        refresh_script()
+        buttons=QHBoxLayout(); copy_button=QPushButton("Copy Script"); save_button=QPushButton("Save Script…"); close=QPushButton("Close")
+        def copy_script():
+            QApplication.clipboard().setText(editor.toPlainText()); copy_button.setText("Copied ✓")
+            QTimer.singleShot(1800,lambda: copy_button.setText("Copy Script"))
+        def save_script():
+            filename=QFileDialog.getSaveFileName(dialog,"Save Python mapping helper","fill-machine-mapping.py","Python (*.py)")[0]
+            if filename:Path(filename).expanduser().write_text(editor.toPlainText(),encoding="utf-8")
+        copy_button.clicked.connect(copy_script); save_button.clicked.connect(save_script); close.clicked.connect(dialog.accept)
+        buttons.addWidget(copy_button); buttons.addWidget(save_button); buttons.addStretch(1); buttons.addWidget(close); layout.addLayout(buttons)
+        self.mapping_helper_dialog=dialog; self.mapping_helper_editor=editor
+        self.mapping_helper_template=template; self.mapping_helper_lattice=lattice
+        self.mapping_helper_variable=variable; self.mapping_helper_output=output
+        dialog.exec()
 
     @Slot()
     def load_measurement_mapping(self) -> bool:
@@ -6053,6 +6192,7 @@ class MainWindow(QMainWindow):
                 if ready else "Load measurements and a reference lattice to begin."
             )
             self.save_measurement_mapping_button.setEnabled(False)
+            self.measurement_mapping_details_button.setEnabled(False)
             self.use_measurement_mappings_button.setEnabled(False)
             return
         unresolved = counts["total"] - counts["mapped"]
@@ -6075,6 +6215,7 @@ class MainWindow(QMainWindow):
         else:
             text = f"{counts['mapped']}/{counts['total']} devices mapped. Next: Use mappings in FIT."
         self.measurement_mapping_feedback.setText(text)
+        self.measurement_mapping_details_button.setEnabled(True)
         self.save_measurement_mapping_button.setEnabled(not unresolved)
         self.use_measurement_mappings_button.setEnabled(not unresolved)
 
@@ -6085,6 +6226,15 @@ class MainWindow(QMainWindow):
         index = self.measurement_mapping_filter.findData(mode)
         if index >= 0:
             self.measurement_mapping_filter.setCurrentIndex(index)
+
+    @Slot()
+    def show_measurement_mapping_details(self) -> None:
+        """Reveal the existing copyable detail table without creating a second mapping view."""
+        index=self.measurement_mapping_filter.findData("all")
+        if index>=0:self.measurement_mapping_filter.setCurrentIndex(index)
+        self.measurement_mapping_search.clear(); self._refresh_measurement_mapping_table()
+        self.measurement_mapping_table.setFocus(Qt.OtherFocusReason)
+        self.measurement_mapping_table.scrollToTop()
 
     def _refresh_measurement_mapping_table(self, *_args) -> None:
         if not hasattr(self, "measurement_mapping_table"): return
@@ -6762,9 +6912,24 @@ class MainWindow(QMainWindow):
             self.active_measurement_session_label.setToolTip(
                 f"Session: {session_name}\nManifest: {manifest}"
             )
+            imported=session.get("fit_import") or {}
+            if imported:
+                self.measurement_session_import_summary.setText(
+                    "Session Import — "
+                    f"Measurements: {imported.get('measurements','Not recorded')} · "
+                    f"Reference lattice: {imported.get('reference_lattice','Not recorded')} · "
+                    f"Machine Mapping: {imported.get('machine_mapping','Not recorded')} · "
+                    f"BPM/H/V selections: {imported.get('device_selections','Not recorded')}"
+                )
+                self.measurement_session_import_summary.setToolTip(str(imported.get("source",manifest)))
+            else:
+                self.measurement_session_import_summary.setText("Session import provenance: not recorded")
+                self.measurement_session_import_summary.setToolTip("")
         else:
             self.active_measurement_session_label.setText("Active measurement session: none")
             self.active_measurement_session_label.setToolTip("")
+            self.measurement_session_import_summary.setText("Session import: none")
+            self.measurement_session_import_summary.setToolTip("")
         self.measurement_metadata_label.setText(self._active_measurement_metadata_summary())
         missing_measurements = self._missing_measurement_roles()
         if missing_measurements:
