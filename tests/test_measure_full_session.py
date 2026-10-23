@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -237,6 +239,7 @@ def test_october_23_saved_session_restores_all_results_mapping_and_order_read_on
         assert tuple(device.name for device in orm.bpms)==tuple(device.name for device in window._measurement_results["dispersion"].devices)
         assert all(status["validated"] and status["restored"] for status in window._measurement_restore_status.values())
         assert mapping_counts(window.measurement_device_alignment)=={"total":330,"mapped":330,"unresolved":0,"ambiguous":0,"duplicate":0,"invalid":0}
+        assert "No mapping saved" in window.device_alignment_status.text()
         assert not window.connection_verified
         for role in ("bpm_noise","dispersion","orm"):
             window.measurement_type.setCurrentIndex(window.measurement_type.findData(role)); app.processEvents()
@@ -244,6 +247,71 @@ def test_october_23_saved_session_restores_all_results_mapping_and_order_read_on
             assert window._measurement_restore_status[role]["restored"]
         assert {role:hashlib.sha256(path.read_bytes()).hexdigest() for role,path in expected.items()}==before
     finally:window.close(); app.processEvents()
+
+
+def test_ebs_mapping_save_close_open_reconnect_keeps_validated_orm_selection(tmp_path,monkeypatch):
+    """Exercise the real saved EBS identities without connecting or writing."""
+    yaml=pytest.importorskip("yaml")
+    root=Path(__file__).resolve().parents[1]/"measurements"
+    manifest=root/"measurement-session.pyloco-session.json"
+    if not manifest.is_file():pytest.skip("October 23 local MDT session is not available")
+    app=QApplication.instance() or QApplication([]); source=MeasureMainWindow()
+    monkeypatch.setattr(QMessageBox,"information",lambda *args:QMessageBox.Ok)
+    try:
+        source.open_full_measurement_session(manifest); app.processEvents()
+        assert mapping_counts(source.measurement_device_alignment)["mapped"]==330
+        assert source.machine_mapping_document is not None
+        saved_h=tuple(device.name for device in source.selected_hcorrectors)
+        saved_v=tuple(device.name for device in source.selected_vcorrectors)
+        destination=tmp_path/"saved-ebs-session.pyloco-measure-session"
+        bundle=save_full_session_bundle(destination,project=source._collect_project(),session_manifest=manifest,
+            reference_lattice=source.reference_model.path,reference_mat_variable=source.reference_model.mat_variable,
+            reference_element_count=len(source.reference_model.ring),mapping=source.machine_mapping_document)
+        assert bundle.mapping is not None
+    finally:source.close(); app.processEvents()
+
+    restored=MeasureMainWindow()
+    try:
+        restored.open_full_measurement_session(bundle.manifest_path); app.processEvents()
+        assert mapping_counts(restored.measurement_device_alignment)["mapped"]==330
+        assert restored.alignment_details_button.isEnabled()
+        assert restored.save_mapping_button.isEnabled()
+        assert "Saved mapping restored and validated offline" in restored.device_alignment_status.text()
+
+        config=Path(restored.project.metadata["pyaml_options"]["config_path"])
+        arrays={row["name"]:row["elements"] for row in yaml.safe_load(config.read_text())["arrays"]}
+        class Adapter:
+            capabilities=frozenset()
+            simulator_identity=None
+            allow_get_only_restoration=False
+            def test_connection(self):return {"bpms":320,"corrector_readback":"available","calibration":"available","rf_readback":352_202_000.0}
+            def list_devices(self,kind):
+                if kind=="bpm":return tuple({"name":name,"x_channel":"X","y_channel":"Y"} for name in arrays["BPM"])
+                names,plane=(arrays["HCorr"],"H") if kind=="hcor" else (arrays["VCorr"],"V")
+                return tuple({"name":name,"setpoint_channel":"SP","readback_channel":"RBV","plane":plane} for name in names)
+        adapter=Adapter()
+        from pyLOCO.measure.main_window import InterfaceRegistry as RealRegistry
+        class Registry(RealRegistry):
+            def create(self,_key):return SimpleNamespace(adapter=adapter)
+        monkeypatch.setattr("pyLOCO.measure.main_window.InterfaceRegistry",Registry)
+        restored.pyaml_magnet_writes.setChecked(False); restored.pyaml_rf_writes.setChecked(False)
+        restored._test_connection()
+        deadline=time.monotonic()+10
+        while restored.connection_thread is not None and time.monotonic()<deadline:
+            app.processEvents(); time.sleep(.01)
+        assert restored.connection_thread is None
+        assert tuple(device.name for device in restored.selected_hcorrectors)==saved_h
+        assert tuple(device.name for device in restored.selected_vcorrectors)==saved_v
+        assert restored.alignment_details_button.isEnabled() and restored.save_mapping_button.isEnabled(),restored.device_alignment_status.text()
+        assert "connected inventory matches" in restored.device_alignment_status.text()
+        mapping=restored.measurement_device_alignment
+        for kind in ("bpm_noise","dispersion","orm"):
+            restored.measurement_type.setCurrentIndex(restored.measurement_type.findData(kind)); app.processEvents()
+            assert restored.measurement_device_alignment is mapping
+        restored.corrector_selection_widgets["hcor"]["search"].setText("c04, c05")
+        restored._filter_corrector_table("hcor")
+        assert restored.measurement_device_alignment is mapping
+    finally:restored.close(); app.processEvents()
 
 
 def test_ordinary_open_project_redirects_measurement_session_to_full_session_action(tmp_path,monkeypatch):

@@ -430,6 +430,7 @@ class MeasureMainWindow(QMainWindow):
         self.reference_model = None
         self.measurement_device_alignment = None
         self.machine_mapping_document = None
+        self._pending_mapping_revalidation = None
         self.last_mapping_template_path: Path | None = None
         self._pending_full_bundle = None
         self._session_dirty = True
@@ -752,11 +753,13 @@ class MeasureMainWindow(QMainWindow):
         for checkbox in (self.pyaml_magnet_writes, self.pyaml_rf_writes):
             checkbox.setChecked(True)
             pyaml_form.addRow(checkbox)
-            checkbox.toggled.connect(self._invalidate_pyaml)
+            # Authorization changes require reconnecting the adapter, but do
+            # not alter lattice/device identity or invalidate Machine Mapping.
+            checkbox.toggled.connect(lambda _checked:self._invalidate_pyaml(preserve_mapping=True))
         self.pyaml_orbit_correction = QCheckBox("Correct orbit after each ORM column")
         self.pyaml_orbit_correction.setToolTip("Use the measured corrector and its opposite-plane partner to return to the pre-kick orbit. Corrections remain applied.")
         pyaml_form.addRow(self.pyaml_orbit_correction)
-        self.pyaml_orbit_correction.toggled.connect(self._invalidate_pyaml)
+        self.pyaml_orbit_correction.toggled.connect(lambda _checked:self._invalidate_pyaml(preserve_mapping=True))
         self.pyaml_simulator_identity_status=QLabel("Unavailable until pyAML provides verified runtime simulator identity.")
         self.pyaml_simulator_identity_status.setWordWrap(True); self.pyaml_simulator_identity_status.setObjectName("infoText"); pyaml_form.addRow("Simulator identity",self.pyaml_simulator_identity_status)
         pyaml_form.addRow(QLabel("Mode: design or live. RF plant defaults to RF. Writes default to enabled; uncheck to disable. Live connections require confirmation."))
@@ -1305,10 +1308,11 @@ class MeasureMainWindow(QMainWindow):
         else:
             self.pyaml_simulator_identity_status.setText("No authoritative runtime simulator identity/capability was provided by pyAML. Real-machine or unknown-target ORM remains blocked without an independent readback.")
 
-    def _invalidate_pyaml(self, *_):
+    def _invalidate_pyaml(self, *_, preserve_mapping=False):
         if self.adapter_combo.currentData() != "pyaml":
             return
-        self._invalidate_device_alignment("pyAML configuration changed — verify device alignment again.")
+        if not preserve_mapping:
+            self._invalidate_device_alignment("pyAML configuration changed — verify device alignment again.")
         self.adapter = MockAdapter()
         self.devices = self.horizontal_correctors = self.vertical_correctors = ()
         self.selected_devices = self.selected_hcorrectors = self.selected_vcorrectors = ()
@@ -1322,13 +1326,16 @@ class MeasureMainWindow(QMainWindow):
             label.setText("Not connected")
         self.machine_info["adapter"].setText("pyAML")
         self.machine_info["access"].setText("Read only")
-        if hasattr(self, "corrector_selection_widgets"):
-            for kind in ("hcor", "vcor"):
-                self.corrector_selection_widgets[kind]["devices"] = ()
-                self._refresh_corrector_preview(kind, read_diagnostics=False)
+        previous_loading=self._loading_selection_state; self._loading_selection_state=True
+        try:
+            if hasattr(self, "corrector_selection_widgets"):
+                for kind in ("hcor", "vcor"):
+                    self.corrector_selection_widgets[kind]["devices"] = ()
+                    self._refresh_corrector_preview(kind, read_diagnostics=False)
+            self.refresh_preview()
+        finally:self._loading_selection_state=previous_loading
         self._reset_selection_states_for_inventory()
         self._update_machine_identity()
-        self.refresh_preview()
         self._sync_rf_presentation()
 
     def _connect_pyaml(self):
@@ -1394,7 +1401,13 @@ class MeasureMainWindow(QMainWindow):
         if key=="mock":self.statusBar().showMessage("Mock ready — no external connection"); return
         options=None
         if key=="pyaml":
-            self._invalidate_pyaml(); options={name:editor.text().strip() for name,editor in self.pyaml_fields.items()}; options.update(allow_writes=self.pyaml_magnet_writes.isChecked(),allow_rf_writes=self.pyaml_rf_writes.isChecked(),corrector_values_in_radians=True,orbit_correction_enabled=self.pyaml_orbit_correction.isChecked())
+            candidate=self.measurement_device_alignment if self._pending_full_bundle is not None else None
+            self._invalidate_pyaml()
+            # Hold the offline-validated mapping outside active GUI state while
+            # the new adapter is being constructed. It is restored only as a
+            # candidate for exact connected-inventory revalidation below.
+            self._pending_mapping_revalidation=candidate
+            options={name:editor.text().strip() for name,editor in self.pyaml_fields.items()}; options.update(allow_writes=self.pyaml_magnet_writes.isChecked(),allow_rf_writes=self.pyaml_rf_writes.isChecked(),corrector_values_in_radians=True,orbit_correction_enabled=self.pyaml_orbit_correction.isChecked())
             if options["mode"]=="live" and (options["allow_writes"] or options["allow_rf_writes"]):
                 answer=QMessageBox.question(self,"Enable live pyAML writes?","Measurements may change configured corrector magnets and/or RF frequency. Enable selected writes?",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
                 if answer!=QMessageBox.Yes:return
@@ -1435,9 +1448,11 @@ class MeasureMainWindow(QMainWindow):
             if self._pending_full_bundle is None:
                 self._reset_selection_states_for_inventory()
             else:
+                self.measurement_device_alignment=self._pending_mapping_revalidation
                 try:self._restore_full_bundle_inventory(self._pending_full_bundle)
                 except Exception as exc:
                     self._reset_selection_states_for_inventory(); self._invalidate_device_alignment(f"Saved device selection is incompatible: {exc}")
+                finally:self._pending_mapping_revalidation=None
             self.refresh_preview()
             writable=AdapterCapability.WRITE in self.adapter.capabilities; rf_writable=AdapterCapability.RF_WRITE in self.adapter.capabilities
             if rf_writable:
@@ -1463,11 +1478,13 @@ class MeasureMainWindow(QMainWindow):
 
     def _connection_test_failed(self,exc):
         if getattr(self,"_connection_test_timed_out",False):return
+        self._pending_mapping_revalidation=None
         self._set_connection_state(False,"DISCONNECTED"); self.machine_info["connection"].setText("Unavailable"); QMessageBox.warning(self,"Connection unavailable",str(exc))
 
     def _connection_test_timeout(self):
         if getattr(self,"connection_thread",None) is not None and self.connection_thread.isRunning():
             self._connection_test_timed_out=True
+            self._pending_mapping_revalidation=None
             self._set_connection_state(False,"TIMEOUT"); self.machine_info["connection"].setText("Connection test timed out; waiting for backend cleanup…"); self.statusBar().showMessage("Connection test timed out — no stale connection was accepted")
             self.connection_progress.setVisible(False); self.test_connection_button.setEnabled(True)
 
@@ -2100,7 +2117,8 @@ class MeasureMainWindow(QMainWindow):
         try:selected=self._resolve_correctors(key)
         except Exception as exc:data["table"].setRowCount(0); data["table"].setToolTip(str(exc)); return
         previous=self.selected_hcorrectors if key=="hcor" else self.selected_vcorrectors
-        if tuple(device.name for device in previous)!=tuple(device.name for device in selected):
+        if (not self._loading_selection_state and
+                tuple(device.name for device in previous)!=tuple(device.name for device in selected)):
             self._invalidate_device_alignment("Corrector inventory changed — verify device alignment again.")
             if hasattr(self,"device_selection_reviewed"):self.device_selection_reviewed.setChecked(False)
         if key=="hcor":self.selected_hcorrectors=selected
@@ -2265,11 +2283,15 @@ class MeasureMainWindow(QMainWindow):
 
     def _restore_selection(self,kind):
         state=self._selection_states.get(kind) or MeasureProject().measurement_selections[kind]
+        # Correctors are ORM inputs.  Keep one authoritative H/V selection
+        # while switching between BPM-noise, dispersion and ORM workspaces;
+        # per-tab defaults must not replace it or invalidate a saved mapping.
+        orm_state=self._selection_states.get("orm") or MeasureProject().measurement_selections["orm"]
         self._loading_selection_state=True
         try:
             bpm=state["bpm"]; self.selection_method.setCurrentIndex(max(0,self.selection_method.findData(bpm["method"]))); self.manual_input.setText(bpm.get("manual","")); self.names_file.setText(bpm.get("names_file","")); self.bpm_exclusions.setText(bpm.get("excluded_positions","")); self.bpm_search.setText(bpm.get("search",""))
             for key in ("hcor","vcor"):
-                settings=state[key]; data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(max(0,data["method"].findData(settings["method"]))); data["manual"].setText(settings.get("manual","")); data["file"].setText(settings.get("names_file","")); data["exclusion"].setText(settings.get("excluded_positions","")); data["search"].setText(settings.get("search","")); self._corrector_method_changed(key); self._refresh_corrector_preview(key,read_diagnostics=False)
+                settings=orm_state[key]; data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(max(0,data["method"].findData(settings["method"]))); data["manual"].setText(settings.get("manual","")); data["file"].setText(settings.get("names_file","")); data["exclusion"].setText(settings.get("excluded_positions","")); data["search"].setText(settings.get("search","")); self._corrector_method_changed(key); self._refresh_corrector_preview(key,read_diagnostics=False)
             self._selection_method_changed(); self.refresh_preview()
         finally:self._loading_selection_state=False
 
@@ -3013,7 +3035,8 @@ class MeasureMainWindow(QMainWindow):
         self._model_orm_cache=None
         try:selected=self._resolve_selection(); self._bpm_selection_error=""
         except Exception as exc:selected=(); self._bpm_selection_error=str(exc)
-        if tuple(device.name for device in self.selected_devices)!=tuple(device.name for device in selected):
+        if (not self._loading_selection_state and
+                tuple(device.name for device in self.selected_devices)!=tuple(device.name for device in selected)):
             self._invalidate_device_alignment("BPM inventory changed — verify device alignment again.")
             if hasattr(self,"device_selection_reviewed"):self.device_selection_reviewed.setChecked(False)
         self.selected_devices=tuple(selected); self.preview_table.blockSignals(True); self.preview_table.setRowCount(len(self.devices)); selected_positions={device.name:position for position,device in enumerate(selected)}
@@ -4471,7 +4494,14 @@ class MeasureMainWindow(QMainWindow):
         p=self.project; self._selection_states=p.measurement_selections; self._measurement_view_states=deepcopy(p.metadata.get("measurement_view_states",{})); self._active_selection_kind=p.measurement_type; self.measurement_type.blockSignals(True); self.measurement_type.setCurrentIndex(max(0,self.measurement_type.findData(p.measurement_type))); self.measurement_type.blockSignals(False); self._restore_selection(p.measurement_type); self.measurement_name.setText(p.measurement_name); self.measurement_label.setText(p.measurement_label); self.comments.setPlainText(p.operator_comments); self.readings.setValue(p.readings); self.bpm_noise_convention.setCurrentIndex(max(0,self.bpm_noise_convention.findData(p.bpm_noise_ddof))); self.delay.setValue(p.delay_seconds); self.settling_delay.setValue(p.settling_delay_seconds); self.orm_settling_delay.setValue(p.settling_delay_seconds); self.rf_restoration_tolerance.setValue(p.rf_restoration_tolerance_hz); self.verify_restored_orbit.setChecked(p.verify_restored_orbit); self.nominal_rf.setText("" if p.nominal_rf_hz is None else f"{p.nominal_rf_hz:g}"); self.rf_step.setValue(p.rf_step_hz); self.dispersion_direction.setCurrentIndex(max(0,self.dispersion_direction.findData(p.dispersion_direction))); self.orm_direction.setCurrentIndex(max(0,self.orm_direction.findData(p.orm_direction))); self.orm_kick_mode.setCurrentIndex(max(0,self.orm_kick_mode.findData(p.orm_kick_mode))); self.orm_hkick.setValue(p.orm_horizontal_kick_rad*1e6); self.orm_vkick.setValue(p.orm_vertical_kick_rad*1e6); self.orm_kick_file.setText(p.orm_kick_file); self.orm_normalized_analysis.setChecked(bool(p.orm_scaled or p.metadata.get("orm_normalized_analysis",False))); self._measurement_view_states[p.measurement_type]=self._measurement_view_snapshot()
         self.reference_model_path.setText(p.reference_model_path); self.compare_reference.setChecked(p.compare_with_reference_model)
         if p.reference_model_path:self._load_reference_model(p.reference_model_path,"Project reference model",p.reference_model_mat_variable or None)
-        self.output_directory.setText(p.output_directory); self.apply_theme(p.theme); self.refresh_preview()
+        self.output_directory.setText(p.output_directory); self.apply_theme(p.theme)
+        # Project hydration may occur while pyAML is intentionally
+        # disconnected and its live inventory is empty.  Rebuilding the table
+        # must not write that temporary empty preview back into the saved BPM
+        # selection (and consequently invalidate its mapping fingerprint).
+        self._loading_selection_state=True
+        try:self.refresh_preview()
+        finally:self._loading_selection_state=False
         if p.measurement_type=="orm":self._fresh_orm_defaults_applied=True
         self._measurement_type_changed(); self._update_machine_identity()
         workspace=p.metadata.get("active_workspace",p.measurement_type)
@@ -4757,7 +4787,7 @@ class MeasureMainWindow(QMainWindow):
                 checked=find_exact_device_mappings(self.reference_model.ring,inventory,
                     lattice_path=self.reference_model.path,configuration_path=configuration if configuration.is_file() else None,
                     provenance="Reconstructed offline from saved HDF5 identities and checksummed session dependencies")
-                origin="No mapping was stored in this session; exact mapping reconstructed and validated offline"
+                origin="No mapping saved; exact mapping reconstructed and validated offline"
             counts=mapping_counts(checked)
             if counts["mapped"]!=counts["total"]:
                 raise ValueError(f"mapping is incomplete ({counts['mapped']}/{counts['total']} identities mapped)")
@@ -4790,7 +4820,10 @@ class MeasureMainWindow(QMainWindow):
             checked=validate_mapping(self.measurement_device_alignment,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,configuration_path=configuration if configuration.is_file() else None,require_provenance=True)
             counts=mapping_counts(checked)
             if counts["mapped"]!=counts["total"]:raise ValueError("saved device mapping is incomplete")
-            self.measurement_device_alignment=checked; self.device_alignment_status.setText(f"Restored and revalidated — {counts['mapped']}/{counts['total']} exact identities."); self.alignment_details_button.setEnabled(True); self._update_reference_comparison_enabled()
+            self.measurement_device_alignment=checked
+            self.machine_mapping_document=merge_measurement(self.machine_mapping_document,checked)
+            self.device_alignment_status.setText(f"Restored and revalidated — {counts['mapped']}/{counts['total']} exact identities; connected inventory matches the saved session.")
+            self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(True); self._update_reference_comparison_enabled()
 
     def apply_theme(self,key):
         self.project.theme=key; app=QApplication.instance(); apply_application_theme(app,theme_for_key(key),"teal")
