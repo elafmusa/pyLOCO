@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
+import os
 import shutil
 from typing import Any
 
@@ -48,6 +49,71 @@ def _copy_verified(source: Path, destination: Path) -> dict[str, Any]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
     return {"path": destination.as_posix(), "sha256": file_sha256(destination), "size": destination.stat().st_size}
+
+
+def _atomic_save_project(path: Path, project: MeasureProject) -> None:
+    temporary=path.with_name(f".{path.name}.tmp")
+    try:
+        save_measure_project(temporary,project); os.replace(temporary,path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _atomic_save_session(path: Path, session: MeasurementSession) -> None:
+    temporary=path.with_name(f".{path.name}.tmp")
+    try:
+        save_session(temporary,session); os.replace(temporary,path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def save_full_session_state(session_manifest: str | Path, *, project: MeasureProject,
+                            reference_lattice: str | Path | None,
+                            reference_mat_variable: str = "",
+                            reference_element_count: int | None = None,
+                            mapping: dict[str, Any] | None = None) -> FullSessionBundle:
+    """Save workspace state beside existing measurements without copying HDF5.
+
+    Portable export is intentionally separate. The active manifest and project
+    are atomically replaced; measurement files are only validated and hashed.
+    """
+    manifest=Path(session_manifest).expanduser().resolve(); root=manifest.parent
+    source=load_session(manifest,validate_files=True); resolved=source.resolve(manifest)
+    entries=tuple(SessionFile(entry.role,entry.path,{**entry.metadata,
+        "sha256":file_sha256(resolved[entry.role]),"size":resolved[entry.role].stat().st_size}) for entry in source.files)
+    previous=source.metadata.get("full_measure_session")
+    full=deepcopy(previous) if isinstance(previous,dict) else {}
+    full.update({"bundle_version":BUNDLE_VERSION,"project":PROJECT_NAME,
+        "created":full.get("created") or datetime.now().astimezone().isoformat(),
+        "updated":datetime.now().astimezone().isoformat(),
+        "roles":{role:role in resolved for role in ("bpm_noise","dispersion","orm")},
+        "mapping":deepcopy(mapping)})
+    portable=deepcopy(project)
+    try:portable.output_directory=str(Path(portable.output_directory).expanduser().resolve().relative_to(root))
+    except (ValueError,OSError):pass
+    if reference_lattice:
+        lattice_source=Path(reference_lattice).expanduser().resolve()
+        digest=file_sha256(lattice_source); existing=full.get("reference_lattice") or {}
+        existing_path=root/str(existing.get("path",""))
+        if existing.get("sha256")==digest and existing_path.is_file():target=existing_path
+        else:
+            target=root/"lattice"/f"{digest[:12]}-{lattice_source.name}"
+            if not target.is_file():_copy_verified(lattice_source,target)
+        relative=target.relative_to(root).as_posix(); portable.reference_model_path=relative
+        portable.reference_model_mat_variable=reference_mat_variable
+        full["reference_lattice"]={"path":relative,"sha256":digest,"size":target.stat().st_size,
+            "mat_variable":reference_mat_variable,"element_count":reference_element_count}
+    else:full["reference_lattice"]={"status":"not_included"}
+    options=dict(portable.metadata.get("pyaml_options",{})); config_text=str(options.get("config_path","")).strip()
+    if config_text:
+        config=Path(config_text).expanduser().resolve()
+        full["pyaml_configuration"]={"included":False,"external_path":str(config),
+            "sha256":file_sha256(config) if config.is_file() else "",
+            "status":"external" if config.is_file() else "missing"}
+    project_path=root/PROJECT_NAME
+    bundle_session=MeasurementSession(source.session_id,entries,{**source.metadata,"full_measure_session":full})
+    _atomic_save_project(project_path,portable); _atomic_save_session(manifest,bundle_session)
+    return open_full_session_bundle(manifest)
 
 
 def save_full_session_bundle(destination: str | Path, *, project: MeasureProject,

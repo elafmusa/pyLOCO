@@ -156,6 +156,20 @@ def test_missing_design_machine_has_clear_error():
         PyAMLAdapter("unused.yaml", mode="design", accelerator=SimpleNamespace(design=None))
 
 
+def test_public_design_simulator_lattice_provenance_is_resolved_from_configuration(tmp_path):
+    base,_=make_adapter(); config=tmp_path/"machine.yaml"; config.write_text("machine: test\n"); lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"ring")
+    base.accelerator.design=SimpleNamespace(lattice="ring.mat",mat_key="betamodel")
+    adapter=PyAMLAdapter(config,accelerator=base.accelerator,rf_name="",allow_writes=False,allow_rf_writes=False)
+    assert adapter.theoretical_lattice_provenance()=={"path":str(lattice.resolve()),"mat_variable":"betamodel","source":"pyAML public design Simulator.lattice"}
+
+
+def test_runtime_ring_without_public_file_provenance_is_not_guessed(tmp_path):
+    base,_=make_adapter(); config=tmp_path/"machine.yaml"; config.write_text("machine: test\n")
+    base.accelerator.design=SimpleNamespace(lattice="missing.mat",mat_key="RING",get_lattice=lambda:object())
+    adapter=PyAMLAdapter(config,accelerator=base.accelerator,rf_name="",allow_writes=False,allow_rf_writes=False)
+    assert adapter.theoretical_lattice_provenance() is None
+
+
 def test_registry_loads_selected_file_and_mode(monkeypatch):
     import sys
 

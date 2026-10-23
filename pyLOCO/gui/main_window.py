@@ -5206,8 +5206,12 @@ class MainWindow(QMainWindow):
         if not filename:return False
         try:handoff=inspect_measurement_session(filename)
         except Exception as exc:QMessageBox.warning(self,"Cannot import Measurement Session",str(exc)); return False
+        if self.project.measurements:
+            answer=QMessageBox.question(self,"Import Measure session?","Keep the current FIT recipe and replace its measurement bindings with this session?\n\nFitting stages, quadrupole selections, weights, SVD and optimizer settings remain unchanged. Cancel makes no changes.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)
+            if answer!=QMessageBox.Yes:return False
         self.project.measurements={role:ImportedDataset(role,str(source),source.suffix.lower().lstrip("."),source.stat().st_size,deepcopy(handoff.options[role])) for role,source in handoff.files.items()}
         self.project.measurement_session=deepcopy(handoff.provenance); self.project.measurement_session["manifest"]=str(handoff.manifest)
+        self.project.measurement_device_mapping={}
         self._mark_compatibility_stale("Measurement session changed; validation is required.")
         orm=handoff.options.get("orm",{}); dispersion=handoff.options.get("dispersion",{})
         if orm:
@@ -5219,7 +5223,44 @@ class MainWindow(QMainWindow):
             self.project.loco_config.element_selection_state["measurement_session_names"]={"bpms":orm.get("bpm_names",[]),"horizontal_correctors":orm.get("horizontal_corrector_names",[]),"vertical_correctors":orm.get("vertical_corrector_names",[])}
         if dispersion:
             step=float(dispersion["rf_step_hz"]); self.project.loco_config.response_matrix.rfStep=step; self.project.loco_config.parameters.rfStep=step; self.project.loco_config.fixed_parameters.rfstep=step; self.project.loco_config.response_matrix.includeDispersion=True; self.project.loco_config.rejection.includeDispersion=True
+        full=(handoff.provenance.get("session_metadata") or {}).get("full_measure_session")
+        mapping_ready=False
+        if isinstance(full,dict):
+            lattice_info=full.get("reference_lattice") or {}; relative=lattice_info.get("path")
+            if relative:
+                lattice_path=(handoff.manifest.parent/str(relative)).resolve()
+                expected=str(lattice_info.get("sha256", ""))
+                if not lattice_path.is_file() or (expected and file_sha256(lattice_path)!=expected):
+                    QMessageBox.warning(self,"Full Measure session lattice unavailable","The saved reference lattice is missing or its checksum changed. Measurements were imported, but lattice mapping was not reused.")
+                else:
+                    replace_lattice=True
+                    if self.project.lattice.path:
+                        current=self.project.resolve_path(self.project.lattice.path)
+                        try:same=current.is_file() and file_sha256(current)==expected
+                        except OSError:same=False
+                        if not same:
+                            replace_lattice=QMessageBox.question(self,"Reference lattice differs","The imported Measure session uses a different reference lattice. Replace the current FIT lattice while preserving the FIT recipe?\n\nCancel leaves the current FIT project unchanged except for the already imported measurements.",QMessageBox.Yes|QMessageBox.Cancel,QMessageBox.Cancel)==QMessageBox.Yes
+                    if replace_lattice:
+                        self.project.lattice=LatticeSelection(path=str(lattice_path),file_type=lattice_path.suffix.lower().lstrip("."),element_count=lattice_info.get("element_count"),mat_variable=str(lattice_info.get("mat_variable", "")))
+                        saved_mapping=full.get("mapping") or {}
+                        if saved_mapping and orm:
+                            inventory=measurement_inventory({"files":{"orm":orm}}); configuration=None
+                            config_info=full.get("pyaml_configuration") or {}; config_value=config_info.get("path") if config_info.get("included") else config_info.get("external_path")
+                            if config_value:
+                                candidate=(handoff.manifest.parent/str(config_value)).resolve() if not Path(str(config_value)).is_absolute() else Path(str(config_value)).expanduser().resolve()
+                                if candidate.is_file() and (not config_info.get("sha256") or file_sha256(candidate)==config_info.get("sha256")):configuration=candidate
+                            requires_config=bool((saved_mapping.get("machine_profile") or {}).get("configuration_sha256"))
+                            if not requires_config or configuration is not None:
+                                try:
+                                    ring=load_project_lattice(lattice_path,self.project.lattice.mat_variable or None)
+                                    self.project.measurement_device_mapping=validate_measurement_mapping(saved_mapping,ring,inventory,lattice_path=lattice_path,configuration_path=configuration,require_provenance=True)
+                                    mapping_ready=measurement_mapping_counts(self.project.measurement_device_mapping)["mapped"]==measurement_mapping_counts(self.project.measurement_device_mapping)["total"]
+                                except Exception as exc:
+                                    self.project.measurement_device_mapping={}; self._append_run_log(f"Saved Measure mapping requires revalidation: {exc}")
+                            else:
+                                self.project.measurement_device_mapping={}; self._append_run_log("Saved Measure mapping requires the checksummed pyAML configuration before it can be reused.")
         self.project.modified=True; self._load_config_to_widgets(); self._refresh_ui(f"Imported Measurement Session {handoff.session_id}")
+        if mapping_ready:self.use_measurement_mappings_for_fit()
         available="\n".join(f"✓ {role.replace('_',' ').title()}" for role in handoff.available_roles) or "—"
         missing="\n".join(f"✗ {role.replace('_',' ').title()}" for role in handoff.missing_roles) or "None"
         message=f"Measurement Session: {handoff.session_id}\n\nAvailable:\n{available}\n\nMissing:\n{missing}"
@@ -5703,12 +5744,12 @@ class MainWindow(QMainWindow):
                 except ValueError:
                     mapping = find_exact_device_mappings(
                         lattice, inventory, lattice_path=lattice_path, configuration_path=configuration,
-                        provenance="exact AT Device identity from selected lattice and Measure inventory",
+                        provenance="exact AT Device/FamName identity from selected lattice and Measure inventory",
                     )
             else:
                 mapping = find_exact_device_mappings(
                     lattice, inventory, lattice_path=lattice_path, configuration_path=configuration,
-                    provenance="exact AT Device identity from selected lattice and Measure inventory",
+                    provenance="exact AT Device/FamName identity from selected lattice and Measure inventory",
                 )
         except Exception as exc:
             self.measurement_mapping_feedback.setText(f"Mapping could not be completed — {exc}")

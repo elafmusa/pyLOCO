@@ -27,6 +27,7 @@ class PyAMLAdapter(WritableAdapter):
                  orbit_correction_enabled=False):
         if mode not in ("design", "live"):
             raise ValueError("pyAML mode must be design or live")
+        self._config_path=Path(config_path).expanduser().resolve()
         if accelerator is None:
             from pyaml.accelerator import Accelerator
             accelerator = Accelerator.load(str(config_path))
@@ -93,6 +94,22 @@ class PyAMLAdapter(WritableAdapter):
         self.orbit_correction_enabled = bool(orbit_correction_enabled)
         if self.orbit_correction_enabled:
             self._initialize_orbit_correction()
+
+    def theoretical_lattice_provenance(self):
+        """Return an authoritative file-backed design lattice when pyAML exposes one.
+
+        The public pyAML ``Simulator.lattice`` and ``mat_key`` properties are
+        used. A runtime ring without a resolvable source file is deliberately
+        not exported or guessed here.
+        """
+        simulator=getattr(self.accelerator,"design",None)
+        configured=getattr(simulator,"lattice",None)
+        if simulator is None or not configured:return None
+        path=Path(str(configured)).expanduser()
+        if not path.is_absolute():path=Path(self._config_path).expanduser().resolve().parent/path
+        if not path.is_file():return None
+        return {"path":str(path.resolve()),"mat_variable":str(getattr(simulator,"mat_key","") or ""),
+                "source":"pyAML public design Simulator.lattice"}
 
     def _initialize_orbit_correction(self):
         if not self.allow_writes:

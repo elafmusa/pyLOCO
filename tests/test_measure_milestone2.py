@@ -163,8 +163,9 @@ def test_saved_measurement_session_and_existing_importer(app, tmp_path):
     assert "Missing for FIT: orm, dispersion" in window.review_details.text()
     assert str(window.saved_measurement_path) in window.review_paths.text()
     assert "Automatically saved session manifest" in window.review_paths.text()
-    assert window.project_save_note.text()=="Project = settings only"
-    assert "does not create or replace measurement HDF5 files" in window.project_save_note.toolTip()
+    assert set(window.session_toolbar_buttons)=={"New","Open","Save","Open in FIT"}
+    assert window.session_save_action.text()=="Save Session"
+    assert window.session_export_action.text()=="Export Portable Session…"
     assert window.review_validate_button.isEnabled() and window.review_open_button.isEnabled()
     assert window.open_output_button.isEnabled()
     window.close()

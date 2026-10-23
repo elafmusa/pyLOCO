@@ -53,6 +53,44 @@ def test_exact_mapping_preserves_measurement_order_and_roles(example):
     assert rows["vertical_corrector"]["component"] == "A1L"
 
 
+def test_exact_famname_correctors_do_not_require_component_suffix(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"famname lattice")
+    ring=[BPM("BPM-A","unrelated/bpm"),Multipole("HCOR-A","unrelated/h"),Multipole("VCOR-A","unrelated/v")]
+    inventory={"bpm":["BPM-A"],"horizontal_corrector":["HCOR-A"],"vertical_corrector":["VCOR-A"]}
+    result=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
+    assert mapping_counts(result)["mapped"]==3
+    assert ordered_ordinals(result,"horizontal_corrector")==[1]
+    assert ordered_ordinals(result,"vertical_corrector")==[2]
+    assert {row["identity_match"] for row in result["mappings"]}=={"exact_fam_name"}
+
+
+def test_exact_device_precedes_famname_and_duplicate_identity_is_ambiguous(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"precedence lattice")
+    ring=[BPM("same","other"),BPM("different","same"),BPM("duplicate","dup"),BPM("duplicate","else")]
+    inventory={"bpm":["same","duplicate"],"horizontal_corrector":[],"vertical_corrector":[]}
+    result=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
+    rows=result["mappings"]
+    assert rows[0]["lattice_ordinal"]==1 and rows[0]["identity_match"]=="exact_device"
+    assert rows[1]["status"]=="ambiguous" and "ordinals [2, 3]" in rows[1]["reason"]
+
+
+def test_manual_ordinal_accepts_exact_famname_without_suffix_and_reports_wrong_identity(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"manual lattice")
+    ring=[Multipole("H-CORRECTOR","device/h"),Multipole("V-CORRECTOR","device/v")]
+    inventory={"bpm":[],"horizontal_corrector":["H-CORRECTOR"],"vertical_corrector":["V-CORRECTOR"]}
+    template=mapping_template(inventory)
+    template["mappings"][0]["lattice_ordinal"]=0; template["mappings"][1]["lattice_ordinal"]=1
+    checked=validate_mapping(template,ring,inventory,lattice_path=lattice,require_provenance=False)
+    assert mapping_counts(checked)["mapped"]==2
+    assert all(row["identity_match"]=="exact_fam_name" for row in checked["mappings"])
+    wrong=deepcopy(template); wrong["mappings"][0]["lattice_ordinal"]=1
+    checked=validate_mapping(wrong,ring,inventory,lattice_path=lattice,require_provenance=False)
+    row=checked["mappings"][0]
+    assert row["status"]=="invalid"
+    assert "measured horizontal_corrector 'H-CORRECTOR'" in row["reason"]
+    assert "AT ordinal 1" in row["reason"] and "FamName='V-CORRECTOR'" in row["reason"]
+
+
 def test_revalidation_rejects_order_inventory_lattice_and_configuration_changes(example, tmp_path):
     ring, inventory, lattice, config = example
     result = find_exact_device_mappings(ring, inventory, lattice_path=lattice, configuration_path=config)

@@ -6,8 +6,9 @@ import numpy as np
 import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from pyLOCO.data_schema import MeasurementSession, SessionFile, save_session, write_bpm_noise, write_dispersion, write_orm
-from pyLOCO.measure.full_session import open_full_session_bundle, save_full_session_bundle
+from pyLOCO.data_schema import MeasurementSession, SessionFile, load_session, save_session, write_bpm_noise, write_dispersion, write_orm
+from pyLOCO.measure.full_session import (file_sha256, open_full_session_bundle,
+                                         save_full_session_bundle, save_full_session_state)
 from pyLOCO.measure.project import MeasureProject, load_measure_project, save_measure_project
 from pyLOCO.measure.main_window import MeasureMainWindow
 from pyLOCO.measure.acquisition import BpmDevice, DispersionResult, DispersionStateResult
@@ -86,6 +87,29 @@ def test_measure_project_accepts_pyaml_and_absolute_local_output(tmp_path):
     assert restored.output_directory==configured.output_directory
 
 
+def test_save_session_twice_updates_state_without_copying_or_modifying_hdf5(tmp_path):
+    manifest=source_session(tmp_path); configured,_=project(tmp_path); lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"ring")
+    original=load_session(manifest).resolve(manifest)
+    before={role:(path,file_sha256(path),path.stat().st_mtime_ns) for role,path in original.items()}
+    first=save_full_session_state(manifest,project=configured,reference_lattice=lattice,reference_mat_variable="RING",reference_element_count=3,mapping={"mapping":"first"})
+    second=save_full_session_state(manifest,project=configured,reference_lattice=lattice,reference_mat_variable="RING",reference_element_count=3,mapping={"mapping":"second"})
+    assert first.manifest_path==second.manifest_path==manifest.resolve()
+    assert second.mapping=={"mapping":"second"}
+    assert len(list((manifest.parent/"lattice").glob("*.mat")))==1
+    for role,(path,digest,mtime) in before.items():
+        assert second.measurement_paths[role]==path and file_sha256(path)==digest and path.stat().st_mtime_ns==mtime
+
+
+def test_primary_toolbar_uses_session_actions_and_templates_are_in_file_menu():
+    app=QApplication.instance() or QApplication([]); window=MeasureMainWindow()
+    try:
+        assert tuple(window.session_toolbar_buttons)==("New","Open","Save","Open in FIT")
+        assert not window.session_toolbar_buttons["Save"].isEnabled()
+        assert window.session_export_action.text()=="Export Portable Session…"
+        assert any(action.menu() and action.text()=="Configuration Templates" for action in window.menuBar().actions()[0].menu().actions())
+    finally:window.close(); app.processEvents()
+
+
 def test_gui_opens_full_session_disconnected_with_writes_disabled(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([])
     configured,_=project(tmp_path)
@@ -136,6 +160,60 @@ def test_full_session_action_opens_older_manifest_and_explains_unrecoverable_set
         assert "manually" in explanation
     finally:
         window.close(); app.processEvents()
+
+
+def test_opened_full_session_marks_configuration_edits_unsaved(tmp_path, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    configured, _ = project(tmp_path)
+    bundle = save_full_session_bundle(
+        tmp_path / "editable.pyloco-measure-session",
+        project=configured,
+        session_manifest=source_session(tmp_path),
+        reference_lattice=None,
+    )
+    window = MeasureMainWindow()
+    monkeypatch.setattr(
+        "pyLOCO.measure.main_window.QFileDialog.getOpenFileName",
+        lambda *args: (str(bundle.manifest_path), ""),
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *args: QMessageBox.Ok)
+    try:
+        window.open_full_measurement_session()
+        app.processEvents()
+        assert not window._session_dirty
+        assert not window.windowTitle().endswith("*")
+        assert not window.session_toolbar_buttons["Save"].isEnabled()
+
+        window.measurement_label.setText("edited session label")
+        app.processEvents()
+
+        assert window._session_dirty
+        assert window.windowTitle().endswith("*")
+        assert window.session_toolbar_buttons["Save"].isEnabled()
+    finally:
+        window._session_dirty = False
+        window.close()
+        app.processEvents()
+
+
+def test_independent_measurement_replace_and_remove_preserve_other_roles_and_files(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]); manifest=source_session(tmp_path); window=MeasureMainWindow()
+    monkeypatch.setattr(QMessageBox,"information",lambda *args:QMessageBox.Ok)
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getOpenFileName",lambda *args:(str(manifest),"")); window.open_full_measurement_session()
+    original=load_session(manifest).resolve(manifest); replacement=tmp_path/"replacement-noise.h5"
+    write_bpm_noise(replacement,noise_x_m=[4e-9,5e-9],noise_y_m=[6e-9,7e-9],bpm_names=["B1","B2"],raw_orbits_x_m=np.ones((2,2)),raw_orbits_y_m=np.ones((2,2)))
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getOpenFileName",lambda *args:(str(replacement),""))
+    monkeypatch.setattr(QMessageBox,"question",lambda *args:QMessageBox.Yes)
+    try:
+        assert window._load_measurement_role("bpm_noise",replace=True)
+        updated=load_session(manifest).resolve(manifest)
+        assert updated["bpm_noise"]==replacement.resolve()
+        assert updated["dispersion"]==original["dispersion"] and updated["orm"]==original["orm"]
+        assert all(path.is_file() for path in original.values())
+        assert window._remove_measurement_role("dispersion")
+        removed=load_session(manifest).resolve(manifest)
+        assert set(removed)=={"bpm_noise","orm"} and original["dispersion"].is_file()
+    finally:window.close(); app.processEvents()
 
 
 def test_resumed_partial_bundle_appends_missing_role_without_replacing_old_file(tmp_path):
