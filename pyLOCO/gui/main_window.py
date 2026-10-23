@@ -12,6 +12,7 @@ import re
 import shutil
 import threading
 import numpy as np
+from fnmatch import fnmatchcase
 from html import escape
 from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, version
@@ -531,7 +532,7 @@ class ElementSelectionDialog(QDialog):
         self.role_key = role_key
         self.role_label, self.role_kind = ELEMENT_ROLES[role_key]
         self.setWindowTitle(f"Select {self.role_label}")
-        self.resize(760, 560)
+        self.resize(980, 700)
         self._lattice = parent._load_current_lattice()
         self.selected_ords = list(current)
         self.selection_state = dict(selection_state or {})
@@ -607,19 +608,33 @@ class ElementSelectionDialog(QDialog):
         self.validation_message.hide()
         layout.addWidget(self.validation_message)
         filter_row = QHBoxLayout()
-        self.search_edit = QLineEdit(); self.search_edit.setPlaceholderText("Search/filter elements…")
+        self.search_edit = QLineEdit(); self.search_edit.setPlaceholderText("Search names or indices; comma-separated wildcards supported…")
+        self.search_edit.setToolTip("Examples: QD3J, QF4J, QD5B or QD3*, QF4*. Empty terms and trailing commas are ignored.")
         self.search_edit.textChanged.connect(self._filter_rows)
         filter_row.addWidget(self.search_edit, 1)
         for text, callback in (("Select All", self._select_all), ("Clear", self._clear_all),
-                               ("Select Filtered", self._select_filtered)):
+                               ("Replace with filtered", self._replace_with_filtered)):
             button = QPushButton(text); button.clicked.connect(callback); filter_row.addWidget(button)
         layout.addLayout(filter_row)
+        selection_row=QHBoxLayout()
+        selection_row.addWidget(QLabel("N"))
+        self.selection_n=QSpinBox(); self.selection_n.setRange(1,99999); self.selection_n.setValue(5); self.selection_n.setMaximumWidth(85); selection_row.addWidget(self.selection_n)
+        self.first_n_button=QPushButton("First N"); self.first_n_button.clicked.connect(self._select_first_n); selection_row.addWidget(self.first_n_button)
+        self.uniform_n_button=QPushButton("Uniform N"); self.uniform_n_button.clicked.connect(self._select_uniform_n); selection_row.addWidget(self.uniform_n_button)
+        self.select_highlighted_button=QPushButton("Select only highlighted"); self.select_highlighted_button.clicked.connect(self._select_only_highlighted); selection_row.addWidget(self.select_highlighted_button)
+        self.add_highlighted_button=QPushButton("Add highlighted to selection"); self.add_highlighted_button.clicked.connect(self._add_highlighted); selection_row.addWidget(self.add_highlighted_button)
+        selection_row.addStretch(1); layout.addLayout(selection_row)
         self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(["Use / position", "AT index (0-based)", "Element name", "AT class/type", "Family name", "Current value"])
         configure_item_view(self.table)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.table.setMinimumHeight(250)
         header=self.table.horizontalHeader(); header.setSectionResizeMode(0,QHeaderView.ResizeToContents); header.setSectionResizeMode(1,QHeaderView.ResizeToContents); header.setSectionResizeMode(2,QHeaderView.Stretch); header.setSectionResizeMode(3,QHeaderView.ResizeToContents); header.setSectionResizeMode(4,QHeaderView.Stretch); header.setSectionResizeMode(5,QHeaderView.Stretch)
+        header.setSortIndicator(0, Qt.AscendingOrder)
+        self.table.setSortingEnabled(True)
         self.table.itemChanged.connect(self._update_selection_count)
+        self.table.itemSelectionChanged.connect(self._update_selection_count)
         layout.addWidget(self.table, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._accept_if_valid)
@@ -680,6 +695,12 @@ class ElementSelectionDialog(QDialog):
         elif method == "manual_indices":
             self.manual_radio.setChecked(True)
             self.manual_edit.setPlainText(str(self.selection_state.get("manual_text", ", ".join(map(str, current)))))
+        elif method == "copied_normal_quadrupoles":
+            # A copied tilt selection has useful provenance but is deliberately
+            # independent after the copy.  Do not pretend it came from one of
+            # the editable resolver modes above.
+            for button in (self.type_radio, self.pattern_radio, self.name_file_radio, self.file_radio, self.manual_radio):
+                button.setAutoExclusive(False); button.setChecked(False); button.setAutoExclusive(True)
         else:
             self.selection_state = {}
             self._restore_selection_state(current)
@@ -698,6 +719,8 @@ class ElementSelectionDialog(QDialog):
             return "index_file", self.file_edit.text()
         if self.manual_radio.isChecked():
             return "manual_indices", self.manual_edit.toPlainText()
+        if self.selection_state.get("method") == "copied_normal_quadrupoles":
+            return "copied_normal_quadrupoles", "Current Normal Quadrupoles selection"
         return "legacy", "Imported lattice indices"
 
     def _lattice_identity(self) -> dict:
@@ -726,6 +749,7 @@ class ElementSelectionDialog(QDialog):
             "at_element_type": "AT element type", "at_wildcard": "AT wildcard patterns",
             "python_regex": "Python regular expressions", "name_file": "Loaded name file",
             "index_file": "Loaded index file", "manual_indices": "Manual indices",
+            "copied_normal_quadrupoles": "Copied from Normal Quadrupoles",
             "legacy": "Not recorded",
         }
         source_text = " ".join(source.split()) or "—"
@@ -874,6 +898,11 @@ class ElementSelectionDialog(QDialog):
             )
         if self.file_radio.isChecked():
             return self._load_index_file(Path(self.file_edit.text()).expanduser())
+        if not any(button.isChecked() for button in (
+            self.type_radio, self.pattern_radio, self.name_file_radio,
+            self.file_radio, self.manual_radio,
+        )):
+            return list(map(int, self.selection_state.get("generated_ords", self.selected_ords)))
         text = self.manual_edit.toPlainText().strip()
         if not text:
             raise ValueError("Enter at least one AT index (0-based) before previewing the selection.")
@@ -937,6 +966,31 @@ class ElementSelectionDialog(QDialog):
                         f"Ordinal {ordinal} ({name}, {self._element_class(element)}) has no supported "
                         f"{'horizontal' if plane == 0 else 'vertical'} steering representation for the "
                         f"{calculator} calculator: {detail}"
+                    )
+            return
+        if self.role_kind == "tilt":
+            for ordinal in values:
+                element = self._lattice[ordinal]
+                coefficients = np.asarray(getattr(element, "PolynomB", ()))
+                physical_quadrupole = (
+                    "quadrupole" in self._element_class(element).lower()
+                    or (coefficients.size > 1 and np.isfinite(coefficients[1]))
+                )
+                matrices_valid = all(
+                    getattr(matrix, "shape", None) == (6, 6)
+                    for matrix in (getattr(element, "R1", None), getattr(element, "R2", None))
+                    if matrix is not None
+                )
+                if not physical_quadrupole or not matrices_valid:
+                    name = self._element_name(element) or "unnamed element"
+                    reason = (
+                        "it has no quadrupole PolynomB[1] representation"
+                        if not physical_quadrupole else
+                        "its existing R1/R2 transform is not a 6×6 matrix"
+                    )
+                    raise ValueError(
+                        f"Ordinal {ordinal} ({name}, {self._element_class(element)}) cannot be used as "
+                        f"{self.role_label}: {reason}."
                     )
             return
         if self.role_kind in {"quad", "skew"}:
@@ -1009,10 +1063,12 @@ class ElementSelectionDialog(QDialog):
         # already sorted by lattice ordinal in _candidate_indices().
         values = list(dict.fromkeys(map(int, generated)))
         values.extend(int(value) for value in final if int(value) not in set(values))
+        self._preview_order=list(values)
+        sorting=self.table.isSortingEnabled(); self.table.setSortingEnabled(False); self.table.blockSignals(True)
         self.table.setRowCount(len(values))
         for row, ordinal in enumerate(values):
             elem = self._lattice[ordinal] if self._lattice is not None and 0 <= ordinal < len(self._lattice) else None
-            use = QTableWidgetItem(str(row)); use.setCheckState(Qt.Checked if ordinal in final_set else Qt.Unchecked); use.setData(Qt.UserRole, int(ordinal)); self.table.setItem(row, 0, use)
+            use = QTableWidgetItem(); use.setData(Qt.DisplayRole, row); use.setFlags(use.flags()|Qt.ItemIsUserCheckable|Qt.ItemIsEnabled|Qt.ItemIsSelectable); use.setCheckState(Qt.Checked if ordinal in final_set else Qt.Unchecked); use.setData(Qt.UserRole, int(ordinal)); self.table.setItem(row, 0, use)
             name = str(
                 getattr(elem, "CommonName", None)
                 or getattr(elem, "Name", None)
@@ -1022,18 +1078,32 @@ class ElementSelectionDialog(QDialog):
             value = self._current_value(elem) if elem else ""
             cells = [ordinal, name, self._element_class(elem) if elem else "", family, value]
             for col, value in enumerate(cells, start=1):
-                self.table.setItem(row, col, QTableWidgetItem(str(value)))
+                item = QTableWidgetItem()
+                item.setData(Qt.DisplayRole, value if isinstance(value, int) else str(value))
+                self.table.setItem(row, col, item)
+        self.table.blockSignals(False); self.table.setSortingEnabled(sorting)
         self._filter_rows()
         self._update_selection_count()
 
+    def _checked_ordinals(self) -> list[int]:
+        checked={int(self.table.item(row,0).data(Qt.UserRole)) for row in range(self.table.rowCount())
+                 if self.table.item(row,0) is not None and self.table.item(row,0).checkState()==Qt.Checked}
+        return [ordinal for ordinal in getattr(self,"_preview_order",()) if ordinal in checked]
+
+    def _highlighted_ordinals(self) -> list[int]:
+        selected={int(self.table.item(index.row(),0).data(Qt.UserRole)) for index in self.table.selectionModel().selectedRows()
+                  if self.table.item(index.row(),0) is not None}
+        return [ordinal for ordinal in getattr(self,"_preview_order",()) if ordinal in selected]
+
     def _update_selection_count(self, *_args) -> None:
         if not hasattr(self,"selection_count"):return
-        selected_ordinals = [
-            int(self.table.item(row, 0).data(Qt.UserRole))
-            for row in range(self.table.rowCount())
-            if self.table.item(row, 0) and self.table.item(row, 0).checkState() == Qt.Checked
-        ]
-        self.selection_count.setText(f"{len(selected_ordinals)} selected / {self.table.rowCount()} in preview")
+        selected_ordinals=self._checked_ordinals()
+        visible=sum(not self.table.isRowHidden(row) for row in range(self.table.rowCount()))
+        highlighted=len(self._highlighted_ordinals())
+        self.selection_count.setText(f"{len(selected_ordinals)} selected / {self.table.rowCount()} available · {visible} visible · {highlighted} highlighted")
+        enabled=highlighted>0
+        if hasattr(self,"select_highlighted_button"):
+            self.select_highlighted_button.setEnabled(enabled); self.add_highlighted_button.setEnabled(enabled)
         if hasattr(self, "provenance_summary") and not getattr(self, "_restoring_selection", False):
             self._update_provenance_summary(selected_ordinals)
 
@@ -1051,23 +1121,61 @@ class ElementSelectionDialog(QDialog):
         return "—"
 
     def _filter_rows(self) -> None:
-        needle = self.search_edit.text().strip().lower() if hasattr(self, "search_edit") else ""
+        terms=[term.strip().lower() for term in self.search_edit.text().split(",") if term.strip()] if hasattr(self,"search_edit") else []
         for row in range(self.table.rowCount()):
-            text = " ".join(self.table.item(row, col).text() for col in range(self.table.columnCount()) if self.table.item(row, col))
-            self.table.setRowHidden(row, bool(needle and needle not in text.lower()))
+            text=" ".join(self.table.item(row,col).text() for col in range(self.table.columnCount()) if self.table.item(row,col)).lower()
+            matched = not terms or any(fnmatchcase(text, f"*{term}*") for term in terms)
+            self.table.setRowHidden(row,not matched)
+        self._update_selection_count()
 
     def _set_checks(self, checked: bool, *, filtered_only: bool = False) -> None:
+        self.table.blockSignals(True)
         for row in range(self.table.rowCount()):
             if not filtered_only or not self.table.isRowHidden(row):
                 self.table.item(row, 0).setCheckState(Qt.Checked if checked else Qt.Unchecked)
+        self.table.blockSignals(False); self._update_selection_count()
 
     def _select_all(self): self._set_checks(True)
     def _clear_all(self): self._set_checks(False)
-    def _select_filtered(self): self._set_checks(True, filtered_only=True)
+    def _replace_with_filtered(self):
+        self._set_checks(False); self._set_checks(True,filtered_only=True)
+    # Compatibility alias for extensions/tests using the older label.
+    def _select_filtered(self): self._replace_with_filtered()
+
+    def _visible_ordinals(self):
+        visible={int(self.table.item(row,0).data(Qt.UserRole)) for row in range(self.table.rowCount())
+                 if not self.table.isRowHidden(row) and self.table.item(row,0) is not None}
+        return [ordinal for ordinal in getattr(self,"_preview_order",()) if ordinal in visible]
+
+    def _replace_with_ordinals(self,values):
+        wanted=set(map(int,values)); self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            ordinal=int(self.table.item(row,0).data(Qt.UserRole)); self.table.item(row,0).setCheckState(Qt.Checked if ordinal in wanted else Qt.Unchecked)
+        self.table.blockSignals(False); self._update_selection_count()
+
+    def _select_first_n(self):
+        self._replace_with_ordinals(self._visible_ordinals()[:self.selection_n.value()])
+
+    def _select_uniform_n(self):
+        values=self._visible_ordinals(); count=min(self.selection_n.value(),len(values))
+        if not count:return self._replace_with_ordinals(())
+        positions=np.linspace(0,len(values)-1,count,dtype=int)
+        self._replace_with_ordinals([values[int(position)] for position in positions])
+
+    def _select_only_highlighted(self):
+        highlighted=self._highlighted_ordinals()
+        if highlighted:self._replace_with_ordinals(highlighted)
+
+    def _add_highlighted(self):
+        wanted=set(self._highlighted_ordinals())
+        if not wanted:return
+        self.table.blockSignals(True)
+        for row in range(self.table.rowCount()):
+            if int(self.table.item(row,0).data(Qt.UserRole)) in wanted:self.table.item(row,0).setCheckState(Qt.Checked)
+        self.table.blockSignals(False); self._update_selection_count()
 
     def _accept_if_valid(self) -> None:
-        selected = [int(self.table.item(row, 0).data(Qt.UserRole)) for row in range(self.table.rowCount())
-                    if self.table.item(row, 0).checkState() == Qt.Checked]
+        selected = self._checked_ordinals()
         if not selected:
             QMessageBox.warning(self, "No elements selected", "Select at least one element."); return
         self.selected_ords = self._validate_array(selected)
@@ -1093,6 +1201,8 @@ class ElementSelectionDialog(QDialog):
             state["path"] = self.file_edit.text()
         elif method == "manual_indices":
             state["manual_text"] = self.manual_edit.toPlainText()
+        elif method == "copied_normal_quadrupoles":
+            state["source_role"] = "normal_quadrupole_ords"
         else:
             state = {}
         self.selection_state = state
@@ -1716,6 +1826,17 @@ class MainWindow(QMainWindow):
             button.setFixedSize(126, 34)
             button.clicked.connect(lambda checked=False, role=key: self.edit_element_selection(role))
             row.addWidget(button, 0, Qt.AlignVCenter)
+            if key == "quadrupole_tilt_ords":
+                copy_button = QPushButton("Copy from Normal Quadrupoles…")
+                copy_button.setMinimumWidth(210)
+                copy_button.setFixedHeight(34)
+                copy_button.setToolTip(
+                    "Preview the selected Normal Quadrupole AT indices and copy compatible elements "
+                    "into the independent Quadrupole Tilts selection."
+                )
+                copy_button.clicked.connect(self.copy_normal_quadrupoles_to_tilts)
+                row.addWidget(copy_button, 0, Qt.AlignVCenter)
+                self.copy_quadrupoles_to_tilts_button = copy_button
             if key in {"normal_quadrupole_ords", "skew_quadrupole_ords", "quadrupole_tilt_ords"}:
                 group_button=QPushButton("Family groups…"); group_button.setFixedSize(126,34)
                 group_button.clicked.connect(lambda checked=False, role=key:self.edit_family_groups(role))
@@ -5644,8 +5765,7 @@ class MainWindow(QMainWindow):
             self.project.loco_config.element_selection_state[role_key] = dialog.selection_state
         else:
             self.project.loco_config.element_selection_state.pop(role_key, None)
-        group_key={"normal_quadrupole_ords":"normal_quadrupole_groups","skew_quadrupole_ords":"skew_quadrupole_groups","quadrupole_tilt_ords":"quadrupole_tilt_groups"}.get(role_key)
-        if group_key:setattr(elements,group_key,[])
+        removed_groups = self._reconcile_element_family_groups(role_key, dialog.selected_ords)
         self.project.loco_config._sync_response_matrix_elements()
         self._refresh_recipe_machine_override()
         self._mark_compatibility_stale("Machine-element selections changed; validation is required.")
@@ -5655,6 +5775,109 @@ class MainWindow(QMainWindow):
         self._refresh_measurement_mapping_feedback()
         self._update_fit_summary()
         self._refresh_ui(f"Updated {ELEMENT_ROLES[role_key][0]} selection")
+        if removed_groups:
+            QMessageBox.information(
+                self,
+                "Family groups updated",
+                f"{removed_groups} family group(s) contained elements that are no longer selected and were removed. "
+                "Compatible groups were preserved.",
+            )
+
+    def _reconcile_element_family_groups(self, role_key: str, selected: list[int]) -> int:
+        group_key = {
+            "normal_quadrupole_ords": "normal_quadrupole_groups",
+            "skew_quadrupole_ords": "skew_quadrupole_groups",
+            "quadrupole_tilt_ords": "quadrupole_tilt_groups",
+        }.get(role_key)
+        if not group_key:
+            return 0
+        elements = self.project.loco_config.machine_elements
+        groups = list(getattr(elements, group_key))
+        selected_set = set(map(int, selected))
+        compatible = [list(group) for group in groups if set(map(int, group)).issubset(selected_set)]
+        setattr(elements, group_key, compatible)
+        return len(groups) - len(compatible)
+
+    @Slot()
+    def copy_normal_quadrupoles_to_tilts(self, mode: str | None = None) -> None:
+        """Copy compatible normal-quadrupole ordinals to the independent tilt list."""
+
+        elements = self.project.loco_config.machine_elements
+        proposed = list(map(int, elements.normal_quadrupole_ords))
+        if not proposed:
+            QMessageBox.information(
+                self, "No Normal Quadrupoles selected",
+                "Select Normal Quadrupoles first, then copy them to Quadrupole Tilts.",
+            )
+            return
+        lattice = self._load_current_lattice()
+        if lattice is None:
+            QMessageBox.warning(self, "Reference lattice unavailable", "Load the reference lattice before copying tilt elements.")
+            return
+
+        compatible: list[int] = []
+        incompatible: list[str] = []
+        validator = ElementSelectionDialog(self, "quadrupole_tilt_ords", [])
+        for ordinal in proposed:
+            try:
+                validator._validate_array([ordinal])
+                compatible.append(ordinal)
+            except Exception as exc:
+                incompatible.append(f"AT {ordinal}: {exc}")
+        lattice_identity = validator._lattice_identity()
+        validator.close()
+
+        interactive = mode is None
+        if interactive:
+            message = (
+                f"{len(compatible)} of {len(proposed)} selected Normal Quadrupoles support the "
+                "quadrupole-tilt representation."
+            )
+            if incompatible:
+                message += "\n\nNot included:\n" + "\n".join(incompatible[:12])
+                if len(incompatible) > 12:
+                    message += f"\n…and {len(incompatible) - 12} more."
+            box = QMessageBox(QMessageBox.Question, "Copy Normal Quadrupoles to Tilts", message, parent=self)
+            replace_button = box.addButton("Replace tilt selection", QMessageBox.AcceptRole)
+            add_button = box.addButton("Add to tilt selection", QMessageBox.AcceptRole)
+            box.addButton(QMessageBox.Cancel)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is replace_button:
+                mode = "replace"
+            elif clicked is add_button:
+                mode = "add"
+            else:
+                return
+        if mode not in {"replace", "add"}:
+            raise ValueError("Tilt-copy mode must be 'replace' or 'add'.")
+        if not compatible:
+            if not interactive:
+                raise ValueError("None of the selected Normal Quadrupoles supports quadrupole tilt fitting.")
+            return
+
+        current = list(map(int, elements.quadrupole_tilt_ords))
+        final = compatible if mode == "replace" else current + [value for value in compatible if value not in set(current)]
+        elements.quadrupole_tilt_ords = final
+        self.project.loco_config.element_selection_state["quadrupole_tilt_ords"] = {
+            "version": 1,
+            "method": "copied_normal_quadrupoles",
+            "source_role": "normal_quadrupole_ords",
+            "generated_ords": list(compatible),
+            "resolved_ords": list(final),
+            "manual_additions": [value for value in final if value not in set(compatible)],
+            "manual_removals": [],
+            "lattice_identity": lattice_identity,
+        }
+        self._reconcile_element_family_groups("quadrupole_tilt_ords", final)
+        self.project.loco_config._sync_response_matrix_elements()
+        self._refresh_recipe_machine_override()
+        self._mark_compatibility_stale("Quadrupole-tilt selection changed; validation is required.")
+        self.project.modified = True
+        self._element_preview_signature = None
+        self._refresh_element_selection_ui()
+        self._update_fit_summary()
+        self._refresh_ui(f"Copied {len(compatible)} Normal Quadrupoles to the independent tilt selection")
 
     @Slot()
     def edit_family_groups(self, role_key: str) -> None:

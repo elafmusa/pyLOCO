@@ -726,7 +726,7 @@ def test_case_c_at_wildcard_selects_steering_sextupoles_with_exact_notebook_orde
     assert dialog._preview()
     assert dialog.selected_ords == expected
     assert len(expected) == dialog.table.rowCount() == 32
-    assert dialog.selection_count.text() == "32 selected / 32 in preview"
+    assert dialog.selection_count.text() == "32 selected / 32 available · 32 visible · 0 highlighted"
     assert dialog.table.item(0, 1).text() == str(expected[0]) == "38"
     assert dialog.table.item(0, 2).text() == "SJ2A"
     assert dialog.table.item(0, 3).text() == "Sextupole"
