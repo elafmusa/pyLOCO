@@ -267,7 +267,7 @@ def test_incomplete_mapping_operation_defaults_to_attention_and_empty_state_is_e
     assert window.measurement_mapping_filter.currentData() == "attention"
     assert window.measurement_mapping_table.rowCount() == 1
     assert window.measurement_mapping_table.item(0, 1).text() == "H corrector"
-    assert window.measurement_mapping_table.item(0, 4).text() == "B1L"
+    assert window.measurement_mapping_table.item(0, 6).text() == "B1L — not validated"
     window.close()
 
 

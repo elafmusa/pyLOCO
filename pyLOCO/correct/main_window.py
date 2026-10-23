@@ -14,6 +14,7 @@ from pyLOCO.gui.branding import DISPLAY_ASSET,set_asset,application_icon
 from pyLOCO.gui.project_info import (PROJECT_ACKNOWLEDGEMENTS,PROJECT_CONTRIBUTORS,PROJECT_DOCUMENTATION,PROJECT_ISSUES,PROJECT_LICENSE,PROJECT_PAPER_TITLE,PROJECT_PAPER_URL,PROJECT_REPOSITORY,bibtex_text,citation_text)
 from pyLOCO.gui.suite import present_single_about_dialog
 from pyLOCO.gui.results.plot_canvas import PlotCanvas
+from pyLOCO.gui.mapping_table import CopyableMappingTable, configure_mapping_table
 from pyLOCO.gui.themes import theme_for_key
 from pyLOCO.gui.appearance import ensure_suite_appearance,select_suite_appearance
 from pyLOCO.control_system import AdapterCapability,InterfaceRegistry
@@ -91,7 +92,7 @@ class CorrectionApplyWorker(QObject):
             self.completed.emit(record)
 
 class CorrectMainWindow(QMainWindow):
-    COLUMNS=("Apply?","Index","Lattice ordinal","Element/family name","Control / power-supply name","Mapping status","Type","Initial K [m⁻²]","Fitted K [m⁻²]","Current K [m⁻²]","Raw fitted ΔK [m⁻²]","Recommended machine ΔK [m⁻²]","ΔK/K [%]","Global scale","Individual scale","Final ΔK [m⁻²]","L [m]","Final Δ(KL) [m⁻¹]","Applied control change","Target K [m⁻²]","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason","Current KL [m⁻¹]","Target KL [m⁻¹]")
+    COLUMNS=("Apply?","Index","Fitted magnet (AT FamName)","AT Device","AT ordinal (0-based)","Magnet class / type","pyAML target / control","Strength component","Control units","Mapping status","Initial K [m⁻²]","Fitted K [m⁻²]","Current K [m⁻²]","Raw fitted ΔK [m⁻²]","Recommended machine ΔK [m⁻²]","ΔK/K [%]","Global scale","Individual scale","Final ΔK [m⁻²]","L [m]","Final Δ(KL) [m⁻¹]","Applied control change","Target K [m⁻²]","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason","Current KL [m⁻¹]","Target KL [m⁻¹]")
     def __init__(self, *, registry=None):
         super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
         screen=self.screen()
@@ -220,9 +221,10 @@ class CorrectMainWindow(QMainWindow):
         mapping_help_layout.addWidget(self.mapping_help_body); self.mapping_help_body.setVisible(False); mapping_help.toggled.connect(self.mapping_help_body.setVisible)
 
         mapping_details=QGroupBox("3. Review mapping"); details_layout=QVBoxLayout(mapping_details)
+        mapping_origin=QLabel("Fitted magnet identity and ordinal come from the FIT result. AT Device is shown only when preserved by authoritative lattice provenance. The pyAML target/control, component and units come from the separately validated machine mapping."); mapping_origin.setWordWrap(True); details_layout.addWidget(mapping_origin)
         filter_row=QHBoxLayout(); self.mapping_filter=QLineEdit(); self.mapping_filter.setPlaceholderText("Search fitted magnet or machine device"); self.mapping_filter.textChanged.connect(self._refresh_mapping_details)
         self.mapping_attention_filter=QComboBox(); self.mapping_attention_filter.addItem("All mappings","all"); self.mapping_attention_filter.addItem("Needs attention","attention"); self.mapping_attention_filter.addItem("Validated only","validated"); self.mapping_attention_filter.currentIndexChanged.connect(self._refresh_mapping_details); filter_row.addWidget(self.mapping_filter,1); filter_row.addWidget(self.mapping_attention_filter); details_layout.addLayout(filter_row)
-        self.mapping_details_table=QTableWidget(0,8); self.mapping_details_table.setHorizontalHeaderLabels(["Fitted magnet","Ordinal","Magnet type","Machine device","Component","Units","Status","Problem / next action"]); self.mapping_details_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.mapping_details_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.mapping_details_table.setSortingEnabled(True); self.mapping_details_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents); self.mapping_details_table.horizontalHeader().setSectionResizeMode(3,QHeaderView.Stretch); self.mapping_details_table.horizontalHeader().setSectionResizeMode(7,QHeaderView.Stretch); self.mapping_details_table.setMinimumHeight(170); details_layout.addWidget(self.mapping_details_table); layout.addWidget(mapping_details)
+        self.mapping_details_table=CopyableMappingTable(0,9); self.mapping_details_table.setHorizontalHeaderLabels(["Fitted magnet (AT FamName)","AT Device","AT ordinal (0-based)","Magnet class / type","pyAML target / control","Strength component","Units","Mapping status","Reason / next action"]); configure_mapping_table(self.mapping_details_table,("Fitted magnet identity recorded by FIT.","AT Device attribute from authoritative lattice provenance, when available.","Zero-based AT lattice ordinal recorded by FIT.","AT element class when available and fitted parameter type.","Exact pyAML or other machine control identity; this is not the AT Device attribute.","Validated strength component such as B2L or A2L.","Physical units validated for the selected control component.","Machine mapping validation state and source.","Actionable reason or next step.")); self.mapping_details_table.setMinimumHeight(170); details_layout.addWidget(self.mapping_details_table); layout.addWidget(mapping_details)
         self.pysc_connection_group = connection_group
         self.pyaml_connection_group = QGroupBox("1. Machine connection")
         self.pyaml_connection_layout = QVBoxLayout(self.pyaml_connection_group)
@@ -261,7 +263,7 @@ class CorrectMainWindow(QMainWindow):
         self.representation_explanation=QLabel(); self.representation_explanation.setWordWrap(True); self.representation_explanation.setObjectName("mappingHelpText"); controls_layout.addWidget(self.representation_explanation); layout.addWidget(controls)
         legend_row=QHBoxLayout(); legend=QLabel('● Normal &nbsp;&nbsp; <span style="color:#D99029">● Amber: attention</span> &nbsp;&nbsp; <span style="color:#D32F2F">● Red: blocked / unsafe</span> &nbsp;&nbsp; <span style="color:#888888">● Gray: excluded</span>'); legend.setTextFormat(Qt.RichText); legend.setObjectName("warningLegend"); legend.setToolTip("Only diagnostic cells are highlighted; excluded rows are muted."); legend_row.addWidget(legend); legend_row.addStretch(1)
         self.clear_table_selection_button=QPushButton("Clear highlight"); self.clear_table_selection_button.clicked.connect(lambda:self.table.clearSelection()); self.show_first_columns_button=QPushButton("← First columns"); self.show_first_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().minimum())); self.show_last_columns_button=QPushButton("Show last columns →"); self.show_last_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().maximum())); legend_row.addWidget(self.clear_table_selection_button); legend_row.addWidget(self.show_first_columns_button); legend_row.addWidget(self.show_last_columns_button); layout.addLayout(legend_row)
-        self.table=QTableWidget(0,len(self.COLUMNS)); self.table.setMinimumHeight(260); self.table.setHorizontalHeaderLabels(self.COLUMNS); self.table.setSortingEnabled(True); self.table.setSelectionBehavior(QAbstractItemView.SelectRows); self.table.setSelectionMode(QAbstractItemView.ExtendedSelection); self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn); self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents); self.table.horizontalHeader().setStretchLastSection(False); self.table.horizontalHeader().setSectionResizeMode(len(self.COLUMNS)-1,QHeaderView.Interactive); self.table.setColumnWidth(len(self.COLUMNS)-1,220); self.table.itemChanged.connect(self._item_changed); layout.addWidget(self.table,1)
+        self.table=CopyableMappingTable(0,len(self.COLUMNS)); self.table.setMinimumHeight(260); self.table.setHorizontalHeaderLabels(self.COLUMNS); configure_mapping_table(self.table,tuple("Correction-plan value. Full content is available in each cell tooltip." for _ in self.COLUMNS),editable=True); self.table.horizontalHeader().setSectionResizeMode(len(self.COLUMNS)-1,QHeaderView.Interactive); self.table.setColumnWidth(len(self.COLUMNS)-1,220); self.table.itemChanged.connect(self._item_changed); layout.addWidget(self.table,1)
         self.plan_page=page; self._selection_clear_surfaces=(page,convention,controls,legend)
         for surface in self._selection_clear_surfaces:surface.installEventFilter(self)
         scroll=self._scroll_page(page); self.plan_scroll=scroll; scroll.viewport().installEventFilter(self); return scroll
@@ -1280,7 +1282,9 @@ class CorrectMainWindow(QMainWindow):
             if filter_key=="validated" and status!="mapped": continue
             shown_status=("Validated — "+source) if status=="mapped" and source in {"identity","explicit"} else ("Proposed" if status=="mapped" else status.capitalize())
             message={"mapped":"Validated against connected pyAML inventory","unmapped":"No unique pyAML device selected","ambiguous":"More than one candidate identity","duplicate":"Device is assigned more than once","unsupported":"Correction type is not supported"}.get(status,"Not yet validated")
-            values=(item.name,item.lattice_ordinal,item.correction_type.replace("_"," "),control or "—",item.metadata.get("control_component") or "—",item.metadata.get("control_unit") or "—",shown_status,message)
+            element_class=item.metadata.get("element_class")
+            magnet_type=(f"{element_class} — " if element_class else "")+item.correction_type.replace("_"," ")
+            values=(item.name,item.metadata.get("lattice_device") or item.metadata.get("at_device") or "Not available",item.lattice_ordinal if item.lattice_ordinal is not None else "Not available",magnet_type,control or "Not available",item.metadata.get("control_component") or "Not available",item.metadata.get("control_unit") or "Not available",shown_status,item.metadata.get("mapping_reason") or message)
             row=table.rowCount(); table.insertRow(row)
             for column,value in enumerate(values):
                 cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,item.index); cell.setToolTip(str(value)); table.setItem(row,column,cell)
@@ -1420,23 +1424,32 @@ class CorrectMainWindow(QMainWindow):
             for item in self._sorted_items():
                 try: applied=f"{item.applied_control_delta:.9g} {item.applied_control_unit}"
                 except ValueError: applied="Length required"
-                row=self.table.rowCount(); self.table.insertRow(row); values=(item.included,item.index,item.lattice_ordinal,item.name,item.control_name,item.metadata.get("mapping_status","unmapped"),item.correction_type,item.initial_value,item.fitted_value,item.current_gradient_value,item.raw_fitted_delta,item.recommended_machine_delta,item.relative_percent,self.review.global_scale,item.individual_scale,item.final_delta,item.magnetic_length_m,item.integrated_final_delta,applied,item.target_value,item.current_ampere,item.target_current_ampere,item.delta_i_ampere,item.min_current_ampere,item.max_current_ampere,item.current_limit_margin_ampere,item.calibration_status,item.current_limit_status,item.exclusion_reason,item.current_integrated_value,item.target_integrated_value)
+                element_class=item.metadata.get("element_class")
+                magnet_type=(f"{element_class} — " if element_class else "")+item.correction_type.replace("_"," ")
+                values=(item.included,item.index,item.name,item.metadata.get("lattice_device") or item.metadata.get("at_device") or "Not available",item.lattice_ordinal,magnet_type,item.control_name,item.metadata.get("control_component") or "Not available",item.metadata.get("control_unit") or "Not available",item.metadata.get("mapping_status","unmapped"),item.initial_value,item.fitted_value,item.current_gradient_value,item.raw_fitted_delta,item.recommended_machine_delta,item.relative_percent,self.review.global_scale,item.individual_scale,item.final_delta,item.magnetic_length_m,item.integrated_final_delta,applied,item.target_value,item.current_ampere,item.target_current_ampere,item.delta_i_ampere,item.min_current_ampere,item.max_current_ampere,item.current_limit_margin_ampere,item.calibration_status,item.current_limit_status,item.exclusion_reason,item.current_integrated_value,item.target_integrated_value)
+                row=self.table.rowCount(); self.table.insertRow(row)
                 warnings=item.warnings(self.review.thresholds)
+                individual_scale_column=self.COLUMNS.index("Individual scale")
+                exclusion_reason_column=self.COLUMNS.index("Exclusion reason")
+                mapping_status_column=self.COLUMNS.index("Mapping status")
+                relative_column=self.COLUMNS.index("ΔK/K [%]")
+                limit_margin_column=self.COLUMNS.index("Limit margin [A]")
                 for col,value in enumerate(values):
                     table_item=QTableWidgetItem("" if col==0 else self._fmt(value)); table_item.setData(Qt.UserRole,item.index)
                     if col==0:table_item.setFlags(table_item.flags()|Qt.ItemIsUserCheckable); table_item.setCheckState(Qt.Checked if item.included else Qt.Unchecked)
-                    if col in (14,25):table_item.setFlags(table_item.flags()|Qt.ItemIsEditable)
+                    if col in (individual_scale_column,exclusion_reason_column):table_item.setFlags(table_item.flags()|Qt.ItemIsEditable)
                     elif col!=0:table_item.setFlags(table_item.flags()&~Qt.ItemIsEditable)
-                    table_item.setToolTip("Warnings: "+", ".join(warnings) if warnings else "Normal")
-                    if col == 5 and item.metadata.get("match_source"):
+                    value_text=self._fmt(value)
+                    table_item.setToolTip((value_text+"\n" if value_text else "")+("Warnings: "+", ".join(warnings) if warnings else "Normal"))
+                    if col == mapping_status_column and item.metadata.get("match_source"):
                         table_item.setText(f"{value} ({item.metadata['match_source']})")
                     if not item.included:
                         table_item.setForeground(QColor("#888888"))
                         if col==0:table_item.setBackground(QColor("#D0D0D0"))
-                    elif any(code.startswith("mapping_") for code in warnings) and col in (0,5):table_item.setBackground(QColor("#D32F2F")); table_item.setForeground(QColor("white"))
-                    elif "current_limit_violation" in warnings and col in (0,24):table_item.setBackground(QColor("#D32F2F")); table_item.setForeground(QColor("white"))
-                    elif "serious_relative_correction" in warnings and col in (0,12):table_item.setBackground(QColor("#E88B22"))
-                    elif warnings and col in (0,12,23):table_item.setBackground(QColor("#F4C56A"))
+                    elif any(code.startswith("mapping_") for code in warnings) and col in (0,mapping_status_column):table_item.setBackground(QColor("#D32F2F")); table_item.setForeground(QColor("white"))
+                    elif "current_limit_violation" in warnings and col in (0,limit_margin_column):table_item.setBackground(QColor("#D32F2F")); table_item.setForeground(QColor("white"))
+                    elif "serious_relative_correction" in warnings and col in (0,relative_column):table_item.setBackground(QColor("#E88B22"))
+                    elif warnings and col in (0,relative_column,limit_margin_column):table_item.setBackground(QColor("#F4C56A"))
                     self.table.setItem(row,col,table_item)
                 self.table.setRowHeight(row,30)
         self.table.setSortingEnabled(True); self._updating=False
@@ -1446,8 +1459,8 @@ class CorrectMainWindow(QMainWindow):
         if item is None:return
         try:
             if cell.column()==0:item.included=cell.checkState()==Qt.Checked
-            elif cell.column()==14:item.individual_scale=float(cell.text())
-            elif cell.column()==25:item.exclusion_reason=cell.text()
+            elif cell.column()==self.COLUMNS.index("Individual scale"):item.individual_scale=float(cell.text())
+            elif cell.column()==self.COLUMNS.index("Exclusion reason"):item.exclusion_reason=cell.text()
         except ValueError:QMessageBox.warning(self,"Invalid scale","Individual scale must be numeric.")
         self.refresh_all()
     def _set_selected(self,included,reason):

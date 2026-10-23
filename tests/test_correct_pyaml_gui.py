@@ -202,7 +202,7 @@ def test_shared_workflow_and_backend_switch(window, setup):
     assert widget.apply_button is window.apply_button
     assert widget.preview_button is window.preview_apply_button
     assert widget.restore_button is window.restore_button
-    assert window.table.item(0, 5).text() == "mapped (identity)"
+    assert window.table.item(0, 9).text() == "mapped (identity)"
     window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
     assert window.pyaml_connection_group.isHidden()
     assert window.pysc_connection_group.isHidden()
@@ -294,13 +294,13 @@ def test_mapping_help_and_details_are_self_explanatory(window, setup):
     assert widget.clear_mapping_button.text() == "Find machine mappings"
     assert window.generate_mapping_button.text() == "Create mapping template…"
     assert window.mapping_button.text() == "Load completed mapping…"
-    assert window.mapping_details_table.columnCount() == 8
-    assert window.mapping_details_table.horizontalHeaderItem(0).text() == "Fitted magnet"
-    assert window.mapping_details_table.horizontalHeaderItem(3).text() == "Machine device"
+    assert window.mapping_details_table.columnCount() == 9
+    assert window.mapping_details_table.horizontalHeaderItem(0).text() == "Fitted magnet (AT FamName)"
+    assert window.mapping_details_table.horizontalHeaderItem(4).text() == "pyAML target / control"
     assert window.mapping_details_table.rowCount() == 3
     window.mapping_filter.setText("M2")
     assert window.mapping_details_table.rowCount() == 1
-    assert window.mapping_details_table.item(0, 3).text() == "M2"
+    assert window.mapping_details_table.item(0, 4).text() == "M2"
 
 
 def test_mapping_status_filter_and_readonly_strength_journey(window, setup):
@@ -326,7 +326,7 @@ def test_backend_neutral_disconnected_and_zero_match_states(window, setup):
     assert not widget.writes.isChecked()
     window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
     assert window.mapping_group.title() == "2. Match fitted magnets to machine devices"
-    assert window.mapping_details_table.horizontalHeaderItem(3).text() == "Machine device"
+    assert window.mapping_details_table.horizontalHeaderItem(4).text() == "pyAML target / control"
     assert window.automatic_mapping_group.isHidden()
     assert not window.offline_connection_group.isHidden()
     assert window.pysc_connection_group.isHidden()
@@ -367,17 +367,17 @@ def test_pyaml_representation_lock_explains_k_to_kl_conversion(window, setup):
     assert "Δ(KL) = ΔK × L" in explanation
     assert "m⁻²" in explanation and "m⁻¹" in explanation
     assert "integrated B2L/A2L" in window.correction_representation.toolTip()
-    assert window.table.horizontalHeaderItem(9).text() == "Current K [m⁻²]"
-    assert window.table.horizontalHeaderItem(17).text() == "Final Δ(KL) [m⁻¹]"
-    assert window.table.horizontalHeaderItem(29).text() == "Current KL [m⁻¹]"
-    assert window.table.horizontalHeaderItem(30).text() == "Target KL [m⁻¹]"
+    assert window.table.horizontalHeaderItem(12).text() == "Current K [m⁻²]"
+    assert window.table.horizontalHeaderItem(20).text() == "Final Δ(KL) [m⁻¹]"
+    assert window.table.horizontalHeaderItem(32).text() == "Current KL [m⁻¹]"
+    assert window.table.horizontalHeaderItem(33).text() == "Target KL [m⁻¹]"
 
 
 def test_mapping_table_preview_invalidates_and_pending_locks(window, setup):
     widget = connect_workspace(window, setup)
     widget.preview(); widget.refresh()
     assert widget.table.rowCount() == 3
-    assert widget.table.item(0, 4).text() == "M1"
+    assert widget.table.item(0, 6).text() == "M1"
     assert widget.apply_button.isEnabled()
     setup.review.items[0].individual_scale = .5
     widget.refresh()

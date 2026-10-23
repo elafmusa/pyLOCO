@@ -73,6 +73,7 @@ from .measurement_mapping import (
     ordered_ordinals as measurement_mapping_ordered_ordinals,
     validate_mapping as validate_measurement_mapping,
 )
+from .mapping_table import CopyableMappingTable, configure_mapping_table, identity_match_label
 
 from .backend import LocoRunError, LocoRunRequest, LocoRunResult, run_loco_request, _load_bad_bpm_positions, _load_measurements
 from .machine_detection import detect_machine_elements
@@ -1758,8 +1759,9 @@ class MainWindow(QMainWindow):
         measurement_mapping_group = QGroupBox("Measurement-device mapping")
         measurement_mapping_layout = QVBoxLayout(measurement_mapping_group)
         mapping_intro = QLabel(
-            "Match the device identities stored by Measure to the selected AT lattice. Exact validated "
-            "identities are used; array position, similar names and matching dimensions are never treated as identity. "
+            "Measured identities come from imported HDF5 metadata. AT FamName, AT Device and zero-based ordinal "
+            "come from the active reference lattice. The recorded match method and steering compatibility are "
+            "reviewed separately; array position is never identity. "
             "Find machine mappings verifies identities only — it does not change the FIT selections."
         )
         mapping_intro.setWordWrap(True); measurement_mapping_layout.addWidget(mapping_intro)
@@ -1793,7 +1795,7 @@ class MainWindow(QMainWindow):
         self.use_measurement_mappings_button.clicked.connect(self.use_measurement_mappings_for_fit)
         measurement_mapping_layout.addWidget(self.use_measurement_mappings_button, 0, Qt.AlignLeft)
         mapping_filters = QHBoxLayout(); self.measurement_mapping_search = QLineEdit()
-        self.measurement_mapping_search.setPlaceholderText("Search measured device or AT element")
+        self.measurement_mapping_search.setPlaceholderText("Search measured device, AT FamName or AT Device")
         self.measurement_mapping_filter = QComboBox()
         self.measurement_mapping_filter.addItem("Needs attention", "attention")
         self.measurement_mapping_filter.addItem("All mappings", "all")
@@ -1802,16 +1804,13 @@ class MainWindow(QMainWindow):
         self.measurement_mapping_filter.currentIndexChanged.connect(self._refresh_measurement_mapping_table)
         mapping_filters.addWidget(self.measurement_mapping_search, 1); mapping_filters.addWidget(self.measurement_mapping_filter)
         measurement_mapping_layout.addLayout(mapping_filters)
-        self.measurement_mapping_table = QTableWidget(0, 7)
+        self.measurement_mapping_table = CopyableMappingTable(0, 9)
         self.measurement_mapping_table.setHorizontalHeaderLabels(
-            ["Measured device", "Role / plane", "AT element", "AT ordinal", "Component", "Status", "Problem / evidence"]
+            ["Measured device (HDF5)", "Role / plane", "AT FamName", "AT Device", "AT ordinal (0-based)", "Match method", "Component / steering capability", "Mapping status", "Evidence / problem"]
         )
-        self.measurement_mapping_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.measurement_mapping_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.measurement_mapping_table.setSortingEnabled(True)
-        self.measurement_mapping_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        self.measurement_mapping_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.measurement_mapping_table.horizontalHeader().setSectionResizeMode(6, QHeaderView.Stretch)
+        configure_mapping_table(self.measurement_mapping_table,(
+            "Exact ordered identity stored in imported ORM HDF5 metadata.","Measured role and plane.","FamName attribute from the selected AT lattice element.","Device attribute from the selected AT lattice element.","Zero-based ordinal in the active AT lattice.","Recorded identity_match method, including explicit legacy suffix interpretation.","Required component and independently validated physical steering capability.","Revalidated mapping state.","Separate identity and steering evidence or an actionable validation error."
+        ))
         self.measurement_mapping_table.setMinimumHeight(170)
         measurement_mapping_layout.addWidget(self.measurement_mapping_table)
         self.measurement_mapping_table_hint = QLabel(
@@ -1823,7 +1822,7 @@ class MainWindow(QMainWindow):
         mapping_help = QGroupBox("Mapping workflow and technical details"); mapping_help.setCheckable(True); mapping_help.setChecked(False)
         mapping_help_layout = QVBoxLayout(mapping_help)
         mapping_help_text = QLabel(
-            "Find machine mappings uses exact authoritative Device identities. Create writes JSON; Load accepts JSON, "
+            "Find machine mappings uses exact AT Device or FamName identities, with explicit legacy suffix compatibility. Create writes JSON; Load accepts JSON, "
             "YAML and YML. For unresolved entries, fill in only lattice_ordinal. Roles, AT identity, B1L/A1L "
             "component, units and validation status are derived again when loaded. A typed ordinal is only a proposal. "
             "Validated mappings are bound to the lattice checksum, machine configuration checksum and ordered inventory."
@@ -6095,9 +6094,12 @@ class MainWindow(QMainWindow):
             if mode == "validated" and status != "mapped": continue
             searchable = " ".join(str(item.get(key, "")) for key in ("measured_name", "lattice_name", "lattice_device", "reason")).lower()
             if query and query not in searchable: continue
-            values = (item.get("measured_name", ""), role_labels.get(item.get("role"), item.get("role", "")),
-                      item.get("lattice_name") or "—", item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "—",
-                      item.get("component") or "—", "Validated" if status == "mapped" else status.capitalize(), item.get("reason", ""))
+            capability=(item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated")
+            values = (item.get("measured_name", "") or "Not available", role_labels.get(item.get("role"), item.get("role", "")) or "Not available",
+                      item.get("lattice_name") or "Not available", item.get("lattice_device") or "Not available",
+                      item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",
+                      identity_match_label(item.get("identity_match")), capability,
+                      "Validated" if status == "mapped" else status.capitalize(), item.get("reason", "") or "Not available")
             row = table.rowCount(); table.insertRow(row)
             for column, value in enumerate(values):
                 cell = QTableWidgetItem(str(value)); cell.setToolTip(str(value)); table.setItem(row, column, cell)

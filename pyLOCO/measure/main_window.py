@@ -50,6 +50,8 @@ from pyLOCO.gui.results.plot_canvas import PlotCanvas
 from pyLOCO.gui.measurement_mapping import (
     find_exact_device_mappings, mapping_counts, ordered_ordinals, validate_mapping,
 )
+from pyLOCO.gui.mapping_table import (CopyableMappingTable, configure_mapping_table,
+                                      identity_match_label)
 from pyLOCO.gui.lattice_loader import MultipleMatLatticesError, mat_lattice_candidates
 from pyLOCO.gui.themes import ACCENTS, accent_for_key, apply_application_theme, theme_for_key
 from pyLOCO.gui.suite import launch_suite_application,present_single_about_dialog
@@ -838,7 +840,8 @@ class MeasureMainWindow(QMainWindow):
             else:
                 self.measurement_device_alignment=document
                 self.device_alignment_status.setText(
-                    f"Device alignment verified — {counts['mapped']}/{counts['total']} exact AT Device identities. "
+                    f"Device alignment verified — {counts['mapped']}/{counts['total']} exact AT Device/FamName identities "
+                    "(including validated legacy component-suffix interpretation where recorded). "
                     "Measured BPM/corrector order will be preserved in model calculations.")
             self.alignment_details_button.setEnabled(True)
         except Exception as exc:
@@ -885,13 +888,22 @@ class MeasureMainWindow(QMainWindow):
     def _show_alignment_details(self):
         document=self.measurement_device_alignment
         if not document:return
-        dialog=QDialog(self); dialog.setWindowTitle("Validated measurement-device alignment"); dialog.resize(1000,500)
-        layout=QVBoxLayout(dialog); table=QTableWidget(0,7); table.setHorizontalHeaderLabels(("Measured device","Role","AT element","AT ordinal","Component","Status","Problem / evidence")); table.setEditTriggers(QTableWidget.NoEditTriggers)
+        dialog=QDialog(self); dialog.setWindowTitle("Validated measurement-device alignment"); dialog.resize(1250,560)
+        layout=QVBoxLayout(dialog)
+        explanation=QLabel("Measured identities come from the active pyAML inventory. AT FamName, AT Device and zero-based ordinal come from the checksummed reference lattice; Match method is the recorded identity_match provenance.")
+        explanation.setWordWrap(True); layout.addWidget(explanation)
+        table=CopyableMappingTable(0,9); table.setHorizontalHeaderLabels(("Measured device (pyAML)","Role","AT FamName","AT Device","AT ordinal (0-based)","Match method","Component / steering capability","Mapping status","Evidence / problem"))
+        configure_mapping_table(table,(
+            "Exact device name from the selected pyAML measurement inventory.","Measurement role and plane.","FamName attribute on the selected AT lattice element.","Device attribute on the selected AT lattice element; distinct from a pyAML control name.","Zero-based element ordinal in the active AT lattice.","Recorded identity_match method; never inferred by this dialog.","Required component and whether role compatibility passed.","Validated mapping state.","Detailed identity and steering evidence or actionable problem."
+        ))
         rows=document.get("mappings",()); table.setRowCount(len(rows))
         for row,item in enumerate(rows):
-            values=(item.get("measured_name",""),item.get("role",""),item.get("lattice_name",""),item.get("lattice_ordinal","—"),item.get("component",""),item.get("status",""),item.get("reason",""))
-            for column,value in enumerate(values):table.setItem(row,column,QTableWidgetItem(str(value)))
-        table.horizontalHeader().setSectionResizeMode(0,QHeaderView.Stretch); layout.addWidget(table)
+            status=item.get("status","")
+            capability=(item.get("component") or "BPM identity")+(" — validated" if status=="mapped" else " — not validated")
+            values=(item.get("measured_name","") or "Not available",item.get("role","") or "Not available",item.get("lattice_name","") or "Not available",item.get("lattice_device","") or "Not available",item.get("lattice_ordinal") if item.get("lattice_ordinal") is not None else "Not available",identity_match_label(item.get("identity_match")),capability,status.capitalize() or "Not available",item.get("reason","") or "Not available")
+            for column,value in enumerate(values):
+                cell=QTableWidgetItem(str(value)); cell.setToolTip(str(value)); table.setItem(row,column,cell)
+        layout.addWidget(table); self.alignment_details_dialog=dialog; self.alignment_details_table=table
         buttons=QDialogButtonBox(QDialogButtonBox.Close); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons); dialog.exec()
 
     def _reference_comparison_changed(self,*_):

@@ -137,7 +137,7 @@ def test_source_summary_conventions_workflow_sort_and_operator_metrics():
     assert window.source_path.text()=="No source loaded"; assert window.source_type.text()=="—"; assert window.source_parameters.text()=="—"; assert window.source_status.text()=="Waiting for correction data"; assert not window.conventions_body.isVisible()
     window._load(Path("Examples/Correct/mock_corrections.json").resolve()); app.processEvents(); assert window.source_type.text()=="Legacy correction JSON / YAML"; assert window.source_parameters.text().startswith("6 total")
     assert all(window.tabs.tabText(index).startswith("✓ ") for index in range(4))
-    window.sort_by.setCurrentIndex(window.sort_by.findData("relative")); app.processEvents(); assert window.table.item(0,3).text()=="QD-MOCK-02"
+    window.sort_by.setCurrentIndex(window.sort_by.findData("relative")); app.processEvents(); assert window.table.item(0,2).text()=="QD-MOCK-02"
     window.tabs.setCurrentIndex(3); app.processEvents(); assert window.review_metrics["Magnets loaded"].text()=="6"; assert window.review_metrics["Magnets included"].text()=="5"; assert window.review_metrics["Global correction fraction"].text()=="10%"; window.close()
 
 
