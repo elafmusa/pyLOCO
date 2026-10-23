@@ -5,6 +5,7 @@ import os
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import h5py
 import numpy as np
@@ -342,6 +343,19 @@ def test_dispersion_hdf5_records_manual_frequency_evidence(tmp_path):
 def _dispersion_plot_event(canvas,index,value,name):
     canvas.canvas.draw(); x,y=canvas.figure.axes[0].transData.transform((index,value))
     return MouseEvent(name,canvas.canvas,x,y,button=1 if name=="button_press_event" else None)
+
+
+@pytest.mark.parametrize(("indices","expected"),[
+    (np.array([],dtype=int),(None,None)),
+    (np.array([1]),(1,"X")),
+    (np.array([2,1]),(2,"X")),
+])
+def test_live_dispersion_hit_testing_handles_zero_one_and_multiple_indices(app,indices,expected):
+    window=MeasureMainWindow(devices=default_mock_devices(3)); axis=object()
+    line=SimpleNamespace(contains=lambda _event:(True,{"ind":indices}))
+    window._live_dispersion_plot_state={"axis":axis,"lines":(("X",line,np.zeros(3)),)}
+    try:assert window._live_dispersion_index_from_event(SimpleNamespace(inaxes=axis))==expected
+    finally:window.close(); app.processEvents()
 
 
 def test_live_dispersion_bpm_identity_relative_view_and_persistent_highlight(app):

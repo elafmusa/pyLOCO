@@ -6,6 +6,7 @@ from copy import deepcopy
 
 import re
 import csv
+import json
 from html import escape
 from datetime import datetime
 from pathlib import Path
@@ -33,6 +34,7 @@ from pyLOCO.data_schema import (
     read_bpm_noise_review_annotations, validate_measurement_file, write_bpm_noise, write_bpm_noise_review_annotations,
     write_dispersion, write_orm,
 )
+from pyLOCO.data_schema.session import SESSION_FILE_TYPE
 from pyLOCO.gui.branding import DISPLAY_ASSET, application_icon, set_asset
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from pyLOCO.gui.project_info import (
@@ -2936,7 +2938,10 @@ class MeasureMainWindow(QMainWindow):
         if state is None or event.inaxes is not state["axis"]:return None,None
         for plane,line,values in state["lines"]:
             contains,details=line.contains(event)
-            if contains and details.get("ind"):return int(details["ind"][0]),plane
+            hit_indices=details.get("ind")
+            if contains and hit_indices is not None:
+                indices=np.asarray(hit_indices).reshape(-1)
+                if indices.size>0:return int(indices[0]),plane
         return None,None
 
     def _dispersion_bpm_text(self,index,plane=None):
@@ -3910,7 +3915,16 @@ class MeasureMainWindow(QMainWindow):
         self._fresh_measurement_session=True; self._pending_full_bundle=None
     def open_project(self):
         path=QFileDialog.getOpenFileName(self,"Open pyLOCO Measure project","","pyLOCO Measure (*.pyloco-measure.json *.json)")[0]
-        if path: self.project=load_measure_project(path); self.project_path=Path(path).resolve(); self._load_project_widgets(); self.statusBar().showMessage(f"Opened {path}")
+        if not path:return
+        try:
+            payload=json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError,UnicodeError,json.JSONDecodeError) as exc:
+            QMessageBox.warning(self,"Cannot open Measure project",f"The selected file is not a readable pyLOCO Measure project:\n{exc}"); return
+        if isinstance(payload,dict) and payload.get("file_type")==SESSION_FILE_TYPE:
+            QMessageBox.information(self,"Measurement session selected","This file is a measurement-session manifest, not a Measure project. Use Review & Save → Open Full Measurement Session… to restore its available measurements."); return
+        try:self.project=load_measure_project(path)
+        except Exception as exc:QMessageBox.warning(self,"Cannot open Measure project",str(exc)); return
+        self.project_path=Path(path).resolve(); self._load_project_widgets(); self.statusBar().showMessage(f"Opened {path}")
     def save_project(self):
         if self.project_path is None: return self.save_project_as()
         self.project=self._collect_project(); save_measure_project(self.project_path,self.project); self.statusBar().showMessage(f"Saved {self.project_path}")

@@ -106,6 +106,38 @@ def test_gui_opens_full_session_disconnected_with_writes_disabled(tmp_path,monke
         window.close(); app.processEvents()
 
 
+def test_ordinary_open_project_redirects_measurement_session_to_full_session_action(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]); manifest=source_session(tmp_path,("bpm_noise",)); window=MeasureMainWindow(); original=window.project
+    messages=[]
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getOpenFileName",lambda *args:(str(manifest),""))
+    monkeypatch.setattr(QMessageBox,"information",lambda _parent,title,text,*args:messages.append((title,text)) or QMessageBox.Ok)
+    try:
+        window.open_project(); app.processEvents()
+        assert window.project is original
+        assert messages and "Open Full Measurement Session…" in messages[0][1]
+        assert "measurement-session manifest" in messages[0][1]
+    finally:
+        window.close(); app.processEvents()
+
+
+def test_full_session_action_opens_older_manifest_and_explains_unrecoverable_settings(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([]); manifest=source_session(tmp_path,("bpm_noise","orm")); window=MeasureMainWindow(); messages=[]
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getOpenFileName",lambda *args:(str(manifest),""))
+    monkeypatch.setattr(QMessageBox,"information",lambda _parent,title,text,*args:messages.append((title,text)) or QMessageBox.Ok)
+    try:
+        window.open_full_measurement_session(); app.processEvents()
+        assert window.saved_session_path==manifest.resolve()
+        assert window.saved_measurement_path.is_file()
+        assert "BPM noise" in window.review_details.text() and "ORM" in window.review_details.text()
+        assert "Present" in window.review_details.text() and "Missing" in window.review_details.text()
+        assert messages and "Older measurement session loaded"==messages[0][0]
+        explanation=messages[0][1]
+        assert "no Measure project, lattice, selections or mapping" in explanation
+        assert "manually" in explanation
+    finally:
+        window.close(); app.processEvents()
+
+
 def test_resumed_partial_bundle_appends_missing_role_without_replacing_old_file(tmp_path):
     app=QApplication.instance() or QApplication([]); configured,_=project(tmp_path)
     bundle=save_full_session_bundle(tmp_path/"resume.pyloco-measure-session",project=configured,session_manifest=source_session(tmp_path,("bpm_noise",)),reference_lattice=None)
