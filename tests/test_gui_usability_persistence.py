@@ -207,7 +207,7 @@ def test_measurement_mapping_review_defaults_to_attention_and_filters(app):
     assert window.measurement_mapping_table.rowCount() == 2
     window.measurement_mapping_search.setText("BPM1")
     assert window.measurement_mapping_table.rowCount() == 1
-    assert window.save_measurement_mapping_button.text() == "Save validated mapping…"
+    assert window.save_measurement_mapping_button.text() == "Save validated Machine Mapping…"
     window.close()
 
 

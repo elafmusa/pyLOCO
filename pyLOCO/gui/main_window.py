@@ -76,7 +76,9 @@ from .measurement_mapping import (
 from .mapping_table import CopyableMappingTable, configure_mapping_table, identity_match_label
 from pyLOCO.machine_mapping import (is_document as is_machine_mapping,
     is_template as is_machine_mapping_template, measurement_projection,
-    merge_measurement, template as machine_mapping_template)
+    merge_measurement, template as machine_mapping_template,
+    complete_template as complete_machine_mapping_template,
+    pyaml_configuration_inventory, reconcile_configured)
 
 from .backend import LocoRunError, LocoRunRequest, LocoRunResult, run_loco_request, _load_bad_bpm_positions, _load_measurements
 from .machine_detection import detect_machine_elements
@@ -5835,12 +5837,68 @@ class MainWindow(QMainWindow):
         metadata = orm_options.get("acquisition_metadata") or {}
         pyaml_options = metadata.get("pyaml_options") or {}
         raw_configuration = pyaml_options.get("config_path") or ""
-        configuration = Path(raw_configuration).expanduser() if raw_configuration else None
-        if configuration is not None and not configuration.is_absolute():
-            configuration = self.project.resolve_path(configuration)
-        if configuration is not None and not configuration.is_file():
-            configuration = None
+        candidates = [raw_configuration]
+        master_profile = (self.project.machine_mapping or {}).get("machine_profile") or {}
+        candidates.append(master_profile.get("configuration_path") or "")
+        session_metadata = (self.project.measurement_session or {}).get("session_metadata") or {}
+        full_session = session_metadata.get("full_measure_session") or {}
+        session_configuration = full_session.get("pyaml_configuration") or {}
+        candidates.extend((session_configuration.get("path") or "",
+                           session_configuration.get("external_path") or ""))
+        configuration = None
+        for value in candidates:
+            if not value:
+                continue
+            candidate = Path(str(value)).expanduser()
+            if not candidate.is_absolute():
+                candidate = self.project.resolve_path(candidate)
+            if candidate.is_file():
+                configuration = candidate
+                break
         return lattice, lattice_path, payload, inventory, configuration
+
+    def _find_complete_machine_mapping(self, lattice, lattice_path, configuration):
+        """Build the shared mapping from configured pyAML devices only."""
+        if configuration is None or not Path(configuration).is_file():
+            raise ValueError(
+                "The saved pyAML configuration is required to discover the complete Machine Mapping. "
+                "Restore or locate that configuration; the measured BPM/corrector list alone is not a machine inventory."
+            )
+        try:
+            import yaml
+            configuration_document = yaml.safe_load(Path(configuration).read_text(encoding="utf-8")) or {}
+        except Exception as exc:
+            raise ValueError(f"The pyAML configuration could not be read: {exc}") from exc
+        configured, metadata = pyaml_configuration_inventory(configuration_document)
+        measurements = {role: list(configured.get(role, ())) for role in
+                        ("bpm", "horizontal_corrector", "vertical_corrector")}
+        controls = {role: list(configured.get(role, ())) for role in
+                    ("normal_quadrupole", "skew_quadrupole", "sextupole", "octupole", "dipole")}
+        proposal = complete_machine_mapping_template(lattice, measurements, controls, metadata)
+        proposal["reference_lattice"] = {
+            "path": str(Path(lattice_path).resolve()),
+            "sha256": file_sha256(lattice_path),
+            "element_count": len(lattice),
+            "mat_variable": self.project.lattice.mat_variable or "",
+        }
+        proposal["machine_profile"] = {
+            "configuration_path": str(Path(configuration).resolve()),
+            "configuration_sha256": file_sha256(configuration),
+        }
+        reconciled = reconcile_configured(self.project.machine_mapping, proposal)
+        complete_measurements = find_exact_device_mappings(
+            lattice, measurements, lattice_path=lattice_path,
+            configuration_path=configuration,
+            provenance="FIT complete configured pyAML inventory matched to authoritative AT lattice",
+        )
+        master = merge_measurement(reconciled, complete_measurements)
+        expected = sum(len(names) for names in configured.values())
+        if len(master.get("mappings", ())) != expected:
+            raise ValueError(
+                f"Complete Machine Mapping mismatch: expected {expected} configured devices, "
+                f"got {len(master.get('mappings', ()))}."
+            )
+        return master
 
     @Slot()
     def find_measurement_mappings(self) -> bool:
@@ -5864,10 +5922,12 @@ class MainWindow(QMainWindow):
                     lattice, inventory, lattice_path=lattice_path, configuration_path=configuration,
                     provenance="exact AT Device/FamName identity from selected lattice and Measure inventory",
                 )
+            master = self._find_complete_machine_mapping(lattice, lattice_path, configuration)
         except Exception as exc:
             self.measurement_mapping_feedback.setText(f"Mapping could not be completed — {exc}")
             return False
         self.project.measurement_device_mapping = mapping
+        self.project.machine_mapping = master
         self.project.modified = True
         self.project.compatibility_validation = {
             "required": True, "status": "validation_required",

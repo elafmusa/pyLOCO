@@ -91,6 +91,25 @@ def test_ebs_gui_export_session_fit_reopen_and_correct_preserve_complete_mapping
         assert len(fit.project.measurement_device_mapping["mappings"]) == 330
         assert fit.machine_mapping_details_button.isEnabled()
 
+        # Exercise the actual FIT button slot. It must rediscover/revalidate
+        # the complete configured inventory without changing measured order
+        # or the independent fitting recipe.
+        recipe_before = json.dumps(fit.project.fit_recipe, sort_keys=True)
+        measured_before = [
+            (row["role"], row["measured_name"], row["lattice_ordinal"])
+            for row in fit.project.measurement_device_mapping["mappings"]
+        ]
+        assert fit.find_measurement_mappings()
+        assert len(fit.project.machine_mapping["mappings"]) == sum(expected.values())
+        assert _role_counts(fit.project.machine_mapping) == Counter(expected)
+        assert sum(1 for row in fit.project.machine_mapping["mappings"]
+                   if row["role"] in ("bpm", "horizontal_corrector", "vertical_corrector")) == 896
+        assert [(row["role"], row["measured_name"], row["lattice_ordinal"])
+                for row in fit.project.measurement_device_mapping["mappings"]] == measured_before
+        assert json.dumps(fit.project.fit_recipe, sort_keys=True) == recipe_before
+        assert "Machine Mapping: 1,954 configured devices" in fit.measurement_mapping_feedback.text()
+        assert "Measurement Mapping: 896 available BPM/H/V devices" in fit.measurement_mapping_feedback.text()
+
         project_path = tmp_path / "imported-complete-mapping.pyloco.json"
         assert fit._save_project_to(project_path)
     finally:
