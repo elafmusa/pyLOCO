@@ -1124,6 +1124,7 @@ class MeasureMainWindow(QMainWindow):
         table_group=QGroupBox("Selection preview"); table_group.setMinimumHeight(350); tl=QVBoxLayout(table_group); self.preview_table=QTableWidget(0,3); self.preview_table.setMinimumHeight(260); self.preview_table.setHorizontalHeaderLabels(["Selection position","BPM name","Adapter/device identifier"]); self.preview_table.horizontalHeader().setSectionResizeMode(0,QHeaderView.ResizeToContents); self.preview_table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeToContents); self.preview_table.horizontalHeader().setSectionResizeMode(2,QHeaderView.Stretch); self.preview_table.setEditTriggers(QTableWidget.NoEditTriggers); self.preview_table.setSelectionBehavior(QAbstractItemView.SelectRows); self.preview_table.setSelectionMode(QAbstractItemView.ExtendedSelection); tl.addWidget(self.preview_table); self.selection_message=QLabel(); tl.addWidget(self.selection_message); layout.addWidget(table_group)
         self.manual_input.textChanged.connect(self.refresh_preview)
         self.preview_table.itemSelectionChanged.connect(self._filter_bpm_table)
+        self.preview_table.itemChanged.connect(self._bpm_checkbox_changed)
         self.orm_corrector_group=QGroupBox("Correctors — ORM selection"); cg=QVBoxLayout(self.orm_corrector_group); self.corrector_selection_widgets={}
         self.corrector_diagnostic_legend=QLabel("SP = Setpoint; RBV = Readback Value. Kick/strength and electrical current are distinct quantities; units are never inferred from one another.")
         self.corrector_diagnostic_legend.setObjectName("infoText"); self.corrector_diagnostic_legend.setWordWrap(True)
@@ -1153,7 +1154,7 @@ class MeasureMainWindow(QMainWindow):
             form.addRow("Selection method",method); form.addRow("Search / filter",search); form.addRow("Show devices",visibility); form.addRow("Names file",file_row); file_label=form.labelForField(file_row); form.addRow("Manual selection",manual); manual_label=form.labelForField(manual); form.addRow("Excluded positions",exclusion); form.addRow("",controls); form.addRow("Selection helpers",subset); form.addRow("Selected / available",count); form.addRow(table); form.addRow("",empty)
             data={"method":method,"manual":manual,"file":file_edit,"file_row":file_row,"file_label":file_label,"manual_label":manual_label,"exclusion":exclusion,"search":search,"visibility":visibility,"table":table,"devices":devices,"count":count,"empty":empty,"n":nbox,"select_only_highlighted":select_only_highlighted,"add_highlighted":add_highlighted}
             self.corrector_selection_widgets[key]=data
-            method.currentIndexChanged.connect(lambda _=0,k=key:self._corrector_method_changed(k)); preview.clicked.connect(lambda _=False,k=key:self._refresh_corrector_preview(k)); search.textChanged.connect(lambda _="",k=key:self._filter_corrector_table(k)); visibility.currentIndexChanged.connect(lambda _=0,k=key:self._filter_corrector_table(k)); table.itemSelectionChanged.connect(lambda k=key:self._filter_corrector_table(k)); browse.clicked.connect(lambda _=False,e=file_edit:self._browse_into(e)); exclusion.textChanged.connect(self.refresh_plan)
+            method.currentIndexChanged.connect(lambda _=0,k=key:self._corrector_method_changed(k)); preview.clicked.connect(lambda _=False,k=key:self._refresh_corrector_preview(k)); search.textChanged.connect(lambda _="",k=key:self._filter_corrector_table(k)); visibility.currentIndexChanged.connect(lambda _=0,k=key:self._filter_corrector_table(k)); table.itemSelectionChanged.connect(lambda k=key:self._filter_corrector_table(k)); table.itemChanged.connect(lambda item,k=key:self._corrector_checkbox_changed(k,item)); browse.clicked.connect(lambda _=False,e=file_edit:self._browse_into(e)); exclusion.textChanged.connect(self.refresh_plan)
             cg.addWidget(box); self._corrector_method_changed(key); self._refresh_corrector_preview(key)
         layout.addWidget(self.orm_corrector_group)
         self.device_selection_reviewed=QCheckBox("I reviewed the ordered BPM, H-corrector and V-corrector selections")
@@ -1769,6 +1770,18 @@ class MeasureMainWindow(QMainWindow):
     def _select_all_bpms(self):
         self.selection_method.setCurrentIndex(self.selection_method.findData("all")); self.refresh_preview()
 
+    def _bpm_checkbox_changed(self,item):
+        if item is None or item.column()!=1:return
+        highlighted=self._highlighted_device_names(self.preview_table)
+        checked={self.preview_table.item(row,1).text() for row in range(self.preview_table.rowCount())
+                 if self.preview_table.item(row,1) is not None and self.preview_table.item(row,1).checkState()==Qt.Checked}
+        names=[device.name for device in self.devices if device.name in checked]
+        self.selection_method.blockSignals(True); self.selection_method.setCurrentIndex(self.selection_method.findData("manual")); self.selection_method.blockSignals(False)
+        self.manual_input.blockSignals(True); self.manual_input.setText(", ".join(names)); self.manual_input.blockSignals(False)
+        self.bpm_exclusions.blockSignals(True); self.bpm_exclusions.clear(); self.bpm_exclusions.blockSignals(False)
+        self._selection_method_changed()
+        self._restore_table_highlights(self.preview_table,highlighted); self._filter_bpm_table()
+
     @staticmethod
     def _highlighted_device_names(table):
         return tuple(table.item(index.row(),1).text() for index in table.selectionModel().selectedRows() if table.item(index.row(),1))
@@ -1813,6 +1826,18 @@ class MeasureMainWindow(QMainWindow):
 
     def _select_all_correctors(self,key):
         data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(data["method"].findData("all")); self._refresh_corrector_preview(key,read_diagnostics=False)
+
+    def _corrector_checkbox_changed(self,key,item):
+        if item is None or item.column()!=1:return
+        data=self.corrector_selection_widgets[key]; table=data["table"]; highlighted=self._highlighted_device_names(table)
+        checked={table.item(row,1).text() for row in range(table.rowCount())
+                 if table.item(row,1) is not None and table.item(row,1).checkState()==Qt.Checked}
+        names=[device.name for device in data["devices"] if device.name in checked]
+        data["method"].blockSignals(True); data["method"].setCurrentIndex(data["method"].findData("manual")); data["method"].blockSignals(False)
+        data["manual"].blockSignals(True); data["manual"].setText(", ".join(names)); data["manual"].blockSignals(False)
+        data["exclusion"].blockSignals(True); data["exclusion"].clear(); data["exclusion"].blockSignals(False)
+        self._corrector_method_changed(key); self._refresh_corrector_preview(key,read_diagnostics=False)
+        self._restore_table_highlights(table,highlighted); self._filter_corrector_table(key)
 
     def _clear_correctors(self,key):
         data=self.corrector_selection_widgets[key]; highlighted=self._highlighted_device_names(data["table"])
@@ -2076,7 +2101,7 @@ class MeasureMainWindow(QMainWindow):
             if hasattr(self,"device_selection_reviewed"):self.device_selection_reviewed.setChecked(False)
         if key=="hcor":self.selected_hcorrectors=selected
         else:self.selected_vcorrectors=selected
-        table=data["table"]; table.setRowCount(len(devices)); table.setToolTip(f"{len(selected)} selected; highlighting rows does not change the checked selection")
+        table=data["table"]; table.blockSignals(True); table.setRowCount(len(devices)); table.setToolTip(f"{len(selected)} selected; checkboxes define the measurement inventory, while highlighting rows does not change it")
         selected_positions={device.name:position for position,device in enumerate(selected)}
         for row,device in enumerate(devices):
             diagnostics=None
@@ -2091,8 +2116,9 @@ class MeasureMainWindow(QMainWindow):
             values=(selected_positions.get(device.name,"—"),device.name,device.identifier,device.plane,*(cell[0] for cell in diagnostic_cells))
             for col,value in enumerate(values):
                 item=QTableWidgetItem(str(value)); table.setItem(row,col,item)
-                if col==1:item.setCheckState(Qt.Checked if device.name in selected_positions else Qt.Unchecked); item.setFlags(item.flags()&~Qt.ItemIsUserCheckable)
+                if col==1:item.setFlags(item.flags()|Qt.ItemIsUserCheckable); item.setCheckState(Qt.Checked if device.name in selected_positions else Qt.Unchecked)
                 if col>=4:item.setToolTip(diagnostic_cells[col-4][1])
+        table.blockSignals(False)
         self._filter_corrector_table(key)
         source={"all":"adapter discovery","names_file":"names file","manual":"manual selection"}[data["method"].currentData()]; table.setToolTip((table.toolTip()+"\n" if table.toolTip() else "")+f"Source: {source}; {len(selected)} retained")
         # Correctors are ORM inputs even when prepared before ORM is selected.
@@ -2954,11 +2980,12 @@ class MeasureMainWindow(QMainWindow):
         if tuple(device.name for device in self.selected_devices)!=tuple(device.name for device in selected):
             self._invalidate_device_alignment("BPM inventory changed — verify device alignment again.")
             if hasattr(self,"device_selection_reviewed"):self.device_selection_reviewed.setChecked(False)
-        self.selected_devices=tuple(selected); self.preview_table.setRowCount(len(self.devices)); selected_positions={device.name:position for position,device in enumerate(selected)}
+        self.selected_devices=tuple(selected); self.preview_table.blockSignals(True); self.preview_table.setRowCount(len(self.devices)); selected_positions={device.name:position for position,device in enumerate(selected)}
         for row,device in enumerate(self.devices):
             for column,value in enumerate((selected_positions.get(device.name,"—"),device.name,device.identifier)):
                 item=QTableWidgetItem(str(value)); self.preview_table.setItem(row,column,item)
-                if column==1:item.setCheckState(Qt.Checked if device.name in selected_positions else Qt.Unchecked); item.setFlags(item.flags()&~Qt.ItemIsUserCheckable)
+                if column==1:item.setFlags(item.flags()|Qt.ItemIsUserCheckable); item.setCheckState(Qt.Checked if device.name in selected_positions else Qt.Unchecked)
+        self.preview_table.blockSignals(False)
         source={"all":"adapter discovery","names_file":"names file","manual":"manual selection"}.get(self.selection_method.currentData(),"selection")
         if not self._loading_selection_state:
             self._selection_states[self._active_selection_kind]["bpm"]={

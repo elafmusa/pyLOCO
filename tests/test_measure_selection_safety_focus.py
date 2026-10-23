@@ -256,6 +256,50 @@ def test_bpm_and_vertical_filters_use_commas_wildcards_without_changing_selectio
     window.close()
 
 
+def test_bpm_checkbox_updates_authoritative_selection_with_active_comma_filter(app):
+    bpms=tuple(BpmDevice(name,name+".X",name+".Y") for name in ("BPM-c04","BPM-c05","BPM-c06"))
+    window=MeasureMainWindow(devices=bpms,horizontal_correctors=(),vertical_correctors=())
+    window.measurement_device_alignment={"validated":True}; window.device_selection_reviewed.setChecked(True)
+    window.bpm_search.setText("c04, c05")
+    assert _visible_names(window.preview_table)==["BPM-c04","BPM-c05"]
+    assert window.preview_table.item(0,1).flags()&Qt.ItemIsUserCheckable
+    window.preview_table.selectRow(1); window.preview_table.item(0,1).setCheckState(Qt.Unchecked)
+    assert [device.name for device in window.selected_devices]==["BPM-c05","BPM-c06"]
+    assert window.manual_input.text()=="BPM-c05, BPM-c06"
+    assert window._selection_states[window._active_selection_kind]["bpm"]["resolved_names"]==["BPM-c05","BPM-c06"]
+    assert "2 / 3 BPMs selected for measurement" in window.selection_message.text()
+    assert window.preview_table.item(1,1).isSelected()
+    assert window.measurement_device_alignment is None and not window.device_selection_reviewed.isChecked()
+    window.preview_table.item(0,1).setCheckState(Qt.Checked)
+    assert [device.name for device in window.selected_devices]==["BPM-c04","BPM-c05","BPM-c06"]
+    window.close()
+
+
+@pytest.mark.parametrize(("key","plane"),[("hcor","H"),("vcor","V")])
+def test_corrector_checkbox_updates_manual_state_without_reads_under_comma_filter(app,key,plane):
+    devices=tuple(CorrectorDevice(f"{plane}C-c0{index}",f"{plane}{index}.SP",f"{plane}{index}.RBV",plane) for index in (4,5,6))
+    kwargs={"horizontal_correctors":devices,"vertical_correctors":()} if key=="hcor" else {"horizontal_correctors":(),"vertical_correctors":devices}
+    window=MeasureMainWindow(devices=(BpmDevice("BPM","X","Y"),),**kwargs)
+    data=window.corrector_selection_widgets[key]; reads=[]
+    window.adapter.read_corrector_diagnostics=lambda name:reads.append(name)
+    window.measurement_device_alignment={"validated":True}; window.device_selection_reviewed.setChecked(True)
+    data["search"].setText("c04, c05")
+    assert _visible_names(data["table"])==[f"{plane}C-c04",f"{plane}C-c05"]
+    assert data["table"].item(0,1).flags()&Qt.ItemIsUserCheckable
+    data["table"].selectRow(1); data["table"].item(0,1).setCheckState(Qt.Unchecked)
+    selected=window.selected_hcorrectors if key=="hcor" else window.selected_vcorrectors
+    assert [device.name for device in selected]==[f"{plane}C-c05",f"{plane}C-c06"]
+    assert data["manual"].text()==f"{plane}C-c05, {plane}C-c06"
+    assert window._selection_states["orm"][key]["resolved_names"]==[f"{plane}C-c05",f"{plane}C-c06"]
+    assert "2 / 3 selected for measurement" in data["count"].text() and "2 shown by filter" in data["count"].text()
+    assert data["table"].item(1,1).isSelected() and reads==[]
+    assert window.measurement_device_alignment is None and not window.device_selection_reviewed.isChecked()
+    data["table"].item(0,1).setCheckState(Qt.Checked)
+    selected=window.selected_hcorrectors if key=="hcor" else window.selected_vcorrectors
+    assert [device.name for device in selected]==[device.name for device in devices]
+    window.close()
+
+
 def test_highlight_is_distinct_and_adds_without_duplicates(app):
     window=_window(); window._clear_correctors("hcor")
     table=window.corrector_selection_widgets["hcor"]["table"]
