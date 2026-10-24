@@ -181,7 +181,7 @@ def test_source_summary_conventions_workflow_sort_and_operator_metrics():
 def test_correct_pages_are_responsive_in_both_themes(theme,size):
     app=QApplication.instance() or build_application(["correct-responsive"]); window=CorrectMainWindow(); window._load(Path("Examples/Correct/mock_corrections.json").resolve()); window.resize(*size); window.apply_theme(theme); window.show()
     for index in range(window.tabs.count()):
-        window.tabs.setCurrentIndex(index); app.processEvents(); assert window.tabs.currentWidget().width()>700; assert window.tabs.currentWidget().height()>400
+        window.tabs.setCurrentIndex(index); app.processEvents(); assert window.tabs.currentWidget().width()>700; assert window.tabs.currentWidget().height()>240
         if index==2:assert window.table.height()>180
         if index==3:assert window.plot_tabs.height()>120
     assert not window.logo_button.pixmap().isNull(); window.close()
@@ -224,6 +224,17 @@ def test_correction_progress_panel_advances_only_for_verified_readbacks():
     from types import SimpleNamespace
     app=QApplication.instance() or build_application(["correct-progress"])
     window=CorrectMainWindow(); window.resize(1000,700); window.show(); app.processEvents()
+    panel=window.findChild(QGroupBox,"correctionProgressPanel")
+    assert panel is not None and panel.isVisible() and panel.height() >= 142
+    for control in (
+        window.verified_percent,window.next_target_percent,
+        window.progress_machine_status,window.progress_increment,
+        window.progress_preview_button,window.progress_apply_button,
+        window.progress_restore_button,window.progress_measured_button,
+        window.correction_progress,*window.progress_segments,
+    ):
+        assert control.isVisible()
+        assert control.mapTo(panel,control.rect().bottomLeft()).y() <= panel.rect().bottom()
     assert window.progress_increment.value()==10
     assert window.correction_progress.value()==0
     preview={"status":"preview_verified","previous_fraction":.1,"cumulative_fraction":.2,

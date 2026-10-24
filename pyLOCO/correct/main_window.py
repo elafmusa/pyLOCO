@@ -149,22 +149,36 @@ class CorrectMainWindow(QMainWindow):
 
     def _correction_progress_panel(self):
         group=QGroupBox("Correction Progress — verified readbacks only")
-        group.setObjectName("correctionProgressPanel"); group.setFixedHeight(50); outer=QVBoxLayout(group); outer.setContentsMargins(6,2,6,2); outer.setSpacing(0)
-        row=QHBoxLayout()
+        group.setObjectName("correctionProgressPanel")
+        group.setMinimumHeight(142)
+        group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        outer=QVBoxLayout(group); outer.setContentsMargins(10,8,10,8); outer.setSpacing(5)
+        summary_row=QHBoxLayout(); summary_row.setSpacing(12)
         self.verified_percent=QLabel("Last verified: 0%")
         self.next_target_percent=QLabel("Next target: 10%")
         self.progress_machine_status=QLabel("Machine state: not reconciled")
         self.progress_machine_status.setWordWrap(False)
-        row.addWidget(self.verified_percent); row.addWidget(self.next_target_percent); row.addWidget(self.progress_machine_status,1)
-        row.addWidget(QLabel("Increment")); self.progress_increment=QSpinBox(); self.progress_increment.setRange(1,100); self.progress_increment.setValue(10); self.progress_increment.setSuffix(" %"); self.progress_increment.valueChanged.connect(self._refresh_correction_progress); row.addWidget(self.progress_increment)
+        summary_row.addWidget(self.verified_percent); summary_row.addWidget(self.next_target_percent); summary_row.addWidget(self.progress_machine_status,1)
+        summary_row.addWidget(QLabel("Increment")); self.progress_increment=QSpinBox(); self.progress_increment.setRange(1,100); self.progress_increment.setValue(10); self.progress_increment.setSuffix(" %"); self.progress_increment.valueChanged.connect(self._refresh_correction_progress); summary_row.addWidget(self.progress_increment)
+        outer.addLayout(summary_row)
+
+        progress_row=QHBoxLayout(); progress_row.setSpacing(3)
         self.progress_preview_button=QPushButton("Preview Next Step"); self.progress_apply_button=QPushButton("Apply Confirmed Step"); self.progress_restore_button=QPushButton("Restore Baseline"); self.progress_measured_button=QPushButton("Associate Measurement…"); self.progress_apply_button.setEnabled(False); self.progress_restore_button.setEnabled(False); self.progress_measured_button.setEnabled(False)
-        for button in (self.progress_preview_button,self.progress_apply_button,self.progress_restore_button):button.setMaximumHeight(30)
+        for button in (self.progress_preview_button,self.progress_apply_button,self.progress_restore_button,self.progress_measured_button):button.setFixedHeight(28)
         self.progress_preview_button.clicked.connect(self.preview_machine_changes); self.progress_apply_button.clicked.connect(self.apply_machine_changes); self.progress_restore_button.clicked.connect(self.restore_machine_changes); self.progress_measured_button.clicked.connect(self.associate_progress_measurement)
         self.progress_segments=[]
         for index in range(10):
-            segment=QLabel(str((index+1)*10)); segment.setAlignment(Qt.AlignCenter); segment.setMinimumHeight(18); segment.setProperty("verified",False); segment.setStyleSheet("border:1px solid #777;border-radius:2px;font-size:8pt;padding:1px;background:#35384B;color:#BFC4D8")
-            row.addWidget(segment,1); self.progress_segments.append(segment)
-        self.correction_progress=QProgressBar(); self.correction_progress.setRange(0,100); self.correction_progress.setValue(0); self.correction_progress.setFormat("0% verified"); self.correction_progress.setTextVisible(True); row.addWidget(self.correction_progress,3); outer.addLayout(row)
+            segment=QLabel(str((index+1)*10)); segment.setAlignment(Qt.AlignCenter); segment.setFixedHeight(22); segment.setMinimumWidth(28); segment.setProperty("verified",False); segment.setStyleSheet("border:1px solid #777;border-radius:2px;font-size:8pt;padding:1px;background:#35384B;color:#BFC4D8")
+            progress_row.addWidget(segment,1); self.progress_segments.append(segment)
+        self.correction_progress=QProgressBar(); self.correction_progress.setRange(0,100); self.correction_progress.setValue(0); self.correction_progress.setFormat("0% verified"); self.correction_progress.setTextVisible(True); self.correction_progress.setMinimumWidth(150); self.correction_progress.setFixedHeight(22); progress_row.addWidget(self.correction_progress,3); outer.addLayout(progress_row)
+
+        action_row=QHBoxLayout(); action_row.setSpacing(8)
+        action_row.addWidget(self.progress_preview_button)
+        action_row.addWidget(self.progress_apply_button)
+        action_row.addWidget(self.progress_restore_button)
+        action_row.addWidget(self.progress_measured_button)
+        action_row.addStretch(1)
+        outer.addLayout(action_row)
         self.progress_history=QTableWidget(0,5); self.progress_history.setHorizontalHeaderLabels(["Time","Target","Increment","Status","Measurements"]); self.progress_history.setEditTriggers(QAbstractItemView.NoEditTriggers); self.progress_history.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.progress_history.setMinimumHeight(115)
         self.progress_magnets=QTableWidget(0,7); self.progress_magnets.setHorizontalHeaderLabels(["Magnet","Baseline K","Full correction","Target K","Actual readback","Readback error","Status"]); self.progress_magnets.setEditTriggers(QAbstractItemView.NoEditTriggers); self.progress_magnets.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.progress_magnets.setMinimumHeight(135)
         return group
@@ -378,7 +392,7 @@ class CorrectMainWindow(QMainWindow):
 
     def _review_page(self):
         page=QWidget(); layout=QVBoxLayout(page); actions=QHBoxLayout(); self.apply_status=QLabel("Select a backend and preview before Apply"); self.apply_status.setObjectName("safetyBadge"); self.apply_status.setAlignment(Qt.AlignCenter); self.apply_status.setMinimumWidth(500); self.apply_status.setMaximumWidth(650); actions.addWidget(self.apply_status); actions.addStretch(); self.preview_apply_button=QPushButton("Preview machine changes"); self.preview_apply_button.clicked.connect(self.preview_machine_changes); actions.addWidget(self.preview_apply_button); self.apply_button=QPushButton("Apply…"); self.apply_button.setEnabled(False); self.apply_button.clicked.connect(self.apply_machine_changes); actions.addWidget(self.apply_button); self.undo_button=QPushButton("Undo last 10%…"); self.undo_button.setEnabled(False); self.undo_button.setToolTip("Return to the preceding verified cumulative correction level"); self.undo_button.clicked.connect(self.undo_last_machine_changes); actions.addWidget(self.undo_button); self.restore_button=QPushButton("Restore original…"); self.restore_button.setEnabled(False); self.restore_button.setToolTip("Restore exact pre-Apply B2 values in the pySC simulation"); self.restore_button.clicked.connect(self.restore_machine_changes); actions.addWidget(self.restore_button); export=QPushButton("Export CSV…"); export.setToolTip("Export the human-readable correction table"); export.clicked.connect(self.export_csv); actions.addWidget(export); layout.addLayout(actions)
-        progress_details=QGroupBox("Correction step history and readbacks"); progress_details.setCheckable(True); progress_details.setChecked(True); progress_layout=QVBoxLayout(progress_details); progress_body=QWidget(); progress_body_layout=QVBoxLayout(progress_body); progress_body_layout.setContentsMargins(0,0,0,0); measurement_row=QHBoxLayout(); measurement_row.addWidget(self.progress_preview_button); measurement_row.addWidget(self.progress_apply_button); measurement_row.addWidget(self.progress_restore_button); measurement_row.addWidget(self.progress_measured_button); measurement_row.addStretch(); progress_body_layout.addLayout(measurement_row); progress_body_layout.addWidget(self.progress_history); progress_body_layout.addWidget(self.progress_magnets); progress_layout.addWidget(progress_body); progress_details.toggled.connect(progress_body.setVisible); layout.addWidget(progress_details)
+        progress_details=QGroupBox("Correction step history and readbacks"); progress_details.setCheckable(True); progress_details.setChecked(True); progress_layout=QVBoxLayout(progress_details); progress_body=QWidget(); progress_body_layout=QVBoxLayout(progress_body); progress_body_layout.setContentsMargins(0,0,0,0); progress_body_layout.addWidget(self.progress_history); progress_body_layout.addWidget(self.progress_magnets); progress_layout.addWidget(progress_body); progress_details.toggled.connect(progress_body.setVisible); layout.addWidget(progress_details)
         self.review_actions = layout
         metrics=QGroupBox(); self.review_metrics_group=metrics; metrics.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); grid=QGridLayout(metrics); self.review_metrics={}
         labels=("Magnets loaded","Magnets included","Magnets excluded","Warnings","Current-limit violations","Global correction fraction","Max |ΔK/K|","Max |Final ΔK|")
