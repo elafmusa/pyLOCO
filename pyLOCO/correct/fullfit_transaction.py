@@ -10,6 +10,7 @@ import json
 import math
 import os
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .quadrupole_transaction import (
@@ -137,13 +138,9 @@ class FullFitB2Transaction:
         if not isinstance(count, int) or count <= 0:
             raise ValueError("Manifest count must be a positive integer")
 
-        if not math.isclose(
-            float(manifest.get("fraction")),
-            0.10,
-            rel_tol=0,
-            abs_tol=1e-15,
-        ):
-            raise ValueError("Only the validated 10% correction is enabled")
+        increment_fraction = float(manifest.get("fraction", 0.10))
+        if not math.isfinite(increment_fraction) or not 0 < increment_fraction <= 1:
+            raise ValueError("Correction increment must be greater than 0% and at most 100%")
 
         records = manifest.get("records")
         if not isinstance(records, list) or len(records) != count:
@@ -230,15 +227,13 @@ class FullFitB2Transaction:
                 )
 
         application_number = int(manifest.get("application_number", 1))
-        cumulative_fraction = float(
-            manifest.get("cumulative_fraction", application_number * 0.10)
-        )
-        if application_number <= 0 or not math.isclose(
-            cumulative_fraction,
-            application_number * 0.10,
-            rel_tol=0,
-            abs_tol=1e-12,
-        ):
+        cumulative_fraction = float(manifest.get("cumulative_fraction", application_number * 0.10))
+        previous_fraction = float(manifest.get("previous_fraction", cumulative_fraction - increment_fraction))
+        if (application_number <= 0 or not all(math.isfinite(value) for value in
+                (previous_fraction, increment_fraction, cumulative_fraction)) or
+                previous_fraction < 0 or cumulative_fraction > 1 or
+                not math.isclose(cumulative_fraction, previous_fraction + increment_fraction,
+                                 rel_tol=0, abs_tol=1e-12)):
             raise ValueError("Invalid cumulative correction sequence")
         history = manifest.get("history", [])
         if not isinstance(history, list) or len(history) != application_number - 1:
@@ -267,6 +262,22 @@ class FullFitB2Transaction:
                     raise ValueError("Cumulative preview does not start at prior control state")
                 if not close(float(prior["physical"]), float(frozen["current_physical_k"])):
                     raise ValueError("Cumulative preview does not start at prior physical state")
+        for frozen in records:
+            if "full_physical_delta" not in frozen:
+                continue  # backward-compatible 10% journals predate this invariant.
+            full_delta=float(frozen["full_physical_delta"])
+            baseline_control=float(frozen["restore_control"])
+            baseline_physical=float(frozen["restore_physical_k"])
+            factor=float(frozen["factor"])
+            expected_start=baseline_physical+full_delta*previous_fraction
+            expected_target=baseline_physical+full_delta*cumulative_fraction
+            expected_control=baseline_control+(full_delta*cumulative_fraction)/factor
+            if not close(float(frozen["current_physical_k"]),expected_start):
+                raise ValueError(f"Preview start is not anchored to the original baseline: {frozen['control']}")
+            if not close(float(frozen["expected_physical_k"]),expected_target):
+                raise ValueError(f"Target is not anchored to the original baseline: {frozen['control']}")
+            if not close(float(frozen["proposed_control"]),expected_control):
+                raise ValueError(f"Control target is not anchored to the original baseline: {frozen['control']}")
 
         self.record = {
             "schema": JOURNAL_SCHEMA,
@@ -274,11 +285,14 @@ class FullFitB2Transaction:
             "manifest_path": str(manifest_path),
             "manifest_sha256": _sha256(manifest_path),
             "identity": frozen_identity,
-            "fraction": 0.10,
+            "fraction": increment_fraction,
+            "previous_fraction": previous_fraction,
             "application_number": application_number,
             "cumulative_fraction": cumulative_fraction,
             "restore_required": bool(manifest.get("restore_required", False)),
             "history": history,
+            "measurement_session": manifest.get("measurement_session") or {},
+            "previewed_utc": datetime.now(timezone.utc).isoformat(),
             "items": records,
         }
 
@@ -449,11 +463,17 @@ class FullFitB2Transaction:
             self.record["restore_required"] = True
             self.record.setdefault("history", []).append({
                 "application_number": self.record["application_number"],
+                "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                "requested_target_fraction": self.record["cumulative_fraction"],
+                "increment_fraction": self.record["fraction"],
                 "cumulative_fraction": self.record["cumulative_fraction"],
+                "execution_status": "verified",
+                "measurements": self.record.get("measurement_session") or {},
                 "values": {
                     item["control"]: {
                         "control": float(item["proposed_control"]),
                         "physical": float(item["expected_physical_k"]),
+                        "readback_error": float(item["applied_readback"]["physical"]) - float(item["expected_physical_k"]),
                     }
                     for item in self.record["items"]
                 },
@@ -550,10 +570,47 @@ class FullFitB2Transaction:
             item["expected_physical_k"] = float(target["physical"])
             item["applied_readback"] = dict(target)
         self.record["application_number"] = remaining
-        self.record["cumulative_fraction"] = remaining * 0.10
+        self.record["cumulative_fraction"] = float(history[-1]["cumulative_fraction"]) if history else 0.0
         self.record["restore_required"] = remaining > 0
         self.record["status"] = "applied" if remaining else "restored"
         self.record["last_action"] = "undo_last_increment"
+        self._persist()
+        return self.record
+
+    def load_journal(self, path):
+        """Reload a durable cumulative journal and reconcile live readbacks."""
+        document = json.loads(Path(path).read_text(encoding="utf-8"))
+        if document.get("schema") != JOURNAL_SCHEMA:
+            raise ValueError("Not a cumulative full-FIT correction journal")
+        self.record = document
+        self.path = Path(path).resolve()
+        status = document.get("status")
+        if status == "applied":
+            self.verify_applied()
+        elif status == "restored":
+            snapshot, rows = self._snapshot_rows()
+            if snapshot["identity"] != document["identity"]:
+                raise RuntimeError("pySC server identity changed")
+            for item in document["items"]:
+                row = rows.get(item["control"])
+                if row is None or not close(float(row["current"]), float(item["restore_control"])):
+                    raise RuntimeError(f"Restored baseline no longer matches: {item['control']}")
+        elif status in {"write_pending", "restoring", "restore_failed"}:
+            raise RuntimeError("Interrupted correction journal requires explicit recovery before continuing")
+        else:
+            raise RuntimeError(f"Journal state '{status}' cannot be resumed")
+        return self.record
+
+    def mark_latest_measured(self, measurement_paths):
+        """Associate immutable measurement references with the latest verified step."""
+        if not self.record or self.record.get("status") != "applied" or not self.record.get("history"):
+            raise RuntimeError("A readback-verified correction step is required before marking it measured")
+        paths=[str(Path(path).expanduser().resolve()) for path in measurement_paths if str(path).strip()]
+        if not paths:
+            raise ValueError("Select at least one measurement file")
+        step=self.record["history"][-1]
+        step["execution_status"]="measured"
+        step["measurements"]={"files":paths,"associated_utc":datetime.now(timezone.utc).isoformat()}
         self._persist()
         return self.record
 

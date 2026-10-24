@@ -218,6 +218,34 @@ def test_machine_mapping_page_uses_separate_natural_height_sections_at_1000x700(
     convention_text=" ".join(label.text() for label in window.plan_conventions_body.findChildren(QLabel))
     for term in ("Raw fitted ΔK","Recommended machine ΔK","Global fraction","Individual fraction","Final ΔK","ΔK/K [%]"):
         assert term in convention_text
+
+
+def test_correction_progress_panel_advances_only_for_verified_readbacks():
+    from types import SimpleNamespace
+    app=QApplication.instance() or build_application(["correct-progress"])
+    window=CorrectMainWindow(); window.resize(1000,700); window.show(); app.processEvents()
+    assert window.progress_increment.value()==10
+    assert window.correction_progress.value()==0
+    preview={"status":"preview_verified","previous_fraction":.1,"cumulative_fraction":.2,
+             "fraction":.1,"history":[{"timestamp_utc":"2026-10-24T00:00:00Z",
+             "cumulative_fraction":.1,"increment_fraction":.1,"execution_status":"verified"}],
+             "items":[{"control":"Q1/B2","restore_physical_k":1.0,"full_physical_delta":.2,
+                       "expected_physical_k":1.04}]}
+    window.fullfit_transaction=SimpleNamespace(record=preview)
+    window._refresh_correction_progress()
+    assert window.correction_progress.value()==10
+    assert window.verified_percent.text()=="Last verified: 10%"
+    assert window.progress_magnets.item(0,4).text()=="Not read yet"
+    applied={**preview,"status":"applied","history":preview["history"]+[
+        {"timestamp_utc":"2026-10-24T00:01:00Z","cumulative_fraction":.2,
+         "increment_fraction":.1,"execution_status":"verified"}]}
+    applied["items"]=[{**preview["items"][0],"verified":True,
+                        "applied_readback":{"physical":1.04}}]
+    window.fullfit_transaction.record=applied; window._refresh_correction_progress()
+    assert window.correction_progress.value()==20
+    assert window.progress_magnets.item(0,6).text()=="Verified"
+    assert window.progress_history.rowCount()==2
+    window.close()
     window.close()
 
 

@@ -95,6 +95,7 @@ class QuadrupoleWidget(QWidget):
         self.owner.registry.pysc_profile = self.profile.currentData()
         self.transaction = QuadrupoleTransaction(connection, Path.cwd() / 'correction-transactions')
         self.owner._read_current_pysc_k(strict=False)
+        self.owner.reconcile_correction_history(connection)
 
     def load_request(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Load explicit B2 request', '', 'JSON (*.json)')

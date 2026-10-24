@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, QSettings, QSize, Qt, Signal, Slot, QThread, QUrl, QEvent
 from PySide6.QtGui import QColor, QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QMainWindow,QMessageBox,QPlainTextEdit,QPushButton,QScrollArea,QSizePolicy,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
+from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QMainWindow,QMessageBox,QPlainTextEdit,QProgressBar,QPushButton,QScrollArea,QSizePolicy,QSpinBox,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
 
 from pyLOCO.gui import __version__ as PYLOCO_VERSION
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
@@ -123,7 +123,8 @@ class CorrectMainWindow(QMainWindow):
         self.logo_button=ClickableLogo(); set_asset(self.logo_button,QSize(70,29),DISPLAY_ASSET,crop_transparency=False); self.logo_button.clicked.connect(self.about); toolbar.addWidget(self.logo_button)
         root=QWidget(); layout=QVBoxLayout(root); layout.setContentsMargins(18,14,18,18)
         heading_row=QHBoxLayout(); title=QLabel("Correction Review"); title.setStyleSheet("font-size:22pt;font-weight:800"); heading_row.addWidget(title); heading_row.addStretch(); layout.addLayout(heading_row)
-        self.workflow_banner=QLabel("1  LOAD   →   2  PREVIEW   →   3  CONFIRM   →   4  APPLY   →   5  READBACK"); self.workflow_banner.setObjectName("workflowBanner"); self.workflow_banner.setAlignment(Qt.AlignCenter); self.workflow_banner.setMaximumHeight(38); layout.addWidget(self.workflow_banner)
+        self.workflow_banner=QLabel("1  LOAD   →   2  PREVIEW   →   3  CONFIRM   →   4  APPLY   →   5  READBACK"); self.workflow_banner.setObjectName("workflowBanner"); self.workflow_banner.setAlignment(Qt.AlignCenter); self.workflow_banner.setMaximumHeight(38); self.workflow_banner.hide(); layout.addWidget(self.workflow_banner)
+        layout.addWidget(self._correction_progress_panel())
         self.profile_badge=QLabel('Machine/profile not selected'); self.profile_badge.setWordWrap(True); self.profile_badge.setMaximumWidth(360); self.profile_badge.setVisible(False)
         self.tabs=QTabWidget(); self.tabs.setDocumentMode(True); layout.addWidget(self.tabs,1); self.setCentralWidget(root)
         self.workflow_names=("Correction Source","Machine / Mapping","Correction Plan","Review && Validate")
@@ -146,6 +147,85 @@ class CorrectMainWindow(QMainWindow):
         self.quadrupole_workspace.profile.currentIndexChanged.connect(self._pysc_profile_selected)
         self.statusBar().showMessage("Load a correction file; control-system writes remain confirmation-gated")
 
+    def _correction_progress_panel(self):
+        group=QGroupBox("Correction Progress — verified readbacks only")
+        group.setObjectName("correctionProgressPanel"); group.setFixedHeight(50); outer=QVBoxLayout(group); outer.setContentsMargins(6,2,6,2); outer.setSpacing(0)
+        row=QHBoxLayout()
+        self.verified_percent=QLabel("Last verified: 0%")
+        self.next_target_percent=QLabel("Next target: 10%")
+        self.progress_machine_status=QLabel("Machine state: not reconciled")
+        self.progress_machine_status.setWordWrap(False)
+        row.addWidget(self.verified_percent); row.addWidget(self.next_target_percent); row.addWidget(self.progress_machine_status,1)
+        row.addWidget(QLabel("Increment")); self.progress_increment=QSpinBox(); self.progress_increment.setRange(1,100); self.progress_increment.setValue(10); self.progress_increment.setSuffix(" %"); self.progress_increment.valueChanged.connect(self._refresh_correction_progress); row.addWidget(self.progress_increment)
+        self.progress_preview_button=QPushButton("Preview Next Step"); self.progress_apply_button=QPushButton("Apply Confirmed Step"); self.progress_restore_button=QPushButton("Restore Baseline"); self.progress_measured_button=QPushButton("Associate Measurement…"); self.progress_apply_button.setEnabled(False); self.progress_restore_button.setEnabled(False); self.progress_measured_button.setEnabled(False)
+        for button in (self.progress_preview_button,self.progress_apply_button,self.progress_restore_button):button.setMaximumHeight(30)
+        self.progress_preview_button.clicked.connect(self.preview_machine_changes); self.progress_apply_button.clicked.connect(self.apply_machine_changes); self.progress_restore_button.clicked.connect(self.restore_machine_changes); self.progress_measured_button.clicked.connect(self.associate_progress_measurement)
+        self.progress_segments=[]
+        for index in range(10):
+            segment=QLabel(str((index+1)*10)); segment.setAlignment(Qt.AlignCenter); segment.setMinimumHeight(18); segment.setProperty("verified",False); segment.setStyleSheet("border:1px solid #777;border-radius:2px;font-size:8pt;padding:1px;background:#35384B;color:#BFC4D8")
+            row.addWidget(segment,1); self.progress_segments.append(segment)
+        self.correction_progress=QProgressBar(); self.correction_progress.setRange(0,100); self.correction_progress.setValue(0); self.correction_progress.setFormat("0% verified"); self.correction_progress.setTextVisible(True); row.addWidget(self.correction_progress,3); outer.addLayout(row)
+        self.progress_history=QTableWidget(0,5); self.progress_history.setHorizontalHeaderLabels(["Time","Target","Increment","Status","Measurements"]); self.progress_history.setEditTriggers(QAbstractItemView.NoEditTriggers); self.progress_history.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.progress_history.setMinimumHeight(115)
+        self.progress_magnets=QTableWidget(0,7); self.progress_magnets.setHorizontalHeaderLabels(["Magnet","Baseline K","Full correction","Target K","Actual readback","Readback error","Status"]); self.progress_magnets.setEditTriggers(QAbstractItemView.NoEditTriggers); self.progress_magnets.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.progress_magnets.setMinimumHeight(135)
+        return group
+
+    def _populate_progress_magnets(self, record):
+        items=(record or {}).get("items",())
+        self.progress_magnets.setRowCount(len(items))
+        for row,item in enumerate(items):
+            readback=(item.get("applied_readback") or {}).get("physical")
+            target=item.get("expected_physical_k")
+            error=None if readback is None or target is None else float(readback)-float(target)
+            status=("Verified" if item.get("verified") else
+                    "Commanded" if item.get("set_completed") else
+                    "Pending" if (record or {}).get("status")=="preview_verified" else
+                    "Failed" if (record or {}).get("status") in {"restore_failed","write_pending"} else "Planned")
+            values=(item.get("control",""),item.get("restore_physical_k"),item.get("full_physical_delta"),target,readback,error,status)
+            for column,value in enumerate(values):
+                text="Not read yet" if value is None else f"{value:.12g}" if isinstance(value,(int,float)) else str(value)
+                self.progress_magnets.setItem(row,column,QTableWidgetItem(text))
+
+    def _refresh_correction_progress(self, *_):
+        transaction=getattr(self,"fullfit_transaction",None); record=getattr(transaction,"record",None) or {}
+        status=str(record.get("status") or "not_started")
+        history=record.get("history",()) if isinstance(record,dict) else ()
+        verified=(float(record.get("cumulative_fraction",0.0)) if status=="applied" else
+                  float(record.get("previous_fraction",0.0)) if status=="preview_verified" else
+                  float(history[-1].get("cumulative_fraction",0.0)) if history else 0.0)
+        if status=="restored": verified=0.0
+        increment=self.progress_increment.value()/100.0 if hasattr(self,"progress_increment") else .1
+        next_target=min(1.0,verified+increment)
+        self.verified_percent.setText(f"Last verified: {verified*100:g}%")
+        self.next_target_percent.setText(f"Next target: {next_target*100:g}% (+{(next_target-verified)*100:g}%)")
+        state={"applied":"readback verified","preview_verified":"pending — preview verified","write_pending":"in progress — write pending","restore_failed":"FAILED — restoration unresolved","restored":"baseline verified"}.get(status,"not reconciled")
+        self.progress_machine_status.setText(f"Machine state: {state}")
+        value=round(verified*100); self.correction_progress.setValue(value); self.correction_progress.setFormat(f"{verified*100:g}% verified")
+        for index,segment in enumerate(self.progress_segments):
+            filled=verified+1e-12 >= (index+1)/10
+            segment.setStyleSheet("border:1px solid #777;border-radius:2px;font-size:8pt;padding:1px;"+("background:#2E9C68;color:white;font-weight:700" if filled else "background:#35384B;color:#BFC4D8"))
+        self.progress_history.setRowCount(len(history))
+        for row,step in enumerate(history):
+            measurements=step.get("measurements") or {}
+            measurement_text=str(measurements.get("session_id") or measurements.get("manifest") or "Not associated") if isinstance(measurements,dict) else str(measurements or "Not associated")
+            values=(str(step.get("timestamp_utc") or "Not recorded"),f"{float(step.get('cumulative_fraction',0))*100:g}%",f"{float(step.get('increment_fraction',.1))*100:g}%",str(step.get("execution_status") or "Verified").title(),measurement_text)
+            for column,text in enumerate(values): self.progress_history.setItem(row,column,QTableWidgetItem(text))
+        pending=status=="preview_verified"; applied=status=="applied"; unsafe=status in {"write_pending","restoring","restore_failed"}
+        self.progress_apply_button.setEnabled(pending and not unsafe)
+        self.progress_restore_button.setEnabled(bool(record.get("restore_required")) and not unsafe)
+        self.progress_preview_button.setEnabled(not unsafe and verified < 1.0 and status not in {"preview_verified"})
+        self.progress_measured_button.setEnabled(status=="applied" and bool(history))
+        self._populate_progress_magnets(record)
+
+    def associate_progress_measurement(self):
+        transaction=getattr(self,"fullfit_transaction",None)
+        if transaction is None:
+            QMessageBox.warning(self,"No verified step","Apply and verify a correction step first."); return
+        path,_=QFileDialog.getOpenFileName(self,"Associate measurement with latest verified step",self._browse_start("measurements"),"Measurement files (*.h5 *.hdf5 *.json);;All files (*)",options=QFileDialog.DontUseNativeDialog)
+        if not path:return
+        try:
+            transaction.mark_latest_measured([path]); self._remember_browse("measurements",path); self._refresh_correction_progress()
+        except Exception as exc:QMessageBox.warning(self,"Cannot associate measurements",str(exc))
+
     def _screenshot_project_directory(self):
         """Return the directory containing the active correction source."""
         if not hasattr(self,"source_path"):
@@ -162,12 +242,11 @@ class CorrectMainWindow(QMainWindow):
             event.ignore()
             return
         fullfit = getattr(self, "fullfit_transaction", None)
-        fullfit_pending = bool(
-            fullfit is not None
-            and fullfit.record is not None
-            and fullfit.record.get("restore_required")
+        fullfit_unresolved = bool(
+            fullfit is not None and fullfit.record is not None and
+            fullfit.record.get("status") in {"write_pending","restoring","restore_failed"}
         )
-        if self.quadrupole_workspace.pending() or fullfit_pending:
+        if self.quadrupole_workspace.pending() or fullfit_unresolved:
             QMessageBox.warning(self, 'Restore required', 'Restore and verify the original quadrupole before closing. The journal is available for recovery.')
             event.ignore()
         else:
@@ -299,6 +378,7 @@ class CorrectMainWindow(QMainWindow):
 
     def _review_page(self):
         page=QWidget(); layout=QVBoxLayout(page); actions=QHBoxLayout(); self.apply_status=QLabel("Select a backend and preview before Apply"); self.apply_status.setObjectName("safetyBadge"); self.apply_status.setAlignment(Qt.AlignCenter); self.apply_status.setMinimumWidth(500); self.apply_status.setMaximumWidth(650); actions.addWidget(self.apply_status); actions.addStretch(); self.preview_apply_button=QPushButton("Preview machine changes"); self.preview_apply_button.clicked.connect(self.preview_machine_changes); actions.addWidget(self.preview_apply_button); self.apply_button=QPushButton("Apply…"); self.apply_button.setEnabled(False); self.apply_button.clicked.connect(self.apply_machine_changes); actions.addWidget(self.apply_button); self.undo_button=QPushButton("Undo last 10%…"); self.undo_button.setEnabled(False); self.undo_button.setToolTip("Return to the preceding verified cumulative correction level"); self.undo_button.clicked.connect(self.undo_last_machine_changes); actions.addWidget(self.undo_button); self.restore_button=QPushButton("Restore original…"); self.restore_button.setEnabled(False); self.restore_button.setToolTip("Restore exact pre-Apply B2 values in the pySC simulation"); self.restore_button.clicked.connect(self.restore_machine_changes); actions.addWidget(self.restore_button); export=QPushButton("Export CSV…"); export.setToolTip("Export the human-readable correction table"); export.clicked.connect(self.export_csv); actions.addWidget(export); layout.addLayout(actions)
+        progress_details=QGroupBox("Correction step history and readbacks"); progress_details.setCheckable(True); progress_details.setChecked(True); progress_layout=QVBoxLayout(progress_details); progress_body=QWidget(); progress_body_layout=QVBoxLayout(progress_body); progress_body_layout.setContentsMargins(0,0,0,0); measurement_row=QHBoxLayout(); measurement_row.addWidget(self.progress_preview_button); measurement_row.addWidget(self.progress_apply_button); measurement_row.addWidget(self.progress_restore_button); measurement_row.addWidget(self.progress_measured_button); measurement_row.addStretch(); progress_body_layout.addLayout(measurement_row); progress_body_layout.addWidget(self.progress_history); progress_body_layout.addWidget(self.progress_magnets); progress_layout.addWidget(progress_body); progress_details.toggled.connect(progress_body.setVisible); layout.addWidget(progress_details)
         self.review_actions = layout
         metrics=QGroupBox(); self.review_metrics_group=metrics; metrics.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); grid=QGridLayout(metrics); self.review_metrics={}
         labels=("Magnets loaded","Magnets included","Magnets excluded","Warnings","Current-limit violations","Global correction fraction","Max |ΔK/K|","Max |Final ΔK|")
@@ -608,6 +688,37 @@ class CorrectMainWindow(QMainWindow):
             self.current_k_status.setText(f"Current machine K unavailable: {exc}")
             QMessageBox.warning(self,"Cannot read current machine K",str(exc))
 
+    def reconcile_correction_history(self, connection):
+        """Reload the newest durable simulator journal and verify live state."""
+        if not self.review:
+            self.progress_machine_status.setText("Machine state: connected; no correction source loaded")
+            return None
+        directory=Path(self.review.source_result).resolve()/"correction"/"fullfit_transaction_journals"
+        candidates=sorted(directory.glob("*.json"),key=lambda path:path.stat().st_mtime,reverse=True) if directory.is_dir() else []
+        if not candidates:
+            self.fullfit_transaction=None
+            self.progress_machine_status.setText("Machine state: connected; no correction history found")
+            self._refresh_correction_progress(); return None
+        from .fullfit_transaction import FullFitB2Transaction
+        transaction=FullFitB2Transaction(connection=connection,journal_directory=directory)
+        try:
+            record=transaction.load_journal(candidates[0])
+        except Exception as exc:
+            self.fullfit_transaction=transaction
+            self.progress_machine_status.setText(f"Machine state: reconciliation blocked — {exc}")
+            self.progress_preview_button.setEnabled(False); self.progress_apply_button.setEnabled(False)
+            self.apply_button.setEnabled(False)
+            return None
+        self.fullfit_transaction=transaction
+        verified=float(record.get("cumulative_fraction",0.0)) if record.get("status")=="applied" else 0.0
+        self.progress_machine_status.setText(f"Machine state: reconciled from journal — {verified*100:g}% verified")
+        self.restore_button.setEnabled(bool(record.get("restore_required")))
+        self.undo_button.setEnabled(bool(record.get("history")))
+        self.preview_apply_button.setEnabled(verified < 1.0)
+        self.preview_apply_button.setText(f"Preview next +{min(self.progress_increment.value(),100-verified*100):g}%")
+        self._refresh_correction_progress()
+        return record
+
     def preview_machine_changes(self):
         if self.backend_combo.currentData() == "pyaml":
             self.tabs.setCurrentIndex(3)
@@ -640,6 +751,14 @@ class CorrectMainWindow(QMainWindow):
                 return
         if not self.review:
             QMessageBox.warning(self, "No correction", "Load a correction source first.")
+            return
+
+        current_fraction=float((previous_record or {}).get("cumulative_fraction",0.0))
+        requested_increment=self.progress_increment.value()/100.0
+        target_fraction=min(1.0,current_fraction+requested_increment)
+        increment_fraction=target_fraction-current_fraction
+        if increment_fraction <= 0:
+            QMessageBox.warning(self,"100% reached","The full fitted correction is already applied.")
             return
 
         included = [item for item in self.review.items if item.included]
@@ -714,17 +833,24 @@ class CorrectMainWindow(QMainWindow):
                 offset = float(row["offset"])
                 current = float(row["current"])
                 physical = float(row["physical"])
-                physical_delta = float(item.final_delta)
+                if factor == 0:
+                    raise RuntimeError(f"Zero calibration factor for {control}")
+                full_physical_delta = float(item.recommended_machine_delta * item.individual_scale)
+                previous_item = next((entry for entry in (previous_record or {}).get("items",())
+                                      if entry.get("control")==control),None)
+                baseline_control=float(previous_item.get("restore_control") if previous_item else current)
+                baseline_physical=float(previous_item.get("restore_physical_k") if previous_item else physical)
+                expected_current_physical=baseline_physical+full_physical_delta*current_fraction
+                if not math.isclose(physical,expected_current_physical,rel_tol=1e-10,abs_tol=1e-12):
+                    raise RuntimeError(f"Stale readback before preview: {control}")
+                expected_physical=baseline_physical+full_physical_delta*target_fraction
+                proposed=baseline_control+(full_physical_delta*target_fraction)/factor
+                physical_delta=expected_physical-physical
 
                 values = (factor, offset, current, physical, physical_delta)
                 if not all(math.isfinite(v) for v in values):
                     raise RuntimeError(
                         f"Non-finite B2 diagnostic for {control}"
-                    )
-
-                if factor == 0:
-                    raise RuntimeError(
-                        f"Zero calibration factor for {control}"
                     )
 
                 expected_physical = factor * current + offset
@@ -738,10 +864,7 @@ class CorrectMainWindow(QMainWindow):
                         f"Physical/control calibration mismatch for {control}"
                     )
 
-                # final_delta is PHYSICAL ΔK.
-                # Convert it to the corresponding control-setpoint change.
                 control_delta = physical_delta / factor
-                proposed = current + control_delta
 
                 changes.append(
                     CorrectionChange(
@@ -756,20 +879,6 @@ class CorrectMainWindow(QMainWindow):
 
             self.correction_changes = tuple(changes)
             self._populate_machine_changes(self.correction_changes)
-
-            # Full-FIT application is permitted ONLY for an explicitly
-            # validated local pySC simulation profile and
-            # only at the validated 10% correction fraction.
-            if not math.isclose(
-                float(self.review.global_scale),
-                0.10,
-                rel_tol=0.0,
-                abs_tol=1e-15,
-            ):
-                raise RuntimeError(
-                    "Full-FIT pySC application requires exactly "
-                    "10% global correction fraction."
-                )
 
             if not self.mapping_path:
                 raise RuntimeError(
@@ -864,7 +973,7 @@ class CorrectMainWindow(QMainWindow):
                 offset = float(row["offset"])
                 current = float(row["current"])
                 physical = float(row["physical"])
-                physical_delta = float(item.final_delta)
+                full_physical_delta = float(item.recommended_machine_delta * item.individual_scale)
 
                 previous_item = previous_items.get(control)
                 if previous_record is not None and previous_item is None:
@@ -872,8 +981,8 @@ class CorrectMainWindow(QMainWindow):
                         f"Cumulative correction set changed; missing previous control: {control}"
                     )
                 if previous_item is not None and not math.isclose(
-                    physical_delta,
-                    float(previous_item["physical_delta"]),
+                    full_physical_delta,
+                    float(previous_item.get("full_physical_delta",previous_item["physical_delta"]/.1)),
                     rel_tol=1e-12,
                     abs_tol=1e-15,
                 ):
@@ -882,9 +991,15 @@ class CorrectMainWindow(QMainWindow):
                         "Restore original values before changing the plan."
                     )
 
-                control_delta = physical_delta / factor
-                proposed = current + control_delta
-                expected_physical = physical + physical_delta
+                restore_control=float(previous_item.get("restore_control",previous_item["current_control"]) if previous_item is not None else current)
+                restore_physical=float(previous_item.get("restore_physical_k",previous_item["current_physical_k"]) if previous_item is not None else physical)
+                expected_current=restore_physical+full_physical_delta*current_fraction
+                if not math.isclose(physical,expected_current,rel_tol=1e-10,abs_tol=1e-12):
+                    raise RuntimeError(f"Stale readback before cumulative preview: {control}")
+                expected_physical=restore_physical+full_physical_delta*target_fraction
+                proposed=restore_control+(full_physical_delta*target_fraction)/factor
+                physical_delta=expected_physical-physical
+                control_delta=proposed-current
 
                 records.append(
                     {
@@ -899,17 +1014,12 @@ class CorrectMainWindow(QMainWindow):
                         "current_control": current,
                         "current_physical_k": physical,
                         "physical_delta": physical_delta,
+                        "full_physical_delta": full_physical_delta,
                         "control_delta": control_delta,
                         "proposed_control": proposed,
                         "expected_physical_k": expected_physical,
-                        "restore_control": float(
-                            previous_item.get("restore_control", previous_item["current_control"])
-                            if previous_item is not None else current
-                        ),
-                        "restore_physical_k": float(
-                            previous_item.get("restore_physical_k", previous_item["current_physical_k"])
-                            if previous_item is not None else physical
-                        ),
+                        "restore_control": restore_control,
+                        "restore_physical_k": restore_physical,
                     }
                 )
 
@@ -917,11 +1027,13 @@ class CorrectMainWindow(QMainWindow):
                 "schema": FULLFIT_SCHEMA,
                 "mode": "READ_ONLY_PREVIEW",
                 "count": len(records),
-                "fraction": 0.10,
+                "fraction": increment_fraction,
+                "previous_fraction": current_fraction,
                 "application_number": application_number,
-                "cumulative_fraction": application_number * 0.10,
+                "cumulative_fraction": target_fraction,
                 "restore_required": previous_record is not None,
                 "history": list((previous_record or {}).get("history", [])),
+                "measurement_session": (self.review.items[0].metadata.get("measurement_session") if self.review.items else {}),
                 "server_identity": identity,
                 "source_lattice": {
                     "path": str(source_lattice),
@@ -977,7 +1089,7 @@ class CorrectMainWindow(QMainWindow):
 
             self.apply_status.setText(
                 f"VERIFIED pySC preview: {len(changes)} mapped B2 "
-                f"controls — next +10%, cumulative {application_number * 10}%"
+                f"controls — exact increment +{increment_fraction * 100:g}%, target {target_fraction * 100:g}%"
             )
 
             self.profile_badge.setText(
@@ -985,6 +1097,7 @@ class CorrectMainWindow(QMainWindow):
             )
 
             self._set_connection(True, "READ-ONLY PREVIEW")
+            self._refresh_correction_progress()
 
         except Exception as exc:
             self.correction_changes = ()
@@ -1020,28 +1133,21 @@ class CorrectMainWindow(QMainWindow):
             )
             return
 
-        if (
-            not self.review
-            or not math.isclose(
-                float(self.review.global_scale),
-                0.10,
-                rel_tol=0.0,
-                abs_tol=1e-15,
-            )
-        ):
+        if not self.review:
             QMessageBox.warning(
                 self,
                 "Application blocked",
-                "Full-FIT simulation application requires exactly "
-                "10% correction fraction.",
+                "Load and preview a correction first.",
             )
             return
+
+        increment=float(transaction.record.get("fraction",.1)); target=float(transaction.record.get("cumulative_fraction",increment))
 
         answer = QMessageBox.question(
             self,
             "Confirm pySC full-FIT application",
-            "Apply the next verified 10% correction in the same fitted direction "
-            f"(cumulative {transaction.record.get('cumulative_fraction', .1) * 100:.0f}%) to the mapped normal "
+            f"Apply the explicitly previewed +{increment * 100:g}% correction step "
+            f"(target {target * 100:g}%) to the mapped normal "
             "B2 controls of the explicitly connected pySC simulation?\n\n"
             "This writes ONLY to the local pySC simulation. "
             "No PETRA/DOOCS hardware writes are performed.",
@@ -1057,6 +1163,7 @@ class CorrectMainWindow(QMainWindow):
         self.restore_button.setEnabled(False)
         self.undo_button.setEnabled(False)
         self.apply_status.setText("Applying verified correction…")
+        self._refresh_correction_progress()
         thread=QThread(self); worker=CorrectionApplyWorker(transaction); worker.moveToThread(thread)
         thread.started.connect(worker.run); worker.progress.connect(self._apply_progress)
         worker.completed.connect(self._apply_completed); worker.failed.connect(self._apply_failed)
@@ -1112,15 +1219,18 @@ class CorrectMainWindow(QMainWindow):
             self.apply_button.setEnabled(False)
             self.restore_button.setEnabled(True)
             self.undo_button.setEnabled(True)
-            self.preview_apply_button.setText("Preview next +10%")
+            next_increment=min(self.progress_increment.value(),max(0,100-record.get('cumulative_fraction',.1)*100))
+            self.preview_apply_button.setText(f"Preview next +{next_increment:g}%")
             self.preview_apply_button.setEnabled(True)
 
             self.apply_status.setText(
                 f"APPLIED AND VERIFIED in pySC simulation: "
                 f"{len(record['items'])} B2 controls — cumulative "
                 f"{record.get('cumulative_fraction', .1) * 100:.0f}% — "
-                "Preview again for the next +10%, or restore original"
+                "Preview the next explicit step, or restore the original baseline"
             )
+
+            self._refresh_correction_progress()
 
             self.statusBar().showMessage(f"Applied and verified • {len(record['items'])} B2 controls • DEMO only")
 
@@ -1132,6 +1242,8 @@ class CorrectMainWindow(QMainWindow):
         self.apply_button.setEnabled(False)
         self.preview_apply_button.setText("Preview machine changes")
         self.preview_apply_button.setEnabled(True)
+        self.progress_machine_status.setText("Machine state: FAILED or unverified — reconcile before continuing")
+        self._refresh_correction_progress()
         QMessageBox.critical(self,"Full-FIT simulation application failed",message)
 
     @Slot()
@@ -1147,10 +1259,12 @@ class CorrectMainWindow(QMainWindow):
             QMessageBox.warning(self, "Nothing to undo", "No applied 10% increment is available.")
             return
         current = float(transaction.record.get("cumulative_fraction", 0.0))
-        target = max(0.0, current - 0.10)
+        history=transaction.record.get("history",())
+        last_increment=float(history[-1].get("increment_fraction",.1)) if history else .1
+        target=max(0.0,current-last_increment)
         answer = QMessageBox.question(
             self,
-            "Undo last 10%",
+            "Undo last verified step",
             f"Return the verified pySC correction from {current * 100:.0f}% "
             f"to {target * 100:.0f}%?\n\nThe current machine state is checked before any write.",
             QMessageBox.Yes | QMessageBox.No,
@@ -1166,11 +1280,12 @@ class CorrectMainWindow(QMainWindow):
             self.restore_button.setEnabled(remaining > 0)
             self.preview_apply_button.setEnabled(True)
             self.preview_apply_button.setText(
-                "Preview next +10%" if remaining > 0 else "Preview machine changes"
+                f"Preview next +{self.progress_increment.value()}%" if remaining > 0 else "Preview machine changes"
             )
             self.apply_status.setText(
-                f"LAST 10% UNDONE AND VERIFIED — cumulative {remaining * 100:.0f}%"
+                f"LAST STEP UNDONE AND VERIFIED — cumulative {remaining * 100:g}%"
             )
+            self._refresh_correction_progress()
             self.statusBar().showMessage(
                 f"Undo verified • cumulative correction {remaining * 100:.0f}% • DEMO only"
             )
@@ -1278,6 +1393,7 @@ class CorrectMainWindow(QMainWindow):
                 )
 
             self.statusBar().showMessage(f"Restored and verified • {restored} B2 controls")
+            self._refresh_correction_progress()
 
         except Exception as exc:
             QMessageBox.critical(

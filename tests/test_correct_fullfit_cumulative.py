@@ -194,3 +194,115 @@ def test_apply_uses_targeted_readback_and_only_durable_transaction_boundaries(tm
         (1, 1, control, "writing"),
         (1, 1, control, "verified"),
     ]
+
+
+def _anchored_manifest(tmp_path, connection, application, previous_fraction, target_fraction,
+                       baseline=1.0, full_delta=.2, history=None):
+    connection.current=baseline+(full_delta*previous_fraction)/connection.factor
+    path=_manifest(tmp_path,connection,application,connection.current,baseline,history)
+    data=json.loads(path.read_text())
+    increment=target_fraction-previous_fraction
+    data["fraction"]=increment
+    data["previous_fraction"]=previous_fraction
+    data["cumulative_fraction"]=target_fraction
+    row=data["records"][0]
+    row["full_physical_delta"]=full_delta
+    row["physical_delta"]=full_delta*increment
+    row["control_delta"]=full_delta*increment/connection.factor
+    row["proposed_control"]=baseline+(full_delta*target_fraction)/connection.factor
+    row["expected_physical_k"]=connection.factor*baseline+connection.offset+full_delta*target_fraction
+    path.write_text(json.dumps(data))
+    return path
+
+
+def test_zero_to_thirty_percent_targets_are_anchored_to_original_baseline(tmp_path):
+    source=tmp_path/"source.mat"; source.write_text(source.name)
+    connection=FakeConnection(_sha(source)); history=[]
+    for application,(start,target) in enumerate(((0,.1),(.1,.2),(.2,.3)),start=1):
+        transaction=FullFitB2Transaction(connection,tmp_path/"journals")
+        transaction.load_preview_manifest(_anchored_manifest(
+            tmp_path,connection,application,start,target,history=history))
+        transaction.apply(confirmed=True)
+        history=list(transaction.record["history"])
+        assert connection.current==pytest.approx(1.0+(.2*target)/2.0)
+        assert transaction.record["cumulative_fraction"]==pytest.approx(target)
+        assert history[-1]["execution_status"]=="verified"
+        assert history[-1]["requested_target_fraction"]==pytest.approx(target)
+        with pytest.raises(RuntimeError,match="Fresh verified"):
+            transaction.apply(confirmed=True)
+    assert [step["cumulative_fraction"] for step in history]==pytest.approx([.1,.2,.3])
+
+
+def test_restart_reconciles_readbacks_and_rejects_stale_machine_state(tmp_path):
+    source=tmp_path/"source.mat"; source.write_text(source.name)
+    connection=FakeConnection(_sha(source))
+    transaction=FullFitB2Transaction(connection,tmp_path/"journals")
+    transaction.load_preview_manifest(_anchored_manifest(tmp_path,connection,1,0,.1))
+    transaction.apply(confirmed=True)
+    resumed=FullFitB2Transaction(connection,tmp_path/"journals")
+    assert resumed.load_journal(transaction.path)["cumulative_fraction"]==pytest.approx(.1)
+    connection.current+=.01
+    stale=FullFitB2Transaction(connection,tmp_path/"journals")
+    with pytest.raises(RuntimeError,match="Applied control changed"):
+        stale.load_journal(transaction.path)
+
+
+def test_restore_uses_original_baseline_after_three_steps(tmp_path):
+    source=tmp_path/"source.mat"; source.write_text(source.name)
+    connection=FakeConnection(_sha(source)); history=[]; transaction=None
+    for application,(start,target) in enumerate(((0,.1),(.1,.2),(.2,.3)),start=1):
+        transaction=FullFitB2Transaction(connection,tmp_path/"journals")
+        transaction.load_preview_manifest(_anchored_manifest(tmp_path,connection,application,start,target,history=history))
+        transaction.apply(confirmed=True); history=list(transaction.record["history"])
+    transaction.restore()
+    assert connection.current==pytest.approx(1.0)
+    assert transaction.record["status"]=="restored"
+
+
+def test_interrupted_journal_requires_explicit_recovery(tmp_path):
+    source=tmp_path/"source.mat"; source.write_text(source.name)
+    connection=FakeConnection(_sha(source))
+    transaction=FullFitB2Transaction(connection,tmp_path/"journals")
+    transaction.load_preview_manifest(_anchored_manifest(tmp_path,connection,1,0,.1))
+    transaction.record["status"]="write_pending"; transaction.record["restore_required"]=True
+    transaction._persist()
+    resumed=FullFitB2Transaction(connection,tmp_path/"journals")
+    with pytest.raises(RuntimeError,match="explicit recovery"):
+        resumed.load_journal(transaction.path)
+
+
+def test_failed_command_does_not_advance_verified_history_and_restores_baseline(tmp_path):
+    source=tmp_path/"source.mat"; source.write_text(source.name)
+    connection=FakeConnection(_sha(source))
+    transaction=FullFitB2Transaction(connection,tmp_path/"journals")
+    transaction.load_preview_manifest(_anchored_manifest(tmp_path,connection,1,0,.1))
+    calls=0
+    original_interface=connection.interface
+    def faulty_interface(identity):
+        interface=original_interface(identity)
+        original_set=interface.set
+        def set_value(control,value):
+            nonlocal calls
+            calls+=1
+            original_set(control, value+.01 if calls==1 else value)
+        interface.set=set_value
+        return interface
+    connection.interface=faulty_interface
+    with pytest.raises(RuntimeError,match="all original values restored"):
+        transaction.apply(confirmed=True)
+    assert connection.current==pytest.approx(1.0)
+    assert transaction.record["status"]=="restored"
+    assert transaction.record["history"]==[]
+
+
+def test_verified_step_can_be_marked_measured_and_persists(tmp_path):
+    source=tmp_path/"source.mat"; source.write_text(source.name)
+    measurement=tmp_path/"orm.h5"; measurement.write_bytes(b"measurement")
+    connection=FakeConnection(_sha(source))
+    transaction=FullFitB2Transaction(connection,tmp_path/"journals")
+    transaction.load_preview_manifest(_anchored_manifest(tmp_path,connection,1,0,.1))
+    transaction.apply(confirmed=True)
+    transaction.mark_latest_measured([measurement])
+    persisted=json.loads(transaction.path.read_text())
+    assert persisted["history"][-1]["execution_status"]=="measured"
+    assert persisted["history"][-1]["measurements"]["files"]==[str(measurement.resolve())]
