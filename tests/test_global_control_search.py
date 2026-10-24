@@ -88,6 +88,12 @@ def test_fit_compact_search_and_more_menu_preserve_existing_actions(app):
     app.processEvents()
     assert window.control_search.search_box.isVisible()
     assert window.control_search.search_box.hasFocus()
+    editor = window.control_search.search_editor
+    toolbar = window.main_toolbar
+    assert editor.geometry().top() >= toolbar.geometry().bottom()
+    QTest.keyClick(window.control_search.search_box, Qt.Key_Escape)
+    app.processEvents()
+    assert not editor.isVisible()
     window.project.modified = False; window.close()
 
 

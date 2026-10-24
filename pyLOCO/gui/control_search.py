@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from PySide6.QtCore import QObject, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QObject, QPoint, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -176,6 +176,8 @@ class ControlSearchController(QObject):
             self.search_editor.resize(300, self.search_box.sizeHint().height() + 12)
             self.search_editor.hide()
             self.search_box_action = None
+            self.window.installEventFilter(self)
+            self.search_box.installEventFilter(self)
         else:
             self.search_button_action = None
             self.search_editor = None
@@ -209,10 +211,7 @@ class ControlSearchController(QObject):
     def focus_search(self) -> None:
         was_visible = self.search_box.isVisible()
         if self.search_editor is not None:
-            anchor = self.search_button or self.window
-            point = anchor.mapTo(self.window, QPoint(0, anchor.height() + 4))
-            x = min(point.x(), max(0, self.window.width() - self.search_editor.width() - 12))
-            self.search_editor.move(x, point.y())
+            self._position_compact_editor()
             self.search_editor.show()
             self.search_editor.raise_()
         elif self.search_box_action is not None:
@@ -234,6 +233,39 @@ class ControlSearchController(QObject):
         self.search_box.selectAll()
         if self.search_box.text().strip():
             self._query_changed(self.search_box.text())
+
+    def _position_compact_editor(self) -> None:
+        """Place compact search below the toolbar, never over its actions."""
+        if self.search_editor is None:
+            return
+        button = self.search_button
+        if button is not None and button.isVisibleTo(self.window):
+            point = button.mapTo(self.window, QPoint(0, button.height() + 4))
+            x = min(point.x(), max(12, self.window.width() - self.search_editor.width() - 12))
+        else:
+            # Cmd/Ctrl+F remains available when responsive layout moves the
+            # search action into More.  A hidden toolbar button has invalid
+            # (usually 0,0) anchor geometry, which previously placed the
+            # editor across the primary action labels on macOS.
+            point = QPoint(0, 0)
+            toolbar = self.window.findChild(QToolBar, "mainToolbar")
+            if toolbar is not None:
+                toolbar_point = toolbar.mapTo(self.window, QPoint(0, toolbar.height() + 4))
+                point = QPoint(0, toolbar_point.y())
+            x = max(12, self.window.width() - self.search_editor.width() - 12)
+        self.search_editor.move(x, max(0, point.y()))
+
+    def eventFilter(self, watched, event):  # type: ignore[override]
+        if self.compact and event.type() == QEvent.Resize and watched is self.window:
+            if self.search_editor is not None and self.search_editor.isVisible():
+                self._position_compact_editor()
+        if self.compact and event.type() == QEvent.KeyPress and watched is self.search_box:
+            if event.key() == Qt.Key_Escape:
+                self.popup.hide()
+                if self.search_editor is not None:
+                    self.search_editor.hide()
+                return True
+        return super().eventFilter(watched, event)
 
     def rebuild_index(self) -> list[ControlSearchResult]:
         results: list[ControlSearchResult] = []
