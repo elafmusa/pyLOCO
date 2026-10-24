@@ -75,6 +75,37 @@ def test_fit_mapping_shows_identity_method_manual_evidence_and_missing_device():
     window.close(); app.processEvents()
 
 
+def test_fit_complete_mapping_details_clear_stale_search_and_role_filters():
+    app=QApplication.instance() or QApplication([]); window=MainWindow()
+    rows=[
+        {"role":"bpm","pyaml_device":"machine/bpm/1","lattice_fam_name":"BPM1",
+         "lattice_device":"machine/bpm/1","lattice_ordinal":1,"identity_match":"exact_device",
+         "component":"","physical_element_type":"Monitor","status":"proposed_unique_exact_match"},
+        {"role":"normal_quadrupole","pyaml_device":"machine/q1-B2L","lattice_fam_name":"Q1",
+         "lattice_device":"machine/q1","lattice_ordinal":2,"identity_match":"legacy_suffix_exact_device",
+         "component":"B2L","physical_element_type":"Quadrupole","status":"proposed_unique_exact_match"},
+        {"role":"sextupole","pyaml_device":"machine/s1-B3L","lattice_fam_name":"S1",
+         "lattice_device":"machine/s1","lattice_ordinal":3,"identity_match":"legacy_suffix_exact_device",
+         "component":"B3L","physical_element_type":"Sextupole","status":"proposed_unique_exact_match"},
+    ]
+    window.project.machine_mapping={"schema":"pyloco.machine_mapping","schema_version":3,"mappings":rows}
+    window.mapping_table_scope.setCurrentIndex(window.mapping_table_scope.findData("machine"))
+    window._refresh_measurement_mapping_table()
+    window.mapping_table_role_filter.setCurrentIndex(window.mapping_table_role_filter.findData("bpm"))
+    window.measurement_mapping_search.setText("no-match")
+    assert window.measurement_mapping_table.rowCount()==0
+
+    window.show_complete_machine_mapping_details()
+    assert window.mapping_table_scope.currentData()=="machine"
+    assert window.mapping_table_role_filter.currentData()==""
+    assert window.measurement_mapping_search.text()==""
+    assert window.measurement_mapping_table.rowCount()==3
+    assert window.mapping_table_count.text()=="Showing 3 of 3 Complete Machine Mapping records"
+    assert window.measurement_mapping_table.item(1,2).text()=="Q1"
+    assert window.measurement_mapping_table.item(1,3).text()=="machine/q1"
+    window.project.modified=False; window.close(); app.processEvents()
+
+
 def test_correct_distinguishes_fit_at_identity_from_pyaml_target_and_copies_rows():
     app=QApplication.instance() or QApplication([]); window=CorrectMainWindow()
     item=CorrectItem(0,"normal_quadrupole","QD3J",27,"m⁻²",1.0,1.1,.1,-.1,"test",control_name="srmag/m-qd3/c04-a-B2L",metadata={"lattice_fam_name":"QD3J","lattice_device":"EBS/QD3J/04","lattice_common_name":"QFAMILY-03","lattice_device_defined":True,"element_class":"Quadrupole","mapping_status":"mapped","match_source":"identity","control_component":"B2L","control_unit":"m^-1"})

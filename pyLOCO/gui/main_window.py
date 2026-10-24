@@ -1958,6 +1958,9 @@ class MainWindow(QMainWindow):
         mapping_filters.addWidget(self.measurement_mapping_search, 1)
         mapping_filters.addWidget(self.measurement_mapping_filter)
         measurement_mapping_layout.addLayout(mapping_filters)
+        self.mapping_table_count = QLabel("No mapping records displayed")
+        self.mapping_table_count.setObjectName("mappingHelpText")
+        measurement_mapping_layout.addWidget(self.mapping_table_count)
         self.measurement_mapping_table = CopyableMappingTable(0, 9)
         self.measurement_mapping_table.setHorizontalHeaderLabels(
             ["Measured device (HDF5)", "Role / plane", "AT FamName", "AT Device", "AT index (0-based)", "Match method", "Component / steering capability", "Mapping status", "Evidence / problem"]
@@ -6325,10 +6328,16 @@ class MainWindow(QMainWindow):
         scope_index = self.mapping_table_scope.findData("machine")
         if scope_index >= 0:
             self.mapping_table_scope.setCurrentIndex(scope_index)
+        role_index = self.mapping_table_role_filter.findData("")
+        if role_index >= 0:
+            self.mapping_table_role_filter.setCurrentIndex(role_index)
         all_index = self.measurement_mapping_filter.findData("all")
         if all_index >= 0:
             self.measurement_mapping_filter.setCurrentIndex(all_index)
+        self.measurement_mapping_search.clear()
         self._refresh_measurement_mapping_table(); self._refresh_measurement_mapping_feedback()
+        self.measurement_mapping_table.setFocus(Qt.OtherFocusReason)
+        self.measurement_mapping_table.scrollToTop()
         self._refresh_ui("Measurement-device mapping changed; validate before running FIT")
         return measurement_mapping_counts(mapping)["mapped"] == measurement_mapping_counts(mapping)["total"]
 
@@ -6755,6 +6764,8 @@ class MainWindow(QMainWindow):
             return
         scope=self.mapping_table_scope.findData("machine")
         if scope>=0:self.mapping_table_scope.setCurrentIndex(scope)
+        role=self.mapping_table_role_filter.findData("")
+        if role>=0:self.mapping_table_role_filter.setCurrentIndex(role)
         index=self.measurement_mapping_filter.findData("all")
         if index>=0:self.measurement_mapping_filter.setCurrentIndex(index)
         self.measurement_mapping_search.clear(); self._refresh_measurement_mapping_table()
@@ -6823,6 +6834,10 @@ class MainWindow(QMainWindow):
                 cell = QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,record_identity); cell.setToolTip(str(value)); table.setItem(row, column, cell)
             displayed += 1
         table.setSortingEnabled(True)
+        scope_name="Complete Machine Mapping" if complete else "Measured BPM/H/V mapping"
+        self.mapping_table_count.setText(
+            f"Showing {displayed:,} of {len(rows):,} {scope_name} records"
+        )
         if not rows:
             self.measurement_mapping_table_hint.setText(
                 "No mapping records yet. Select Find machine mappings after loading measurements and a reference lattice."
