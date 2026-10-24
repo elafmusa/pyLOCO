@@ -210,6 +210,40 @@ def test_minimal_mapping_derives_family_component_and_unit(setup):
     assert all(row["status"] == "mapped" for row in resolved)
 
 
+def test_explicit_ordinal_maps_when_fit_display_name_differs(setup):
+    setup.review.items[0].name = "FIT display alias"
+    explicit = [{
+        "correction_type": "normal_quadrupole", "lattice_name": "Q1",
+        "lattice_ordinal": 0, "control_name": "M1",
+        "component": "B2L", "unit": "m^-1",
+    }]
+    rows = resolve_mapping(setup.review, setup.connection.inventory, explicit)
+    assert rows[0]["status"] == "mapped"
+    assert rows[0]["magnet_name"] == "M1"
+
+
+def test_minimal_template_ordinal_derives_lattice_name_for_correct(setup, monkeypatch):
+    setup.review.items[0].name = "FIT display alias"
+    document = {
+        "schema": "pyloco.machine_mapping", "schema_version": 3,
+        "template": True,
+        "mappings": [{"pyaml_device": "M1", "role": "normal_quadrupole",
+                      "lattice_ordinal": 0}],
+    }
+    ring = [SimpleNamespace(FamName="Q1", Device="device/Q1")]
+    monkeypatch.setattr(
+        "pyLOCO.correct.pyaml_connection.lattice_identity",
+        lambda _path: ({"sha256": "unused", "element_count": 1}, ring),
+    )
+    selected, rows, provenance, _identity = validate_mapping_document(
+        setup.review, setup.connection, document, "unused.mat"
+    )
+    assert selected[0]["lattice_name"] == "Q1"
+    assert rows[0]["status"] == "mapped"
+    assert rows[0]["magnet_name"] == "M1"
+    assert "minimal template" in provenance
+
+
 def test_embedded_machine_mapping_requires_matching_connection_fingerprints(setup, monkeypatch):
     from pyLOCO.machine_mapping import entry
     rows=[]

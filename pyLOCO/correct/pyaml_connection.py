@@ -203,12 +203,12 @@ def _entry_family(entry, review=None):
     )
 
 
-def validate_mapping_entries(review, connection, entries, ring):
+def validate_mapping_entries(review, connection, entries, ring, *, ordinal_authoritative=False):
     """Validate authoritative source identities before delegating to the strict resolver."""
     inventory = {row["name"]: row for row in connection.inventory}
     sources, targets = set(), set()
     selected = []
-    wanted = {item_identity(item) for item in review.items}
+    wanted = {(item.correction_type, item.lattice_ordinal) for item in review.items}
     for original in entries:
         entry=dict(original)
         family = _entry_family(entry, review)
@@ -218,18 +218,22 @@ def validate_mapping_entries(review, connection, entries, ring):
         if type(ordinal) is not int or not 0 <= ordinal < len(ring):
             raise ValueError(f"Invalid source lattice ordinal for {lattice_name!r}: {ordinal!r}")
         actual = str(getattr(ring[ordinal], "FamName", ""))
-        if not lattice_name:
+        if ordinal_authoritative:
+            # A filled operator template identifies the source by its explicit
+            # zero-based AT ordinal. FIT display names may differ from FamName.
             lattice_name=actual; entry["lattice_name"]=actual
-        if actual != lattice_name:
+        elif not lattice_name:
+            lattice_name=actual; entry["lattice_name"]=actual
+        if not ordinal_authoritative and actual != lattice_name:
             raise ValueError(
                 f"Reference lattice identity mismatch at ordinal {ordinal}: "
                 f"mapping has {lattice_name!r}, lattice has {actual!r}"
             )
         declared_device=str(entry.get("lattice_device") or "")
         actual_device=str(getattr(ring[ordinal],"Device","") or "")
-        if declared_device and declared_device!=actual_device:
+        if not ordinal_authoritative and declared_device and declared_device!=actual_device:
             raise ValueError(f"Reference lattice Device mismatch at ordinal {ordinal}: mapping has {declared_device!r}, lattice has {actual_device!r}")
-        source = (family, ordinal, lattice_name)
+        source = (family, ordinal)
         if source in sources:
             raise ValueError(f"Duplicate mapping source: {source}")
         sources.add(source)
@@ -294,17 +298,19 @@ def validate_mapping_document(review, connection, document, lattice_path, *, ent
             if inventory and (inventory.get("sha256") != inventory_fingerprint(connection.inventory) or inventory.get("device_count") != len(connection.inventory)):
                 raise ValueError("Reusable mapping inventory has changed; revalidation is required")
             provenance = "revalidated saved mapping"
-    rows = validate_mapping_entries(review, connection, entries, ring)
+    rows = validate_mapping_entries(
+        review, connection, entries, ring, ordinal_authoritative=template
+    )
     unresolved = [row for row in rows if row["included"] and row["status"] != "mapped"]
     if unresolved:
         raise ValueError(f"Authoritative mapping leaves {len(unresolved)} included correction(s) unresolved")
     selected = []
-    wanted = {item_identity(item) for item in review.items}
+    wanted = {(item.correction_type, item.lattice_ordinal) for item in review.items}
     for entry in entries:
         family = _entry_family(entry, review)
         ordinal=entry.get("lattice_ordinal"); lattice_name=entry.get("lattice_name")
         if not lattice_name and type(ordinal) is int and 0<=ordinal<len(ring):lattice_name=str(getattr(ring[ordinal],"FamName","") or "")
-        key = (family, ordinal, lattice_name)
+        key = (family, ordinal)
         if key in wanted:
             selected.append(dict(entry, lattice_name=lattice_name, correction_type=family,
                                  component="B2L" if family == FAMILIES[0] else "A2L",
@@ -403,9 +409,18 @@ def resolve_mapping(review, inventory, explicit=()):
     used = set()
     for row in explicit:
         name = row.get("control_name", row.get("magnet_name"))
-        candidates = [item for item in review.items if item.name == row["lattice_name"]
-                      and (row.get("lattice_ordinal") is None or item.lattice_ordinal == row["lattice_ordinal"])
-                      and (not row.get("correction_type") or item.correction_type == row["correction_type"])]
+        ordinal = row.get("lattice_ordinal")
+        family = row.get("correction_type")
+        if type(ordinal) is int:
+            # Explicit AT ordinal is the authoritative source identity. Do not
+            # also require the FIT display name to equal the lattice FamName.
+            candidates = [item for item in review.items
+                          if item.lattice_ordinal == ordinal
+                          and (not family or item.correction_type == family)]
+        else:
+            candidates = [item for item in review.items
+                          if item.name == row["lattice_name"]
+                          and (not family or item.correction_type == family)]
         if len(candidates) != 1:
             raise ValueError(f"Mapping source {row['lattice_name']!r} does not identify exactly one fitted lattice element; check lattice_name and lattice_ordinal")
         key = item_identity(candidates[0])
@@ -423,9 +438,13 @@ def resolve_mapping(review, inventory, explicit=()):
         if name in used:
             raise ValueError(f"Duplicate mapping target: {name!r}; one pyAML device cannot represent two fitted elements")
         matched = deepcopy(candidates[0])
-        apply_explicit_mapping(SimpleNamespace(items=[matched]),
-            [MagnetMapping(row["lattice_name"], name, row.get("lattice_ordinal"), component, row.get("unit"))])
-        overrides[key] = matched.control_name
+        # The source was already resolved above (ordinal first when present),
+        # so do not pass it through the legacy name-first mapper again.
+        matched.control_name = name
+        matched.metadata["mapping_status"] = "mapped"
+        matched.metadata["control_component"] = component or expected_component
+        matched.metadata["control_unit"] = row.get("unit") or "m^-1"
+        overrides[key] = name
         used.add(name)
     rows = []
     for item in review.items:
