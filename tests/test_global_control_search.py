@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QApplication, QMessageBox, QToolBar
+from PySide6.QtTest import QSignalSpy, QTest
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QToolBar
 
 from pyLOCO.correct.main_window import CorrectMainWindow
 from pyLOCO.gui.main_window import MainWindow
@@ -85,6 +85,40 @@ def test_fit_compact_search_and_more_menu_preserve_existing_actions(app):
     assert window.control_search.search_box.isVisible()
     assert window.control_search.search_box.hasFocus()
     window.project.modified = False; window.close()
+
+
+def test_fit_compact_search_keeps_focus_while_typing_full_query(app):
+    window = MainWindow(); window.show(); app.processEvents()
+    window.control_search.focus_search(); app.processEvents()
+    QTest.keyClicks(window.control_search.search_box, "quadrupole")
+    app.processEvents()
+    assert window.control_search.search_box.text() == "quadrupole"
+    assert window.control_search.search_box.hasFocus()
+    assert window.control_search.result_list.count() > 0
+    assert window.control_search.popup.parent() is window
+    assert window.control_search.popup.geometry().right() < window.width()
+    window.project.modified = False; window.close()
+
+
+def test_search_index_and_shortcut_are_scoped_to_owning_window(app):
+    first = MainWindow(); second = MainWindow()
+    unique_first = QPushButton("First-window-only diagnostic", first)
+    unique_second = QPushButton("Second-window-only diagnostic", second)
+    first.show(); second.show(); app.processEvents()
+    assert first.control_search.shortcut.context() == Qt.WindowShortcut
+    assert second.control_search.shortcut.context() == Qt.WindowShortcut
+    assert any(
+        result.widget is unique_first
+        for result in first.control_search.search("First-window-only")
+    )
+    assert not second.control_search.search("First-window-only")
+    assert any(
+        result.widget is unique_second
+        for result in second.control_search.search("Second-window-only")
+    )
+    assert not first.control_search.search("Second-window-only")
+    first.project.modified = False; second.project.modified = False
+    first.close(); second.close()
 
 
 def test_fit_search_finds_documented_examples_and_navigates_without_activation(app):

@@ -181,7 +181,10 @@ class ControlSearchController(QObject):
             self.search_editor = None
             self.search_box_action = toolbar.addWidget(self.search_box)
 
-        self.popup = QFrame(window, Qt.Popup)
+        # Compact search lives in a child overlay.  Its results must also stay
+        # inside the owning window; a Qt.Popup top-level steals keyboard focus
+        # from the editor after the first typed character on macOS.
+        self.popup = QFrame(window) if compact else QFrame(window, Qt.Popup)
         self.popup.setObjectName("controlSearchPopup")
         self.popup.setMinimumWidth(440)
         from PySide6.QtWidgets import QVBoxLayout
@@ -198,7 +201,9 @@ class ControlSearchController(QObject):
         self.result_list.itemActivated.connect(self._item_activated)
         self.result_list.itemClicked.connect(self._item_activated)
         self.shortcut = QShortcut(QKeySequence.Find, window)
-        self.shortcut.setContext(Qt.ApplicationShortcut)
+        # Each pyLOCO window owns an independent search index.  Window scope
+        # prevents Cmd/Ctrl+F from triggering every open application window.
+        self.shortcut.setContext(Qt.WindowShortcut)
         self.shortcut.activated.connect(self.focus_search)
 
     def focus_search(self) -> None:
@@ -300,9 +305,21 @@ class ControlSearchController(QObject):
         if matches:
             self.result_list.setCurrentRow(0)
             point = self.search_box.mapTo(self.window, QPoint(0, self.search_box.height() + 2))
-            self.popup.move(self.window.mapToGlobal(point))
-            self.popup.resize(max(440, self.search_box.width() * 2), self.popup.sizeHint().height())
+            popup_width = max(440, self.search_box.width() * 2)
+            if self.compact:
+                popup_width = min(popup_width, max(260, self.window.width() - 24))
+            self.popup.resize(popup_width, self.popup.sizeHint().height())
+            if self.compact:
+                x = min(max(12, point.x()), max(12, self.window.width() - popup_width - 12))
+                self.popup.move(x, point.y())
+            else:
+                self.popup.move(self.window.mapToGlobal(point))
             self.popup.show()
+            self.popup.raise_()
+            if self.compact:
+                # Showing a child results panel must not interrupt continued
+                # typing in the compact editor.
+                self.search_box.setFocus(Qt.ShortcutFocusReason)
         else:
             self.popup.hide()
 
