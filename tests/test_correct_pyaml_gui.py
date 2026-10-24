@@ -223,7 +223,7 @@ def test_shared_mapping_import_export(window, setup, tmp_path, monkeypatch):
     assert [entry["component"] for entry in mappings] == [None, None, None]
     widget.clear_mapping()
     monkeypatch.setattr(pyaml_widget, "find_reference_lattice", lambda *_: setup.source)
-    def validate(review, connection, selected, lattice):
+    def validate(review, connection, selected, lattice, **_kwargs):
         entries = pyaml_widget.load_mapping(selected)
         for entry,item in zip(entries,setup.review.items):
             entry["lattice_name"]=item.name

@@ -268,6 +268,10 @@ def test_embedded_machine_mapping_requires_matching_connection_fingerprints(setu
     document["machine_profile"]["configuration_sha256"]="stale"
     with pytest.raises(ValueError,match="different machine configuration"):
         validate_mapping_document(setup.review,setup.connection,document,"ring.mat")
+    selected,resolved,provenance,_identity=validate_mapping_document(
+        setup.review,setup.connection,document,"ring.mat",operator_selected=True)
+    assert len(selected)==3 and all(row["status"]=="mapped" for row in resolved)
+    assert "explicitly selected" in provenance
 
 
 def test_minimal_shared_template_accepts_ordinals_and_validates_connected_targets(setup,monkeypatch):

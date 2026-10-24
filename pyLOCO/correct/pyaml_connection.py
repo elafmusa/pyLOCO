@@ -256,14 +256,18 @@ def validate_mapping_entries(review, connection, entries, ring, *, ordinal_autho
     return rows
 
 
-def validate_mapping_bundle(review, connection, path, lattice_path):
+def validate_mapping_bundle(review, connection, path, lattice_path, *, operator_selected=False):
     """Load and revalidate a v2 bundle or authoritative legacy mapping."""
     document = mapping_document(path)
     entries = load_mapping(path)
-    return validate_mapping_document(review, connection, document, lattice_path, entries=entries)
+    return validate_mapping_document(
+        review, connection, document, lattice_path, entries=entries,
+        operator_selected=operator_selected,
+    )
 
 
-def validate_mapping_document(review, connection, document, lattice_path, *, entries=None):
+def validate_mapping_document(review, connection, document, lattice_path, *, entries=None,
+                              operator_selected=False):
     """Revalidate an in-memory FIT/Measure Machine Mapping.
 
     Loading a saved mapping is not machine authorization.  Its lattice,
@@ -280,12 +284,17 @@ def validate_mapping_document(review, connection, document, lattice_path, *, ent
         template=shared and is_shared_mapping_template(document)
         if not shared and document.get("schema_version") != MAPPING_BUNDLE_VERSION:
             raise ValueError("Unsupported reusable mapping-bundle version")
-        if template:
+        if template or operator_selected:
             # Templates deliberately contain only device, role and ordinal.
             # The ordinal is accepted as the operator's source selection;
             # target family/component/unit are still checked below against
             # the connected pyAML inventory before any operation is enabled.
-            provenance = "explicit minimal template — validated against connected pyAML inventory"
+            provenance = (
+                "explicitly selected Machine Mapping — AT ordinals and targets validated "
+                "against active lattice and connected pyAML inventory"
+                if operator_selected else
+                "explicit minimal template — validated against connected pyAML inventory"
+            )
         else:
             expected_lattice = document.get("reference_lattice", {})
             if expected_lattice.get("sha256") != lattice["sha256"] or expected_lattice.get("element_count") != lattice["element_count"]:
@@ -299,7 +308,8 @@ def validate_mapping_document(review, connection, document, lattice_path, *, ent
                 raise ValueError("Reusable mapping inventory has changed; revalidation is required")
             provenance = "revalidated saved mapping"
     rows = validate_mapping_entries(
-        review, connection, entries, ring, ordinal_authoritative=template
+        review, connection, entries, ring,
+        ordinal_authoritative=(template or operator_selected)
     )
     unresolved = [row for row in rows if row["included"] and row["status"] != "mapped"]
     if unresolved:

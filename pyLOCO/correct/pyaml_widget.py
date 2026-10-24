@@ -315,7 +315,8 @@ class PyAMLCorrectionWidget(QWidget):
             if self.owner.review and self.connection:
                 lattice = find_reference_lattice(self.owner.review, self.connection)
                 entries, _rows, provenance, _identity = validate_mapping_bundle(
-                    self.owner.review, self.connection, path, lattice
+                    self.owner.review, self.connection, path, lattice,
+                    operator_selected=True,
                 )
             self.explicit = entries
             self._embedded_mapping_error = None
