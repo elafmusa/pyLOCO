@@ -25,7 +25,8 @@ from .model import CorrectionReview,load_review,save_review,save_review_csv
 from .petra_readonly import MagnetMapping,apply_explicit_mapping,load_mapping
 from pyLOCO.machine_mapping import (SCHEMA as MACHINE_MAPPING_SCHEMA,
     VERSION as MACHINE_MAPPING_VERSION, correction_projection,
-    entry as machine_mapping_entry, is_document as is_machine_mapping)
+    editable_template as editable_machine_mapping_template,
+    is_document as is_machine_mapping)
 
 AMBER_QSS="""
 QLabel#correctBrand { color:#E88B22; font-size:24pt; font-weight:850; padding:2px 8px; }
@@ -1523,14 +1524,15 @@ class CorrectMainWindow(QMainWindow):
             "mappings": entries,
         }
         if pyaml:
-            template_document={"schema":MACHINE_MAPPING_SCHEMA,"schema_version":MACHINE_MAPPING_VERSION,"template":True,
-                "description":"Complete pyaml_device only where unavailable. Roles and lattice identities come from FIT.",
-                "user_fields":["pyaml_device","identity_evidence"],
-                "derived_on_load":["status","evidence"],
-                "mappings":[machine_mapping_entry(role=item.correction_type,pyaml_device=item.control_name or "",
-                    lattice_ordinal=item.lattice_ordinal,lattice_fam_name=item.name,
-                    lattice_device=item.metadata.get("lattice_device") or item.metadata.get("at_device") or "")
-                    for item in self.review.items if item.correction_type in {"normal_quadrupole","skew_quadrupole"}]}
+            template_document=editable_machine_mapping_template({
+                "schema":MACHINE_MAPPING_SCHEMA,"schema_version":MACHINE_MAPPING_VERSION,
+                "mappings":[{
+                    "role":item.correction_type,
+                    "pyaml_device":item.control_name or "",
+                    "lattice_ordinal":item.lattice_ordinal,
+                } for item in self.review.items
+                  if item.correction_type in {"normal_quadrupole","skew_quadrupole"}],
+            })
         target.write_text(json.dumps(template_document, indent=2), encoding="utf-8")
         self._remember_browse("mapping", target)
         if pyaml:
@@ -1539,7 +1541,7 @@ class CorrectMainWindow(QMainWindow):
             self.mapping_file_status.setToolTip(str(target.resolve()))
             self.mapping_feedback.setText("Mapping file saved — complete the device names and load the file")
             self.manual_mapping_feedback.setText("Mapping file saved — complete the device names and load the file for validation.")
-            self.statusBar().showMessage("Mapping template saved. Complete every control_name, then use Load mapping to validate it.",8000)
+            self.statusBar().showMessage("Mapping template saved. Complete every pyaml_device, then use Load mapping to validate it.",8000)
             return
         counts = apply_explicit_mapping(self.review, load_mapping(target))
         self.mapping_path = str(target.resolve())

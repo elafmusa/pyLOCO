@@ -221,6 +221,26 @@ def test_embedded_machine_mapping_requires_matching_connection_fingerprints(setu
         validate_mapping_document(setup.review,setup.connection,document,"ring.mat")
 
 
+def test_minimal_shared_template_accepts_ordinals_and_validates_connected_targets(setup,monkeypatch):
+    document={"schema":"pyloco.machine_mapping","schema_version":3,"template":True,
+        "mappings":[
+            {"pyaml_device":name,"role":item.correction_type,
+             "lattice_ordinal":item.lattice_ordinal}
+            for item,name in zip(setup.review.items,("M1","M2","S1"))]}
+    ring=[SimpleNamespace(FamName=item.name,Device="unrelated/device")
+          for item in setup.review.items]
+    monkeypatch.setattr("pyLOCO.correct.pyaml_connection.lattice_identity",
+                        lambda _path: ({"sha256":"active","element_count":3},ring))
+    selected,resolved,provenance,_identity=validate_mapping_document(
+        setup.review,setup.connection,document,"ring.mat")
+    assert len(selected)==3
+    assert all(row["status"]=="mapped" for row in resolved)
+    assert "minimal template" in provenance
+    document["mappings"][0]["pyaml_device"]="not-configured"
+    with pytest.raises(ValueError,match="Unknown or wrong-family mapping target"):
+        validate_mapping_document(setup.review,setup.connection,document,"ring.mat")
+
+
 def test_ebs_smoke_identity_mapping_is_explicit_unique_and_family_checked(tmp_path):
     source = tmp_path / "ebs-smoke.json"; source.write_text("{}")
     identities = [("QD3J", 27, "srmag/m-qd3/c04-a-B2L"),

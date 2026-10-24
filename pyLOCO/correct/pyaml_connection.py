@@ -13,7 +13,8 @@ import yaml
 
 from .petra_readonly import load_mapping as load_machine_mapping, apply_explicit_mapping, MagnetMapping
 from pyLOCO.machine_mapping import (correction_projection,
-    is_document as is_shared_machine_mapping)
+    is_document as is_shared_machine_mapping,
+    is_template as is_shared_mapping_template)
 
 
 FAMILIES = ("normal_quadrupole", "skew_quadrupole")
@@ -272,19 +273,27 @@ def validate_mapping_document(review, connection, document, lattice_path, *, ent
     provenance = "authoritative legacy mapping — revalidated"
     if isinstance(document, dict) and document.get("schema") == MAPPING_BUNDLE_SCHEMA:
         shared=is_shared_machine_mapping(document)
+        template=shared and is_shared_mapping_template(document)
         if not shared and document.get("schema_version") != MAPPING_BUNDLE_VERSION:
             raise ValueError("Unsupported reusable mapping-bundle version")
-        expected_lattice = document.get("reference_lattice", {})
-        if expected_lattice.get("sha256") != lattice["sha256"] or expected_lattice.get("element_count") != lattice["element_count"]:
-            raise ValueError("Reusable mapping belongs to a different reference lattice")
-        profile = document.get("machine_profile", {})
-        expected_options = {key: connection.options[key] for key in ("mode", "normal_array", "skew_array")}
-        if profile.get("configuration_sha256") != connection.config_hash or any(k in profile and profile.get(k) != v for k, v in expected_options.items()):
-            raise ValueError("Reusable mapping belongs to a different machine configuration/profile")
-        inventory = document.get("inventories",{}).get("correction",{}) if shared else document.get("inventory", {})
-        if inventory and (inventory.get("sha256") != inventory_fingerprint(connection.inventory) or inventory.get("device_count") != len(connection.inventory)):
-            raise ValueError("Reusable mapping inventory has changed; revalidation is required")
-        provenance = "revalidated saved mapping"
+        if template:
+            # Templates deliberately contain only device, role and ordinal.
+            # The ordinal is accepted as the operator's source selection;
+            # target family/component/unit are still checked below against
+            # the connected pyAML inventory before any operation is enabled.
+            provenance = "explicit minimal template — validated against connected pyAML inventory"
+        else:
+            expected_lattice = document.get("reference_lattice", {})
+            if expected_lattice.get("sha256") != lattice["sha256"] or expected_lattice.get("element_count") != lattice["element_count"]:
+                raise ValueError("Reusable mapping belongs to a different reference lattice")
+            profile = document.get("machine_profile", {})
+            expected_options = {key: connection.options[key] for key in ("mode", "normal_array", "skew_array")}
+            if profile.get("configuration_sha256") != connection.config_hash or any(k in profile and profile.get(k) != v for k, v in expected_options.items()):
+                raise ValueError("Reusable mapping belongs to a different machine configuration/profile")
+            inventory = document.get("inventories",{}).get("correction",{}) if shared else document.get("inventory", {})
+            if inventory and (inventory.get("sha256") != inventory_fingerprint(connection.inventory) or inventory.get("device_count") != len(connection.inventory)):
+                raise ValueError("Reusable mapping inventory has changed; revalidation is required")
+            provenance = "revalidated saved mapping"
     rows = validate_mapping_entries(review, connection, entries, ring)
     unresolved = [row for row in rows if row["included"] and row["status"] != "mapped"]
     if unresolved:

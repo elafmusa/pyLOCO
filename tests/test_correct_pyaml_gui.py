@@ -220,11 +220,13 @@ def test_shared_mapping_import_export(window, setup, tmp_path, monkeypatch):
     window.generate_mapping_template()
     mappings = load_mapping(path)
     assert [entry["control_name"] for entry in mappings] == ["M1", "M2", "S1"]
-    assert [entry["component"] for entry in mappings] == ["B2L", "B2L", "A2L"]
+    assert [entry["component"] for entry in mappings] == [None, None, None]
     widget.clear_mapping()
     monkeypatch.setattr(pyaml_widget, "find_reference_lattice", lambda *_: setup.source)
     def validate(review, connection, selected, lattice):
         entries = pyaml_widget.load_mapping(selected)
+        for entry,item in zip(entries,setup.review.items):
+            entry["lattice_name"]=item.name
         rows = pyaml_widget.resolve_mapping(review, connection.inventory, entries)
         return entries, rows, "authoritative legacy mapping — revalidated", {"sha256": "test", "element_count": 3}
     monkeypatch.setattr(pyaml_widget, "validate_mapping_bundle", validate)
@@ -247,7 +249,8 @@ def test_unmapped_template_is_saved_but_not_loaded_or_trusted(window, setup, tmp
     assert [row["pyaml_device"] for row in data["mappings"]] == ["", "", ""]
     assert [row["role"] for row in data["mappings"]] == ["normal_quadrupole","normal_quadrupole","skew_quadrupole"]
     assert data["schema"] == "pyloco.machine_mapping"
-    assert data["derived_on_load"] == ["status", "evidence"]
+    assert all(set(row)=={"pyaml_device","role","lattice_ordinal"} for row in data["mappings"])
+    assert set(data)=={"schema","schema_version","template","mappings"}
     assert widget.mapping_path is None
     assert widget.explicit == []
     assert "not loaded" in window.mapping_file_status.text().lower()
@@ -258,7 +261,8 @@ def test_unmapped_template_is_saved_but_not_loaded_or_trusted(window, setup, tmp
 def test_automatic_mapping_reuses_authoritative_profile_mapping(window, setup, tmp_path, monkeypatch):
     widget = connect_workspace(window, setup)
     for row in setup.connection.inventory:
-        row["lattice_name"] = row["name"]
+        row["lattice_name"] = "unmatched"
+        row["lattice_names"] = ("unmatched",)
     path = tmp_path / "approved.mapping.json"
     path.write_text("{}")
     entries = [
