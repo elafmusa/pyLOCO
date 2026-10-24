@@ -208,11 +208,11 @@ class CorrectMainWindow(QMainWindow):
         self.mapping_summary=QLabel("No correction source loaded"); self.mapping_file_status=QLabel("—"); self.mapped_status=QLabel("—"); self.unmapped_status=QLabel("—"); self.ambiguous_status=QLabel("—")
         mapping_grid=status_grid(mapping_group,(("Mapping status",self.mapping_summary),("Mapping file",self.mapping_file_status),("Mapped magnets",self.mapped_status),("Unmapped magnets",self.unmapped_status),("Ambiguous mappings",self.ambiguous_status)))
         self.mapping_source_notice=QLabel("Load a correction source first to configure PETRA magnet mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,5,0,1,2)
-        self.automatic_mapping_group=QGroupBox("A. Automatic mapping"); automatic_layout=QVBoxLayout(self.automatic_mapping_group)
+        self.automatic_mapping_group=QGroupBox("Find and validate"); automatic_layout=QVBoxLayout(self.automatic_mapping_group)
         self.automatic_mapping_help=QLabel("Find unique devices using exact lattice identities from the discovered device inventory. Array positions are not used and no magnet settings are changed."); self.automatic_mapping_help.setWordWrap(True); automatic_layout.addWidget(self.automatic_mapping_help)
         self.automatic_mapping_actions=QHBoxLayout(); automatic_layout.addLayout(self.automatic_mapping_actions); self.automatic_mapping_actions.addStretch(1)
         self.automatic_mapping_feedback=QLabel("Not run yet."); self.automatic_mapping_feedback.setWordWrap(True); self.automatic_mapping_feedback.setObjectName("mappingHelpText"); automatic_layout.addWidget(self.automatic_mapping_feedback); mapping_grid.addWidget(self.automatic_mapping_group,6,0,1,2)
-        manual_group=QGroupBox("B. Manual mapping"); manual_layout=QVBoxLayout(manual_group)
+        manual_group=QGroupBox("Mapping file"); manual_layout=QVBoxLayout(manual_group)
         self.manual_mapping_help=QLabel("Create a JSON template containing immutable FIT identities. Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded. Creating a template does not complete or validate the mapping."); self.manual_mapping_help.setWordWrap(True); manual_layout.addWidget(self.manual_mapping_help)
         mapping_actions=QHBoxLayout()
         self.generate_mapping_button=QPushButton("Create Machine Mapping template…"); self.generate_mapping_button.clicked.connect(self.generate_mapping_template); self.generate_mapping_button.setEnabled(False)
@@ -240,11 +240,11 @@ class CorrectMainWindow(QMainWindow):
         example=QLabel('<b>Minimal unvalidated example:</b> {"lattice_name":"QD3J", "lattice_ordinal":27, "control_name":""}<br><b>Instruction:</b> Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded.'); example.setWordWrap(True); help_grid.addWidget(example,len(help_rows),0,1,2)
         mapping_help_layout.addWidget(self.mapping_help_body); self.mapping_help_body.setVisible(False); mapping_help.toggled.connect(self.mapping_help_body.setVisible)
 
-        mapping_details=QGroupBox("3. Review Machine Mapping"); details_layout=QVBoxLayout(mapping_details)
-        mapping_origin=QLabel("Fitted magnet identity and AT index (0-based) come from the FIT result. AT Device is shown only when preserved by authoritative lattice provenance. The pyAML target/control, component and units come from the separately validated machine mapping."); mapping_origin.setWordWrap(True); details_layout.addWidget(mapping_origin)
+        mapping_details=QGroupBox("3. Machine Mapping review"); details_layout=QVBoxLayout(mapping_details)
+        mapping_origin=QLabel("Fitted identities come from the FIT result; AT FamName, Device, CommonName and zero-based index come from the authoritative reference lattice or retained Complete Machine Mapping. A saved target remains a proposal until it is revalidated against the current pyAML inventory."); mapping_origin.setWordWrap(True); details_layout.addWidget(mapping_origin)
         filter_row=QHBoxLayout(); self.mapping_filter=QLineEdit(); self.mapping_filter.setPlaceholderText("Search fitted magnet or machine device"); self.mapping_filter.textChanged.connect(self._refresh_mapping_details)
         self.mapping_attention_filter=QComboBox(); self.mapping_attention_filter.addItem("All mappings","all"); self.mapping_attention_filter.addItem("Needs attention","attention"); self.mapping_attention_filter.addItem("Validated only","validated"); self.mapping_attention_filter.currentIndexChanged.connect(self._refresh_mapping_details); filter_row.addWidget(self.mapping_filter,1); filter_row.addWidget(self.mapping_attention_filter); details_layout.addLayout(filter_row)
-        self.mapping_details_table=CopyableMappingTable(0,9); self.mapping_details_table.setHorizontalHeaderLabels(["Fitted magnet (AT FamName)","AT Device","AT index (0-based)","Magnet class / type","pyAML target / control","Strength component","Units","Mapping status","Reason / next action"]); configure_mapping_table(self.mapping_details_table,("Fitted magnet identity recorded by FIT.","AT Device attribute from authoritative lattice provenance, when available.","Zero-based AT lattice index recorded by FIT.","AT element class when available and fitted parameter type.","Exact pyAML or other machine control identity; this is not the AT Device attribute.","Validated strength component such as B2L or A2L.","Physical units validated for the selected control component.","Machine mapping validation state and source.","Actionable reason or next step.")); self.mapping_details_table.setMinimumHeight(170); details_layout.addWidget(self.mapping_details_table); layout.addWidget(mapping_details)
+        self.mapping_details_table=CopyableMappingTable(0,11); self.mapping_details_table.setHorizontalHeaderLabels(["Fitted magnet","AT FamName","AT Device","AT CommonName","AT index (0-based)","pyAML target / control","Magnet type","Strength component","Units","Mapping status","Identity evidence / next action"]); configure_mapping_table(self.mapping_details_table,("Fitted magnet identity recorded in the FIT result.","FamName attribute read from the authoritative AT lattice.","Device attribute read from the authoritative AT lattice; never replaced with a control name.","CommonName attribute read from the authoritative AT lattice.","Zero-based AT lattice ordinal recorded by FIT.","Exact pyAML control identity; this is not an AT Device attribute.","Physical AT element class and fitted parameter role.","Validated control component such as B2L or A2L.","Physical units validated for the selected component.","Saved, proposed, unresolved, or validated against the active inventory.","Identity match, provenance, validation evidence, or actionable problem.")); self.mapping_details_table.setMinimumHeight(230); details_layout.addWidget(self.mapping_details_table); layout.addWidget(mapping_details)
         self.pysc_connection_group = connection_group
         self.pyaml_connection_group = QGroupBox("1. Machine connection")
         self.pyaml_connection_layout = QVBoxLayout(self.pyaml_connection_group)
@@ -369,6 +369,11 @@ class CorrectMainWindow(QMainWindow):
             self.correction_details_info.setText("Select a magnet to inspect detailed fit and scaling metadata.")
         if hasattr(self, "pyaml_workspace"):
             self.pyaml_workspace._rendered = None
+            self.pyaml_workspace._embedded_mapping_error = None
+            self.pyaml_workspace.explicit = []
+            self.pyaml_workspace.mapping_path = None
+            self.pyaml_workspace.mapping_hash = None
+            self.mapping_path = None
             if self.pyaml_workspace.transaction and self.pyaml_workspace.transaction.record:
                 self.pyaml_workspace.transaction.record["status"] = "stale"
         source=Path(path).resolve(); self.machine_snapshot=None; self.badge.setText(self.registry.descriptor(self.backend_combo.currentData()).badge)
@@ -381,8 +386,13 @@ class CorrectMainWindow(QMainWindow):
                 for row in correction_projection(embedded) if row.get("control_name")]
             if entries:
                 counts=apply_explicit_mapping(self.review,entries)
+                for item in self.review.items:
+                    if item.metadata.get("mapping_status") == "mapped":
+                        item.metadata["mapping_status"] = "saved"
+                        item.metadata["match_source"] = "saved_machine_mapping"
+                        item.metadata["mapping_validation_level"] = "saved_requires_connection"
                 self.mapping_file_status.setText(
-                    f"Embedded FIT Machine Mapping — {counts['mapped']} mapped")
+                    f"Embedded FIT Machine Mapping — {counts['mapped']} saved; connection revalidation required")
         self.correction_changes=(); self.apply_button.setEnabled(False); self.apply_status.setText("Correction loaded — preview machine changes")
         session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False)
         if not is_machine_mapping(embedded):self.mapping_file_status.setText("—")
@@ -1273,7 +1283,7 @@ class CorrectMainWindow(QMainWindow):
     def _refresh_mapping_status(self):
         if not self.review:
             self.mapping_summary.setText("No correction source loaded"); self.mapped_status.setText("—"); self.unmapped_status.setText("—"); self.ambiguous_status.setText("—"); self.mapping_feedback.setText("Load a correction source to begin mapping."); self._refresh_mapping_details(); return
-        statuses={key:sum(item.metadata.get("mapping_status")==key for item in self.review.items) for key in ("mapped","unmapped","proposed","ambiguous","duplicate","invalid")}; mapped=statuses["mapped"]
+        statuses={key:sum(item.metadata.get("mapping_status")==key for item in self.review.items) for key in ("mapped","saved","unmapped","proposed","ambiguous","duplicate","invalid")}; mapped=statuses["mapped"]
         unresolved=len(self.review.items)-mapped
         total=len(self.review.items)
         self.mapped_status.setText(str(mapped)); self.unmapped_status.setText(str(statuses["unmapped"])); self.ambiguous_status.setText(f"{statuses['ambiguous']} ambiguous; {statuses['duplicate']} duplicate")
@@ -1285,7 +1295,8 @@ class CorrectMainWindow(QMainWindow):
             feedback=f"Automatic matching could not find a unique device for {unresolved} magnet{'s' if unresolved != 1 else ''}"
         else:
             feedback=f"{unresolved} magnet{'s' if unresolved != 1 else ''} still need mapping"
-        self.mapping_summary.setText(f"{mapped} of {total} magnets mapped — {feedback}")
+        saved=statuses["saved"]
+        self.mapping_summary.setText(f"{mapped} validated · {saved} saved pending revalidation · {unresolved - saved} unresolved · {total} fitted magnets")
         if getattr(self,"mapping_action_message","")=="automatic":
             if hasattr(self, "mapping_auto_feedback"):
                 self.automatic_mapping_feedback.setText(self.mapping_auto_feedback)
@@ -1307,16 +1318,30 @@ class CorrectMainWindow(QMainWindow):
         table=self.mapping_details_table; query=self.mapping_filter.text().strip().lower() if hasattr(self,"mapping_filter") else ""; filter_key=self.mapping_attention_filter.currentData() if hasattr(self,"mapping_attention_filter") else "all"
         table.setSortingEnabled(False); table.setRowCount(0)
         for item in self.review.items if self.review else ():
-            control=item.control_name or ""
-            if query and query not in item.name.lower() and query not in control.lower(): continue
+            control=item.control_name or ""; metadata=item.metadata
+            searchable=" ".join((item.name,control,str(metadata.get("lattice_fam_name") or ""),str(metadata.get("lattice_device") or ""),str(metadata.get("lattice_common_name") or ""))).lower()
+            if query and query not in searchable: continue
             status=item.metadata.get("mapping_status","unmapped"); source=item.metadata.get("match_source")
             if filter_key=="attention" and status=="mapped": continue
             if filter_key=="validated" and status!="mapped": continue
-            shown_status=("Validated — "+source) if status=="mapped" and source in {"identity","explicit"} else ("Proposed" if status=="mapped" else status.capitalize())
-            message={"mapped":"Validated against connected pyAML inventory","unmapped":"No unique pyAML device selected","ambiguous":"More than one candidate identity","duplicate":"Device is assigned more than once","unsupported":"Correction type is not supported"}.get(status,"Not yet validated")
-            element_class=item.metadata.get("element_class")
+            shown_status=("Validated against current inventory" if status=="mapped" else
+                          "Saved mapping — revalidation required" if status=="saved" else
+                          "Proposed — not validated" if status=="proposed" else status.capitalize())
+            message={"mapped":"Validated against connected pyAML inventory","saved":"Retained from Complete Machine Mapping; connect to revalidate fingerprints and target","unmapped":"No unique pyAML device selected","ambiguous":"More than one candidate identity","duplicate":"Device is assigned more than once","unsupported":"Correction type is not supported"}.get(status,"Not yet validated")
+            element_class=item.metadata.get("element_class") or item.metadata.get("physical_element_type")
             magnet_type=(f"{element_class} — " if element_class else "")+item.correction_type.replace("_"," ")
-            values=(item.name,item.metadata.get("lattice_device") or item.metadata.get("at_device") or "Not available",item.lattice_ordinal if item.lattice_ordinal is not None else "Not available",magnet_type,control or "Not available",item.metadata.get("control_component") or "Not available",item.metadata.get("control_unit") or "Not available",shown_status,item.metadata.get("mapping_reason") or message)
+            if "lattice_device_defined" in metadata:
+                device=metadata.get("lattice_device") or "Not defined in AT lattice"
+            else: device=metadata.get("lattice_device") or metadata.get("at_device") or "Unavailable — lattice provenance not loaded"
+            common=(metadata.get("lattice_common_name") or
+                    ("Not defined in AT lattice" if metadata.get("lattice_identity_source") else "Unavailable — lattice provenance not loaded"))
+            evidence=" · ".join(value for value in (
+                metadata.get("saved_mapping_identity_match"), metadata.get("saved_mapping_provenance"),
+                metadata.get("mapping_reason"), message) if value)
+            values=(item.name,metadata.get("lattice_fam_name") or item.name,device,common,
+                    item.lattice_ordinal if item.lattice_ordinal is not None else "Not available",
+                    control or "Not available",magnet_type,metadata.get("control_component") or "Not available",
+                    metadata.get("control_unit") or "Not available",shown_status,evidence)
             row=table.rowCount(); table.insertRow(row)
             for column,value in enumerate(values):
                 cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,item.index); cell.setToolTip(str(value)); table.setItem(row,column,cell)

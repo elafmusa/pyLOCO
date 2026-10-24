@@ -77,14 +77,16 @@ def test_fit_mapping_shows_identity_method_manual_evidence_and_missing_device():
 
 def test_correct_distinguishes_fit_at_identity_from_pyaml_target_and_copies_rows():
     app=QApplication.instance() or QApplication([]); window=CorrectMainWindow()
-    item=CorrectItem(0,"normal_quadrupole","QD3J",27,"m⁻²",1.0,1.1,.1,-.1,"test",control_name="srmag/m-qd3/c04-a-B2L",metadata={"lattice_device":"EBS/QD3J/04","element_class":"Quadrupole","mapping_status":"mapped","match_source":"identity","control_component":"B2L","control_unit":"m^-1"})
+    item=CorrectItem(0,"normal_quadrupole","QD3J",27,"m⁻²",1.0,1.1,.1,-.1,"test",control_name="srmag/m-qd3/c04-a-B2L",metadata={"lattice_fam_name":"QD3J","lattice_device":"EBS/QD3J/04","lattice_common_name":"QFAMILY-03","lattice_device_defined":True,"element_class":"Quadrupole","mapping_status":"mapped","match_source":"identity","control_component":"B2L","control_unit":"m^-1"})
     window.review=CorrectionReview([item],"test"); window.refresh_all(); table=window.mapping_details_table
-    assert _headers(table)[:7]==["Fitted magnet (AT FamName)","AT Device","AT index (0-based)","Magnet class / type","pyAML target / control","Strength component","Units"]
-    assert table.item(0,0).text()=="QD3J" and table.item(0,1).text()=="EBS/QD3J/04"
-    assert table.item(0,4).text()=="srmag/m-qd3/c04-a-B2L" and table.item(0,5).text()=="B2L"
+    assert _headers(table)[:9]==["Fitted magnet","AT FamName","AT Device","AT CommonName","AT index (0-based)","pyAML target / control","Magnet type","Strength component","Units"]
+    assert table.item(0,0).text()=="QD3J" and table.item(0,1).text()=="QD3J"
+    assert table.item(0,2).text()=="EBS/QD3J/04" and table.item(0,3).text()=="QFAMILY-03"
+    assert table.item(0,5).text()=="srmag/m-qd3/c04-a-B2L" and table.item(0,7).text()=="B2L"
     table.selectRow(0); QTest.keyClick(table,Qt.Key_C,Qt.ControlModifier)
     copied=QApplication.clipboard().text(); assert "AT Device" in copied and "EBS/QD3J/04" in copied
-    item.metadata.pop("lattice_device"); window.refresh_all(); assert table.item(0,1).text()=="Not available"
+    item.metadata["lattice_device"]=""; item.metadata["lattice_device_defined"]=False
+    window.refresh_all(); assert table.item(0,2).text()=="Not defined in AT lattice"
     window.close(); app.processEvents()
 
 

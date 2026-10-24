@@ -12,9 +12,11 @@ from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 
 from .pyaml_connection import (PyAMLCorrectionConnection, load_mapping,
     resolve_mapping, approved_mapping_candidates, find_reference_lattice,
-    file_hash, make_mapping_bundle, validate_mapping_bundle)
+    file_hash, make_mapping_bundle, validate_mapping_bundle,
+    validate_mapping_document)
 from pyLOCO.machine_mapping import (is_document as is_shared_machine_mapping,
-    load as load_shared_mapping, merge_corrections)
+    load as load_shared_mapping, merge_corrections, correction_projection)
+from .petra_readonly import MagnetMapping, apply_explicit_mapping
 from .pyaml_transaction import PyAMLCorrectionTransaction
 
 
@@ -45,6 +47,7 @@ class PyAMLCorrectionWidget(QWidget):
         self.mapping_hash = None
         self.thread = None
         self._rendered = None
+        self._embedded_mapping_error = None
         self.cancel = Event()
         layout = QVBoxLayout(self)
         self.settings_box = QWidget()
@@ -125,10 +128,23 @@ class PyAMLCorrectionWidget(QWidget):
         self.connection = self.transaction = None
         if hasattr(self, "status"):
             if self.owner.review:
-                for item in self.owner.review.items:
-                    item.control_name = None
-                    item.metadata["mapping_status"] = "unmapped"
-                    item.metadata.pop("match_source", None)
+                embedded = getattr(self.owner.review, "machine_mapping", {})
+                if is_shared_machine_mapping(embedded):
+                    entries = [MagnetMapping(
+                        row.get("lattice_name", ""), row.get("control_name", ""),
+                        row.get("lattice_ordinal"), row.get("component"), row.get("unit"))
+                        for row in correction_projection(embedded) if row.get("control_name")]
+                    apply_explicit_mapping(self.owner.review, entries)
+                    for item in self.owner.review.items:
+                        if item.metadata.get("mapping_status") == "mapped":
+                            item.metadata["mapping_status"] = "saved"
+                            item.metadata["match_source"] = "saved_machine_mapping"
+                            item.metadata["mapping_validation_level"] = "saved_requires_connection"
+                else:
+                    for item in self.owner.review.items:
+                        item.control_name = None
+                        item.metadata["mapping_status"] = "unmapped"
+                        item.metadata.pop("match_source", None)
             self.connection_result.setText("Disconnected — configuration changed")
             self.inventory_result.setText("Inventory not discovered")
             self.authorization_result.setText("WRITE AUTHORIZED" if self.writes.isChecked() else "READ ONLY — writes not authorized")
@@ -170,7 +186,26 @@ class PyAMLCorrectionWidget(QWidget):
         self.inventory_result.setText(f"Inventory discovered — {len(connection.inventory)} quadrupole devices")
         self.authorization_result.setText("WRITE AUTHORIZED" if connection.allow_writes else "READ ONLY — writes not authorized")
         self.status.setText(f"Connected: {len(connection.inventory)} quadrupoles. No writes performed.")
-        if self.mapping_path:
+        embedded = getattr(self.owner.review, "machine_mapping", {}) if self.owner.review else {}
+        if is_shared_machine_mapping(embedded):
+            try:
+                lattice = find_reference_lattice(self.owner.review, connection)
+                entries, _rows, provenance, _identity = validate_mapping_document(
+                    self.owner.review, connection, embedded, lattice)
+                self.explicit = entries
+                self._embedded_mapping_error = None
+                self.mapping_hash = None
+                self.owner.manual_mapping_feedback.setText(
+                    f"Embedded Complete Machine Mapping revalidated for this connection — "
+                    f"{len(entries)} fitted magnet(s), {provenance}.")
+                self.mapping_label.setText("Embedded FIT Machine Mapping — revalidated")
+            except Exception as exc:
+                self.explicit = []
+                self._embedded_mapping_error = str(exc)
+                self.mapping_label.setText("Embedded FIT Machine Mapping — revalidation failed")
+                self.owner.manual_mapping_feedback.setText(
+                    f"Saved mapping retained for review but is not valid for this connection: {exc}")
+        elif self.mapping_path:
             try:
                 lattice = find_reference_lattice(self.owner.review, connection)
                 entries, _rows, provenance, _identity = validate_mapping_bundle(
@@ -178,14 +213,14 @@ class PyAMLCorrectionWidget(QWidget):
                 )
                 self.explicit = entries
                 self.mapping_hash = file_hash(self.mapping_path)
-                self.manual_mapping_feedback.setText(
+                self.owner.manual_mapping_feedback.setText(
                     f"Saved mapping revalidated for this connection — {len(entries)} magnet(s), {provenance}."
                 )
             except Exception as exc:
                 self.explicit = []; self.mapping_hash = None
                 self.mapping_path = None; self.owner.mapping_path = None
                 self.mapping_label.setText("Saved mapping invalidated")
-                self.manual_mapping_feedback.setText(
+                self.owner.manual_mapping_feedback.setText(
                     f"Previously selected mapping is not valid for this connection: {exc}"
                 )
 
@@ -204,15 +239,20 @@ class PyAMLCorrectionWidget(QWidget):
                     self.owner.review, self.connection, path, lattice
                 )
             self.explicit = entries
+            self._embedded_mapping_error = None
             self.mapping_path = Path(path)
             self.mapping_hash = file_hash(self.mapping_path)
             self.owner.mapping_path = str(self.mapping_path.resolve())
             self.mapping_label.setText(str(path))
             self.owner.mapping_action_message = "loaded"
             self.owner.manual_mapping_feedback.setText(
-                f"Mapping loaded and validated — {len(entries)} fitted magnet(s), {provenance}."
+                (f"Mapping loaded and validated — {len(entries)} fitted magnet(s), {provenance}."
+                 if self.connection else
+                 f"Mapping loaded — {len(entries)} fitted magnet proposal(s); connect to revalidate.")
             )
-            self.owner.automatic_mapping_feedback.setText("Not run — a validated manual mapping is active.")
+            self.owner.automatic_mapping_feedback.setText(
+                "Not run — a validated manual mapping is active." if self.connection else
+                "Not run — a saved mapping proposal is loaded pending connection revalidation.")
             QSettings("pyLOCO", "pyLOCO Correct").setValue(
                 "correct/pyaml/approved_mapping_path", str(self.mapping_path.resolve())
             )
@@ -223,6 +263,7 @@ class PyAMLCorrectionWidget(QWidget):
         if self.pending():
             raise RuntimeError("Restore before changing mapping")
         self.explicit = []; self.mapping_path = None; self.mapping_hash = None; self.owner.mapping_path = None
+        self._embedded_mapping_error = None
         self.owner.mapping_action_message = "automatic"
         exact = resolve_mapping(self.owner.review, self.connection.inventory) if self.owner.review and self.connection else []
         exact_unresolved = [row for row in exact if row["included"] and row["status"] != "mapped"]
@@ -506,6 +547,10 @@ class PyAMLCorrectionWidget(QWidget):
             return
         can_apply = False
         try:
+            if self._embedded_mapping_error:
+                raise RuntimeError(
+                    "Embedded Machine Mapping failed current-connection revalidation: "
+                    + self._embedded_mapping_error)
             rows = (resolve_mapping(self.owner.review, self.connection.inventory, self.explicit)
                     if self.owner.review else record["identity"]["review"]["rows"])
             if not pending:
@@ -528,6 +573,7 @@ class PyAMLCorrectionWidget(QWidget):
                     item.control_name = row["magnet_name"] or None
                     item.metadata["mapping_status"] = row["status"]
                     item.metadata["match_source"] = row["match_source"]
+                    item.metadata["mapping_validation_level"] = "connected_inventory"
                     item.metadata["control_component"] = "B2L" if item.correction_type == "normal_quadrupole" else "A2L"
                     item.metadata["control_unit"] = "m^-1"
                 self.owner._sync_representation()

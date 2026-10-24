@@ -248,6 +248,19 @@ def validate_mapping_bundle(review, connection, path, lattice_path):
     """Load and revalidate a v2 bundle or authoritative legacy mapping."""
     document = mapping_document(path)
     entries = load_mapping(path)
+    return validate_mapping_document(review, connection, document, lattice_path, entries=entries)
+
+
+def validate_mapping_document(review, connection, document, lattice_path, *, entries=None):
+    """Revalidate an in-memory FIT/Measure Machine Mapping.
+
+    Loading a saved mapping is not machine authorization.  Its lattice,
+    configuration, inventory, source identity, component and unit evidence is
+    checked against the exact active connection here.
+    """
+    if entries is None:
+        entries = correction_projection(document) if is_shared_machine_mapping(document) else list(
+            document.get("mappings", ()) if isinstance(document, dict) else document or ())
     lattice, ring = lattice_identity(lattice_path)
     provenance = "authoritative legacy mapping — revalidated"
     if isinstance(document, dict) and document.get("schema") == MAPPING_BUNDLE_SCHEMA:

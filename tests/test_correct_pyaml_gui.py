@@ -291,20 +291,22 @@ def test_mapping_help_and_details_are_self_explanatory(window, setup):
     assert widget.clear_mapping_button.text() == "Find machine mappings"
     assert window.generate_mapping_button.text() == "Create Machine Mapping template…"
     assert window.mapping_button.text() == "Load Machine Mapping…"
-    assert window.mapping_details_table.columnCount() == 9
-    assert window.mapping_details_table.horizontalHeaderItem(0).text() == "Fitted magnet (AT FamName)"
-    assert window.mapping_details_table.horizontalHeaderItem(4).text() == "pyAML target / control"
+    assert window.mapping_details_table.columnCount() == 11
+    assert window.mapping_details_table.horizontalHeaderItem(0).text() == "Fitted magnet"
+    assert window.mapping_details_table.horizontalHeaderItem(1).text() == "AT FamName"
+    assert window.mapping_details_table.horizontalHeaderItem(2).text() == "AT Device"
+    assert window.mapping_details_table.horizontalHeaderItem(3).text() == "AT CommonName"
+    assert window.mapping_details_table.horizontalHeaderItem(5).text() == "pyAML target / control"
     assert window.mapping_details_table.rowCount() == 3
     window.mapping_filter.setText("M2")
     assert window.mapping_details_table.rowCount() == 1
-    assert window.mapping_details_table.item(0, 4).text() == "M2"
+    assert window.mapping_details_table.item(0, 5).text() == "M2"
 
 
 def test_mapping_status_filter_and_readonly_strength_journey(window, setup):
     widget = connect_workspace(window, setup)
     widget.refresh()
-    assert window.mapping_summary.text().startswith("3 of 3 magnets mapped")
-    assert "ready to read current strengths" in window.mapping_summary.text()
+    assert window.mapping_summary.text().startswith("3 validated")
     window.mapping_attention_filter.setCurrentIndex(window.mapping_attention_filter.findData("attention"))
     assert window.mapping_details_table.rowCount() == 0
     window.mapping_attention_filter.setCurrentIndex(window.mapping_attention_filter.findData("all"))
@@ -323,7 +325,7 @@ def test_backend_neutral_disconnected_and_zero_match_states(window, setup):
     assert not widget.writes.isChecked()
     window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
     assert window.mapping_group.title() == "2. Machine Mapping"
-    assert window.mapping_details_table.horizontalHeaderItem(4).text() == "pyAML target / control"
+    assert window.mapping_details_table.horizontalHeaderItem(5).text() == "pyAML target / control"
     assert window.automatic_mapping_group.isHidden()
     assert not window.offline_connection_group.isHidden()
     assert window.pysc_connection_group.isHidden()
@@ -335,7 +337,7 @@ def test_backend_neutral_disconnected_and_zero_match_states(window, setup):
     for index,item in enumerate(setup.review.items):
         item.name = f"NO_MATCH_{index}"
     widget.clear_mapping(); widget.refresh()
-    assert window.mapping_summary.text().startswith("0 of 3 magnets mapped")
+    assert window.mapping_summary.text().startswith("0 validated")
     feedback=window.automatic_mapping_feedback.text()
     assert "Matching completed — 0 validated, 3 unresolved, 0 ambiguous" in feedback
     assert "create a template" in feedback
@@ -345,13 +347,43 @@ def test_backend_neutral_disconnected_and_zero_match_states(window, setup):
         item.name=name
     setup.review.items[0].name = "NO_EXACT_IDENTITY"
     widget.clear_mapping(); widget.refresh()
-    assert window.mapping_summary.text().startswith("2 of 3 magnets mapped")
+    assert window.mapping_summary.text().startswith("2 validated")
     assert "2 validated, 1 unresolved" in window.automatic_mapping_feedback.text()
     window.mapping_attention_filter.setCurrentIndex(window.mapping_attention_filter.findData("attention"))
     assert window.mapping_details_table.rowCount() == 1
     with pytest.raises(ValueError, match="Valid mappings are required"):
         widget.read_current()
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
+
+
+def test_embedded_fit_mapping_is_visible_offline_then_revalidated_on_connection(window, setup, monkeypatch):
+    from pyLOCO.machine_mapping import entry
+    rows=[]
+    for item,target in zip(setup.review.items,("M1","M2","S1")):
+        rows.append(entry(role=item.correction_type,pyaml_device=target,
+            lattice_ordinal=item.lattice_ordinal,lattice_fam_name=item.name,
+            lattice_device=f"device/{item.name}",component="B2L" if item.correction_type=="normal_quadrupole" else "A2L",unit="m^-1",
+            status="mapped",identity_match="exact_device"))
+    setup.review.machine_mapping={"schema":"pyloco.machine_mapping","schema_version":3,
+                                  "mapping_provenance":"Measure → FIT validated mapping","mappings":rows}
+    window._accept_loaded_review(setup.review,setup.source)
+    assert all(item.metadata["mapping_status"]=="saved" for item in window.review.items)
+    assert "saved pending revalidation" in window.mapping_summary.text()
+    assert window.mapping_details_table.item(0,9).text()=="Saved mapping — revalidation required"
+    widget=window.pyaml_workspace
+    window.backend_combo.setCurrentIndex(window.backend_combo.findData("pyaml"))
+    monkeypatch.setattr(pyaml_widget,"PyAMLCorrectionConnection",lambda **_options:setup.connection)
+    monkeypatch.setattr(pyaml_widget,"find_reference_lattice",lambda *_args:setup.source)
+    selected=[dict(correction_type=item.correction_type,lattice_name=item.name,
+                   lattice_ordinal=item.lattice_ordinal,control_name=target,
+                   component="B2L" if item.correction_type=="normal_quadrupole" else "A2L",unit="m^-1")
+              for item,target in zip(setup.review.items,("M1","M2","S1"))]
+    monkeypatch.setattr(pyaml_widget,"validate_mapping_document",
+                        lambda *_args,**_kwargs:(selected,[],"revalidated saved mapping",{}))
+    widget.connect_machine(); widget.refresh()
+    assert all(item.metadata["mapping_status"]=="mapped" for item in window.review.items)
+    assert all(item.metadata["mapping_validation_level"]=="connected_inventory" for item in window.review.items)
+    assert window.mapping_details_table.item(0,9).text()=="Validated against current inventory"
 
 
 def test_pyaml_representation_lock_explains_k_to_kl_conversion(window, setup):

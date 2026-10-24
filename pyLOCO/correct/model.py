@@ -217,6 +217,8 @@ class CorrectionReview:
             records.append(CorrectionRecord(item.correction_type,item.name,item.lattice_ordinal,item.unit,float(item.initial_value),item.raw_fitted_delta,item.recommended_machine_delta,item.individual_scale,None,item.family,metadata,item.magnetic_length_m,item.integrated_recommended_delta))
             states[str(item.index)]={"included":item.included,"exclusion_reason":item.exclusion_reason}
         provenance={key:self.items[0].metadata.get(key) for key in ("source_results_directory","source_iteration","source_state","fit_timestamp","measurement_session") if self.items and self.items[0].metadata.get(key) is not None}
+        if self.machine_mapping:
+            provenance["machine_mapping"] = self.machine_mapping
         return CorrectionPlan(plan_id,self.source_result,tuple(records),self.global_scale,"dry_run",self.comparison(),{"created_utc":datetime.now(timezone.utc).isoformat(),"comments":self.comments,"warning_thresholds":asdict(self.thresholds),"record_states":states,"source_provenance":provenance,"safety":"OFFLINE DRY RUN — no machine setpoints changed"})
 
     @classmethod
@@ -235,6 +237,7 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
     loader=ResultsLoader(path,iteration=iteration); result=[]; correction=loader.quadrupole_corrections; provenance={"source_results_directory":str(loader.result_dir),"source_iteration":iteration,"source_state":"Final" if iteration is None else f"Iteration {iteration}","fit_timestamp":loader.summary.get("completed_utc",loader.summary.get("timestamp")),"measurement_session":loader.request.get("measurement_session",{}),"machine_mapping":loader.request.get("machine_mapping",{})}
     lengths_by_ordinal: dict[int, float] = {}
     common_names_by_ordinal: dict[int, str] = {}
+    lattice_identity_by_ordinal: dict[int, dict[str, Any]] = {}
     skew_lengths: list[float] = []
     legacy_strengths = loader.result_dir / "correction" / "quad_skew_deltas_lengths.json"
     if legacy_strengths.exists():
@@ -253,21 +256,25 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
     # the optional legacy correction diagnostics were not requested.  Use
     # that authoritative lattice metadata so integrated-strength controls do
     # not depend on a historical sidecar JSON file.
-    if not lengths_by_ordinal:
-        lattice_candidates = [
-            loader.result_dir / "final_lattice.mat",
-            loader.result_dir / "ring_pyloco.mat",
-        ]
+    if not lengths_by_ordinal or not lattice_identity_by_ordinal:
+        # Identity comes from the original reference lattice first.  The
+        # fitted lattice is a numerical state and is only a fallback if the
+        # original input is no longer available.
+        lattice_candidates = []
         request_lattice = loader.request.get("lattice_path")
         if request_lattice:
-            lattice_candidates.append(Path(request_lattice).expanduser())
-        for lattice_path in lattice_candidates:
-            if not lattice_path.is_file():
+            lattice_candidates.append((loader._resolve_reference(request_lattice), True))
+        lattice_candidates.extend(((loader.result_dir / "final_lattice.mat", False),
+                                   (loader.result_dir / "ring_pyloco.mat", False)))
+        for lattice_path, is_reference in lattice_candidates:
+            if lattice_path is None or not lattice_path.is_file():
                 continue
             try:
-                import at
-
-                ring = at.load_lattice(str(lattice_path))
+                if is_reference:
+                    ring = loader._load_reference_lattice(lattice_path)
+                else:
+                    import at
+                    ring = at.load_lattice(str(lattice_path))
                 lengths_by_ordinal = {
                     int(index): float(length)
                     for index, element in enumerate(ring)
@@ -276,18 +283,53 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
                     and float(length) > 0
                 }
                 common_names_by_ordinal = {}
+                lattice_identity_by_ordinal = {}
                 for index, element in enumerate(ring):
-                    name = (
-                        getattr(element, "CommonName", None)
-                        or getattr(element, "Device", None)
-                        or getattr(element, "Name", None)
-                    )
-                    if name:
-                        common_names_by_ordinal[int(index)] = str(name)
+                    fam_name = str(getattr(element, "FamName", "") or "")
+                    device = str(getattr(element, "Device", "") or "")
+                    common_name = str(getattr(element, "CommonName", "") or "")
+                    lattice_identity_by_ordinal[int(index)] = {
+                        "lattice_fam_name": fam_name,
+                        "lattice_device": device,
+                        "lattice_common_name": common_name,
+                        "lattice_device_defined": bool(device),
+                        "lattice_identity_source": (
+                            "original AT reference lattice" if is_reference else "saved fitted AT lattice"
+                        ),
+                        "element_class": type(element).__name__,
+                    }
+                    if common_name:
+                        common_names_by_ordinal[int(index)] = common_name
             except Exception:
                 continue
             if lengths_by_ordinal:
                 break
+    master_mapping = loader.request.get("machine_mapping") or {}
+    master_rows = master_mapping.get("mappings", ()) if isinstance(master_mapping, dict) else ()
+    mapped_identity = {
+        (str(row.get("role") or ""), row.get("lattice_ordinal")): row
+        for row in master_rows if isinstance(row, dict) and type(row.get("lattice_ordinal")) is int
+    }
+
+    def enrich_identity(metadata, correction_type, ordinal):
+        ordinal = None if ordinal is None else int(ordinal)
+        if ordinal in lattice_identity_by_ordinal:
+            metadata.update(lattice_identity_by_ordinal[ordinal])
+        row = mapped_identity.get((correction_type, ordinal))
+        if row:
+            # The original lattice wins when it was readable; the retained
+            # mapping supplies provenance and is an authoritative fallback.
+            metadata.setdefault("lattice_fam_name", str(row.get("lattice_fam_name") or ""))
+            metadata.setdefault("lattice_device", str(row.get("lattice_device") or ""))
+            metadata.setdefault("lattice_common_name", str(row.get("lattice_common_name") or ""))
+            metadata.setdefault("lattice_device_defined", bool(row.get("lattice_device")))
+            metadata["saved_mapping_status"] = str(row.get("status") or "")
+            metadata["saved_mapping_identity_match"] = str(row.get("identity_match") or "")
+            metadata["saved_mapping_evidence"] = str(row.get("evidence") or row.get("identity_evidence") or "")
+            metadata["saved_mapping_provenance"] = str(
+                row.get("provenance") or master_mapping.get("mapping_provenance") or "Complete Machine Mapping")
+            metadata["physical_element_type"] = str(row.get("physical_element_type") or "")
+        return row
     if correction is not None:
         # ResultsLoader can expose the expanded physical-quadrupole
         # correction directly. For family-mode runs, enrich those rows
@@ -339,6 +381,7 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
             family = family_by_ordinal.get(ordinal)
 
             metadata = dict(provenance)
+            enrich_identity(metadata, "normal_quadrupole", ordinal)
             if ordinal in lengths_by_ordinal:
                 metadata["magnetic_length_m"] = lengths_by_ordinal[ordinal]
             if ordinal in common_names_by_ordinal:
@@ -500,6 +543,7 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
             identity=loader.parameter_identity(block.key,i); initial=None if block.baseline is None else float(block.baseline[i]); raw=float(value)-(initial or 0.0)
             metadata = dict(provenance)
             ordinal = identity.get("lattice_ordinal")
+            enrich_identity(metadata, type_map[block.key], ordinal)
             if ordinal is not None and int(ordinal) in lengths_by_ordinal:
                 metadata["magnetic_length_m"] = lengths_by_ordinal[int(ordinal)]
             elif block.key == "skew_quads" and i < len(skew_lengths) and skew_lengths[i] > 0:

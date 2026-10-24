@@ -127,5 +127,5 @@ def test_correct_projects_only_supported_fitted_controls_from_master_mapping():
     master["mappings"][1].update(lattice_ordinal=8,lattice_fam_name="S",lattice_device="S")
     rows=correction_projection(master)
     assert rows==[{"correction_type":"normal_quadrupole","lattice_name":"Q",
-        "lattice_ordinal":7,"lattice_device":"Q","physical_element_type":"",
+        "lattice_ordinal":7,"lattice_device":"Q","lattice_common_name":"","physical_element_type":"",
         "control_name":"Q-B2L","component":"B2L","unit":"m^-1"}]

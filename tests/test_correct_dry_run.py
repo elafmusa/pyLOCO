@@ -82,16 +82,38 @@ def test_current_results_loader_recovers_lengths_from_saved_lattice(monkeypatch,
         parameter_blocks = []
 
     class Element:
-        def __init__(self, length, name): self.Length, self.CommonName = length, name
+        def __init__(self, length, fam_name, device="", common_name=""):
+            self.Length, self.FamName = length, fam_name
+            self.Device, self.CommonName = device, common_name
 
     (tmp_path / "final_lattice.mat").touch()
     monkeypatch.setattr("pyLOCO.correct.model.ResultsLoader", FakeLoader)
     monkeypatch.setitem(sys.modules, "at", SimpleNamespace(
-        load_lattice=lambda _path: [Element(0.0, "D0"), Element(0.1, "D1"), Element(0.42, "Q1-COMMON")]))
+        load_lattice=lambda _path: [Element(0.0, "D0"), Element(0.1, "D1"),
+                                    Element(0.42, "Q1", "srmag/m-qf6d/c04-a", "Q1-COMMON")]))
     review = load_review(tmp_path)
     assert review.items[0].magnetic_length_m == pytest.approx(0.42)
     assert review.items[0].metadata["lattice_common_name"] == "Q1-COMMON"
+    assert review.items[0].metadata["lattice_fam_name"] == "Q1"
+    assert review.items[0].metadata["lattice_device"] == "srmag/m-qf6d/c04-a"
+    assert review.items[0].metadata["lattice_device_defined"] is True
     assert review.items[0].integrated_recommended_delta == pytest.approx(0.042)
+
+
+def test_current_results_loader_marks_genuinely_missing_at_device(monkeypatch, tmp_path):
+    class FakeLoader:
+        def __init__(self, path, iteration=None):
+            self.result_dir, self.summary, self.request = Path(path), {}, {}
+        quadrupole_corrections = {"names":["Q1"],"ordinals":[0],"initial":np.array([1.]),
+            "fitted":np.array([.9]),"delta_k_apply":np.array([.1]),"sign_convention":"initial - fitted"}
+        parameter_blocks = []
+    element=SimpleNamespace(Length=.4,FamName="Q1",Device="",CommonName="")
+    (tmp_path/"final_lattice.mat").touch()
+    monkeypatch.setattr("pyLOCO.correct.model.ResultsLoader",FakeLoader)
+    monkeypatch.setitem(sys.modules,"at",SimpleNamespace(load_lattice=lambda _path:[element]))
+    item=load_review(tmp_path).items[0]
+    assert item.metadata["lattice_device"] == ""
+    assert item.metadata["lattice_device_defined"] is False
 
 
 def test_selected_iteration_and_measurement_session_provenance_reach_plan(monkeypatch,tmp_path):
@@ -110,6 +132,19 @@ def test_selected_iteration_and_measurement_session_provenance_reach_plan(monkey
     provenance=review.to_plan().metadata["source_provenance"]
     assert provenance["source_iteration"]==2
     assert provenance["fit_timestamp"]=="2026-08-29T12:05:00Z"
+
+
+def test_correction_plan_reopen_preserves_complete_machine_mapping(tmp_path):
+    mapping={"schema":"pyloco.machine_mapping","schema_version":3,"mappings":[{
+        "role":"normal_quadrupole","lattice_ordinal":93,"lattice_fam_name":"QF6D",
+        "lattice_device":"srmag/m-qf6d/c04-a","pyaml_device":"srmag/m-qf6d/c04-a-B2L"}]}
+    item=CorrectItem(0,"normal_quadrupole","QF6D",93,"m⁻²",1.,.9,-.1,.1,
+                     "initial-fitted",metadata={"machine_mapping":mapping})
+    review=CorrectionReview([item],str(tmp_path/"results"))
+    target=tmp_path/"plan.json"; save_review(target,review)
+    reopened=load_review(target)
+    assert reopened.machine_mapping==mapping
+    assert reopened.items[0].lattice_ordinal==93
 
 
 def test_gui_launch_theme_filters_table_and_mock_apply_is_disabled(tmp_path):

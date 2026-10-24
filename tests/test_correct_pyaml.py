@@ -6,7 +6,8 @@ import pytest
 
 from pyLOCO.correct.model import CorrectItem, CorrectionReview
 from pyLOCO.correct.pyaml_connection import (PyAMLCorrectionConnection, resolve_mapping,
-    load_mapping, mapping_template, validate_mapping_entries)
+    load_mapping, mapping_template, validate_mapping_entries,
+    validate_mapping_document)
 from pyLOCO.correct.pyaml_transaction import PyAMLCorrectionTransaction
 
 
@@ -177,6 +178,32 @@ def test_minimal_mapping_derives_family_component_and_unit(setup):
     ring = [SimpleNamespace(FamName=name) for name in ("Q1", "Q2", "SQ1")]
     resolved = validate_mapping_entries(setup.review, setup.connection, rows, ring)
     assert all(row["status"] == "mapped" for row in resolved)
+
+
+def test_embedded_machine_mapping_requires_matching_connection_fingerprints(setup, monkeypatch):
+    from pyLOCO.machine_mapping import entry
+    rows=[]
+    for item,name in zip(setup.review.items,("M1","M2","S1")):
+        rows.append(entry(role=item.correction_type,pyaml_device=name,
+            lattice_ordinal=item.lattice_ordinal,lattice_fam_name=item.name,
+            lattice_device=f"device/{item.name}",component="B2L" if item.correction_type=="normal_quadrupole" else "A2L",unit="m^-1"))
+    from pyLOCO.correct.pyaml_connection import inventory_fingerprint
+    document={"schema":"pyloco.machine_mapping","schema_version":3,
+        "reference_lattice":{"sha256":"abc","element_count":3},
+        "machine_profile":{"configuration_sha256":setup.connection.config_hash,"mode":"live",
+                           "normal_array":"Quads","skew_array":"SkewQuads"},
+        "inventories":{"correction":{"sha256":inventory_fingerprint(setup.connection.inventory),
+                                      "device_count":3}},"mappings":rows}
+    ring=[SimpleNamespace(FamName=item.name,Device=f"device/{item.name}") for item in setup.review.items]
+    monkeypatch.setattr("pyLOCO.correct.pyaml_connection.lattice_identity",
+                        lambda _path: ({"sha256":"abc","element_count":3},ring))
+    selected,resolved,provenance,_identity=validate_mapping_document(
+        setup.review,setup.connection,document,"ring.mat")
+    assert len(selected)==3 and all(row["status"]=="mapped" for row in resolved)
+    assert provenance=="revalidated saved mapping"
+    document["machine_profile"]["configuration_sha256"]="stale"
+    with pytest.raises(ValueError,match="different machine configuration"):
+        validate_mapping_document(setup.review,setup.connection,document,"ring.mat")
 
 
 def test_ebs_smoke_identity_mapping_is_explicit_unique_and_family_checked(tmp_path):

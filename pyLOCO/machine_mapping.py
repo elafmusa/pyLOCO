@@ -113,6 +113,7 @@ def complete_template(ring, measurement_inventory: dict[str,list[str]],
             ordinal=hits[0]; element=ring[ordinal]
             row.update(lattice_ordinal=ordinal,lattice_fam_name=str(getattr(element,"FamName","") or ""),
                        lattice_device=str(getattr(element,"Device","") or ""),
+                       lattice_common_name=str(getattr(element,"CommonName","") or ""),
                        physical_element_type=type(element).__name__,identity_match=method,
                        status="proposed_unique_exact_match")
         else:row.update(status="ambiguous" if hits else "unresolved",candidate_count=len(hits),
@@ -166,6 +167,7 @@ def correction_projection(document: dict[str,Any]) -> list[dict[str,Any]]:
         return list(entries or ())
     return [dict(correction_type=row["role"],lattice_name=row.get("lattice_fam_name",""),
                  lattice_ordinal=row.get("lattice_ordinal"),lattice_device=row.get("lattice_device",""),
+                 lattice_common_name=row.get("lattice_common_name",""),
                  physical_element_type=row.get("physical_element_type",""),control_name=row.get("pyaml_device",""),
                  component=row.get("component"),unit=row.get("unit"))
             for row in document.get("mappings",()) if row.get("role") in CORRECTION_ROLES]
