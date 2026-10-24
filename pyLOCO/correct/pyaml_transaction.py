@@ -80,7 +80,7 @@ class PyAMLCorrectionTransaction:
             current = self.connection.read(name)
             prior = next((item for item in previous["changes"] if item["name"] == name), None) if previous else None
             if prior and not close(current, prior["target"]):
-                raise RuntimeError(f"Stale applied readback: {name}")
+                raise RuntimeError(f"Stale adapter strength.get() value: {name}")
             original = prior["original"] if prior else current
             applied_delta_k = (row["delta"] / step_fraction) * fraction
             applied_delta_kl = applied_delta_k * length
@@ -88,7 +88,9 @@ class PyAMLCorrectionTransaction:
             if not math.isfinite(target):
                 raise ValueError(f"Nonfinite target: {name}")
             rows.append(dict(name=name, original=original, current=current, target=target,
-                             readback=current, status="preview", component="B2L" if row["correction_type"] == "normal_quadrupole" else "A2L",
+                             readback=current, verification_evidence="adapter_value",
+                             verification_source="magnet.strength.get()",
+                             status="preview", component="B2L" if row["correction_type"] == "normal_quadrupole" else "A2L",
                              unit="m^-1", magnetic_length_m=length,
                              applied_delta_k_m2=applied_delta_k,
                              applied_delta_kl_m1=applied_delta_kl))
@@ -113,7 +115,7 @@ class PyAMLCorrectionTransaction:
             raise RuntimeError("Stale preview: configuration, mapping or correction changed")
         for row in self.record["changes"]:
             if not close(self.connection.read(row["name"]), row["current"]):
-                raise RuntimeError(f"Stale preview readback: {row['name']}")
+                raise RuntimeError(f"Stale preview adapter strength.get() value: {row['name']}")
         try:
             for row in self.record["changes"]:
                 if cancel and cancel.is_set():
@@ -128,7 +130,7 @@ class PyAMLCorrectionTransaction:
                 self.connection.write(row["name"], row["target"])
                 row["readback"] = self.connection.read(row["name"])
                 if not close(row["readback"], row["target"]):
-                    raise RuntimeError(f"Readback mismatch: {row['name']}")
+                    raise RuntimeError(f"Adapter strength.get() mismatch: {row['name']}")
                 row["status"] = "applied"
                 self.persist()
             if cancel and cancel.is_set():
@@ -169,7 +171,7 @@ class PyAMLCorrectionTransaction:
                 self.connection.write(row["name"], row["original"])
                 row["readback"] = self.connection.read(row["name"])
                 if not close(row["readback"], row["original"]):
-                    raise RuntimeError("Restoration readback mismatch")
+                    raise RuntimeError("Restoration adapter strength.get() mismatch")
                 row["status"] = "restored"
             except Exception as exc:
                 row["status"] = "restore_failed"

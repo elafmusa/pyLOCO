@@ -436,11 +436,11 @@ def test_recovery_refuses_changed_config(setup):
         recovered.recover(tx.path)
 
 
-def test_readback_mismatch_restores(setup):
+def test_adapter_strength_get_mismatch_restores(setup):
     strength = setup.magnets["M1"].strength
     strength.after_write = lambda: setattr(strength, "value", strength.value + .01 if strength.value != 1 else 1)
     setup.transaction.preview(setup.review)
-    with pytest.raises(RuntimeError, match="Readback mismatch"):
+    with pytest.raises(RuntimeError, match=r"Adapter strength\.get\(\) mismatch"):
         setup.transaction.apply(setup.review, confirmed=True)
     assert strength.value == 1
 

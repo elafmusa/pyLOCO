@@ -479,7 +479,7 @@ class PyAMLCorrectionWidget(QWidget):
             if item.control_name and item.metadata.get("mapping_status")=="mapped":
                 item.machine_value = self.connection.read(item.control_name); read.append(item)
         self.owner.refresh_all()
-        self.owner.current_k_status.setText(f"Read {len(read)} integrated KL value(s) [m⁻¹]; no writes performed. Runtime numeric readback succeeded, but physical calibration remains independently unverified.")
+        self.owner.current_k_status.setText(f"Read {len(read)} integrated KL value(s) [m⁻¹] using adapter magnet.strength.get(); no writes performed. This is adapter-value evidence, not independent hardware readback.")
 
     def current_mapping(self):
         if self.mapping_path and self.mapping_hash != file_hash(self.mapping_path):

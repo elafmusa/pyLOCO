@@ -356,7 +356,8 @@ def test_mapping_status_filter_and_readonly_strength_journey(window, setup):
     widget.read_current()
     assert "Read 3 integrated KL value(s)" in window.current_k_status.text()
     assert "no writes" in window.current_k_status.text()
-    assert "calibration remains independently unverified" in window.current_k_status.text()
+    assert "adapter magnet.strength.get()" in window.current_k_status.text()
+    assert "not independent hardware readback" in window.current_k_status.text()
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
 
 
