@@ -42,6 +42,26 @@ def _model(ring):
     )
 
 
+def test_measure_uses_connected_runtime_inventory_when_yaml_has_no_devices(qapp,tmp_path):
+    from pyLOCO.measure.main_window import MeasureMainWindow
+    window=MeasureMainWindow()
+    window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("pyaml"))
+    configuration=tmp_path/"composed.yaml"; configuration.write_text("machine: composed\n")
+    window.pyaml_fields["config_path"].setText(str(configuration))
+    runtime={role:[] for role in ("bpm","horizontal_corrector","vertical_corrector",
+        "normal_quadrupole","skew_quadrupole","sextupole","octupole","dipole")}
+    runtime["bpm"]=["machine/bpm/1"]
+    runtime["normal_quadrupole"]=["machine/q1-B2L"]
+    metadata={("normal_quadrupole","machine/q1-B2L"):{"configured_component":"B2L"}}
+    window.adapter=SimpleNamespace(machine_mapping_inventory=lambda:(runtime,metadata))
+    window.connection_verified=True
+    inventory,actual_metadata=window._pyaml_inventory_bundle()
+    assert inventory["bpm"]==["machine/bpm/1"]
+    assert inventory["normal_quadrupole"]==["machine/q1-B2L"]
+    assert actual_metadata[("normal_quadrupole","machine/q1-B2L")]["configured_component"]=="B2L"
+    window.close()
+
+
 def test_validated_bpm_ordinals_preserve_measurement_order_for_dispersion():
     ring = _Ring()
     devices = [SimpleNamespace(name="control/name/first"), SimpleNamespace(name="control/name/second")]

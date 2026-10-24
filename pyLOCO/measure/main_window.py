@@ -853,26 +853,41 @@ class MeasureMainWindow(QMainWindow):
             "vertical_corrector":[device.name for device in self.selected_vcorrectors],
         }
 
+    def _pyaml_inventory_bundle(self):
+        """Merge file-backed and connected public pyAML device inventories."""
+        if self.adapter_combo.currentData()!="pyaml":return {},{}
+        file_inventory={}; file_metadata={}
+        path=Path(self.pyaml_fields["config_path"].text()).expanduser()
+        if path.is_file():
+            try:
+                import yaml
+                document=yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+                file_inventory,file_metadata=pyaml_configuration_inventory(document)
+            except Exception:pass
+        runtime_inventory={}; runtime_metadata={}
+        provider=getattr(self.adapter,"machine_mapping_inventory",None)
+        if self.connection_verified and callable(provider):
+            try:runtime_inventory,runtime_metadata=provider()
+            except Exception:pass
+        roles=("bpm","horizontal_corrector","vertical_corrector","normal_quadrupole",
+               "skew_quadrupole","sextupole","octupole","dipole")
+        merged={role:list(file_inventory.get(role,())) for role in roles}
+        for role in roles:
+            for name in runtime_inventory.get(role,()):
+                if name not in merged[role]:merged[role].append(name)
+        metadata=dict(file_metadata)
+        for key,values in runtime_metadata.items():
+            combined=dict(metadata.get(key,{}))
+            combined.update({name:value for name,value in values.items() if value not in (None,"")})
+            metadata[key]=combined
+        return merged,metadata
+
     def _pyaml_named_inventories(self):
         """Read every supported physical device configured in pyAML."""
-        if self.adapter_combo.currentData()!="pyaml":return {}
-        path=Path(self.pyaml_fields["config_path"].text()).expanduser()
-        if not path.is_file():return {}
-        try:
-            import yaml
-            document=yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except Exception:return {}
-        return pyaml_configuration_inventory(document)[0]
+        return self._pyaml_inventory_bundle()[0]
 
     def _pyaml_inventory_metadata(self):
-        if self.adapter_combo.currentData()!="pyaml":return {}
-        path=Path(self.pyaml_fields["config_path"].text()).expanduser()
-        if not path.is_file():return {}
-        try:
-            import yaml
-            document=yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-            return pyaml_configuration_inventory(document)[1]
-        except Exception:return {}
+        return self._pyaml_inventory_bundle()[1]
 
     def _pyaml_fitted_magnet_inventory(self):
         inventories=self._pyaml_named_inventories()
@@ -882,6 +897,12 @@ class MeasureMainWindow(QMainWindow):
     def _complete_machine_mapping_template(self):
         if self.reference_model is None:raise ValueError("Load the authoritative AT reference lattice first.")
         inventories=self._pyaml_named_inventories()
+        configured_total=sum(len(names) for names in inventories.values())
+        if not configured_total:
+            raise ValueError(
+                "No configured pyAML device identities were discovered. Test the connection first, or select "
+                "a configuration that exposes public devices/arrays; an empty Machine Mapping template was not created."
+            )
         measured={role:list(inventories.get(role,())) for role in
                   ("bpm","horizontal_corrector","vertical_corrector")}
         document=complete_machine_mapping_template(self.reference_model.ring,measured,

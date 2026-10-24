@@ -430,6 +430,61 @@ class PyAMLAdapter(WritableAdapter):
     def list_devices(self, kind):
         return self._catalog.get(kind, ())
 
+    def machine_mapping_inventory(self):
+        """Return configured runtime device identities without reading channels.
+
+        This complements file-backed YAML discovery for configurations assembled
+        from includes or runtime arrays.  Only public collection names, object
+        classes and strength-unit metadata are inspected; no get/set operation is
+        performed.
+        """
+        roles=("bpm","horizontal_corrector","vertical_corrector","normal_quadrupole",
+               "skew_quadrupole","sextupole","octupole","dipole")
+        inventories={role:[] for role in roles}; metadata={}
+        selected={"bpm":"bpm","hcor":"horizontal_corrector","vcor":"vertical_corrector"}
+        for kind,role in selected.items():
+            for row in self._catalog.get(kind,()):
+                name=str(row.get("name","") or "")
+                if name and name not in inventories[role]:inventories[role].append(name)
+
+        known={name:role for role,names in inventories.items() for name in names}
+        class_roles=(("hcorrector","horizontal_corrector"),("vcorrector","vertical_corrector"),
+                     ("skewquad","skew_quadrupole"),("quadrupole","normal_quadrupole"),
+                     ("sextupole","sextupole"),("octupole","octupole"),("dipole","dipole"))
+        suffix_roles={"B1L":"horizontal_corrector","A1L":"vertical_corrector",
+                      "B2L":"normal_quadrupole","A2L":"skew_quadrupole",
+                      "B3L":"sextupole","B4L":"octupole"}
+        arrays=getattr(self.machine,"magnets",{})
+        values=arrays.values() if hasattr(arrays,"values") else ()
+        names=[]
+        for array in values:
+            provider=getattr(array,"names",None)
+            if not callable(provider):continue
+            try:members=provider()
+            except Exception:continue
+            for value in members:
+                name=str(value or "")
+                if name and name not in names:names.append(name)
+        registry=getattr(self.machine,"magnet",None)
+        for name in names:
+            try:magnet=registry.get(name)
+            except Exception:magnet=None
+            class_name=(f"{type(magnet).__module__}.{type(magnet).__qualname__}" if magnet is not None else "").lower()
+            component=name.rsplit("-",1)[-1].upper() if "-" in name else ""
+            role=known.get(name) or next((value for token,value in class_roles if token in class_name),None) or suffix_roles.get(component)
+            if role is None:continue
+            if name not in inventories[role]:inventories[role].append(name)
+            unit=""
+            try:
+                strength=getattr(magnet,"strength",None); provider=getattr(strength,"unit",None)
+                if callable(provider):unit=str(provider() or "")
+            except Exception:unit=""
+            metadata[(role,name)]={"pyaml_class":class_name,
+                "configured_unit":unit,"hardware_unit":"",
+                "configured_component":component if component in suffix_roles else "",
+                "inventory_source":"connected pyAML runtime arrays"}
+        return inventories,metadata
+
     def list_channels(self):
         return tuple(self._channels)
 

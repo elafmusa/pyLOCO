@@ -69,6 +69,26 @@ def test_current_bpm_hierarchy_is_preferred_when_both_are_exposed():
     assert adapter.bpm_api_path == "diagnostic.bpms"
 
 
+def test_runtime_machine_mapping_inventory_discovers_all_public_arrays_without_reads():
+    adapter,bpms=make_adapter()
+    normal=Array(["machine/q1-B2L"],[1.2],["m^-1"])
+    skew=Array(["machine/q2-A2L"],[.3],["m^-1"])
+    sext=Array(["machine/s1-B3L"],[.4],["m^-2"])
+    adapter.machine.magnets.update(Quads=normal,SkewQuads=skew,Sextupoles=sext)
+    adapter.machine.magnet.update({
+        "machine/q1-B2L":normal[0],"machine/q2-A2L":skew[0],"machine/s1-B3L":sext[0],
+    })
+    inventory,metadata=adapter.machine_mapping_inventory()
+    assert inventory["bpm"]==["B2","B1"]
+    assert inventory["horizontal_corrector"]==["H1"]
+    assert inventory["vertical_corrector"]==["V1"]
+    assert inventory["normal_quadrupole"]==["machine/q1-B2L"]
+    assert inventory["skew_quadrupole"]==["machine/q2-A2L"]
+    assert inventory["sextupole"]==["machine/s1-B3L"]
+    assert metadata[("normal_quadrupole","machine/q1-B2L")]["configured_component"]=="B2L"
+    assert bpms.calls==0 and normal.calls==0 and skew.calls==0 and sext.calls==0
+
+
 def test_missing_bpm_hierarchy_has_clear_error():
     horizontal = Array(["H1"], [2], ["mrad"])
     vertical = Array(["V1"], [3], ["rad"])
