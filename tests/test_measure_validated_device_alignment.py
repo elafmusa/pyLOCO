@@ -200,6 +200,9 @@ def test_generated_script_preserves_missing_and_ambiguous_as_none(tmp_path):
     assert 'row["lattice_ordinal"] = None' in script
     assert 'if len(hits) == 1:' in script
     assert 'return hits' in script
+    assert 'if type(supplied) is int:' in script
+    assert 'supplied in hits' in script
+    assert 'invalid ordinal:' in script
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]

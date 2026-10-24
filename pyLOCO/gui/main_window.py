@@ -6276,7 +6276,7 @@ class MainWindow(QMainWindow):
             "configuration_path": str(Path(configuration).resolve()),
             "configuration_sha256": file_sha256(configuration),
         }
-        reconciled = reconcile_configured(self.project.machine_mapping, proposal)
+        reconciled = reconcile_configured(self.project.machine_mapping, proposal, ring=lattice)
         complete_measurements = find_exact_device_mappings(
             lattice, measurements, lattice_path=lattice_path,
             configuration_path=configuration,

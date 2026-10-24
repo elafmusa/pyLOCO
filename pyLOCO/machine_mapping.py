@@ -185,7 +185,7 @@ def _require_same_machine(base: dict[str,Any], incoming: dict[str,Any]) -> None:
         raise ValueError("Cannot merge Machine Mapping files: machine configuration fingerprint differs")
 
 
-def reconcile_configured(document: dict[str,Any]|None, configured: dict[str,Any]) -> dict[str,Any]:
+def reconcile_configured(document: dict[str,Any]|None, configured: dict[str,Any], *, ring=None) -> dict[str,Any]:
     """Keep verified values for devices still present in the active config.
 
     Rows absent from the selected pyAML configuration are deliberately not
@@ -195,12 +195,42 @@ def reconcile_configured(document: dict[str,Any]|None, configured: dict[str,Any]
     result=deepcopy(configured)
     if not document or not is_document(document):return result
     _require_same_machine(document,configured)
+    template_source=is_template(document)
     previous={(row.get("role"),row.get("pyaml_device")):row
               for row in document.get("mappings",()) if row.get("pyaml_device")}
     reconciled=[]
     for row in result.get("mappings",()):
         prior=previous.get((row.get("role"),row.get("pyaml_device")),{})
-        if row.get("status")=="ambiguous" and type(prior.get("lattice_ordinal")) is int \
+        supplied=prior.get("lattice_ordinal")
+        if template_source and type(supplied) is int and ring is not None:
+            # A filled template is an explicit operator proposal.  Validate
+            # that zero-based ordinal against the active lattice before doing
+            # anything with the automatically discovered proposal.  A bad
+            # ordinal remains visibly unresolved; it is never silently
+            # replaced by a different name-search result.
+            hits,method=_exact_lattice_match(ring,str(row.get("pyaml_device","") or ""),
+                                             str(row.get("role","") or ""))
+            row=deepcopy(row)
+            if 0 <= supplied < len(ring) and supplied in hits:
+                element=ring[supplied]
+                row.update(lattice_ordinal=supplied,
+                    lattice_fam_name=str(getattr(element,"FamName","") or ""),
+                    lattice_device=str(getattr(element,"Device","") or ""),
+                    lattice_common_name=str(getattr(element,"CommonName","") or ""),
+                    physical_element_type=type(element).__name__,
+                    identity_match=f"manual_{method}",
+                    identity_evidence=prior.get("identity_evidence","") or
+                        f"Explicit template ordinal {supplied} validated against the active lattice.",
+                    status="proposed_explicit_ordinal")
+            else:
+                row.update(lattice_ordinal=None,requested_lattice_ordinal=supplied,
+                    status="invalid_explicit_ordinal",
+                    identity_evidence=(
+                        f"Explicit template ordinal {supplied} does not identify the exact "
+                        f"{row.get('role','device')} {row.get('pyaml_device','')!r} in the active lattice; "
+                        "automatic matching was not substituted."
+                    ))
+        elif row.get("status")=="ambiguous" and type(supplied) is int \
                 and prior["lattice_ordinal"] in row.get("candidate_ordinals",()):
             row=deepcopy(row); row["lattice_ordinal"]=prior["lattice_ordinal"]
             row["lattice_fam_name"]=prior.get("lattice_fam_name","")

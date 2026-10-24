@@ -9,7 +9,7 @@ import pytest
 from pyLOCO.gui.measurement_mapping import mapping_counts, validate_mapping
 from pyLOCO.machine_mapping import (SCHEMA, VERSION, correction_projection, entry,
     complete_template, measurement_projection, merge_corrections, merge_measurement,
-    pyaml_configuration_inventory, template)
+    pyaml_configuration_inventory, reconcile_configured, template)
 
 
 def test_shared_template_assigns_roles_and_preserves_same_ordinal_components():
@@ -109,6 +109,31 @@ def test_configured_device_without_unique_lattice_match_remains_unresolved():
     assert len(document["mappings"])==1
     assert document["mappings"][0]["lattice_ordinal"] is None
     assert document["mappings"][0]["status"]=="ambiguous"
+
+
+def test_filled_template_ordinal_is_validated_and_used_before_name_search():
+    ring=[SimpleNamespace(FamName="Q",Device="Q"),SimpleNamespace(FamName="Q",Device="Q")]
+    filled=template({}, {"normal_quadrupole":["Q"]})
+    filled["mappings"][0]["lattice_ordinal"]=1
+    proposal=complete_template(ring,{}, {"normal_quadrupole":["Q"]})
+    reconciled=reconcile_configured(filled,proposal,ring=ring)
+    row=reconciled["mappings"][0]
+    assert row["lattice_ordinal"]==1
+    assert row["identity_match"]=="manual_exact_device"
+    assert row["status"]=="proposed_explicit_ordinal"
+
+
+def test_invalid_filled_template_ordinal_is_not_silently_replaced():
+    ring=[SimpleNamespace(FamName="OTHER",Device="OTHER"),
+          SimpleNamespace(FamName="Q",Device="Q")]
+    filled=template({}, {"normal_quadrupole":["Q"]})
+    filled["mappings"][0]["lattice_ordinal"]=0
+    proposal=complete_template(ring,{}, {"normal_quadrupole":["Q"]})
+    assert proposal["mappings"][0]["lattice_ordinal"]==1
+    row=reconcile_configured(filled,proposal,ring=ring)["mappings"][0]
+    assert row["lattice_ordinal"] is None
+    assert row["requested_lattice_ordinal"]==0
+    assert row["status"]=="invalid_explicit_ordinal"
 
 
 def test_fit_project_and_run_request_preserve_complete_machine_mapping():

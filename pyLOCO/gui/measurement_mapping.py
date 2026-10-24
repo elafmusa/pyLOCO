@@ -272,6 +272,19 @@ def find_hits(row):
 
 matched = 0
 for row in d["mappings"]:
+    supplied = row.get("lattice_ordinal")
+    if type(supplied) is int:
+        hits = find_hits(row)
+        if 0 <= supplied < len(ring) and supplied in hits:
+            # Explicit template ordinals take precedence over automatic
+            # matching, including intentional disambiguation of duplicates.
+            row["lattice_ordinal"] = supplied
+            matched += 1
+            continue
+        row["lattice_ordinal"] = None
+        print(f"invalid ordinal: {{row['role']}} {{row.get('pyaml_device', row.get('measured_name'))}} "
+              f"(AT index {{supplied}} is not an exact identity match)")
+        continue
     hits = find_hits(row)
     if len(hits) == 1:
         row["lattice_ordinal"] = hits[0]

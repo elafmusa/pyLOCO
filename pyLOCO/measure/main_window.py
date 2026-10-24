@@ -931,7 +931,8 @@ class MeasureMainWindow(QMainWindow):
         if self.reference_model is None:raise ValueError("Load the authoritative AT reference lattice first.")
         configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
         if not configuration.is_file():raise ValueError("The active pyAML configuration file is unavailable.")
-        proposal=reconcile_configured(self.machine_mapping_document,self._complete_machine_mapping_template())
+        proposal=reconcile_configured(self.machine_mapping_document,self._complete_machine_mapping_template(),
+                                      ring=self.reference_model.ring)
         configured=self._pyaml_named_inventories()
         measurement_inventory={role:list(configured.get(role,())) for role in
             ("bpm","horizontal_corrector","vertical_corrector")}
@@ -1034,7 +1035,8 @@ class MeasureMainWindow(QMainWindow):
                 # Legacy shared files may contain only the measurement subset.
                 # Reconcile them with the active configured inventory, then
                 # validate every configured measurement device afresh.
-                proposal=reconcile_configured(source,self._complete_machine_mapping_template())
+                proposal=reconcile_configured(source,self._complete_machine_mapping_template(),
+                                              ring=self.reference_model.ring)
                 projected=measurement_projection(proposal)
                 if template:projected={**projected,"mapping_provenance":"Externally completed complete Machine Mapping template"}
                 full_checked=validate_mapping(projected,self.reference_model.ring,full_inventory,lattice_path=self.reference_model.path,
