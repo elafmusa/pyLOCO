@@ -141,7 +141,7 @@ def test_fit_mapping_actions_include_python_helper(qapp):
     window.project.modified=False; window.close()
 
 
-def test_fit_machine_mapping_template_contains_complete_prefilled_identities(qapp,tmp_path,monkeypatch):
+def test_fit_machine_mapping_template_is_minimal_and_keeps_prefilled_ordinal(qapp,tmp_path,monkeypatch):
     target=tmp_path/"machine-mapping-template.json"
     lattice_path=tmp_path/"ring.mat"; lattice_path.write_bytes(b"ring")
     configuration=tmp_path/"machine.yaml"; configuration.write_text("devices: []")
@@ -164,8 +164,9 @@ def test_fit_machine_mapping_template_contains_complete_prefilled_identities(qap
     assert window.create_measurement_mapping_template()
     saved=__import__("json").loads(target.read_text())
     assert saved["template"] is True
-    assert saved["mappings"]==master["mappings"]
-    assert saved["mappings"][0]["lattice_fam_name"]=="Q1"
-    assert saved["mappings"][0]["lattice_device"]=="machine/q1"
-    assert saved["mappings"][0]["pyaml_device"]=="machine/q1-B2L"
+    assert saved["mappings"]==[{
+        "pyaml_device":"machine/q1-B2L",
+        "role":"normal_quadrupole",
+        "lattice_ordinal":7,
+    }]
     window.project.modified=False; window.close()

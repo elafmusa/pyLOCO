@@ -82,6 +82,7 @@ from pyLOCO.machine_mapping import (is_document as is_machine_mapping,
     is_template as is_machine_mapping_template, measurement_projection,
     merge_measurement, template as machine_mapping_template,
     complete_template as complete_machine_mapping_template,
+    editable_template as editable_machine_mapping_template,
     pyaml_configuration_inventory, reconcile_configured)
 
 from .backend import LocoRunError, LocoRunRequest, LocoRunResult, run_loco_request, _load_bad_bpm_positions, _load_measurements
@@ -6545,9 +6546,8 @@ class MainWindow(QMainWindow):
     def create_measurement_mapping_template(self) -> bool:
         try:
             lattice, lattice_path, _payload, _inventory, configuration = self._measurement_mapping_context()
-            document = deepcopy(self._find_complete_machine_mapping(
-                lattice, lattice_path, configuration
-            ))
+            document = editable_machine_mapping_template(
+                self._find_complete_machine_mapping(lattice, lattice_path, configuration))
         except Exception as exc:
             QMessageBox.warning(self, "Mapping template unavailable", str(exc)); return False
         filename = QFileDialog.getSaveFileName(
@@ -6557,16 +6557,10 @@ class MainWindow(QMainWindow):
         if not filename: return False
         target = Path(filename).expanduser()
         if target.suffix.lower() != ".json": target = target.with_suffix(".json")
-        document["template"] = True
-        document["description"] = (
-            "Complete Machine Mapping proposal for every supported device in the selected pyAML "
-            "configuration. Exact AT Device/FamName matches are prefilled. Set lattice_ordinal "
-            "only for unresolved or ambiguous rows; pyLOCO revalidates every row on load."
-        )
         target.resolve().write_text(json.dumps(document, indent=2), encoding="utf-8")
         self.measurement_mapping_feedback.setText(
-            f"Complete template saved — not validated: {target.name}. Exact matches include AT and pyAML names; "
-            "fill only unresolved lattice_ordinal values, then load it."
+            f"Complete template saved — not validated: {target.name}. Each row contains only the pyAML device, "
+            "role and zero-based lattice_ordinal; fill missing indices, then load it."
         )
         self._last_measurement_mapping_template = target.resolve()
         return True

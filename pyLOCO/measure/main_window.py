@@ -60,6 +60,7 @@ from pyLOCO.gui.mapping_table import (CopyableMappingTable, configure_mapping_ta
 from pyLOCO.machine_mapping import (is_document as is_machine_mapping,
     is_template as is_machine_mapping_template, measurement_projection,
     complete_template as complete_machine_mapping_template,
+    editable_template as editable_machine_mapping_template,
     merge_measurement, pyaml_configuration_inventory, reconcile_configured,
     template as machine_mapping_template)
 from pyLOCO.gui.lattice_loader import MultipleMatLatticesError, mat_lattice_candidates
@@ -1073,7 +1074,8 @@ class MeasureMainWindow(QMainWindow):
     def _save_mapping_template(self):
         path=QFileDialog.getSaveFileName(self,"Create Machine Mapping template","machine-mapping-template.json","JSON (*.json)")[0]
         if not path:return
-        try:self._write_json_atomic(path,self._complete_machine_mapping_template())
+        try:self._write_json_atomic(path,editable_machine_mapping_template(
+            self._complete_machine_mapping_template()))
         except Exception as exc:QMessageBox.warning(self,"Cannot create mapping template",str(exc)); return
         self.last_mapping_template_path=Path(path).expanduser().resolve()
         self.statusBar().showMessage(f"Created mapping template: {path}")

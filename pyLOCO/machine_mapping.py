@@ -132,6 +132,26 @@ def is_template(document: dict[str,Any]) -> bool:
     return is_document(document) and document.get("template") is True
 
 
+def editable_template(document: dict[str,Any]) -> dict[str,Any]:
+    """Return the intentionally small operator-editable interchange form."""
+    if not is_document(document):
+        raise ValueError("A Machine Mapping document is required")
+    return {
+        "schema": SCHEMA,
+        "schema_version": VERSION,
+        "template": True,
+        "mappings": [
+            {
+                "pyaml_device": str(row.get("pyaml_device", "") or ""),
+                "role": str(row.get("role", "") or ""),
+                "lattice_ordinal": row.get("lattice_ordinal")
+                    if type(row.get("lattice_ordinal")) is int else None,
+            }
+            for row in document.get("mappings", ())
+        ],
+    }
+
+
 def load(path: str|Path) -> dict[str,Any]:
     source=Path(path).expanduser(); text=source.read_text(encoding="utf-8")
     data=json.loads(text) if source.suffix.lower() not in {".yaml",".yml"} else __import__("yaml").safe_load(text)

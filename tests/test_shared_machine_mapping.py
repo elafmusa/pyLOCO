@@ -8,7 +8,7 @@ import pytest
 
 from pyLOCO.gui.measurement_mapping import mapping_counts, validate_mapping
 from pyLOCO.machine_mapping import (SCHEMA, VERSION, correction_projection, entry,
-    complete_template, measurement_projection, merge_corrections, merge_measurement,
+    complete_template, editable_template, measurement_projection, merge_corrections, merge_measurement,
     pyaml_configuration_inventory, reconcile_configured, template)
 
 
@@ -19,6 +19,16 @@ def test_shared_template_assigns_roles_and_preserves_same_ordinal_components():
     assert [row["role"] for row in document["mappings"]]==["bpm","horizontal_corrector","vertical_corrector","normal_quadrupole","skew_quadrupole"]
     h,v=document["mappings"][1:3]; h["lattice_ordinal"]=v["lattice_ordinal"]=42
     assert (h["component"],v["component"])==("B1L","A1L") and h["role"]!=v["role"]
+
+
+def test_editable_template_contains_only_required_mapping_fields():
+    document=template({"bpm":["BPM"]})
+    document["mappings"][0].update(lattice_ordinal=12,lattice_fam_name="BPM1",
+                                    status="proposed_unique_exact_match")
+    assert editable_template(document)=={
+        "schema":SCHEMA,"schema_version":VERSION,"template":True,
+        "mappings":[{"pyaml_device":"BPM","role":"bpm","lattice_ordinal":12}],
+    }
 
 
 def test_measure_projection_ignores_incomplete_quadrupoles_and_preserves_order(tmp_path):
