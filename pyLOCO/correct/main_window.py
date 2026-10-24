@@ -248,8 +248,17 @@ class CorrectMainWindow(QMainWindow):
         self.pysc_connection_group = connection_group
         self.pyaml_connection_group = QGroupBox("1. Machine connection")
         self.pyaml_connection_layout = QVBoxLayout(self.pyaml_connection_group)
+        self.connection_guidance = QLabel(
+            "Select the approved pyAML configuration and test the connection. "
+            "Discovery is read only and does not authorize magnet writes."
+        )
+        self.connection_guidance.setWordWrap(True)
+        self.connection_guidance.setObjectName("connectionGuidance")
+        self.pyaml_connection_layout.addWidget(self.connection_guidance)
         layout.insertWidget(0, self.pyaml_connection_group)
-        layout.insertWidget(0, mapping_help)
+        # Keep the active connection controls at the very top of this page;
+        # the expandable background material belongs immediately below them.
+        layout.insertWidget(1, mapping_help)
         current_group=QGroupBox("4. Read current machine strengths — read only"); current_layout=QVBoxLayout(current_group); self.current_strength_help=QLabel("Read the present strengths from the connected machine or control system. This operation does not change magnet settings and requires valid mappings. A successful numeric readback does not independently verify physical calibration."); self.current_strength_help.setWordWrap(True); current_layout.addWidget(self.current_strength_help)
         current_row=QHBoxLayout(); self.read_current_k_button=QPushButton("Read current K from pySC Server"); self.read_current_k_button.clicked.connect(self.read_current_pysc_k); self.current_k_status=QLabel("Connect a verified pySC machine/profile and load its explicit mapping."); self.current_k_status.setWordWrap(True); current_row.addWidget(self.read_current_k_button); current_row.addWidget(self.current_k_status,1); current_layout.addLayout(current_row); layout.addWidget(current_group)
         layout.addStretch(1); return self._scroll_page(page)
@@ -396,7 +405,18 @@ class CorrectMainWindow(QMainWindow):
         self.correction_changes=(); self.apply_button.setEnabled(False); self.apply_status.setText("Correction loaded — preview machine changes")
         session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False)
         if not is_machine_mapping(embedded):self.mapping_file_status.setText("—")
-        self._refresh_mapping_status(); self._sync_fraction(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2); self.statusBar().showMessage(f"Loaded {len(self.review.items)} correction item(s)",5000)
+        pyaml_provenance = self.pyaml_workspace.has_saved_pyaml_provenance(self.review)
+        if pyaml_provenance:
+            pyaml_index = self.backend_combo.findData("pyaml")
+            if pyaml_index >= 0:
+                self.backend_combo.setCurrentIndex(pyaml_index)
+            self.pyaml_workspace.apply_saved_provenance(self.review)
+        self._refresh_mapping_status(); self._sync_fraction(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all()
+        self.tabs.setCurrentIndex(1 if pyaml_provenance else 2)
+        status = f"Loaded {len(self.review.items)} correction item(s)"
+        if pyaml_provenance:
+            status += " — saved pyAML mapping retained; connection revalidation required"
+        self.statusBar().showMessage(status,5000)
 
     def load_source_responsively(self,path,iteration=None):
         if self._pyaml_locked():
@@ -500,15 +520,6 @@ class CorrectMainWindow(QMainWindow):
                 self.preview_apply_button.setEnabled(True)
             self.restore_button.setToolTip("Restore exact original strengths")
             self.current_k_status.setText("Connect and verify mapping before reading strengths.")
-            if self.review and (selected or getattr(self, "_last_correct_backend", None) == "pyaml"):
-                for item in self.review.items:
-                    item.control_name = None
-                    item.machine_value = None
-                    item.metadata["mapping_status"] = "unmapped"
-                    item.metadata.pop("match_source", None)
-                self.mapping_path = None
-                self.mapping_file_status.setText("—")
-                self.refresh_all()
             self.pyaml_workspace._rendered = None
             self._last_correct_backend = self.backend_combo.currentData()
         key=self.backend_combo.currentData(); descriptor=self.registry.descriptor(key); self.badge.setText(descriptor.badge); self.backend_session=None; self.correction_changes=(); self.apply_button.setEnabled(False)

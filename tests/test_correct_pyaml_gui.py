@@ -66,8 +66,8 @@ def test_defaults_browser_cancel_and_connection_confirmation(window, setup, monk
     monkeypatch.setattr(QMessageBox, "question", lambda *args: QMessageBox.Yes)
     widget.connect_machine()
     assert len(calls) == 1
-    assert widget.connection_result.text() == "Connected"
-    assert "3 quadrupole devices" in widget.inventory_result.text()
+    assert widget.connection_result.text() == "Connected — writes authorized"
+    assert "Inventory verified — 3 quadrupole devices" in widget.inventory_result.text()
     assert widget.authorization_result.text() == "WRITE AUTHORIZED"
     assert Settings.values["correct/pyaml/normal_array"] == "Quads"
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
@@ -287,7 +287,8 @@ def test_mapping_help_and_details_are_self_explanatory(window, setup):
         assert term in help_text
     assert "Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded." in help_text
     mapping_page = window.tabs.widget(1).widget()
-    assert mapping_page.layout().itemAt(0).widget().title() == "ⓘ Mapping workflow and template format"
+    assert mapping_page.layout().itemAt(0).widget().title() == "1. Machine connection"
+    assert mapping_page.layout().itemAt(1).widget().title() == "ⓘ Mapping workflow and template format"
     assert widget.clear_mapping_button.text() == "Find machine mappings"
     assert window.generate_mapping_button.text() == "Create Machine Mapping template…"
     assert window.mapping_button.text() == "Load Machine Mapping…"
@@ -365,8 +366,21 @@ def test_embedded_fit_mapping_is_visible_offline_then_revalidated_on_connection(
             lattice_device=f"device/{item.name}",component="B2L" if item.correction_type=="normal_quadrupole" else "A2L",unit="m^-1",
             status="mapped",identity_match="exact_device"))
     setup.review.machine_mapping={"schema":"pyloco.machine_mapping","schema_version":3,
+                                  "machine_profile":{"backend":"pyaml","configuration_path":str(setup.config),
+                                                     "mode":"live","normal_array":"Quads","skew_array":"SkewQuads"},
                                   "mapping_provenance":"Measure → FIT validated mapping","mappings":rows}
+    window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
     window._accept_loaded_review(setup.review,setup.source)
+    assert window.backend_combo.currentData()=="pyaml"
+    assert window.tabs.currentIndex()==1
+    assert not window.pyaml_connection_group.isHidden()
+    assert window.pyaml_connection_group.isAncestorOf(window.pyaml_workspace.connect_button)
+    assert not window.pyaml_workspace.connect_button.isHidden()
+    assert window.pyaml_workspace.fields["config_path"].text()==str(setup.config.resolve())
+    assert window.pyaml_workspace.connection is None
+    assert not window.pyaml_workspace.writes.isChecked()
+    assert window.pyaml_workspace.connection_result.text()=="Disconnected"
+    assert "saved mapping remains unverified" in window.connection_guidance.text()
     assert all(item.metadata["mapping_status"]=="saved" for item in window.review.items)
     assert "saved pending revalidation" in window.mapping_summary.text()
     assert window.mapping_details_table.item(0,9).text()=="Saved mapping — revalidation required"
@@ -380,10 +394,37 @@ def test_embedded_fit_mapping_is_visible_offline_then_revalidated_on_connection(
               for item,target in zip(setup.review.items,("M1","M2","S1"))]
     monkeypatch.setattr(pyaml_widget,"validate_mapping_document",
                         lambda *_args,**_kwargs:(selected,[],"revalidated saved mapping",{}))
+    setup.connection.allow_writes=False
     widget.connect_machine(); widget.refresh()
+    assert widget.connection_result.text()=="Connected — read only"
+    assert widget.inventory_result.text()=="Inventory verified — 3 quadrupole devices"
+    assert "Mapping verified for 3 fitted magnet(s)" in window.connection_guidance.text()
     assert all(item.metadata["mapping_status"]=="mapped" for item in window.review.items)
     assert all(item.metadata["mapping_validation_level"]=="connected_inventory" for item in window.review.items)
     assert window.mapping_details_table.item(0,9).text()=="Validated against current inventory"
+
+
+def test_backend_switch_does_not_erase_saved_fit_mapping(window, setup):
+    from pyLOCO.machine_mapping import entry
+    rows=[]
+    for item,target in zip(setup.review.items,("M1","M2","S1")):
+        rows.append(entry(role=item.correction_type,pyaml_device=target,
+            lattice_ordinal=item.lattice_ordinal,lattice_fam_name=item.name,
+            component="B2L" if item.correction_type=="normal_quadrupole" else "A2L",
+            unit="m^-1",status="mapped",identity_match="exact_device"))
+    setup.review.machine_mapping={
+        "schema":"pyloco.machine_mapping","schema_version":3,
+        "machine_profile":{"backend":"pyaml","configuration_path":str(setup.config)},
+        "mappings":rows,
+    }
+    window._accept_loaded_review(setup.review,setup.source)
+    expected=[item.control_name for item in window.review.items]
+    window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
+    assert [item.control_name for item in window.review.items]==expected
+    assert all(item.metadata["mapping_status"]=="saved" for item in window.review.items)
+    window.backend_combo.setCurrentIndex(window.backend_combo.findData("pyaml"))
+    assert [item.control_name for item in window.review.items]==expected
+    assert not window.pyaml_workspace.writes.isChecked()
 
 
 def test_pyaml_representation_lock_explains_k_to_kl_conversion(window, setup):

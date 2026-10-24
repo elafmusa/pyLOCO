@@ -116,6 +116,77 @@ class PyAMLCorrectionWidget(QWidget):
         self.timer.timeout.connect(self.refresh); self.timer.start()
         self.refresh()
 
+    @staticmethod
+    def _saved_connection_options(review):
+        """Return non-sensitive pyAML options retained by Measure/FIT.
+
+        These values only prefill the disconnected connection form.  They do
+        not create a connection, validate a mapping, or authorize writes.
+        """
+        mapping = getattr(review, "machine_mapping", {}) or {}
+        profile = mapping.get("machine_profile", {}) if isinstance(mapping, dict) else {}
+        options = {
+            "config_path": str(profile.get("configuration_path") or ""),
+            "normal_array": str(profile.get("normal_array") or ""),
+            "skew_array": str(profile.get("skew_array") or ""),
+            "mode": str(profile.get("mode") or ""),
+        }
+        session = {}
+        if getattr(review, "items", None):
+            session = review.items[0].metadata.get("measurement_session") or {}
+        full = (session.get("session_metadata") or {}).get("full_measure_session") or {}
+        configuration = full.get("pyaml_configuration") or {}
+        if not options["config_path"]:
+            options["config_path"] = str(
+                configuration.get("path") or configuration.get("external_path") or ""
+            )
+        return options
+
+    @classmethod
+    def has_saved_pyaml_provenance(cls, review):
+        mapping = getattr(review, "machine_mapping", {}) or {}
+        profile = mapping.get("machine_profile", {}) if isinstance(mapping, dict) else {}
+        if str(profile.get("backend") or "").lower() == "pyaml":
+            return True
+        if profile.get("configuration_sha256") or profile.get("configuration_path"):
+            return True
+        if any(row.get("pyaml_device") or row.get("control_name")
+               for row in mapping.get("mappings", ()) if isinstance(row, dict)):
+            return True
+        return bool(cls._saved_connection_options(review).get("config_path"))
+
+    def apply_saved_provenance(self, review):
+        """Prepare a safe disconnected pyAML form from retained provenance."""
+        options = self._saved_connection_options(review)
+        config_path = options.get("config_path", "")
+        valid_config = bool(config_path and Path(config_path).expanduser().is_file())
+        values = {
+            "config_path": str(Path(config_path).expanduser().resolve()) if valid_config else "",
+            "normal_array": options.get("normal_array") or "Quads",
+            "skew_array": options.get("skew_array") or "SkewQuads",
+        }
+        for key, value in values.items():
+            editor = self.fields[key]
+            editor.blockSignals(True); editor.setText(value); editor.blockSignals(False)
+        mode = options.get("mode") if options.get("mode") in {"live", "design"} else "live"
+        self.mode.blockSignals(True); self.mode.setCurrentText(mode); self.mode.blockSignals(False)
+        self.writes.blockSignals(True); self.writes.setChecked(False); self.writes.blockSignals(False)
+        self.connection = self.transaction = None
+        self.connection_result.setText("Disconnected")
+        self.inventory_result.setText("Inventory not discovered")
+        self.authorization_result.setText("READ ONLY — writes not authorized")
+        if valid_config:
+            self.owner.connection_guidance.setText(
+                "Saved pyAML settings restored. Test the connection to discover the current device inventory; "
+                "the saved mapping remains unverified until that check succeeds."
+            )
+        else:
+            missing = f" Saved path is unavailable: {config_path}" if config_path else ""
+            self.owner.connection_guidance.setText(
+                "Select the approved pyAML configuration, confirm the arrays and mode, then test the "
+                f"connection. No connection or write authorization has been inherited.{missing}"
+            )
+
     def pending(self):
         return bool(self.transaction and self.transaction.pending)
 
@@ -182,8 +253,12 @@ class PyAMLCorrectionWidget(QWidget):
             settings.setValue(f"correct/pyaml/{key}", value)
         self.owner._set_connection(True, "CONNECTED")
         self.owner.badge.setText(f"pyAML • {options['mode'].upper()} • {'WRITE' if connection.allow_writes else 'READ ONLY'}")
-        self.connection_result.setText("Connected")
-        self.inventory_result.setText(f"Inventory discovered — {len(connection.inventory)} quadrupole devices")
+        self.connection_result.setText(
+            "Connected — writes authorized" if connection.allow_writes else "Connected — read only"
+        )
+        self.inventory_result.setText(
+            f"Inventory verified — {len(connection.inventory)} quadrupole devices"
+        )
         self.authorization_result.setText("WRITE AUTHORIZED" if connection.allow_writes else "READ ONLY — writes not authorized")
         self.status.setText(f"Connected: {len(connection.inventory)} quadrupoles. No writes performed.")
         embedded = getattr(self.owner.review, "machine_mapping", {}) if self.owner.review else {}
@@ -199,6 +274,10 @@ class PyAMLCorrectionWidget(QWidget):
                     f"Embedded Complete Machine Mapping revalidated for this connection — "
                     f"{len(entries)} fitted magnet(s), {provenance}.")
                 self.mapping_label.setText("Embedded FIT Machine Mapping — revalidated")
+                self.owner.connection_guidance.setText(
+                    f"Inventory verified. Mapping verified for {len(entries)} fitted magnet(s). "
+                    "Magnet writes remain disabled unless separately authorized."
+                )
             except Exception as exc:
                 self.explicit = []
                 self._embedded_mapping_error = str(exc)

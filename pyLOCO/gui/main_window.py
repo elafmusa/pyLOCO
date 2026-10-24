@@ -6244,6 +6244,7 @@ class MainWindow(QMainWindow):
             "mat_variable": self.project.lattice.mat_variable or "",
         }
         proposal["machine_profile"] = {
+            "backend": "pyaml",
             "configuration_path": str(Path(configuration).resolve()),
             "configuration_sha256": file_sha256(configuration),
         }

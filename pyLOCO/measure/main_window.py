@@ -891,8 +891,10 @@ class MeasureMainWindow(QMainWindow):
             "sha256":self.reference_model.checksum_sha256,
             "element_count":self.reference_model.element_count,
             "mat_variable":self.reference_model.mat_variable or ""}
-        document["machine_profile"]={"configuration_path":str(configuration),
-            "configuration_sha256":session_file_sha256(configuration) if configuration.is_file() else ""}
+        document["machine_profile"]={"backend":"pyaml",
+            "configuration_path":str(configuration),
+            "configuration_sha256":session_file_sha256(configuration) if configuration.is_file() else "",
+            "mode":self.pyaml_fields["mode"].text().strip()}
         return document
 
     def _ensure_complete_machine_mapping(self):
