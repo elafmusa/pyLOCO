@@ -49,6 +49,7 @@ def test_fit_toolbar_reflows_secondary_controls_without_hiding_primary_actions(a
     assert window.search_button_action.isVisible()
     assert window.search_box_action is None
     assert not window.control_search.search_editor.isVisible()
+    assert not window.control_search.popup.isVisible()
     assert window.screenshot_controller.button.text() == "📷"
     assert window.screenshot_controller.button.accessibleName() == "Save Screenshot"
     assert window.appearance_button.accessibleName() == "Appearance"

@@ -197,6 +197,10 @@ class ControlSearchController(QObject):
         self.result_list.setMinimumHeight(120)
         self.result_list.setMaximumHeight(340)
         popup_layout.addWidget(self.result_list)
+        # Child widgets are visible by default when their parent window is
+        # shown.  Explicitly hide the empty results frame so it cannot appear
+        # at (0, 0) and cover the toolbar before the first search query.
+        self.popup.hide()
 
         self.search_box.textChanged.connect(self._query_changed)
         self.search_box.returnPressed.connect(self._activate_current)
