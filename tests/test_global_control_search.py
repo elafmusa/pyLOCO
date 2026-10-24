@@ -55,6 +55,7 @@ def test_fit_toolbar_reflows_secondary_controls_without_hiding_primary_actions(a
     assert window.control_search.search_button.accessibleName() == "Find Setting or Action"
 
     window.resize(900, 700); app.processEvents()
+    assert toolbar.height() == 64
     assert window.more_toolbar_action.isVisible()
     assert not window.appearance_toolbar_action.isVisible()
     assert not window.screenshot_toolbar_action.isVisible()
@@ -67,6 +68,9 @@ def test_fit_toolbar_reflows_secondary_controls_without_hiding_primary_actions(a
         button = toolbar.widgetForAction(action)
         assert action.isVisible() and button is not None and button.isVisible()
         assert button.geometry().right() <= toolbar.width()
+        assert button.geometry().top() >= 0
+        assert button.geometry().bottom() < toolbar.height()
+        assert button.height() >= button.sizeHint().height()
     assert window.continue_loco_action in toolbar.actions()
     tabs = window._workspace.tabBar()
     assert tabs.tabRect(tabs.count() - 1).right() <= tabs.width()

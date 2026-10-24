@@ -3608,6 +3608,12 @@ class MainWindow(QMainWindow):
         self.main_toolbar = toolbar
         toolbar.setObjectName("mainToolbar")
         toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setAllowedAreas(Qt.TopToolBarArea)
+        # Keep one stable row on macOS.  With the application-wide button
+        # padding, QToolBar's native height negotiation can otherwise leave
+        # its action widgets taller than the allocated toolbar and clip the
+        # upper half of their labels after a narrow-window resize.
         toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         for action in (self.new_project_action, self.open_project_action, self.save_project_action):
             toolbar.addAction(action)
@@ -3690,6 +3696,9 @@ class MainWindow(QMainWindow):
         self.header_brand.setCursor(Qt.PointingHandCursor); self.header_brand.setToolTip("About pyLOCO"); self.header_brand.clicked.connect(self._show_about_dialog)
         self.header_brand_action = toolbar.addWidget(self.header_brand)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
+        # QMainWindow resets a toolbar's minimum dimension while docking it,
+        # so apply the single-row height after addToolBar().
+        toolbar.setFixedHeight(64)
         run_button = toolbar.widgetForAction(self.run_loco_action)
         if run_button is not None:
             run_button.setObjectName("primaryToolbarAction")
@@ -3724,6 +3733,10 @@ class MainWindow(QMainWindow):
             brand_visible = self.width() >= 1500
             self.header_brand_action.setVisible(brand_visible)
             self.header_brand.setVisible(brand_visible)
+        # Recompute the native toolbar geometry after action visibility
+        # changes.  This is important on macOS, where hiding menu-backed
+        # widgets during resize does not always invalidate the row height.
+        self.main_toolbar.updateGeometry()
 
     def _screenshot_project_directory(self):
         """Return the directory of the active saved FIT project."""
