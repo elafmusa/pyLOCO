@@ -274,16 +274,14 @@ matched = 0
 for row in d["mappings"]:
     supplied = row.get("lattice_ordinal")
     if type(supplied) is int:
-        hits = find_hits(row)
-        if 0 <= supplied < len(ring) and supplied in hits:
-            # Explicit template ordinals take precedence over automatic
-            # matching, including intentional disambiguation of duplicates.
+        if 0 <= supplied < len(ring):
+            # An in-range explicit template ordinal is authoritative.
             row["lattice_ordinal"] = supplied
             matched += 1
             continue
         row["lattice_ordinal"] = None
         print(f"invalid ordinal: {{row['role']}} {{row.get('pyaml_device', row.get('measured_name'))}} "
-              f"(AT index {{supplied}} is not an exact identity match)")
+              f"(AT index {{supplied}} is outside a {{len(ring)}}-element lattice)")
         continue
     hits = find_hits(row)
     if len(hits) == 1:
@@ -318,7 +316,8 @@ def load_document(path: str | Path) -> dict[str, Any]:
 def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[str]], *,
                      lattice_path: str | Path,
                      configuration_path: str | Path | None = None,
-                     require_provenance: bool = True) -> dict[str, Any]:
+                     require_provenance: bool = True,
+                     accept_explicit_ordinals: bool = False) -> dict[str, Any]:
     """Rebuild trusted rows from source fields; never trust saved status."""
     lattice_path = Path(lattice_path).expanduser().resolve()
     configuration = Path(configuration_path).expanduser().resolve() if configuration_path else None
@@ -356,35 +355,44 @@ def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[s
             if type(ordinal) is int and 0 <= ordinal < len(ring):
                 lattice_name, element_class = _element_identity(ring[ordinal])
                 lattice_device = str(getattr(ring[ordinal], "Device", ""))
-                match_method, _identity = _identity_match_for_element(name, role, ring[ordinal])
-                compatible, representation = _role_compatibility(ring[ordinal], role)
+                explicit = accept_explicit_ordinals or source.get("identity_match") == "explicit_lattice_ordinal"
+                match_method, _identity = (("explicit_lattice_ordinal", name) if explicit else
+                    _identity_match_for_element(name, role, ring[ordinal]))
+                compatible, representation = ((True, "operator-supplied lattice ordinal") if explicit else
+                    _role_compatibility(ring[ordinal], role))
                 evidence = str(source.get("identity_evidence", "")).strip() if source else ""
-                lookup = _device_lookup(ring)
-                identity_hits, _ = _identity_hits(lookup, name, role)
-                ambiguous_identity = len(identity_hits) > 1 and ordinal in identity_hits
-                if not match_method:
+                if explicit:
+                    status, reason = "mapped", (
+                        f"Explicit zero-based AT index {ordinal} accepted from the loaded mapping for "
+                        f"{role_label} {name!r}."
+                    )
+                else:
+                    lookup = _device_lookup(ring)
+                    identity_hits, _ = _identity_hits(lookup, name, role)
+                    ambiguous_identity = len(identity_hits) > 1 and ordinal in identity_hits
+                if not explicit and not match_method:
                     status, reason = "invalid", (
                         f"No exact identity match: measured {role_label} {name!r}; selected AT index {ordinal} (0-based); "
                         f"FamName={lattice_name!r}; Device={lattice_device!r}. Exact Device, exact FamName, "
                         "and optional legacy -B1L/-A1L component interpretation all failed. Select the AT "
                         "element with the matching Device or FamName."
                     )
-                elif ambiguous_identity and not evidence:
+                elif not explicit and ambiguous_identity and not evidence:
                     status, reason = "ambiguous", (
                         f"The measured {role_label} identity {name!r} matches multiple AT elements. "
                         f"{_candidate_description(ring, identity_hits, role)}. Record authoritative "
                         "identity_evidence for the explicitly selected AT index; a manual index alone is not proof."
                     )
-                elif not compatible:
+                elif not explicit and not compatible:
                     status, reason = "invalid", (
                         f"Identity passed via {_match_label(match_method)} for measured {role_label} {name!r} at AT "
                         f"index {ordinal} (0-based; FamName={lattice_name!r}, Device={lattice_device!r}), but steering "
                         f"compatibility failed for {component or 'BPM'}: {representation}. Select an element "
                         "that supports the required steering plane."
                     )
-                elif (role, ordinal) in targets:
+                elif not explicit and (role, ordinal) in targets:
                     status, reason = "duplicate", f"AT index {ordinal} (0-based) is assigned more than once in role {role}"
-                else:
+                elif not explicit:
                     status, reason = "mapped", f"Identity: {_match_label(match_method)}; steering compatibility: {representation}"
                     if evidence: reason += f"; operator identity evidence: {evidence}"
                     targets.add((role, ordinal))

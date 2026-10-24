@@ -71,6 +71,7 @@ from .fit_workflow import (
 )
 from .measurement_mapping import (
     find_exact_device_mappings, inventory_fingerprint as measurement_inventory_fingerprint,
+    is_unvalidated_mapping_template,
     load_document as load_measurement_mapping_document, mapping_counts as measurement_mapping_counts,
     mapping_template as measurement_mapping_template, measurement_inventory,
     ordered_ordinals as measurement_mapping_ordered_ordinals,
@@ -6613,6 +6614,7 @@ class MainWindow(QMainWindow):
             lattice, lattice_path, _payload, inventory, configuration = self._measurement_mapping_context()
             source = load_measurement_mapping_document(filename)
             common=is_machine_mapping(source); document=measurement_projection(source) if common else source
+            template=is_machine_mapping_template(source) if common else is_unvalidated_mapping_template(source)
             if common:
                 wanted={(role,name) for role,names in inventory.items() for name in names}
                 document=deepcopy(document)
@@ -6620,10 +6622,11 @@ class MainWindow(QMainWindow):
                     if (row.get("role"),row.get("measured_name")) in wanted]
                 document["inventory"]={"sha256":measurement_inventory_fingerprint(inventory),
                     "counts":{role:len(names) for role,names in inventory.items()}}
-            strict = bool(document.get("reference_lattice") and document.get("inventory")) and not (common and is_machine_mapping_template(source))
+            strict = bool(document.get("reference_lattice") and document.get("inventory")) and not template
             mapping = validate_measurement_mapping(
                 document, lattice, inventory, lattice_path=lattice_path,
                 configuration_path=configuration, require_provenance=strict,
+                accept_explicit_ordinals=template,
             )
             mapping["mapping_provenance"] = f"loaded and revalidated from {Path(filename).name}"
             self._loaded_machine_mapping_document=source if common else None

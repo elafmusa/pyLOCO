@@ -119,11 +119,11 @@ def test_filled_template_ordinal_is_validated_and_used_before_name_search():
     reconciled=reconcile_configured(filled,proposal,ring=ring)
     row=reconciled["mappings"][0]
     assert row["lattice_ordinal"]==1
-    assert row["identity_match"]=="manual_exact_device"
+    assert row["identity_match"]=="explicit_lattice_ordinal"
     assert row["status"]=="proposed_explicit_ordinal"
 
 
-def test_invalid_filled_template_ordinal_is_not_silently_replaced():
+def test_filled_template_accepts_in_range_ordinal_without_name_matching():
     ring=[SimpleNamespace(FamName="OTHER",Device="OTHER"),
           SimpleNamespace(FamName="Q",Device="Q")]
     filled=template({}, {"normal_quadrupole":["Q"]})
@@ -131,8 +131,19 @@ def test_invalid_filled_template_ordinal_is_not_silently_replaced():
     proposal=complete_template(ring,{}, {"normal_quadrupole":["Q"]})
     assert proposal["mappings"][0]["lattice_ordinal"]==1
     row=reconcile_configured(filled,proposal,ring=ring)["mappings"][0]
+    assert row["lattice_ordinal"]==0
+    assert row["identity_match"]=="explicit_lattice_ordinal"
+    assert row["status"]=="proposed_explicit_ordinal"
+
+
+def test_filled_template_rejects_only_out_of_range_ordinal():
+    ring=[SimpleNamespace(FamName="Q",Device="Q")]
+    filled=template({}, {"normal_quadrupole":["Q"]})
+    filled["mappings"][0]["lattice_ordinal"]=4
+    row=reconcile_configured(filled,complete_template(ring,{}, {"normal_quadrupole":["Q"]}),
+                             ring=ring)["mappings"][0]
     assert row["lattice_ordinal"] is None
-    assert row["requested_lattice_ordinal"]==0
+    assert row["requested_lattice_ordinal"]==4
     assert row["status"]=="invalid_explicit_ordinal"
 
 

@@ -14,6 +14,7 @@ IDENTITY_MATCH_LABELS = {
     "exact_fam_name": "Exact AT FamName",
     "legacy_component_device": "Legacy suffix → exact AT Device",
     "legacy_component_fam_name": "Legacy suffix → exact AT FamName",
+    "explicit_lattice_ordinal": "Explicit AT index",
 }
 
 

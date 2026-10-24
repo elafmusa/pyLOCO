@@ -10,7 +10,8 @@ import pytest
 from PySide6.QtWidgets import QApplication, QDialog
 
 from pyLOCO.gui.measurement_mapping import (is_unvalidated_mapping_template,
-    load_document, mapping_counts, mapping_template, python_mapping_helper_script)
+    load_document, mapping_counts, mapping_template, python_mapping_helper_script,
+    validate_mapping)
 from pyLOCO.machine_mapping import (complete_template as complete_machine_mapping_template,
     pyaml_configuration_inventory, template as machine_mapping_template)
 
@@ -194,6 +195,20 @@ def test_filled_template_loads_as_unvalidated_then_gains_active_provenance(qapp,
     window.close()
 
 
+def test_explicit_template_ordinal_does_not_require_at_name_match(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"active lattice")
+    inventory={"bpm":["PYAML-BPM"],"horizontal_corrector":[],"vertical_corrector":[]}
+    document=mapping_template(inventory)
+    document["mappings"][0]["lattice_ordinal"]=0
+    ring=[SimpleNamespace(FamName="DIFFERENT",Device="ALSO-DIFFERENT")]
+    checked=validate_mapping(
+        document,ring,inventory,lattice_path=lattice,require_provenance=False,
+        accept_explicit_ordinals=True)
+    assert mapping_counts(checked)["mapped"]==1
+    assert checked["mappings"][0]["identity_match"]=="explicit_lattice_ordinal"
+    assert checked["mappings"][0]["lattice_ordinal"]==0
+
+
 def test_generated_script_preserves_missing_and_ambiguous_as_none(tmp_path):
     script=python_mapping_helper_script(tmp_path/"template.json",tmp_path/"ring.mat","betamodel",tmp_path/"output.json")
     compile(script,"mapping-helper.py","exec")
@@ -201,7 +216,7 @@ def test_generated_script_preserves_missing_and_ambiguous_as_none(tmp_path):
     assert 'if len(hits) == 1:' in script
     assert 'return hits' in script
     assert 'if type(supplied) is int:' in script
-    assert 'supplied in hits' in script
+    assert '0 <= supplied < len(ring)' in script
     assert 'invalid ordinal:' in script
 
 

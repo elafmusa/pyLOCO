@@ -1040,7 +1040,8 @@ class MeasureMainWindow(QMainWindow):
                 projected=measurement_projection(proposal)
                 if template:projected={**projected,"mapping_provenance":"Externally completed complete Machine Mapping template"}
                 full_checked=validate_mapping(projected,self.reference_model.ring,full_inventory,lattice_path=self.reference_model.path,
-                    configuration_path=configuration,require_provenance=False)
+                    configuration_path=configuration,require_provenance=False,
+                    accept_explicit_ordinals=template)
                 master=merge_measurement(proposal,full_checked)
                 wanted={(role,name) for role,names in inventory.items() for name in names}
                 selected={**full_checked,"mappings":[row for row in full_checked["mappings"]
@@ -1051,7 +1052,8 @@ class MeasureMainWindow(QMainWindow):
             else:
                 if template:projected={**projected,"mapping_provenance":"Externally completed mapping template, validated against the active lattice and inventory"}
                 checked=validate_mapping(projected,self.reference_model.ring,inventory,lattice_path=self.reference_model.path,
-                    configuration_path=configuration,require_provenance=bool(projected.get("schema")) and not template)
+                    configuration_path=configuration,require_provenance=bool(projected.get("schema")) and not template,
+                    accept_explicit_ordinals=template)
                 self.machine_mapping_document=merge_measurement(None,checked)
             counts=mapping_counts(checked); self.measurement_device_alignment=checked
             master_total,_roles=self._master_mapping_counts(self.machine_mapping_document)

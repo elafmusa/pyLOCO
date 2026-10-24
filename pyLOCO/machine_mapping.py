@@ -203,32 +203,27 @@ def reconcile_configured(document: dict[str,Any]|None, configured: dict[str,Any]
         prior=previous.get((row.get("role"),row.get("pyaml_device")),{})
         supplied=prior.get("lattice_ordinal")
         if template_source and type(supplied) is int and ring is not None:
-            # A filled template is an explicit operator proposal.  Validate
-            # that zero-based ordinal against the active lattice before doing
-            # anything with the automatically discovered proposal.  A bad
-            # ordinal remains visibly unresolved; it is never silently
-            # replaced by a different name-search result.
-            hits,method=_exact_lattice_match(ring,str(row.get("pyaml_device","") or ""),
-                                             str(row.get("role","") or ""))
+            # Device name and role select the configured row.  For a filled
+            # template, an in-range zero-based ordinal is authoritative.
             row=deepcopy(row)
-            if 0 <= supplied < len(ring) and supplied in hits:
+            if 0 <= supplied < len(ring):
                 element=ring[supplied]
                 row.update(lattice_ordinal=supplied,
                     lattice_fam_name=str(getattr(element,"FamName","") or ""),
                     lattice_device=str(getattr(element,"Device","") or ""),
                     lattice_common_name=str(getattr(element,"CommonName","") or ""),
                     physical_element_type=type(element).__name__,
-                    identity_match=f"manual_{method}",
+                    identity_match="explicit_lattice_ordinal",
                     identity_evidence=prior.get("identity_evidence","") or
-                        f"Explicit template ordinal {supplied} validated against the active lattice.",
+                        f"Explicit template ordinal {supplied} accepted within the active lattice.",
                     status="proposed_explicit_ordinal")
             else:
                 row.update(lattice_ordinal=None,requested_lattice_ordinal=supplied,
                     status="invalid_explicit_ordinal",
                     identity_evidence=(
-                        f"Explicit template ordinal {supplied} does not identify the exact "
-                        f"{row.get('role','device')} {row.get('pyaml_device','')!r} in the active lattice; "
-                        "automatic matching was not substituted."
+                        f"Explicit template ordinal {supplied} is outside the active "
+                        f"{len(ring)}-element lattice for {row.get('role','device')} "
+                        f"{row.get('pyaml_device','')!r}."
                     ))
         elif row.get("status")=="ambiguous" and type(supplied) is int \
                 and prior["lattice_ordinal"] in row.get("candidate_ordinals",()):
