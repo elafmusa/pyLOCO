@@ -1834,7 +1834,13 @@ class MainWindow(QMainWindow):
                     "Preview the selected Normal Quadrupole AT indices and copy compatible elements "
                     "into the independent Quadrupole Tilts selection."
                 )
-                copy_button.clicked.connect(self.copy_normal_quadrupoles_to_tilts)
+                # QPushButton.clicked emits a checked boolean.  Do not pass that
+                # value into ``mode``: an ordinary GUI click must open the
+                # Replace/Add/Cancel preview, while explicit string modes remain
+                # available to tests and other programmatic callers.
+                copy_button.clicked.connect(
+                    lambda checked=False: self.copy_normal_quadrupoles_to_tilts()
+                )
                 row.addWidget(copy_button, 0, Qt.AlignVCenter)
                 self.copy_quadrupoles_to_tilts_button = copy_button
             if key in {"normal_quadrupole_ords", "skew_quadrupole_ords", "quadrupole_tilt_ords"}:
@@ -5923,6 +5929,12 @@ class MainWindow(QMainWindow):
     @Slot()
     def copy_normal_quadrupoles_to_tilts(self, mode: str | None = None) -> None:
         """Copy compatible normal-quadrupole ordinals to the independent tilt list."""
+
+        # A Qt ``clicked(bool)`` signal may reach this public slot directly.
+        # Treat its checked state as an interactive invocation, never as a copy
+        # mode.  Only the explicit strings below select non-interactive behavior.
+        if isinstance(mode, bool):
+            mode = None
 
         elements = self.project.loco_config.machine_elements
         proposed = list(map(int, elements.normal_quadrupole_ords))

@@ -114,3 +114,19 @@ def test_copy_normal_quadrupoles_to_tilts_is_independent_and_persistent(app, mon
     assert reopened.selected_ords == [0, 1, 2]
     assert "Copied from Normal Quadrupoles" in reopened.provenance_summary.text()
     reopened.close(); window.project.modified = False; window.close()
+
+
+def test_copy_normal_quadrupoles_button_opens_interactive_preview(app, monkeypatch):
+    window = MainWindow()
+    elements = window.project.loco_config.machine_elements
+    elements.normal_quadrupole_ords = [0]
+    monkeypatch.setattr(window, "_load_current_lattice", lambda: [Quadrupole("QD3J")])
+    monkeypatch.setattr(QMessageBox, "exec", lambda _box: QMessageBox.Cancel)
+    window.copy_quadrupoles_to_tilts_button.click()
+    assert elements.quadrupole_tilt_ords == []
+
+    # Also protect callers that connect clicked(bool) directly to the slot.
+    window.copy_normal_quadrupoles_to_tilts(False)
+    assert elements.quadrupole_tilt_ords == []
+    window.project.modified = False
+    window.close()
