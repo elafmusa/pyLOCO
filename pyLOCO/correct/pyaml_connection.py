@@ -386,7 +386,16 @@ def resolve_mapping(review, inventory, explicit=()):
     for entry in inventory:
         lattice_names = entry.get("lattice_names") or (entry.get("lattice_name"),)
         if isinstance(lattice_names, str): lattice_names = (lattice_names,)
-        for identity in lattice_names:
+        # EBS pyAML controls commonly append the integrated-strength
+        # component to the exact AT Device identity.  Treat only that
+        # terminal, role-specific component as an additional exact identity.
+        control_name=str(entry.get("name") or "")
+        suffix="-B2L" if entry.get("family")==FAMILIES[0] else \
+               "-A2L" if entry.get("family")==FAMILIES[1] else ""
+        configured_identities=list(lattice_names)
+        if suffix and control_name.endswith(suffix):
+            configured_identities.append(control_name[:-len(suffix)])
+        for identity in configured_identities:
             if isinstance(identity, str) and identity and not any(char in identity for char in "*?[](),@#"):
                 key=(entry["family"],identity)
                 if entry["name"] not in identities[key]:identities[key].append(entry["name"])

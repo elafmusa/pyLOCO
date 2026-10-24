@@ -1524,11 +1524,19 @@ class CorrectMainWindow(QMainWindow):
             "mappings": entries,
         }
         if pyaml:
+            resolved={}
+            connection=getattr(self.pyaml_workspace,"connection",None)
+            if connection:
+                from .pyaml_connection import resolve_mapping as resolve_pyaml_mapping
+                resolved={(row["correction_type"],row["lattice_ordinal"],row["lattice_name"]):row.get("magnet_name")
+                          for row in resolve_pyaml_mapping(self.review,connection.inventory)
+                          if row.get("status")=="mapped"}
             template_document=editable_machine_mapping_template({
                 "schema":MACHINE_MAPPING_SCHEMA,"schema_version":MACHINE_MAPPING_VERSION,
                 "mappings":[{
                     "role":item.correction_type,
-                    "pyaml_device":item.control_name or "",
+                    "pyaml_device":item.control_name or resolved.get(
+                        (item.correction_type,item.lattice_ordinal,item.name),"") or "",
                     "lattice_ordinal":item.lattice_ordinal,
                 } for item in self.review.items
                   if item.correction_type in {"normal_quadrupole","skew_quadrupole"}],

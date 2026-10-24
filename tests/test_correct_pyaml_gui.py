@@ -237,7 +237,7 @@ def test_shared_mapping_import_export(window, setup, tmp_path, monkeypatch):
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
 
 
-def test_unmapped_template_is_saved_but_not_loaded_or_trusted(window, setup, tmp_path, monkeypatch):
+def test_template_prefills_exact_connected_targets_but_is_not_loaded_or_trusted(window, setup, tmp_path, monkeypatch):
     widget = connect_workspace(window, setup)
     for item in setup.review.items:
         item.control_name = None
@@ -246,7 +246,7 @@ def test_unmapped_template_is_saved_but_not_loaded_or_trusted(window, setup, tmp
     monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(path), ""))
     window.generate_mapping_template()
     data = __import__("json").loads(path.read_text())
-    assert [row["pyaml_device"] for row in data["mappings"]] == ["", "", ""]
+    assert [row["pyaml_device"] for row in data["mappings"]] == ["M1", "M2", "S1"]
     assert [row["role"] for row in data["mappings"]] == ["normal_quadrupole","normal_quadrupole","skew_quadrupole"]
     assert data["schema"] == "pyloco.machine_mapping"
     assert all(set(row)=={"pyaml_device","role","lattice_ordinal"} for row in data["mappings"])
