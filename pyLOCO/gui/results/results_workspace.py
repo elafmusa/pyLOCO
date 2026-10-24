@@ -238,6 +238,10 @@ class ResultsWorkspace(QWidget):
         if not path.exists():
             self.loader = None; self.run_status_label.setText(f"Saved results directory is unavailable: {path}"); return
         self.base_loader = ResultsLoader(path, runtime=runtime)
+        if not workflow_stage:
+            self.files.set_workflow_stages([
+                {"index": 1, "name": "FIT run", "path": path},
+            ])
         entries = self.base_loader.iteration_entries
         self.iteration_selector.blockSignals(True)
         self.iteration_selector.clear()
@@ -287,6 +291,11 @@ class ResultsWorkspace(QWidget):
         self.stage_selector.setCurrentIndex(selected)
         self.stage_selector.blockSignals(False)
         self.stage_selector_label.show(); self.stage_selector.show()
+        self.files.set_workflow_stages([
+            {"index": position + 1, "name": checkpoint.stage_name,
+             "path": checkpoint.results_dir}
+            for position, checkpoint in enumerate(checkpoints)
+        ])
         self._select_stage(selected)
 
     def _select_stage(self, index: int) -> None:

@@ -399,3 +399,97 @@ def test_results_workspace_switches_workflow_stages_and_their_iterations(tmp_pat
     workspace.iteration_selector.setCurrentIndex(0)
     assert workspace.loader.iteration == 0
     workspace.close()
+
+
+def test_files_view_browses_and_exports_every_stage_and_iteration(tmp_path, monkeypatch):
+    """The Files tab keeps stage-final and iteration artifacts associated."""
+    monkeypatch.setitem(sys.modules, "at", types.SimpleNamespace(
+        save_lattice=lambda ring, path: Path(path).write_text(str(ring.scale))))
+    request = _request(tmp_path)
+    stage_dirs = []
+    for stage_number in (1, 2):
+        stage_dir = tmp_path / f"stage-{stage_number}"
+        stage_dir.mkdir()
+        for number in (0, 1):
+            _save_iteration_snapshot(
+                stage_dir, _record(number, [stage_number, number], 1 + number / 10),
+                diagnostics={"iteration": number, "chi2_after": 1.0 / (number + 1)},
+                reference_ring=_Ring(1.0), measured={"dispersion_supplied": False},
+                include_dispersion=False, bpm_ords=[0, 1], rf_step=1.0,
+                rf_frequency=1.0, momentum_compaction=1.0, request=request)
+        _write_iteration_manifest(stage_dir, run_status="completed")
+        (stage_dir / "ring_pyloco.mat").write_text(f"stage {stage_number}")
+        (stage_dir / "loco_results.npz").write_bytes(
+            (stage_dir / "iterations" / "iteration_001" / "loco_results.npz").read_bytes())
+        (stage_dir / "optics_results.npz").write_bytes(
+            (stage_dir / "iterations" / "iteration_001" / "optics_results.npz").read_bytes())
+        for name in ("fit_dict.pkl", "fit_results.npy", "blocks.pkl"):
+            (stage_dir / name).touch()
+        stage_dirs.append(stage_dir)
+
+    from pyLOCO.gui.results.files_view import FilesView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    view = FilesView()
+    view.set_workflow_stages([
+        {"index": 1, "name": "Alignment", "path": stage_dirs[0]},
+        {"index": 2, "name": "Optics", "path": stage_dirs[1]},
+    ])
+    assert view.stage_selector.itemText(0) == "All stages"
+    assert {record.stage for record in view.records} == {1, 2}
+    for stage in (1, 2):
+        for iteration in (0, 1):
+            scoped = [record for record in view.records
+                      if record.stage == stage and record.iteration == iteration]
+            assert {record.category for record in scoped} >= {
+                "Fitted lattices", "ORM", "Optics", "Parameters", "Diagnostics"}
+            lattice = next(record for record in scoped if record.category == "Fitted lattices")
+            assert lattice.path == stage_dirs[stage - 1] / "iterations" / f"iteration_{iteration:03d}" / "fitted_lattice.mat"
+    assert any(record.artifact == "Full Jacobian (optional)" and
+               record.status == "Not saved (optional)" for record in view.records)
+
+    view.stage_selector.setCurrentIndex(view.stage_selector.findData(2))
+    view.iteration_selector.setCurrentIndex(view.iteration_selector.findData(1))
+    destination = view.export_filtered_records(tmp_path / "exported")
+    manifest = json.loads((destination / "export_manifest.json").read_text())
+    assert manifest["artifacts"]
+    assert {item["stage"] for item in manifest["artifacts"]} == {2}
+    assert {item["iteration"] for item in manifest["artifacts"]} == {1}
+    assert (destination / "stage-02" / "iteration-001" / "fitted-lattices" /
+            "fitted_lattice.mat").is_file()
+    view.close()
+
+
+def test_workflow_reopen_restores_complete_files_browser(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "at", types.SimpleNamespace(
+        save_lattice=lambda ring, path: Path(path).write_text(str(ring.scale))))
+    request = _request(tmp_path)
+    stage_dirs = []
+    for stage_number in (1, 2):
+        stage_dir = tmp_path / f"reopen-stage-{stage_number}"
+        stage_dir.mkdir()
+        _save_iteration_snapshot(
+            stage_dir, _record(0, [stage_number, 0], 1.0),
+            diagnostics={"iteration": 0, "chi2_after": 1.0}, reference_ring=_Ring(1.0),
+            measured={"dispersion_supplied": False}, include_dispersion=False,
+            bpm_ords=[0, 1], rf_step=1.0, rf_frequency=1.0,
+            momentum_compaction=1.0, request=request)
+        _write_iteration_manifest(stage_dir, run_status="completed")
+        (stage_dir / "run_request.json").write_text(json.dumps({"backend_mapping": request.backend_mapping}))
+        (stage_dir / "summary.json").write_text(json.dumps({"chi2_history": [1.0]}))
+        for name in ("ring_pyloco.mat", "fit_dict.pkl", "fit_results.npy", "blocks.pkl"):
+            (stage_dir / name).touch()
+        stage_dirs.append(stage_dir)
+    from pyLOCO.gui.fit_workflow import FitRunSession, StageCheckpoint
+    checkpoints = [StageCheckpoint(i, f"Stage {i + 1}", str(path), "ring_pyloco.mat",
+                                   "fit_dict.pkl", "fit_results.npy", {}, {}, "blocks.pkl", "summary.json")
+                   for i, path in enumerate(stage_dirs)]
+    session = FitRunSession({}, "ring.mat", "checksum", {}, {}, checkpoints).save(
+        tmp_path / "reopen-fit-run-session.json")
+    from pyLOCO.gui.results.results_workspace import ResultsWorkspace
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    workspace = ResultsWorkspace(); workspace.load_workflow_session(session)
+    assert workspace.files.stage_selector.count() == 3  # All + two completed stages
+    assert {record.stage for record in workspace.files.records} == {1, 2}
+    workspace.close()
