@@ -87,6 +87,21 @@ def test_discovery_and_identity_matching_not_position(setup):
     assert [row["magnet_name"] for row in rows] == ["S1", "M2", "M1"]
 
 
+def test_identity_matching_accepts_exact_at_device_and_backend_aliases(setup):
+    item = setup.review.items[0]
+    item.name = "QF6D"
+    item.metadata.update(lattice_fam_name="QF6D", lattice_device="srmag/m-qf6/c01-d")
+    setup.magnets["M1"].identity = "srmag/m-qf6/c01-d"
+    rows = resolve_mapping(setup.review, setup.connection.discover())
+    assert rows[0]["status"] == "mapped"
+    assert rows[0]["magnet_name"] == "M1"
+
+    setup.magnets["M1"].identity = ["unrelated-alias", "srmag/m-qf6/c01-d"]
+    rows = resolve_mapping(setup.review, setup.connection.discover())
+    assert rows[0]["status"] == "mapped"
+    assert rows[0]["magnet_name"] == "M1"
+
+
 @pytest.mark.parametrize("names", [["M1", "M1"], ["M1", "S1"]])
 def test_duplicate_arrays_rejected(setup, names):
     setup.machine.magnets["Quads"].members = names

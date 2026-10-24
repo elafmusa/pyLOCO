@@ -89,7 +89,14 @@ class PyAMLCorrectionConnection:
                 seen.add(name)
                 magnet = self.machine.magnet.get(name)
                 identity = magnet.get_lattice_names() or name
-                inventory.append(dict(name=name, family=family, lattice_name=identity))
+                if isinstance(identity, str):
+                    identities = [identity]
+                else:
+                    try: identities = [str(value) for value in identity if str(value)]
+                    except TypeError: identities = [str(identity)]
+                identities = list(dict.fromkeys(identities)) or [name]
+                inventory.append(dict(name=name, family=family,
+                                      lattice_name=identities[0], lattice_names=identities))
         return inventory
 
     def identity(self):
@@ -368,9 +375,12 @@ def resolve_mapping(review, inventory, explicit=()):
     targets = {row["name"]: row for row in inventory}
     identities = defaultdict(list)
     for entry in inventory:
-        identity = entry["lattice_name"]
-        if isinstance(identity, str) and not any(char in identity for char in "*?[](),@#"):
-            identities[(entry["family"], identity)].append(entry["name"])
+        lattice_names = entry.get("lattice_names") or (entry.get("lattice_name"),)
+        if isinstance(lattice_names, str): lattice_names = (lattice_names,)
+        for identity in lattice_names:
+            if isinstance(identity, str) and identity and not any(char in identity for char in "*?[](),@#"):
+                key=(entry["family"],identity)
+                if entry["name"] not in identities[key]:identities[key].append(entry["name"])
     overrides = {}
     used = set()
     for row in explicit:
@@ -402,7 +412,17 @@ def resolve_mapping(review, inventory, explicit=()):
     rows = []
     for item in review.items:
         key = item_identity(item)
-        matches = identities[(item.correction_type, item.name)]
+        candidate_identities = list(dict.fromkeys(str(value) for value in (
+            item.name,
+            item.metadata.get("lattice_fam_name"),
+            item.metadata.get("lattice_device"),
+            item.metadata.get("at_device"),
+            item.metadata.get("lattice_common_name"),
+        ) if value))
+        matches = list(dict.fromkeys(
+            name for identity in candidate_identities
+            for name in identities[(item.correction_type, identity)]
+        ))
         name = overrides.get(key)
         source = "explicit" if name else "identity"
         if not name and len(matches) == 1:

@@ -6534,7 +6534,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def create_measurement_mapping_template(self) -> bool:
         try:
-            _lattice, _lattice_path, _payload, inventory, _configuration = self._measurement_mapping_context()
+            lattice, lattice_path, _payload, _inventory, configuration = self._measurement_mapping_context()
+            document = deepcopy(self._find_complete_machine_mapping(
+                lattice, lattice_path, configuration
+            ))
         except Exception as exc:
             QMessageBox.warning(self, "Mapping template unavailable", str(exc)); return False
         filename = QFileDialog.getSaveFileName(
@@ -6544,9 +6547,16 @@ class MainWindow(QMainWindow):
         if not filename: return False
         target = Path(filename).expanduser()
         if target.suffix.lower() != ".json": target = target.with_suffix(".json")
-        target.resolve().write_text(json.dumps(machine_mapping_template(inventory), indent=2), encoding="utf-8")
+        document["template"] = True
+        document["description"] = (
+            "Complete Machine Mapping proposal for every supported device in the selected pyAML "
+            "configuration. Exact AT Device/FamName matches are prefilled. Set lattice_ordinal "
+            "only for unresolved or ambiguous rows; pyLOCO revalidates every row on load."
+        )
+        target.resolve().write_text(json.dumps(document, indent=2), encoding="utf-8")
         self.measurement_mapping_feedback.setText(
-            f"Template saved — not validated: {target.name}. Fill in only lattice_ordinal for unresolved devices, then load it."
+            f"Complete template saved — not validated: {target.name}. Exact matches include AT and pyAML names; "
+            "fill only unresolved lattice_ordinal values, then load it."
         )
         self._last_measurement_mapping_template = target.resolve()
         return True

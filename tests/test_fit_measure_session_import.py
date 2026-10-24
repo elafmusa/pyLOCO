@@ -139,3 +139,33 @@ def test_fit_mapping_actions_include_python_helper(qapp):
     assert window.machine_mapping_details_button.text()=="Show Complete Machine Mapping…"
     assert window.save_measurement_mapping_button.text()=="Save validated Machine Mapping…"
     window.project.modified=False; window.close()
+
+
+def test_fit_machine_mapping_template_contains_complete_prefilled_identities(qapp,tmp_path,monkeypatch):
+    target=tmp_path/"machine-mapping-template.json"
+    lattice_path=tmp_path/"ring.mat"; lattice_path.write_bytes(b"ring")
+    configuration=tmp_path/"machine.yaml"; configuration.write_text("devices: []")
+    master={
+        "schema":"pyloco.machine_mapping","schema_version":3,"template":False,
+        "mappings":[
+            {"role":"normal_quadrupole","pyaml_device":"machine/q1-B2L",
+             "lattice_ordinal":7,"lattice_fam_name":"Q1","lattice_device":"machine/q1",
+             "physical_element_type":"Quadrupole","component":"B2L","unit":"m^-1",
+             "status":"proposed_unique_exact_match","identity_match":"legacy_suffix_exact_device"},
+        ],
+    }
+    window=MainWindow()
+    monkeypatch.setattr(window,"_measurement_mapping_context",
+                        lambda:([object()],lattice_path,{}, {},configuration))
+    monkeypatch.setattr(window,"_find_complete_machine_mapping",
+                        lambda *_args:master)
+    monkeypatch.setattr("pyLOCO.gui.main_window.QFileDialog.getSaveFileName",
+                        lambda *_args,**_kwargs:(str(target),"JSON mapping (*.json)"))
+    assert window.create_measurement_mapping_template()
+    saved=__import__("json").loads(target.read_text())
+    assert saved["template"] is True
+    assert saved["mappings"]==master["mappings"]
+    assert saved["mappings"][0]["lattice_fam_name"]=="Q1"
+    assert saved["mappings"][0]["lattice_device"]=="machine/q1"
+    assert saved["mappings"][0]["pyaml_device"]=="machine/q1-B2L"
+    window.project.modified=False; window.close()
