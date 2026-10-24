@@ -2611,15 +2611,6 @@ class MeasureMainWindow(QMainWindow):
             for label in self.role_status_labels.values():label.setText("Missing")
             for actions in self.role_manage_actions.values():actions["load"].setEnabled(True); actions["replace"].setEnabled(False); actions["remove"].setEnabled(False)
             return
-        kind="ORM" if isinstance(self.result,ORMResult) else "Dispersion" if isinstance(self.result,DispersionResult) else "BPM noise" if isinstance(self.result,BpmNoiseResult) else "Restored session"
-        if kind=="Restored session" and self.saved_measurement_path is not None:
-            try:kind={"orm":"ORM","dispersion":"Dispersion","bpm_noise":"BPM noise"}.get(validate_measurement_file(self.saved_measurement_path)["kind"],kind)
-            except Exception:pass
-        restoration="Not applicable"
-        if isinstance(self.result,DispersionResult):restoration=self.result.restoration_status.replace("_"," ").title()
-        elif isinstance(self.result,ORMResult):
-            statuses=tuple(self.result.restoration_status)
-            restoration="All correctors restored" if statuses and all(status in {"restored","confirmed_by_operator"} for status in statuses) else "Check restoration status"
         complete=False
         try:
             session=load_session(self.saved_session_path,validate_files=False)
@@ -2629,6 +2620,14 @@ class MeasureMainWindow(QMainWindow):
         except Exception as exc:
             roles=set(); completeness=f"Session could not be read: {exc}"
             session=None
+        latest_role=session.files[-1].role if session is not None and session.files else None
+        kind={"orm":"ORM","dispersion":"Dispersion","bpm_noise":"BPM noise"}.get(latest_role,"Restored session")
+        latest_result=self._measurement_results.get(latest_role) if latest_role is not None else None
+        restoration="Not applicable"
+        if isinstance(latest_result,DispersionResult):restoration=latest_result.restoration_status.replace("_"," ").title()
+        elif isinstance(latest_result,ORMResult):
+            statuses=tuple(latest_result.restoration_status)
+            restoration="All correctors restored" if statuses and all(status in {"restored","confirmed_by_operator"} for status in statuses) else "Check restoration status"
         has_measurements=bool(roles)
         self.review_validate_button.setEnabled(has_measurements); self.review_open_button.setEnabled(has_measurements)
         self.session_toolbar_buttons["Open in FIT"].setEnabled(has_measurements)
@@ -3818,6 +3817,13 @@ class MeasureMainWindow(QMainWindow):
         self._fresh_measurement_session = False
         self.saved_measurement_path=measurement; self.saved_session_path=manifest
         self._measurement_results[role]=result; self._measurement_result_paths[role]=measurement
+        # A freshly written result is already resident in memory and the file
+        # has just passed schema validation above.  Keep Review & Save's
+        # validation/restoration cache in sync without requiring a close/open
+        # cycle merely to display the correct status.
+        self._measurement_restore_status[role]={
+            "present":True,"validated":True,"restored":True,"error":""
+        }
         self._session_dirty=True; self._update_session_title(); self.paths.setText(f"SAVED ✓\nMeasurement file: {measurement}\nSession manifest: {manifest}"); self.paths.setToolTip(str(measurement)); self.paths.setObjectName("savedPath"); self.paths.style().unpolish(self.paths); self.paths.style().polish(self.paths); self.open_output_button.setEnabled(True); self._refresh_review_page(); self.statusBar().showMessage(f"Saved: {measurement}")
 
     def _stats(self,values):

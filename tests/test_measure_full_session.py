@@ -176,6 +176,24 @@ def test_gui_opens_full_session_disconnected_with_writes_disabled(tmp_path,monke
         window.close(); app.processEvents()
 
 
+def test_review_uses_latest_manifest_role_not_current_measurement_tab(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([])
+    manifest=source_session(tmp_path)
+    window=MeasureMainWindow()
+    monkeypatch.setattr(QMessageBox,"information",lambda *args:QMessageBox.Ok)
+    try:
+        window.open_full_measurement_session(manifest); app.processEvents()
+        # Opening/restoring selects the first available view for display, but
+        # the review summary must still report the newest manifest entry.
+        assert isinstance(window.result,BpmNoiseResult)
+        window._refresh_review_page()
+        assert "<b>Latest measurement</b> &nbsp; ORM" in window.review_details.text()
+        for label in ("BPM noise","Dispersion","ORM"):
+            assert f"<b>{label}</b>" in window.review_details.text()
+        assert all(status["validated"] for status in window._measurement_restore_status.values())
+    finally:window.close(); app.processEvents()
+
+
 def test_full_session_restores_requested_write_preferences_without_authorization(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([])
     configured,_=project(tmp_path); configured.metadata["pyaml_options"].update(requested_magnet_writes=True,requested_rf_writes=True)

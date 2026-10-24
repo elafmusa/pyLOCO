@@ -112,6 +112,10 @@ def test_schema_session_and_main_importer(app,tmp_path):
     manifest=tmp_path/"measurement-session.pyloco-session.json"; save_session(manifest,MeasurementSession("complete",(SessionFile("bpm_noise",noise.name),SessionFile("dispersion",dispersion.name))),validate_files=False)
     window=MeasureMainWindow(devices=bpms,adapter=adapter,horizontal_correctors=h,vertical_correctors=v); window.measurement_type.setCurrentIndex(2); window.output_directory.setText(str(tmp_path)); window.measurement_name.setText("orm"); window._save_result(result)
     info=validate_measurement_file(window.saved_measurement_path); assert info["kind"]=="orm"
+    assert window._measurement_restore_status["orm"]=={
+        "present":True,"validated":True,"restored":True,"error":""
+    }
+    assert "<b>Latest measurement</b> &nbsp; ORM" in window.review_details.text()
     with h5py.File(window.saved_measurement_path,"r") as f:
         assert f["response_matrix"].shape==(8,5); assert f.attrs["response_matrix_unit"]=="m/rad"; assert f["raw/orbit_plus_m"].shape==(5,3,8); assert len(f["setpoints/restoration_status"])==5
         np.testing.assert_allclose(f["setpoints/intermediate_restored"][:],f["setpoints/original"][:],rtol=0,atol=1e-12)
