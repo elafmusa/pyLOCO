@@ -194,6 +194,32 @@ def test_review_uses_latest_manifest_role_not_current_measurement_tab(tmp_path,m
     finally:window.close(); app.processEvents()
 
 
+def test_open_in_fit_promotes_measurement_manifest_to_full_session(tmp_path,monkeypatch):
+    app=QApplication.instance() or QApplication([])
+    manifest=source_session(tmp_path)
+    measurements=load_session(manifest).resolve(manifest)
+    before={role:file_sha256(path) for role,path in measurements.items()}
+    calls=[]
+    monkeypatch.setattr(QMessageBox,"information",lambda *args:QMessageBox.Ok)
+    monkeypatch.setattr("pyLOCO.measure.main_window.launch_suite_application",
+        lambda application,*args:(calls.append((application,args)) or (True,"process 42")))
+    window=MeasureMainWindow()
+    try:
+        window.open_full_measurement_session(manifest); app.processEvents()
+        window._selection_states["orm"]["bpm"]["resolved_names"]=["B1","B2"]
+        window._selection_states["orm"]["hcor"]["resolved_names"]=["H1"]
+        window._selection_states["orm"]["vcor"]["resolved_names"]=["V1"]
+        window.explain_open()
+        session=load_session(manifest,validate_files=True)
+        assert "full_measure_session" in session.metadata
+        restored=load_measure_project(manifest.parent/"measure-project.pyloco-measure.json")
+        assert restored.measurement_selections["orm"]["hcor"]["resolved_names"]==["H1"]
+        assert restored.measurement_selections["orm"]["vcor"]["resolved_names"]==["V1"]
+        assert calls==[("fit",("--measurement-session",str(manifest.resolve())))]
+        assert {role:file_sha256(path) for role,path in measurements.items()}==before
+    finally:window.close(); app.processEvents()
+
+
 def test_full_session_restores_requested_write_preferences_without_authorization(tmp_path,monkeypatch):
     app=QApplication.instance() or QApplication([])
     configured,_=project(tmp_path); configured.metadata["pyaml_options"].update(requested_magnet_writes=True,requested_rf_writes=True)

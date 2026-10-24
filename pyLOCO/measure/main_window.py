@@ -4615,6 +4615,15 @@ class MeasureMainWindow(QMainWindow):
         )
 
     def explain_open(self):
+        # Acquisition initially creates a lightweight measurement manifest.
+        # Before handing it to FIT, persist the active Measure project,
+        # selections, lattice provenance, and complete Machine Mapping into
+        # that same manifest.  HDF5 files are referenced in place and are not
+        # copied or rewritten.
+        if hasattr(self,"_persist_current_full_session"):
+            try:self._persist_current_full_session()
+            except Exception as exc:
+                QMessageBox.warning(self,"Cannot prepare session for FIT",str(exc)); return
         session=load_session(self.saved_session_path)
         try:ok,detail=launch_suite_application("fit","--measurement-session",str(self.saved_session_path))
         except Exception as exc:QMessageBox.warning(self,"Cannot open pyLOCO Fit",str(exc)); return
@@ -4720,23 +4729,29 @@ class MeasureMainWindow(QMainWindow):
                 save_session(target,MeasurementSession(session_id,(),{"created":datetime.now().astimezone().isoformat()}))
             except Exception as exc:QMessageBox.warning(self,"Cannot create session",str(exc)); return False
             self.saved_session_path=target; self._fresh_measurement_session=False; created_manifest=True
-        try:
-            serialized_mapping=(self._ensure_complete_machine_mapping()
-                if self.machine_mapping_document is not None or self.measurement_device_alignment is not None else None)
-            bundle=save_full_session_state(self.saved_session_path,project=self._collect_project(),
-                reference_lattice=self.reference_model.path if self.reference_model is not None else None,
-                reference_mat_variable=self.reference_model.mat_variable if self.reference_model is not None else "",
-                reference_element_count=len(self.reference_model.ring) if self.reference_model is not None else None,
-                mapping=serialized_mapping)
+        try:bundle=self._persist_current_full_session()
         except Exception as exc:
             if created_manifest:
                 self.saved_session_path.unlink(missing_ok=True); self.saved_session_path=None; self._fresh_measurement_session=True
             QMessageBox.warning(self,"Cannot save session",str(exc)); return False
+        self.statusBar().showMessage(f"Saved session workspace without copying measurement HDF5 files: {bundle.manifest_path}")
+        return True
+
+    def _persist_current_full_session(self):
+        """Persist the active handoff state without modifying measurement data."""
+        if self.saved_session_path is None:
+            raise ValueError("No active measurement session is available to save.")
+        serialized_mapping=(self._ensure_complete_machine_mapping()
+            if self.machine_mapping_document is not None or self.measurement_device_alignment is not None else None)
+        bundle=save_full_session_state(self.saved_session_path,project=self._collect_project(),
+            reference_lattice=self.reference_model.path if self.reference_model is not None else None,
+            reference_mat_variable=self.reference_model.mat_variable if self.reference_model is not None else "",
+            reference_element_count=len(self.reference_model.ring) if self.reference_model is not None else None,
+            mapping=serialized_mapping)
         self.project=bundle.project; self.project_path=bundle.project_path; self._pending_full_bundle=bundle
         self._measurement_result_paths={role:bundle.measurement_paths.get(role) for role in ("bpm_noise","dispersion","orm")}
         self._session_dirty=False; self._update_session_title(); self._refresh_review_page(); self._update_workflow_tabs()
-        self.statusBar().showMessage(f"Saved session workspace without copying measurement HDF5 files: {bundle.manifest_path}")
-        return True
+        return bundle
 
     def save_session_as(self):
         return self.save_active_session()
