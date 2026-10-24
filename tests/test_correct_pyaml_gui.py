@@ -283,6 +283,43 @@ def test_automatic_mapping_reuses_authoritative_profile_mapping(window, setup, t
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
 
 
+def test_find_mapping_reuses_embedded_complete_mapping_by_ordinal(window, setup):
+    from pyLOCO.machine_mapping import entry
+
+    widget = connect_workspace(window, setup)
+    rows = [
+        entry(
+            role=item.correction_type,
+            pyaml_device=target,
+            lattice_ordinal=item.lattice_ordinal,
+            lattice_fam_name=f"AT-{item.name}",
+        )
+        for item, target in zip(setup.review.items, ("M1", "M2", "S1"))
+    ]
+    setup.review.machine_mapping = {
+        "schema": "pyloco.machine_mapping",
+        "schema_version": 3,
+        "mappings": rows,
+    }
+    # Neither FIT display names nor backend lattice aliases match. The saved
+    # AT ordinals and exact connected control identities are sufficient.
+    for index, item in enumerate(setup.review.items):
+        item.name = f"FIT-ALIAS-{index}"
+    for row in setup.connection.inventory:
+        row["lattice_name"] = "unmatched"
+        row["lattice_names"] = ("unmatched",)
+
+    widget.clear_mapping()
+    widget.refresh()
+
+    assert len(widget.explicit) == 3
+    assert [item.control_name for item in setup.review.items] == ["M1", "M2", "S1"]
+    assert all(item.metadata["mapping_status"] == "mapped"
+               for item in setup.review.items)
+    assert "matched by AT ordinal" in window.automatic_mapping_feedback.text()
+    assert all(not magnet.strength.writes for magnet in setup.magnets.values())
+
+
 def test_mapping_help_and_details_are_self_explanatory(window, setup):
     widget = connect_workspace(window, setup)
     widget.refresh()

@@ -344,6 +344,37 @@ class PyAMLCorrectionWidget(QWidget):
         self.explicit = []; self.mapping_path = None; self.mapping_hash = None; self.owner.mapping_path = None
         self._embedded_mapping_error = None
         self.owner.mapping_action_message = "automatic"
+        # Prefer the Complete Machine Mapping carried by FIT. Its explicit AT
+        # ordinals identify the fitted sources; resolve_mapping still verifies
+        # every target against the currently connected pyAML inventory.
+        embedded = getattr(self.owner.review, "machine_mapping", {}) if self.owner.review else {}
+        if is_shared_machine_mapping(embedded) and self.owner.review and self.connection:
+            proposed = correction_projection(embedded)
+            try:
+                rows = resolve_mapping(self.owner.review, self.connection.inventory, proposed)
+                unresolved = [row for row in rows
+                              if row["included"] and row["status"] != "mapped"]
+                if not unresolved:
+                    wanted = {(item.correction_type, item.lattice_ordinal)
+                              for item in self.owner.review.items}
+                    self.explicit = [row for row in proposed
+                                     if (row.get("correction_type"),
+                                         row.get("lattice_ordinal")) in wanted]
+                    self.mapping_label.setText(
+                        "Embedded Complete Machine Mapping — verified automatically"
+                    )
+                    self.owner.mapping_auto_feedback = (
+                        f"Mapping completed — {len(rows)} fitted magnet(s) matched by "
+                        "AT ordinal and validated against the connected pyAML inventory."
+                    )
+                    self.owner.automatic_mapping_feedback.setText(
+                        self.owner.mapping_auto_feedback
+                    )
+                    self._rendered = None
+                    self.refresh()
+                    return
+            except Exception as exc:
+                self._embedded_mapping_error = str(exc)
         exact = resolve_mapping(self.owner.review, self.connection.inventory) if self.owner.review and self.connection else []
         exact_unresolved = [row for row in exact if row["included"] and row["status"] != "mapped"]
         if not exact_unresolved:
