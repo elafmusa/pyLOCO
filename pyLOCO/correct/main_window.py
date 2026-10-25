@@ -393,11 +393,12 @@ class CorrectMainWindow(QMainWindow):
         progress_details=QGroupBox("Correction step history and readbacks"); progress_details.setCheckable(True); progress_details.setChecked(True); progress_layout=QVBoxLayout(progress_details); progress_body=QWidget(); progress_body_layout=QVBoxLayout(progress_body); progress_body_layout.setContentsMargins(0,0,0,0); progress_body_layout.addWidget(self.progress_history); progress_body_layout.addWidget(self.progress_magnets); progress_layout.addWidget(progress_body); progress_details.toggled.connect(progress_body.setVisible); layout.addWidget(progress_details)
         self.review_actions = layout
         metrics=QGroupBox(); self.review_metrics_group=metrics; metrics.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); grid=QGridLayout(metrics); self.review_metrics={}
-        labels=("Magnets loaded","Magnets included","Magnets excluded","Warnings","Current-limit violations","Global correction fraction","Max |ΔK/K|","Max |Final ΔK|")
+        labels=("Magnets loaded","Selected in plan","Applied by scope","Magnets excluded","Warnings","Current-limit violations","Global correction fraction","Max |ΔK/K|","Max |Final ΔK|")
         for index,name in enumerate(labels):
             column=(index%4)*2; row=index//4; value=QLabel("—"); value.setObjectName("metricValue"); caption=QLabel(name); caption.setObjectName("metricLabel"); grid.addWidget(caption,row,column); grid.addWidget(value,row,column+1); self.review_metrics[name]=value
         layout.addWidget(metrics); self.comments=QPlainTextEdit(); self.comments.setPlaceholderText("Plan comments / review notes"); self.comments.setFixedHeight(34); layout.addWidget(self.comments)
         changes_group=QGroupBox("Machine change preview / readback"); changes_layout=QVBoxLayout(changes_group); self.machine_changes_table=QTableWidget(0,6); self.machine_changes_table.setHorizontalHeaderLabels(["Control","Current value","Requested change","Proposed value","Readback","Status"]); self.machine_changes_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.machine_changes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.machine_changes_table.setMinimumHeight(135); changes_layout.addWidget(self.machine_changes_table); layout.addWidget(changes_group)
+        self.machine_changes_table.viewport().installEventFilter(self)
         self.expansion_summary=QLabel(
             "Family-mode LOCO: fitted quadrupole families → "
             "expanded physical quadrupoles"
@@ -438,7 +439,7 @@ class CorrectMainWindow(QMainWindow):
         layout.addLayout(summary_row)
         layout.addWidget(info)
         layout.addWidget(recovery)
-        return self._scroll_page(page)
+        scroll=self._scroll_page(page); self.review_scroll=scroll; return scroll
 
     def _ensure_plots(self):
         if self.plots:return
@@ -446,6 +447,8 @@ class CorrectMainWindow(QMainWindow):
         for position,(key,title) in enumerate(self._plot_specs):
             placeholder=self.plot_tabs.widget(position); self.plot_tabs.removeTab(position); placeholder.deleteLater()
             canvas=PlotCanvas(minimum_height=270); self.plots[key]=canvas; self.plot_tabs.insertTab(position,canvas,title)
+            canvas.installEventFilter(self)
+            canvas.canvas.installEventFilter(self)
             self._correction_plot_callbacks[key]=(
                 canvas.canvas.mpl_connect("motion_notify_event", lambda event,k=key:self._correction_plot_hover(k,event)),
                 canvas.canvas.mpl_connect("button_press_event", lambda event,k=key:self._correction_plot_click(k,event)),
@@ -1743,8 +1746,8 @@ class CorrectMainWindow(QMainWindow):
     def refresh_all(self): self.refresh_table(); self._refresh_mapping_details(); self.refresh_review(); self._update_workflow_tabs()
     def refresh_review(self):
         if not self.review:return
-        active=[item for item in self.review.items if item.included]; included=len(active); warnings=sum(bool(item.warnings(self.review.thresholds)) for item in self.review.items); violations=sum(item.current_limit_status=="VIOLATION" for item in active); relative=[abs(item.relative_percent) for item in active if item.relative_percent is not None]; final=[abs(item.final_delta) for item in active]
-        values={"Magnets loaded":str(len(self.review.items)),"Magnets included":str(included),"Magnets excluded":str(len(self.review.items)-included),"Warnings":str(warnings),"Current-limit violations":str(violations),"Global correction fraction":f"{self.review.global_scale*100:g}%","Max |ΔK/K|":self._fmt(max(relative,default=None))+" %" if relative else "Not available","Max |Final ΔK|":self._fmt(max(final,default=None)) if final else "Not available"}
+        selected=[item for item in self.review.items if item.included]; scoped=[item for item in self.review.items if self.review.applies_to(item)]; included=len(selected); warnings=sum(bool(item.warnings(self.review.thresholds)) for item in self.review.items); violations=sum(item.current_limit_status=="VIOLATION" for item in scoped); relative=[abs(item.relative_percent) for item in scoped if item.relative_percent is not None]; final=[abs(item.final_delta) for item in scoped]
+        values={"Magnets loaded":str(len(self.review.items)),"Selected in plan":str(included),"Applied by scope":str(len(scoped)),"Magnets excluded":str(len(self.review.items)-included),"Warnings":str(warnings),"Current-limit violations":str(violations),"Global correction fraction":f"{self.review.global_scale*100:g}%","Max |ΔK/K|":self._fmt(max(relative,default=None))+" %" if relative else "Not available","Max |Final ΔK|":self._fmt(max(final,default=None)) if final else "Not available"}
         for name,value in values.items():self.review_metrics[name].setText(value)
 
         families={
@@ -1951,6 +1954,20 @@ class CorrectMainWindow(QMainWindow):
         for canvas in getattr(self,"plots",{}).values():canvas.apply_theme()
 
     def eventFilter(self,watched,event):
+        if event.type()==QEvent.Wheel and hasattr(self,"review_scroll"):
+            forward=False
+            if hasattr(self,"machine_changes_table") and watched is self.machine_changes_table.viewport():
+                inner=self.machine_changes_table.verticalScrollBar(); delta=event.angleDelta().y()
+                forward=(delta>0 and inner.value()<=inner.minimum()) or (delta<0 and inner.value()>=inner.maximum())
+            elif any(watched is canvas or watched is canvas.canvas for canvas in getattr(self,"plots",{}).values()):
+                forward=True
+            if forward:
+                outer=self.review_scroll.verticalScrollBar()
+                pixel_delta=event.pixelDelta().y()
+                movement=pixel_delta if pixel_delta else event.angleDelta().y()
+                outer.setValue(outer.value()-movement)
+                event.accept()
+                return True
         if event.type()==QEvent.MouseButtonPress and hasattr(self,"table") and (watched in getattr(self,"_selection_clear_surfaces",()) or watched is getattr(getattr(self,"plan_scroll",None),"viewport",lambda:None)()):
             self.table.clearSelection()
         if watched is QApplication.instance() and event.type()==QEvent.DynamicPropertyChange and bytes(event.propertyName())==b"pyLOCOThemePlot":self._sync_theme_chrome()

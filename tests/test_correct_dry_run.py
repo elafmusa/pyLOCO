@@ -191,7 +191,7 @@ def test_source_summary_conventions_workflow_sort_and_operator_metrics():
     window._load(Path("Examples/Correct/mock_corrections.json").resolve()); app.processEvents(); assert window.source_type.text()=="Legacy correction JSON / YAML"; assert window.source_parameters.text().startswith("6 total")
     assert all(window.tabs.tabText(index).startswith("✓ ") for index in range(4))
     window.sort_by.setCurrentIndex(window.sort_by.findData("relative")); app.processEvents(); assert window.table.item(0,2).text()=="QD-MOCK-02"
-    window.tabs.setCurrentIndex(3); app.processEvents(); assert window.review_metrics["Magnets loaded"].text()=="6"; assert window.review_metrics["Magnets included"].text()=="5"; assert window.review_metrics["Global correction fraction"].text()=="10%"; window.close()
+    window.tabs.setCurrentIndex(3); app.processEvents(); assert window.review_metrics["Magnets loaded"].text()=="6"; assert window.review_metrics["Selected in plan"].text()=="5"; assert window.review_metrics["Applied by scope"].text()=="5"; assert window.review_metrics["Global correction fraction"].text()=="10%"; window.close()
 
 
 @pytest.mark.parametrize("theme",["light","dark"])
@@ -342,6 +342,9 @@ def test_correction_review_plots_use_list_indices_existing_strength_conversions_
     window.review=review; window.refresh_review(); app.processEvents()
     window.refresh_table()
     assert window.correction_type_counts.text()=="Normal quadrupoles: 2 total / 1 included   •   Skew quadrupoles: 1 total / 1 included"
+    review.application_scope="normal_quadrupole"; window.refresh_review()
+    assert window.review_metrics["Selected in plan"].text()=="2"
+    assert window.review_metrics["Applied by scope"].text()=="1"
     raw_axis=window._correction_plot_payload["raw"]["axis"]
     final_axis=window._correction_plot_payload["final"]["axis"]
     integrated_axis=window._correction_plot_payload["integrated"]["axis"]
