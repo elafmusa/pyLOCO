@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +45,31 @@ def test_measure_projection_ignores_incomplete_quadrupoles_and_preserves_order(t
     assert [row["lattice_ordinal"] for row in checked["mappings"]]==[1,0]
     combined=merge_measurement(shared,checked)
     assert any(row["role"]=="normal_quadrupole" and row["lattice_ordinal"] is None for row in combined["mappings"])
+
+
+def test_validated_complete_mapping_round_trip_preserves_corrector_ordinals(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"ring")
+    inventory={"bpm":["PYAML-BPM"],
+               "horizontal_corrector":["PYAML:HCOR-C04-H:STRENGTH"],
+               "vertical_corrector":["PYAML:VCOR-C04-V:STRENGTH"]}
+    shared=template(inventory)
+    shared["template"]=False
+    for ordinal,row in enumerate(shared["mappings"]):
+        row.update(lattice_ordinal=ordinal,status="mapped",
+                   identity_match="explicit_lattice_ordinal")
+    # Exercise the JSON representation written by Measure, rather than only
+    # passing the same in-memory dictionaries back into the projector.
+    reloaded=json.loads(json.dumps(shared))
+    projected=measurement_projection(reloaded)
+    ring=[SimpleNamespace(FamName="AT-BPM",Device="AT-BPM"),
+          SimpleNamespace(FamName="AT-H",Device="AT-H"),
+          SimpleNamespace(FamName="AT-V",Device="AT-V")]
+    checked=validate_mapping(projected,ring,inventory,lattice_path=lattice,
+                             require_provenance=False)
+    assert mapping_counts(checked)["mapped"]==3
+    assert [row["lattice_ordinal"] for row in checked["mappings"]]==[0,1,2]
+    assert all(row["identity_match"]=="explicit_lattice_ordinal"
+               for row in checked["mappings"])
 
 
 def test_measure_and_correct_updates_do_not_modify_each_others_entries(tmp_path):

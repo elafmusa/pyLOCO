@@ -175,6 +175,12 @@ def measurement_projection(document: dict[str,Any]) -> dict[str,Any]:
         if row.get("role") not in MEASUREMENT_ROLES:continue
         rows.append({"measured_name":row.get("pyaml_device",""),"role":row.get("role"),
                      "lattice_ordinal":row.get("lattice_ordinal"),
+                     # A validated complete mapping may use an authoritative
+                     # ordinal even when the pyAML corrector identifier is not
+                     # an AT Device/FamName.  Keep that validation evidence in
+                     # the measurement projection so save -> reload is
+                     # lossless for BPMs and both corrector planes.
+                     "identity_match":row.get("identity_match",""),
                      "identity_evidence":row.get("identity_evidence",""),
                      "provenance":row.get("provenance","shared Machine Mapping")})
     inventories=document.get("inventories",{})
