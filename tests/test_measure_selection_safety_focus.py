@@ -69,6 +69,26 @@ def test_bpm_clear_highlight_three_and_add_has_one_authoritative_ordered_selecti
     window.thread.quit(); window.thread.wait(); window.close()
 
 
+def test_full_session_restore_uses_saved_resolved_names_not_selection_recipe(app):
+    window=_window()
+    state=window._selection_states
+    # An "all" recipe can resolve differently after reopening offline or on a
+    # different adapter.  A saved session must restore its exact ordered
+    # snapshot instead of rerunning that recipe against the new inventory.
+    state["bpm_noise"]["bpm"].update(method="all",resolved_names=["BPM-4","BPM-1"])
+    state["orm"]["hcor"].update(method="all",resolved_names=["H-6","H-2"])
+    state["orm"]["vcor"].update(method="all",resolved_names=["V-5","V-0"])
+    window._active_selection_kind="bpm_noise"
+    window._restore_selection("bpm_noise",use_resolved_names=True)
+    assert [device.name for device in window.selected_devices]==["BPM-4","BPM-1"]
+    assert [device.name for device in window.selected_hcorrectors]==["H-6","H-2"]
+    assert [device.name for device in window.selected_vcorrectors]==["V-5","V-0"]
+    assert window.selection_method.currentData()=="manual"
+    assert window.corrector_selection_widgets["hcor"]["method"].currentData()=="manual"
+    assert window.corrector_selection_widgets["vcor"]["method"].currentData()=="manual"
+    window.close()
+
+
 def test_bpm_manual_method_search_visibility_and_connection_test_stay_synchronized(app,tmp_path):
     window=_window(); window._clear_bpms(); window.manual_input.setText("BPM-5, 2")
     assert [item.name for item in window.selected_devices]==["BPM-5","BPM-2"]

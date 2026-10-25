@@ -2491,7 +2491,7 @@ class MeasureMainWindow(QMainWindow):
         self._selection_states[self._active_selection_kind]["bpm"]=dict(state["bpm"])
         self._selection_states["orm"]["hcor"]=dict(state["hcor"])
         self._selection_states["orm"]["vcor"]=dict(state["vcor"])
-        self._restore_selection(self._active_selection_kind)
+        self._restore_selection(self._active_selection_kind,use_resolved_names=True)
         self.statusBar().showMessage(
             f"Device selection loaded: {counts['bpm']} BPM, {counts['hcor']} H corrector, "
             f"{counts['vcor']} V corrector; validated against the current inventory"
@@ -2575,7 +2575,7 @@ class MeasureMainWindow(QMainWindow):
         if hasattr(self,"measurement_tab_hosts") and kind in self.measurement_tab_hosts:
             self.measurement_tab_hosts[kind][1].addWidget(self.measurement_splitter)
 
-    def _restore_selection(self,kind):
+    def _restore_selection(self,kind,*,use_resolved_names=False):
         state=self._selection_states.get(kind) or MeasureProject().measurement_selections[kind]
         # Correctors are ORM inputs.  Keep one authoritative H/V selection
         # while switching between BPM-noise, dispersion and ORM workspaces;
@@ -2583,9 +2583,23 @@ class MeasureMainWindow(QMainWindow):
         orm_state=self._selection_states.get("orm") or MeasureProject().measurement_selections["orm"]
         self._loading_selection_state=True
         try:
-            bpm=state["bpm"]; self.selection_method.setCurrentIndex(max(0,self.selection_method.findData(bpm["method"]))); self.manual_input.setText(bpm.get("manual","")); self.names_file.setText(bpm.get("names_file","")); self.bpm_exclusions.setText(bpm.get("excluded_positions","")); self.bpm_search.setText(bpm.get("search",""))
+            bpm=state["bpm"]
+            bpm_names=list(bpm.get("resolved_names",())) if use_resolved_names else []
+            bpm_method="manual" if bpm_names else bpm["method"]
+            self.selection_method.setCurrentIndex(max(0,self.selection_method.findData(bpm_method)))
+            self.manual_input.setText(", ".join(bpm_names) if bpm_names else bpm.get("manual",""))
+            self.names_file.setText(bpm.get("names_file",""))
+            self.bpm_exclusions.setText("" if bpm_names else bpm.get("excluded_positions",""))
+            self.bpm_search.setText(bpm.get("search",""))
             for key in ("hcor","vcor"):
-                settings=orm_state[key]; data=self.corrector_selection_widgets[key]; data["method"].setCurrentIndex(max(0,data["method"].findData(settings["method"]))); data["manual"].setText(settings.get("manual","")); data["file"].setText(settings.get("names_file","")); data["exclusion"].setText(settings.get("excluded_positions","")); data["search"].setText(settings.get("search","")); self._corrector_method_changed(key); self._refresh_corrector_preview(key,read_diagnostics=False)
+                settings=orm_state[key]; data=self.corrector_selection_widgets[key]
+                names=list(settings.get("resolved_names",())) if use_resolved_names else []
+                method="manual" if names else settings["method"]
+                data["method"].setCurrentIndex(max(0,data["method"].findData(method)))
+                data["manual"].setText(", ".join(names) if names else settings.get("manual",""))
+                data["file"].setText(settings.get("names_file",""))
+                data["exclusion"].setText("" if names else settings.get("excluded_positions",""))
+                data["search"].setText(settings.get("search","")); self._corrector_method_changed(key); self._refresh_corrector_preview(key,read_diagnostics=False)
             self._selection_method_changed(); self.refresh_preview()
         finally:self._loading_selection_state=False
 
@@ -5095,7 +5109,7 @@ class MeasureMainWindow(QMainWindow):
             open_warnings.append(f"Measurement inventories are incompatible: {exc}")
         self._selection_states=deepcopy(bundle.project.measurement_selections)
         self._active_selection_kind=self.measurement_type.currentData()
-        self._restore_selection(self._active_selection_kind)
+        self._restore_selection(self._active_selection_kind,use_resolved_names=True)
         self._session_dirty=False; self._update_session_title()
         self.measurement_device_alignment=None
         self.machine_mapping_document=bundle.mapping if bundle.mapping is not None and is_machine_mapping(bundle.mapping) else None
@@ -5164,7 +5178,7 @@ class MeasureMainWindow(QMainWindow):
                 devices=inventories[key]
                 available={device.name for device in devices}; missing.extend(name for name in measurement[key].get("resolved_names",()) if name not in available)
         if missing:raise ValueError("missing identities: "+", ".join(dict.fromkeys(missing)))
-        self._selection_states=deepcopy(state); self._active_selection_kind=self.measurement_type.currentData(); self._restore_selection(self._active_selection_kind)
+        self._selection_states=deepcopy(state); self._active_selection_kind=self.measurement_type.currentData(); self._restore_selection(self._active_selection_kind,use_resolved_names=True)
         if self.measurement_device_alignment is not None and self.reference_model is not None:
             configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
             if self.adapter_combo.currentData()=="pyaml" and not configuration.is_file():raise ValueError("the saved pyAML configuration is unavailable; mapping cannot be revalidated")
