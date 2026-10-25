@@ -376,6 +376,11 @@ class CorrectMainWindow(QMainWindow):
         include=QPushButton("Include selected"); exclude=QPushButton("Exclude selected"); reason=QLineEdit(); reason.setPlaceholderText("Exclusion reason"); include.clicked.connect(lambda:self._set_selected(True,"")); exclude.clicked.connect(lambda:self._set_selected(False,reason.text())); load=QPushButton("Load exclusion list…"); load.clicked.connect(self.load_exclusions); warn=QPushButton("Exclude warning…"); warn.setToolTip("Exclude every correction matching a selected warning category"); warn.clicked.connect(self.exclude_warning_category)
         reason.setMinimumWidth(170); second.addWidget(include); second.addWidget(exclude); second.addWidget(reason,1); second.addWidget(load); second.addWidget(warn); controls_layout.addLayout(first); controls_layout.addLayout(second)
         self.representation_explanation=QLabel(); self.representation_explanation.setWordWrap(True); self.representation_explanation.setObjectName("mappingHelpText"); controls_layout.addWidget(self.representation_explanation); layout.addWidget(controls)
+        self.correction_type_counts=QLabel("Normal quadrupoles: 0 total / 0 included   •   Skew quadrupoles: 0 total / 0 included")
+        self.correction_type_counts.setObjectName("runState")
+        self.correction_type_counts.setToolTip("Counts all loaded fitted corrections and those currently enabled by their Apply checkboxes.")
+        self.correction_type_counts.setAccessibleName("Normal and skew quadrupole correction counts")
+        layout.addWidget(self.correction_type_counts)
         legend_row=QHBoxLayout(); legend=QLabel('● Normal &nbsp;&nbsp; <span style="color:#D99029">● Amber: attention</span> &nbsp;&nbsp; <span style="color:#D32F2F">● Red: blocked / unsafe</span> &nbsp;&nbsp; <span style="color:#888888">● Gray: excluded</span>'); legend.setTextFormat(Qt.RichText); legend.setObjectName("warningLegend"); legend.setToolTip("Only diagnostic cells are highlighted; excluded rows are muted."); legend_row.addWidget(legend); legend_row.addStretch(1)
         self.clear_table_selection_button=QPushButton("Clear highlight"); self.clear_table_selection_button.clicked.connect(lambda:self.table.clearSelection()); self.show_first_columns_button=QPushButton("← First columns"); self.show_first_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().minimum())); self.show_last_columns_button=QPushButton("Show last columns →"); self.show_last_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().maximum())); legend_row.addWidget(self.clear_table_selection_button); legend_row.addWidget(self.show_first_columns_button); legend_row.addWidget(self.show_last_columns_button); layout.addLayout(legend_row)
         self.table=CopyableMappingTable(0,len(self.COLUMNS)); self.table.setMinimumHeight(260); self.table.setHorizontalHeaderLabels(self.COLUMNS); configure_mapping_table(self.table,tuple("Correction-plan value. Full content is available in each cell tooltip." for _ in self.COLUMNS),editable=True); self.table.horizontalHeader().setSectionResizeMode(len(self.COLUMNS)-1,QHeaderView.Interactive); self.table.setColumnWidth(len(self.COLUMNS)-1,220); self.table.itemChanged.connect(self._item_changed); layout.addWidget(self.table,1)
@@ -1664,6 +1669,11 @@ class CorrectMainWindow(QMainWindow):
     def refresh_table(self):
         if not hasattr(self,"table"):return
         self._updating=True; self.table.setSortingEnabled(False); self.table.setRowCount(0)
+        if hasattr(self,"correction_type_counts"):
+            counts={kind:(sum(item.correction_type==kind for item in self.review.items),sum(item.correction_type==kind and item.included for item in self.review.items)) if self.review else (0,0) for kind in ("normal_quadrupole","skew_quadrupole")}
+            normal_total,normal_included=counts["normal_quadrupole"]
+            skew_total,skew_included=counts["skew_quadrupole"]
+            self.correction_type_counts.setText(f"Normal quadrupoles: {normal_total:,} total / {normal_included:,} included   •   Skew quadrupoles: {skew_total:,} total / {skew_included:,} included")
         if self.review:
             for item in self._sorted_items():
                 try: applied=f"{item.applied_control_delta:.9g} {item.applied_control_unit}"

@@ -340,6 +340,8 @@ def test_correction_review_plots_use_list_indices_existing_strength_conversions_
         item(20,name="QX",lattice_ordinal=44,recommended_machine_delta=.3,included=False),
     ],"smoke",global_scale=.5)
     window.review=review; window.refresh_review(); app.processEvents()
+    window.refresh_table()
+    assert window.correction_type_counts.text()=="Normal quadrupoles: 2 total / 1 included   •   Skew quadrupoles: 1 total / 1 included"
     raw_axis=window._correction_plot_payload["raw"]["axis"]
     final_axis=window._correction_plot_payload["final"]["axis"]
     integrated_axis=window._correction_plot_payload["integrated"]["axis"]
