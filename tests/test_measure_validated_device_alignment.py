@@ -72,6 +72,41 @@ def test_validated_bpm_ordinals_preserve_measurement_order_for_dispersion():
     np.testing.assert_array_equal(y, [103.0, 101.0])
 
 
+def test_dispersion_projects_complete_mapping_to_active_bpm_subset(qapp,tmp_path):
+    from pyLOCO.measure.main_window import MeasureMainWindow
+    from pyLOCO.measure.acquisition import BpmDevice
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"active lattice")
+    configuration=tmp_path/"machine.yaml"; configuration.write_text("machine: test\n")
+    ring=[SimpleNamespace(FamName="AT-0",Device="AT-0"),
+          SimpleNamespace(FamName="AT-1",Device="AT-1"),
+          SimpleNamespace(FamName="AT-2",Device="AT-2")]
+    full_inventory={"bpm":["PYAML-BPM-0","PYAML-BPM-1","PYAML-BPM-2"],
+                    "horizontal_corrector":[],"vertical_corrector":[]}
+    source=mapping_template(full_inventory)
+    for ordinal,row in enumerate(source["mappings"]):
+        row["lattice_ordinal"]=ordinal
+    checked=validate_mapping(source,ring,full_inventory,lattice_path=lattice,
+        configuration_path=configuration,require_provenance=False,
+        accept_explicit_ordinals=True)
+    devices=tuple(BpmDevice(name,"X","Y") for name in full_inventory["bpm"])
+    window=MeasureMainWindow(devices=devices)
+    window.adapter_combo.blockSignals(True)
+    window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("pyaml"))
+    window.adapter_combo.blockSignals(False)
+    window.pyaml_fields["config_path"].setText(str(configuration))
+    window.reference_model=replace(_model(ring),path=lattice,ring=ring)
+    window.measurement_device_alignment=checked
+    # The complete validated mapping has three BPMs, while the current
+    # dispersion uses only one. The model must reuse that row, not reject the
+    # different inventory fingerprint.
+    mapping=window._model_mapping_kwargs(bpms=(devices[1],),hcorrectors=(),vcorrectors=())
+    assert mapping=={"bpm_ordinals":[1],
+                    "horizontal_corrector_ordinals":None,
+                    "vertical_corrector_ordinals":None}
+    assert len(window.measurement_device_alignment["mappings"])==3
+    window.close()
+
+
 def test_validated_ordinals_preserve_bpm_and_corrector_order_for_orm(monkeypatch):
     ring = _Ring()
     devices = [SimpleNamespace(name="not-an-at-name") for _ in range(5)]

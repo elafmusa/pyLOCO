@@ -1194,21 +1194,40 @@ class MeasureMainWindow(QMainWindow):
         total,_roles=self._master_mapping_counts(shared)
         self.statusBar().showMessage(f"Saved complete Machine Mapping — {total:,} configured devices: {path}")
 
-    def _validated_alignment_ordinals(self):
+    def _validated_alignment_ordinals(self,inventory=None):
         if self.adapter_combo.currentData()!="pyaml":return None
         if self.reference_model is None or self.measurement_device_alignment is None:
             raise ValueError("Validate the exact device mapping before comparing with the reference model")
+        inventory=inventory or self._alignment_inventory()
         configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
-        checked=validate_mapping(self.measurement_device_alignment,self.reference_model.ring,
-            self._alignment_inventory(),lattice_path=self.reference_model.path,
+        # The stored validated mapping may cover the complete 896-device
+        # measurement inventory while dispersion/noise uses only the active
+        # BPM subset. Project the saved evidence onto that active scope;
+        # never reject or rediscover it merely because the inventory count is
+        # smaller than the master document.
+        source=(measurement_projection(self.machine_mapping_document)
+            if is_machine_mapping(self.machine_mapping_document or {})
+            else deepcopy(self.measurement_device_alignment))
+        wanted={(role,name) for role,names in inventory.items() for name in names}
+        source["mappings"]=[row for row in source.get("mappings",())
+            if (row.get("role"),row.get("measured_name")) in wanted]
+        source["inventory"]={"sha256":inventory_fingerprint(inventory),
+            "counts":{role:len(names) for role,names in inventory.items()}}
+        checked=validate_mapping(source,self.reference_model.ring,
+            inventory,lattice_path=self.reference_model.path,
             configuration_path=configuration,require_provenance=True)
         counts=mapping_counts(checked)
         if counts["mapped"]!=counts["total"]:
             raise ValueError(f"Device mapping is incomplete: {counts['mapped']}/{counts['total']} mapped")
         return {role:ordered_ordinals(checked,role) for role in ("bpm","horizontal_corrector","vertical_corrector")}
 
-    def _model_mapping_kwargs(self):
-        ordinals=self._validated_alignment_ordinals()
+    def _model_mapping_kwargs(self,bpms=None,hcorrectors=None,vcorrectors=None):
+        inventory={
+            "bpm":[device.name for device in (self.selected_devices if bpms is None else bpms)],
+            "horizontal_corrector":[device.name for device in (self.selected_hcorrectors if hcorrectors is None else hcorrectors)],
+            "vertical_corrector":[device.name for device in (self.selected_vcorrectors if vcorrectors is None else vcorrectors)],
+        }
+        ordinals=self._validated_alignment_ordinals(inventory)
         if ordinals is None:return {}
         return {
             "bpm_ordinals":ordinals["bpm"],
@@ -3949,7 +3968,7 @@ class MeasureMainWindow(QMainWindow):
             write_dispersion(measurement,measured_eta_x=result.measured_eta_x,measured_eta_y=result.measured_eta_y,bpm_names=[d.name for d in result.devices],rf_frequency_hz=[s.requested_rf_hz for s in states],rf_setpoint_hz=[s.requested_rf_hz for s in states],rf_readback_hz=[s.actual_rf_hz for s in states],raw_orbits_x_m=np.stack([s.orbits_x_m for s in states]),raw_orbits_y_m=np.stack([s.orbits_y_m for s in states]),rf_step_hz=result.canonical_rf_step_hz,bidirectional=result.direction=="bipolar",metadata=metadata,diagnostics=diagnostics,state_labels=saved_labels,operator_confirmed=[s.operator_confirmed for s in states],rf_actual_sources=[s.actual_rf_source for s in states],rf_readback_verified=[s.rf_readback_verified for s in states],sample_timestamps_s=np.stack([s.timestamps_s for s in states]),restoration_status=result.restoration_status)
             if self.reference_model is not None and self.compare_reference.isChecked():
                 try:
-                    mapping=self._model_mapping_kwargs()
+                    mapping=self._model_mapping_kwargs(bpms=result.devices,hcorrectors=(),vcorrectors=())
                     model_x,model_y=model_dispersion(self.reference_model,result.devices,bpm_ordinals=mapping.get("bpm_ordinals"))
                     store_reference_model_arrays(measurement,{"dispersion_x_m":model_x,"dispersion_y_m":model_y},units={"dispersion_x_m":"m","dispersion_y_m":"m"},provenance=self._reference_model_provenance())
                 except Exception:pass
@@ -4497,7 +4516,7 @@ class MeasureMainWindow(QMainWindow):
         if self.compare_reference.isChecked() and self.reference_model is not None:
             try:
                 model_matrix=getattr(self,"_model_orm_cache",None)
-                if model_matrix is None:model_matrix=model_orm(self.reference_model,result.bpms,result.horizontal_correctors,result.vertical_correctors,result.effective_kicks_rad[:nh],result.effective_kicks_rad[nh:],scaled=result.scaled,**self._model_mapping_kwargs())
+                if model_matrix is None:model_matrix=model_orm(self.reference_model,result.bpms,result.horizontal_correctors,result.vertical_correctors,result.effective_kicks_rad[:nh],result.effective_kicks_rad[nh:],scaled=result.scaled,**self._model_mapping_kwargs(bpms=result.bpms,hcorrectors=result.horizontal_correctors,vcorrectors=result.vertical_correctors))
                 shown_model=model_matrix/result.effective_kicks_rad[np.newaxis,:] if analysis else model_matrix; difference=matrix-shown_model; self._heatmap(self.orm_model_plot,shown_model,"MODEL ORM — reference lattice",unit,row_devices=bpm_rows,column_devices=corrector_columns); self._heatmap(self.orm_difference_plot,difference,"Measured − MODEL ORM",unit,row_devices=bpm_rows,column_devices=corrector_columns)
                 def comparison_row(label, measured_values, model_values):
                     metrics=comparison_metrics(measured_values,model_values)
@@ -4611,7 +4630,7 @@ class MeasureMainWindow(QMainWindow):
         model_comparison_html="<b>Not calculated.</b><br>Enable <i>Compare measurements with reference model</i> before or after the measurement."
         if physical_x is not None and self.compare_reference.isChecked() and self.reference_model is not None:
             try:
-                mapping=self._model_mapping_kwargs()
+                mapping=self._model_mapping_kwargs(bpms=result.devices,hcorrectors=(),vcorrectors=())
                 model_x,model_y=model_dispersion(self.reference_model,result.devices,bpm_ordinals=mapping.get("bpm_ordinals"))
                 for canvas,measured,model_values,plane in ((self.x_plot,physical_x,model_x,"X"),(self.y_plot,physical_y,model_y,"Y")):
                     ax=canvas.figure.axes[0]; ax.plot(model_values*1e3,"--",linewidth=1.5,label=f"MODEL D{plane.lower()} — reference lattice"); ax.plot((measured-model_values)*1e3,":",linewidth=1.2,label="Measured − MODEL"); ax.legend(); canvas.apply_theme()
