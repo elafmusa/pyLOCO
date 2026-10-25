@@ -65,7 +65,7 @@ class SvdView(QWidget):
                 0.5, 0.5, "No positive finite singular values to plot",
                 ha="center", va="center", transform=axis.transAxes,
             )
-        axis.set(xlabel="Singular-value index", ylabel="Singular value", title="Persisted singular-value spectrum")
+        axis.set(xlabel="Singular-value index", ylabel="Singular value", title="Singular-value spectrum")
         axis.grid(True, alpha=.25); self.plot.apply_theme(); self.plot.canvas.draw_idle()
 
     def _save_jacobian(self):

@@ -285,6 +285,7 @@ def test_svd_view_has_readable_log_axis_for_narrow_spectrum():
     axis = view.plot.figure.axes[0]
     assert view.plot.minimumHeight() == 300
     assert axis.get_yscale() == "log"
+    assert axis.get_title() == "Singular-value spectrum"
     low, high = axis.get_ylim()
     assert low < 100.0 < high
     assert len(axis.get_yticks()) <= 7
