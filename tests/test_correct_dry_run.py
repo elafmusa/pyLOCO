@@ -12,7 +12,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
 from PySide6.QtCore import QPoint,Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication,QGroupBox,QLabel,QMessageBox,QPushButton,QScrollArea
+from PySide6.QtWidgets import QApplication,QGroupBox,QLabel,QMessageBox,QPushButton,QScrollArea,QToolBar
 
 from pyLOCO.correct.app import build_application
 from pyLOCO.correct.main_window import CorrectMainWindow
@@ -294,11 +294,23 @@ def test_review_is_compact():
     window.close()
 
 
-def test_correct_toolbar_file_actions_use_clear_labels_and_readable_widths():
+def test_correct_file_actions_live_in_their_workflow_sections_not_toolbar():
     app=QApplication.instance() or build_application(["correct-toolbar-labels"]); window=CorrectMainWindow(); window.resize(1200,800); window.show(); app.processEvents()
-    assert [button.text() for button in window.toolbar_file_buttons]==["Load FIT results…","Load correction plan…","Save correction plan…"]
-    assert all(button.width()>=button.minimumWidth() and button.isVisible() for button in window.toolbar_file_buttons)
-    assert [button.accessibleName() for button in window.toolbar_file_buttons]==["Load FIT results","Load correction plan","Save correction plan"]
+    assert window.toolbar_file_buttons == []
+    toolbar = window.findChild(QToolBar, "mainToolbar")
+    assert not any(
+        isinstance(widget, QPushButton) and widget.text() in {
+            "Load FIT results…", "Load correction plan…", "Save correction plan…"
+        }
+        for widget in toolbar.findChildren(QPushButton)
+    )
+    source_buttons = {
+        button.text() for button in window.tabs.widget(0).findChildren(QPushButton)
+    }
+    assert "Open pyLOCO Results…" in source_buttons
+    assert "Open correction plan / legacy JSON…" in source_buttons
+    assert window.save_plan_button.text() == "Save correction plan…"
+    assert window.save_plan_button.accessibleName() == "Save correction plan"
     window.close()
 
 

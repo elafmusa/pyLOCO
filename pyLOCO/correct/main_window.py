@@ -108,8 +108,6 @@ class CorrectMainWindow(QMainWindow):
         toolbar=QToolBar("Correct toolbar"); toolbar.setObjectName("mainToolbar"); toolbar.setMovable(False); self.addToolBar(toolbar)
         brand=QLabel("pyLOCO CORRECT"); brand.setObjectName("correctBrand"); brand.setFixedWidth(285); toolbar.addWidget(brand); toolbar.addSeparator()
         self.toolbar_file_buttons=[]
-        for text,tip,slot,width in (("Load FIT results…","Open a current pyLOCO FIT Results directory",self.open_results,140),("Load correction plan…","Open a saved correction plan or explicit legacy correction JSON",self.open_file,165),("Save correction plan…","Save the current correction plan as JSON or YAML",self.save_plan,165)):
-            button=QPushButton(text); button.setMinimumWidth(width); button.setToolTip(tip); button.setAccessibleName(text.replace("…","")); button.clicked.connect(slot); toolbar.addWidget(button); self.toolbar_file_buttons.append(button)
         self.screenshot_controller=install_window_screenshot_actions(
             self,toolbar,application_slug="correct",
             directory_provider=self._screenshot_project_directory,
@@ -360,6 +358,14 @@ class CorrectMainWindow(QMainWindow):
 
     def _plan_page(self):
         page=QWidget(); layout=QVBoxLayout(page)
+        plan_actions=QHBoxLayout()
+        self.save_plan_button=QPushButton("Save correction plan…")
+        self.save_plan_button.setToolTip("Save the current correction plan as JSON or YAML")
+        self.save_plan_button.setAccessibleName("Save correction plan")
+        self.save_plan_button.clicked.connect(self.save_plan)
+        plan_actions.addWidget(self.save_plan_button)
+        plan_actions.addStretch(1)
+        layout.addLayout(plan_actions)
         convention=QGroupBox("Correction convention"); convention.setObjectName("correctionConventionSection"); convention.setCheckable(True); convention.setChecked(True); convention.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); convention_layout=QVBoxLayout(convention)
         self.plan_conventions_body=QWidget(); convention_grid=QGridLayout(self.plan_conventions_body); convention_grid.setColumnMinimumWidth(0,240); convention_grid.setColumnStretch(1,1)
         definitions=(("Raw fitted ΔK","Original correction reported by pyLOCO. Never modified."),("Recommended machine ΔK","Correction after applying the explicit machine/sign convention."),("Global fraction","Fraction applied to every included magnet."),("Individual fraction","Additional scale for one magnet."),("Final ΔK","Recommended machine ΔK × global fraction × individual fraction."),("ΔK/K [%]","Final correction relative to the initial K value: 100 × Final ΔK / Initial K."))
