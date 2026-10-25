@@ -5,14 +5,23 @@ import copy
 import json
 import math
 import os
+import time
 from pathlib import Path
 from uuid import uuid4
 
 from .pyaml_connection import file_hash, resolve_mapping, review_identity
 
 
+STRENGTH_GET_ABS_TOLERANCE = 1e-7  # integrated strength [m^-1]
+STRENGTH_GET_REL_TOLERANCE = 1e-8
+STRENGTH_GET_ATTEMPTS = 6
+STRENGTH_GET_INTERVAL_S = 0.1
+
+
 def close(actual, expected):
-    return math.isclose(actual, expected, rel_tol=1e-10, abs_tol=1e-12)
+    """Compare pyAML adapter values at realistic control-system precision."""
+    return math.isclose(actual, expected, rel_tol=STRENGTH_GET_REL_TOLERANCE,
+                        abs_tol=STRENGTH_GET_ABS_TOLERANCE)
 
 
 class PyAMLCorrectionTransaction:
@@ -48,6 +57,29 @@ class PyAMLCorrectionTransaction:
         rows = resolve_mapping(review, self.connection.discover(), explicit)
         mapping = None if self.mapping_path is None else dict(path=str(Path(self.mapping_path).resolve()), sha256=file_hash(self.mapping_path))
         return copy.deepcopy(dict(connection=self.connection.identity(), review=review_identity(review, rows), explicit=explicit, mapping_file=mapping))
+
+    def _verified_get(self, name, expected):
+        """Poll the public strength.get() adapter value after a write.
+
+        pyAML backends may publish a set asynchronously or quantize the stored
+        integrated strength.  This remains a get()-based verification; it does
+        not claim that an independent hardware readback exists.
+        """
+        actual = self.connection.read(name)
+        for _ in range(STRENGTH_GET_ATTEMPTS - 1):
+            if close(actual, expected):
+                return actual
+            time.sleep(STRENGTH_GET_INTERVAL_S)
+            actual = self.connection.read(name)
+        if close(actual, expected):
+            return actual
+        tolerance=max(STRENGTH_GET_ABS_TOLERANCE,
+                      abs(expected)*STRENGTH_GET_REL_TOLERANCE)
+        raise RuntimeError(
+            f"Adapter strength.get() mismatch: {name}; requested {expected:.12g}, "
+            f"get() returned {actual:.12g}, difference {actual-expected:+.6g}, "
+            f"allowed tolerance {tolerance:.3g} m^-1"
+        )
 
     def preview(self, review, explicit=()):
         explicit = list(explicit)
@@ -128,9 +160,7 @@ class PyAMLCorrectionTransaction:
                 row["status"] = "write_pending"
                 self.persist()
                 self.connection.write(row["name"], row["target"])
-                row["readback"] = self.connection.read(row["name"])
-                if not close(row["readback"], row["target"]):
-                    raise RuntimeError(f"Adapter strength.get() mismatch: {row['name']}")
+                row["readback"] = self._verified_get(row["name"], row["target"])
                 row["status"] = "applied"
                 self.persist()
             if cancel and cancel.is_set():
@@ -169,9 +199,7 @@ class PyAMLCorrectionTransaction:
                 continue
             try:
                 self.connection.write(row["name"], row["original"])
-                row["readback"] = self.connection.read(row["name"])
-                if not close(row["readback"], row["original"]):
-                    raise RuntimeError("Restoration adapter strength.get() mismatch")
+                row["readback"] = self._verified_get(row["name"], row["original"])
                 row["status"] = "restored"
             except Exception as exc:
                 row["status"] = "restore_failed"

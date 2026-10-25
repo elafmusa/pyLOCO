@@ -456,6 +456,32 @@ def test_adapter_strength_get_mismatch_restores(setup):
     assert strength.value == 1
 
 
+def test_adapter_strength_get_accepts_control_precision_quantization(setup):
+    strength=setup.magnets["M1"].strength
+    strength.after_write=lambda: setattr(strength,"value",strength.value+5e-8)
+    setup.transaction.preview(setup.review)
+    record=setup.transaction.apply(setup.review,confirmed=True)
+    assert record["status"]=="applied"
+    assert record["changes"][0]["readback"]==pytest.approx(record["changes"][0]["target"]+5e-8)
+
+
+def test_adapter_strength_get_waits_for_delayed_adapter_update(setup):
+    strength=setup.magnets["M1"].strength
+    state={"remaining":0,"old":strength.value}
+    def after_write():
+        state["remaining"]=2
+    def delayed_get():
+        if state["remaining"]:
+            state["remaining"]-=1
+            return state["old"]
+        return strength.value
+    strength.after_write=after_write
+    strength.get=delayed_get
+    setup.transaction.preview(setup.review)
+    record=setup.transaction.apply(setup.review,confirmed=True)
+    assert record["status"]=="applied"
+
+
 def test_read_only_connection_never_applies(setup):
     setup.connection.allow_writes = False
     setup.transaction.preview(setup.review)
