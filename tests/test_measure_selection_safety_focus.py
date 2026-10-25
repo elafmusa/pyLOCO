@@ -500,9 +500,33 @@ def test_h_to_v_reuses_completed_mapping_for_esrf_h_v_control_names(app):
     proposal=window._h_to_v_proposal()
     assert proposal["rows"]==[{
         "horizontal":"SJ2A-C04-H","vertical":"SJ2A-C04-V","status":"Matched",
-        "reason":"Validated Machine Mapping: shared AT index 23 (0-based; B1L → A1L)",
-        "pairing":"validated_machine_mapping",
+        "reason":"Complete Machine Mapping: shared AT index 23 (0-based; B1L → A1L)",
+        "pairing":"complete_machine_mapping",
     }]
+    assert [device.name for device in proposal["devices"]]==["SJ2A-C04-V"]
+    window.close()
+
+
+def test_h_to_v_uses_complete_mapping_after_vertical_selection_invalidates_alignment(app):
+    horizontal=(CorrectorDevice("SJ2A-C04-H","H.SP","H.RBV","H"),)
+    vertical=(CorrectorDevice("SJ2A-C04-V","V.SP","V.RBV","V"),)
+    window=MeasureMainWindow(
+        devices=(BpmDevice("BPM","x","y"),),
+        horizontal_correctors=horizontal,vertical_correctors=vertical)
+    window.measurement_device_alignment=None
+    window.machine_mapping_document={
+        "schema":"pyloco.machine_mapping","schema_version":3,"mappings":[
+            {"pyaml_device":"SJ2A-C04-H","role":"horizontal_corrector","component":"B1L",
+             "lattice_ordinal":23,"status":"mapped"},
+            {"pyaml_device":"SJ2A-C04-V","role":"vertical_corrector","component":"A1L",
+             "lattice_ordinal":23,"status":"mapped"},
+        ]}
+    window._clear_correctors("vcor")
+    assert window.measurement_device_alignment is None
+    proposal=window._h_to_v_proposal()
+    assert proposal["rows"][0]["status"]=="Matched"
+    assert proposal["rows"][0]["vertical"]=="SJ2A-C04-V"
+    assert proposal["rows"][0]["pairing"]=="complete_machine_mapping"
     assert [device.name for device in proposal["devices"]]==["SJ2A-C04-V"]
     window.close()
 

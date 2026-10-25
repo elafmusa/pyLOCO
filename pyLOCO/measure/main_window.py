@@ -2127,7 +2127,11 @@ class MeasureMainWindow(QMainWindow):
     def _h_to_v_proposal_from_document(self,document):
         """Resolve H B1L to V A1L only through a shared exact-identity mapping."""
         rows=tuple(document.get("mappings",()))
-        horizontal={row.get("measured_name"):row for row in rows if row.get("role")=="horizontal_corrector"}
+        device_name=lambda row:row.get("pyaml_device") or row.get("measured_name")
+        mapped=lambda row:row.get("status") in ("mapped","proposed_unique_exact_match",
+            "proposed_manual_exact_disambiguation","proposed_explicit_ordinal") \
+            or (type(row.get("lattice_ordinal")) is int and not str(row.get("status","")).startswith("invalid"))
+        horizontal={device_name(row):row for row in rows if row.get("role")=="horizontal_corrector"}
         vertical_by_ordinal={}
         for row in rows:
             if row.get("role")=="vertical_corrector" and row.get("component")=="A1L" and type(row.get("lattice_ordinal")) is int:
@@ -2135,17 +2139,17 @@ class MeasureMainWindow(QMainWindow):
         preview=[]; matched=set()
         for device in self.selected_hcorrectors:
             source=horizontal.get(device.name)
-            if not source or source.get("status")!="mapped" or source.get("component")!="B1L":
+            if not source or not mapped(source) or source.get("component")!="B1L":
                 preview.append({"horizontal":device.name,"vertical":"","status":"Missing","reason":(source or {}).get("reason","No exact B1L mapping")}); continue
             candidates=vertical_by_ordinal.get(source.get("lattice_ordinal"),[])
-            valid=[row for row in candidates if row.get("status")=="mapped"]
+            valid=[row for row in candidates if mapped(row)]
             if len(candidates)>1 or len(valid)>1:
                 preview.append({"horizontal":device.name,"vertical":"","status":"Ambiguous","reason":"More than one A1L device maps to the same AT element"}); continue
             if len(valid)!=1:
                 reason=candidates[0].get("reason","No validated A1L counterpart") if candidates else "No A1L device maps to the same AT element"
                 preview.append({"horizontal":device.name,"vertical":"","status":"Missing","reason":reason}); continue
-            target=valid[0]; matched.add(target["measured_name"])
-            preview.append({"horizontal":device.name,"vertical":target["measured_name"],"status":"Matched","reason":f"Validated Machine Mapping: shared AT index {source['lattice_ordinal']} (0-based; B1L → A1L)"})
+            target=valid[0]; target_name=device_name(target); matched.add(target_name)
+            preview.append({"horizontal":device.name,"vertical":target_name,"status":"Matched","reason":f"Complete Machine Mapping: shared AT index {source['lattice_ordinal']} (0-based; B1L → A1L)"})
         ordered=tuple(device for device in self.vertical_correctors if device.name in matched)
         return {"rows":preview,"devices":ordered}
 
@@ -2217,15 +2221,19 @@ class MeasureMainWindow(QMainWindow):
         # Reuse the validated row identities and their shared AT ordinal rather
         # than attempting another name match or pairing rows by position.
         unresolved={row["horizontal"] for row in proposal["rows"] if row.get("pairing")=="unrecognized"}
-        if unresolved and self.measurement_device_alignment:
-            mapped=self._h_to_v_proposal_from_document(self.measurement_device_alignment)
-            mapped_rows={row["horizontal"]:row for row in mapped["rows"]}
+        mapping_documents=[]
+        if self.measurement_device_alignment:mapping_documents.append(self.measurement_device_alignment)
+        if self.machine_mapping_document:mapping_documents.append(self.machine_mapping_document)
+        for mapping_document in mapping_documents:
+            if not unresolved:break
+            mapped_proposal=self._h_to_v_proposal_from_document(mapping_document)
+            mapped_rows={row["horizontal"]:row for row in mapped_proposal["rows"]}
             for index,row in enumerate(proposal["rows"]):
                 fallback=mapped_rows.get(row["horizontal"])
                 if row.get("pairing")=="unrecognized" and fallback and fallback["status"]=="Matched":
-                    proposal["rows"][index]={**fallback,"pairing":"validated_machine_mapping"}
-            matched={row["vertical"] for row in proposal["rows"] if row["status"]=="Matched"}
-            proposal["devices"]=tuple(device for device in self.vertical_correctors if device.name in matched)
+                    proposal["rows"][index]={**fallback,"pairing":"complete_machine_mapping"}
+            matched_names={row["vertical"] for row in proposal["rows"] if row["status"]=="Matched"}
+            proposal["devices"]=tuple(device for device in self.vertical_correctors if device.name in matched_names)
             unresolved={row["horizontal"] for row in proposal["rows"] if row.get("pairing")=="unrecognized"}
         # Preserve the former AT path as an optional last fallback, but only
         # for identities not resolved by backend metadata or saved mapping.
