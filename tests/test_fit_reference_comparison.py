@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 
 from pyLOCO.gui.backend import LocoRunRequest
 from pyLOCO.gui.reference_comparison import calculate_reference_comparison
+from pyLOCO.gui.reference_comparison import ReferenceComparisonResult
 
 
 ROOT = Path(__file__).parents[1]
@@ -120,6 +121,30 @@ def test_gui_exposes_distinct_pre_and_post_fit_comparison_actions(app):
     window.close()
 
 
+def test_reference_window_displays_physical_dispersion_in_millimetres(app):
+    from pyLOCO.gui.widgets.reference_comparison import ReferenceComparisonWindow
+
+    result = ReferenceComparisonResult(
+        measured_orm=np.zeros((4, 2)), model_orm=np.zeros((4, 2)),
+        measured_rf=np.zeros(4), model_rf=np.zeros(4),
+        physical_measured=np.array([.001, .002, .003, .004]),
+        physical_model=np.zeros(4), n_bpms=2, n_hcors=1, n_vcors=1,
+        cross_plane_excluded=False, statistics={}, rf_statistics={}, provenance={},
+    )
+    window = ReferenceComparisonWindow(result)
+    window.rf_quantity_selector.setCurrentIndex(1)
+
+    assert window.rf_quantity_selector.currentText() == "Physical dispersion D [mm]"
+    measured_rms, unit = window.rf_statistics_table.item(0, 0).text().split()
+    assert unit == "mm"
+    assert float(measured_rms) == pytest.approx(np.sqrt((1.0 ** 2 + 2.0 ** 2) / 2.0))
+    assert any(
+        "converted from metres to millimetres" in label.text()
+        for label in window.findChildren(__import__("PySide6.QtWidgets", fromlist=["QLabel"]).QLabel)
+    )
+    window.close()
+
+
 def test_case_c_post_fit_comparison_separates_rf_and_replays_exclusions():
     from pyLOCO.gui.results.results_loader import ResultsLoader
 
@@ -154,7 +179,7 @@ def test_reference_window_separates_rf_planes_and_collapses_technical_details(ap
     assert window.rf_plane_selector.itemText(0) == "Horizontal"
     assert window.rf_plane_selector.itemText(1) == "Vertical"
     assert window.rf_quantity_selector.itemText(0) == "RF orbit response [m]"
-    assert window.rf_quantity_selector.itemText(1) == "Physical dispersion D [m]"
+    assert window.rf_quantity_selector.itemText(1) == "Physical dispersion D [mm]"
     assert window.rf_statistics_table.columnCount() == 3
     assert window.rf_statistics_table.rowCount() == 2
     assert window.rf_statistics_table.verticalHeaderItem(0).text() == "Horizontal (X)"
@@ -166,6 +191,13 @@ def test_reference_window_separates_rf_planes_and_collapses_technical_details(ap
     window.rf_quantity_selector.setCurrentIndex(1)
     assert window.rf_statistics_table.item(0, 2).text() != rf_horizontal
     assert window.rf_statistics_table.item(1, 2).text() != rf_vertical
+    expected_horizontal_mm = 1000.0 * np.sqrt(np.mean(
+        (case_c_result.physical_measured[:case_c_result.n_bpms]
+         - case_c_result.physical_model[:case_c_result.n_bpms]) ** 2
+    ))
+    displayed_value, displayed_unit = window.rf_statistics_table.item(0, 2).text().split()
+    assert displayed_unit == "mm"
+    assert float(displayed_value) == pytest.approx(expected_horizontal_mm)
     window.rf_plane_selector.setCurrentIndex(1)
-    assert "m" in window.rf_statistics_table.item(0, 2).text()
+    assert window.rf_statistics_table.item(0, 2).text().endswith(" mm")
     window.close()

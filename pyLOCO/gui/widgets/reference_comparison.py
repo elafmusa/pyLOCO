@@ -96,7 +96,7 @@ class ReferenceComparisonWindow(QDialog):
         controls.addSpacing(18); controls.addWidget(QLabel("Displayed quantity:"))
         selector = QComboBox(); selector.addItem("RF orbit response [m]", "rf")
         if self.result.physical_measured is not None:
-            selector.addItem("Physical dispersion D [m]", "physical")
+            selector.addItem("Physical dispersion D [mm]", "physical")
         controls.addWidget(selector); controls.addStretch(1); layout.addLayout(controls)
         message = QLabel(); message.setWordWrap(True); layout.addWidget(message)
         stats = QTableWidget(2, 3)
@@ -120,6 +120,11 @@ class ReferenceComparisonWindow(QDialog):
             physical = selector.currentData() == "physical"
             measured = self.result.physical_measured if physical else self.result.measured_rf
             model = self.result.physical_model if physical else self.result.model_rf
+            # Scientific data remain in SI metres. Scale only the physical-
+            # dispersion presentation so the values are easier to inspect.
+            display_scale = 1000.0 if physical else 1.0
+            measured = np.asarray(measured, dtype=float) * display_scale
+            model = np.asarray(model, dtype=float) * display_scale
             all_measured = measured
             all_model = model
             plane = plane_selector.currentData()
@@ -129,13 +134,14 @@ class ReferenceComparisonWindow(QDialog):
             if physical:
                 message.setText(
                     "Physical dispersion is derived only for display: D = ΔorbitRF × ηAT × fRF / signed Δf. "
+                    "Displayed values are converted from metres to millimetres. "
                     "The signed RF orbit response remains the FIT objective quantity."
                 )
                 prefix = "physical dispersion"
             else:
                 message.setText("Signed RF-induced orbit difference used by FIT; it is not absolute physical dispersion.")
                 prefix = "RF orbit response"
-            unit = "m"
+            unit = "mm" if physical else "m"
             for row, plane_section in enumerate((
                 slice(0, self.result.n_bpms), slice(self.result.n_bpms, None),
             )):
@@ -147,7 +153,7 @@ class ReferenceComparisonWindow(QDialog):
                     np.sqrt(np.mean((plane_measured - plane_model) ** 2)),
                 )):
                     stats.setItem(row, column, QTableWidgetItem(f"{float(value):.8g} {unit}"))
-            current[0] = self._plot_triplet(measured, model, title_prefix=prefix, unit="m")
+            current[0] = self._plot_triplet(measured, model, title_prefix=prefix, unit=unit)
             holder.addWidget(current[0])
         selector.currentIndexChanged.connect(redraw)
         plane_selector.currentIndexChanged.connect(redraw)
