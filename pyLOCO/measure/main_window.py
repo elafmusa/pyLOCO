@@ -957,6 +957,31 @@ class MeasureMainWindow(QMainWindow):
             role=str(row.get("role","") or "unclassified"); roles[role]=roles.get(role,0)+1
         return len((document or {}).get("mappings",())),roles
 
+    @staticmethod
+    def _master_mapping_statistics(document):
+        statistics={"total":0,"mapped":0,"unresolved":0,"ambiguous":0,"duplicate":0,"invalid":0}
+        for row in (document or {}).get("mappings",()):
+            statistics["total"]+=1; status=str(row.get("status","") or "").lower()
+            if "duplicate" in status:statistics["duplicate"]+=1
+            elif "ambiguous" in status:statistics["ambiguous"]+=1
+            elif "invalid" in status:statistics["invalid"]+=1
+            elif type(row.get("lattice_ordinal")) is int:statistics["mapped"]+=1
+            else:statistics["unresolved"]+=1
+        return statistics
+
+    @staticmethod
+    def _mapping_statistics_text(master, selected=None, *, prefix="Machine Mapping"):
+        stats=MeasureMainWindow._master_mapping_statistics(master)
+        text=(f"{prefix} — configured: {stats['total']:,}; mapped: {stats['mapped']:,}; "
+              f"unresolved: {stats['unresolved']:,}; ambiguous: {stats['ambiguous']:,}; "
+              f"duplicate: {stats['duplicate']:,}; invalid: {stats['invalid']:,}.")
+        if selected is not None:
+            counts=mapping_counts(selected)
+            text+=(f" Selected measurement devices — mapped: {counts['mapped']:,}/{counts['total']:,}; "
+                   f"unresolved: {counts['unresolved']:,}; ambiguous: {counts['ambiguous']:,}; "
+                   f"duplicate: {counts['duplicate']:,}; invalid: {counts['invalid']:,}.")
+        return text
+
     def _invalidate_device_alignment(self,reason="Device inventory changed — validate the device mapping again."):
         self.measurement_device_alignment=None; self._model_orm_cache=None
         if hasattr(self,"device_alignment_status"):
@@ -995,21 +1020,19 @@ class MeasureMainWindow(QMainWindow):
                 lattice_path=self.reference_model.path,configuration_path=configuration,
                 require_provenance=False,accept_explicit_ordinals=True)
             counts=mapping_counts(document)
-            master_total,_roles=self._master_mapping_counts(self.machine_mapping_document)
             measurement_total=sum(len(self._pyaml_named_inventories().get(role,())) for role in
                                   ("bpm","horizontal_corrector","vertical_corrector"))
             if counts["mapped"]!=counts["total"]:
                 self.measurement_device_alignment=document
                 self.device_alignment_status.setText(
-                    f"Mapping incomplete — {counts['mapped']}/{counts['total']} mapped; "
-                    f"{counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, "
-                    f"{counts['duplicate']} duplicate, {counts['invalid']} invalid. Comparison remains disabled.")
+                    self._mapping_statistics_text(self.machine_mapping_document,document)+
+                    f" Available measurement inventory: {measurement_total:,} BPM/H/V devices. "
+                    "Mapping is incomplete; comparison remains disabled.")
             else:
                 self.measurement_device_alignment=document
                 self.device_alignment_status.setText(
-                    f"Machine Mapping: {master_total:,} configured devices · Measurement Mapping: {measurement_total:,} available BPM/H/V devices · "
-                    f"Selected measurement subset: {counts['mapped']}/{counts['total']} identities matched by the recorded exact Device, exact FamName, or legacy-suffix method "
-                    "(including validated legacy component-suffix interpretation where recorded). "
+                    self._mapping_statistics_text(self.machine_mapping_document,document)+
+                    f" Available measurement inventory: {measurement_total:,} BPM/H/V devices. "
                     "Measured BPM/corrector order will be preserved in model calculations.")
             self.alignment_details_button.setEnabled(True)
             self.save_mapping_button.setEnabled(counts["mapped"]==counts["total"])
@@ -1065,16 +1088,12 @@ class MeasureMainWindow(QMainWindow):
                     accept_explicit_ordinals=template)
                 self.machine_mapping_document=merge_measurement(None,checked)
             counts=mapping_counts(checked); self.measurement_device_alignment=checked
-            master_total,_roles=self._master_mapping_counts(self.machine_mapping_document)
             measurement_total=sum(len(self._pyaml_named_inventories().get(role,())) for role in
                                   ("bpm","horizontal_corrector","vertical_corrector"))
             kind="Filled template validated" if template else "Loaded mapping"
             self.device_alignment_status.setText(
-                f"{kind} · Machine Mapping: {master_total:,} configured devices · "
-                f"Measurement Mapping: {measurement_total:,} available BPM/H/V devices · "
-                f"selected subset {counts['mapped']}/{counts['total']} mapped; "
-                f"{counts['unresolved']} unresolved, {counts['ambiguous']} ambiguous, "
-                f"{counts['duplicate']} duplicate, {counts['invalid']} invalid.")
+                self._mapping_statistics_text(self.machine_mapping_document,checked,prefix=kind)+
+                f" Available measurement inventory: {measurement_total:,} BPM/H/V devices.")
             self.alignment_details_button.setEnabled(True); self.save_mapping_button.setEnabled(counts["mapped"]==counts["total"])
             self._update_reference_comparison_enabled()
         except Exception as exc:QMessageBox.warning(self,"Cannot load Machine Mapping",str(exc))
@@ -1187,7 +1206,12 @@ class MeasureMainWindow(QMainWindow):
         layout=QVBoxLayout(dialog)
         total,roles=self._master_mapping_counts(document)
         measurement_total=sum(roles.get(role,0) for role in ("bpm","horizontal_corrector","vertical_corrector"))
-        explanation=QLabel(f"Machine Mapping: {total:,} configured devices. Measurement Mapping: {measurement_total:,} available BPM/H/V devices. Rows come from the selected pyAML configuration; AT fields come from the checksummed reference lattice. Measurement selections are stored separately.")
+        explanation=QLabel(
+            self._mapping_statistics_text(document,self.measurement_device_alignment,prefix="Complete Machine Mapping")+
+            f" Available measurement inventory: {measurement_total:,} BPM/H/V devices. "
+            "Rows come from the selected pyAML configuration; AT fields come from the checksummed reference lattice. "
+            "Measurement selections are stored separately."
+        )
         explanation.setWordWrap(True); layout.addWidget(explanation)
         role_filter=QComboBox(); role_filter.addItem("All configured device roles","")
         for role in sorted(roles):role_filter.addItem(f"{role.replace('_',' ').title()} ({roles[role]:,})",role)

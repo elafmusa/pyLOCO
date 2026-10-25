@@ -168,6 +168,23 @@ def test_filled_template_rejects_only_out_of_range_ordinal():
     assert row["status"]=="invalid_explicit_ordinal"
 
 
+def test_reconcile_preserves_validated_mapping_when_details_are_rebuilt():
+    ring=[SimpleNamespace(FamName="SH1",Device="AT-COR")]
+    validated=template({"horizontal_corrector":["SJ2A-C04-H"]})
+    validated["template"]=False
+    validated["mappings"][0].update(
+        lattice_ordinal=0,lattice_fam_name="SH1",lattice_device="AT-COR",
+        identity_match="explicit_lattice_ordinal",status="mapped",
+        evidence="Explicit zero-based AT index accepted")
+    proposal=complete_template(ring,{"horizontal_corrector":["SJ2A-C04-H"]})
+    assert proposal["mappings"][0]["status"]=="unresolved"
+    row=reconcile_configured(validated,proposal,ring=ring)["mappings"][0]
+    assert row["status"]=="mapped"
+    assert row["lattice_ordinal"]==0
+    assert row["lattice_fam_name"]=="SH1"
+    assert row["lattice_device"]=="AT-COR"
+
+
 def test_fit_project_and_run_request_preserve_complete_machine_mapping():
     from pyLOCO.gui.backend import LocoRunRequest
     from pyLOCO.gui.models.project import ProjectMetadata

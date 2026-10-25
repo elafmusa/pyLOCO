@@ -195,6 +195,24 @@ def test_filled_template_loads_as_unvalidated_then_gains_active_provenance(qapp,
     window.close()
 
 
+def test_mapping_statistics_text_separates_complete_and_selected_counts():
+    from pyLOCO.measure.main_window import MeasureMainWindow
+    master={"mappings":[
+        {"lattice_ordinal":1,"status":"mapped"},
+        {"lattice_ordinal":None,"status":"unresolved"},
+        {"lattice_ordinal":None,"status":"ambiguous"},
+    ]}
+    selected={"mappings":[
+        {"status":"mapped"},
+        {"status":"invalid"},
+    ]}
+    text=MeasureMainWindow._mapping_statistics_text(master,selected)
+    assert "configured: 3" in text and "mapped: 1" in text
+    assert "unresolved: 1" in text and "ambiguous: 1" in text
+    assert "Selected measurement devices — mapped: 1/2" in text
+    assert "invalid: 1" in text
+
+
 def test_explicit_template_ordinal_does_not_require_at_name_match(tmp_path):
     lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"active lattice")
     inventory={"bpm":["PYAML-BPM"],"horizontal_corrector":[],"vertical_corrector":[]}

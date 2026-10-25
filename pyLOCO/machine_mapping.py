@@ -252,6 +252,23 @@ def reconcile_configured(document: dict[str,Any]|None, configured: dict[str,Any]
                         f"{len(ring)}-element lattice for {row.get('role','device')} "
                         f"{row.get('pyaml_device','')!r}."
                     ))
+        elif prior.get("status")=="mapped" and type(supplied) is int and ring is not None \
+                and 0 <= supplied < len(ring):
+            # A validated Machine Mapping is no longer marked as a template.
+            # Preserve its checked ordinal when rebuilding from the same
+            # configuration/lattice; otherwise opening Mapping Details or
+            # saving a session would replace valid rows with fresh unresolved
+            # automatic-name proposals.
+            element=ring[supplied]; row=deepcopy(row)
+            row.update(lattice_ordinal=supplied,
+                lattice_fam_name=str(getattr(element,"FamName","") or ""),
+                lattice_device=str(getattr(element,"Device","") or ""),
+                lattice_common_name=str(getattr(element,"CommonName","") or ""),
+                physical_element_type=type(element).__name__,
+                identity_match=prior.get("identity_match","") or "explicit_lattice_ordinal",
+                identity_evidence=prior.get("identity_evidence","") or prior.get("evidence",""),
+                status="mapped", evidence=prior.get("evidence","") or
+                    f"Previously validated AT index {supplied} retained for the unchanged configured device.")
         elif row.get("status")=="ambiguous" and type(supplied) is int \
                 and prior["lattice_ordinal"] in row.get("candidate_ordinals",()):
             row=deepcopy(row); row["lattice_ordinal"]=prior["lattice_ordinal"]
