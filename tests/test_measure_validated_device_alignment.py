@@ -234,6 +234,16 @@ def test_loaded_magnet_rows_survive_measurement_only_runtime_discovery(qapp):
     window.close()
 
 
+def test_first_find_mapping_accepts_absent_previous_master(qapp):
+    from pyLOCO.measure.main_window import MeasureMainWindow,default_mock_devices
+    window=MeasureMainWindow(devices=default_mock_devices(1))
+    proposal=machine_mapping_template({"bpm":["BPM"]})
+    assert window.machine_mapping_document is None
+    retained=window._retain_loaded_magnet_mappings(proposal,None)
+    assert retained==proposal
+    window.close()
+
+
 def test_explicit_template_ordinal_does_not_require_at_name_match(tmp_path):
     lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"active lattice")
     inventory={"bpm":["PYAML-BPM"],"horizontal_corrector":[],"vertical_corrector":[]}

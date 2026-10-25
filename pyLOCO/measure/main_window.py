@@ -930,7 +930,7 @@ class MeasureMainWindow(QMainWindow):
         independently validates control targets, components, and units.
         """
         result=deepcopy(proposal)
-        if not is_machine_mapping(loaded):return result
+        if not loaded or not is_machine_mapping(loaded):return result
         supported={"normal_quadrupole","skew_quadrupole","sextupole","octupole","dipole"}
         identities={(row.get("role"),row.get("pyaml_device")) for row in result.get("mappings",())}
         for source in loaded.get("mappings",()):
