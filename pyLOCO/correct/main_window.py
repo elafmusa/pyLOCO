@@ -333,20 +333,24 @@ class CorrectMainWindow(QMainWindow):
         mapping_actions=QHBoxLayout()
         self.generate_mapping_button=QPushButton("Create Machine Mapping template…"); self.generate_mapping_button.clicked.connect(self.generate_mapping_template); self.generate_mapping_button.setEnabled(False)
         self.mapping_button=QPushButton("Load Machine Mapping…"); self.mapping_button.setMinimumWidth(210); self.mapping_button.clicked.connect(self.load_petra_mapping); self.mapping_button.setEnabled(False)
+        self.mapping_details_button=QPushButton("Machine Mapping details…"); self.mapping_details_button.clicked.connect(self.show_mapping_details); self.mapping_details_button.setEnabled(False)
         self.save_validated_mapping_button=QPushButton("Save validated Machine Mapping…"); self.save_validated_mapping_button.setEnabled(False)
-        mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.save_validated_mapping_button); mapping_actions.addStretch(1); automatic_layout.addLayout(mapping_actions)
+        mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.mapping_details_button); mapping_actions.addWidget(self.save_validated_mapping_button); mapping_actions.addStretch(1); automatic_layout.addLayout(mapping_actions)
         self.manual_mapping_feedback=QLabel("No mapping file loaded."); self.manual_mapping_feedback.setWordWrap(True); self.manual_mapping_feedback.setObjectName("mappingHelpText"); automatic_layout.addWidget(self.automatic_mapping_feedback); automatic_layout.addWidget(self.manual_mapping_feedback); mapping_grid.addWidget(self.automatic_mapping_group,3,0,1,2)
         self.mapping_feedback=QLabel(); self.mapping_feedback.hide()
         self.mapping_note=QLabel(); self.mapping_note.hide()
-        diagnostics=QGroupBox("Technical details and mapping-file help"); diagnostics.setCheckable(True); diagnostics.setChecked(False); diagnostics_layout=QVBoxLayout(diagnostics); self.mapping_template_help=QLabel("Mapping file: keep the fitted lattice name and ordinal; fill the exact machine control name. Loading validates the file against the active inventory."); self.mapping_template_help.setWordWrap(True); self.mapping_diagnostics=QLabel("No mapping diagnostics."); self.mapping_diagnostics.setWordWrap(True); self.mapping_diagnostics.setTextInteractionFlags(Qt.TextSelectableByMouse); diagnostics_layout.addWidget(self.mapping_template_help); diagnostics_layout.addWidget(self.mapping_diagnostics); self.mapping_template_help.setVisible(False); self.mapping_diagnostics.setVisible(False); diagnostics.toggled.connect(self.mapping_template_help.setVisible); diagnostics.toggled.connect(self.mapping_diagnostics.setVisible); mapping_grid.addWidget(diagnostics,4,0,1,2)
+        self.mapping_details_summary=QLabel("No FIT magnet mapping is available."); self.mapping_details_summary.setWordWrap(True); self.mapping_details_summary.setObjectName("mappingHelpText"); mapping_grid.addWidget(self.mapping_details_summary,4,0,1,2)
+        diagnostics=QGroupBox("Technical details and mapping-file help"); diagnostics.setCheckable(True); diagnostics.setChecked(False); diagnostics_layout=QVBoxLayout(diagnostics); self.mapping_template_help=QLabel("Mapping file: keep the fitted lattice name and ordinal; fill the exact machine control name. Loading validates the file against the active inventory."); self.mapping_template_help.setWordWrap(True); self.mapping_diagnostics=QLabel("No mapping diagnostics."); self.mapping_diagnostics.setWordWrap(True); self.mapping_diagnostics.setTextInteractionFlags(Qt.TextSelectableByMouse); diagnostics_layout.addWidget(self.mapping_template_help); diagnostics_layout.addWidget(self.mapping_diagnostics); self.mapping_template_help.setVisible(False); self.mapping_diagnostics.setVisible(False); diagnostics.toggled.connect(self.mapping_template_help.setVisible); diagnostics.toggled.connect(self.mapping_diagnostics.setVisible); mapping_grid.addWidget(diagnostics,5,0,1,2)
         layout.addWidget(mapping_group)
         self.mapping_group = mapping_group
-        mapping_details=QGroupBox("3. Mapping table"); details_layout=QVBoxLayout(mapping_details)
+        self.mapping_details_dialog=QDialog(self); self.mapping_details_dialog.setWindowTitle("Machine Mapping details — pyLOCO Correct"); self.mapping_details_dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); self.mapping_details_dialog.setSizeGripEnabled(True); self.mapping_details_dialog.setMinimumSize(900,520); self.mapping_details_dialog.resize(1250,700)
+        details_layout=QVBoxLayout(self.mapping_details_dialog)
         mapping_origin=QLabel("Fitted identities come from the FIT result; AT FamName, Device, CommonName and zero-based index come from the authoritative reference lattice or retained Complete Machine Mapping. A saved target remains a proposal until it is revalidated against the current pyAML inventory."); mapping_origin.setWordWrap(True); details_layout.addWidget(mapping_origin)
         mapping_origin.hide()
         filter_row=QHBoxLayout(); self.mapping_filter=QLineEdit(); self.mapping_filter.setPlaceholderText("Search fitted magnet or machine device"); self.mapping_filter.textChanged.connect(self._refresh_mapping_details)
         self.mapping_attention_filter=QComboBox(); self.mapping_attention_filter.addItem("All mappings","all"); self.mapping_attention_filter.addItem("Needs attention","attention"); self.mapping_attention_filter.addItem("Validated only","validated"); self.mapping_attention_filter.currentIndexChanged.connect(self._refresh_mapping_details); filter_row.addWidget(self.mapping_filter,1); filter_row.addWidget(self.mapping_attention_filter); details_layout.addLayout(filter_row)
-        self.mapping_details_table=CopyableMappingTable(0,11); self.mapping_details_table.setHorizontalHeaderLabels(["Fitted magnet","AT FamName","AT Device","AT CommonName","AT index (0-based)","pyAML target / control","Magnet type","Strength component","Units","Mapping status","Identity evidence / next action"]); configure_mapping_table(self.mapping_details_table,("Fitted magnet identity recorded in the FIT result.","FamName attribute read from the authoritative AT lattice.","Device attribute read from the authoritative AT lattice; never replaced with a control name.","CommonName attribute read from the authoritative AT lattice.","Zero-based AT lattice ordinal recorded by FIT.","Exact pyAML control identity; this is not an AT Device attribute.","Physical AT element class and fitted parameter role.","Validated control component such as B2L or A2L.","Physical units validated for the selected component.","Saved, proposed, unresolved, or validated against the active inventory.","Identity match, provenance, validation evidence, or actionable problem.")); self.mapping_details_table.setMinimumHeight(230); details_layout.addWidget(self.mapping_details_table); layout.addWidget(mapping_details)
+        self.mapping_details_table=CopyableMappingTable(0,11); self.mapping_details_table.setHorizontalHeaderLabels(["Fitted magnet","AT FamName","AT Device","AT CommonName","AT index (0-based)","pyAML target / control","Magnet type","Strength component","Units","Mapping status","Identity evidence / next action"]); configure_mapping_table(self.mapping_details_table,("Fitted magnet identity recorded in the FIT result.","FamName attribute read from the authoritative AT lattice.","Device attribute read from the authoritative AT lattice; never replaced with a control name.","CommonName attribute read from the authoritative AT lattice.","Zero-based AT lattice ordinal recorded by FIT.","Exact pyAML control identity; this is not an AT Device attribute.","Physical AT element class and fitted parameter role.","Validated control component such as B2L or A2L.","Physical units validated for the selected component.","Saved, proposed, unresolved, or validated against the active inventory.","Identity match, provenance, validation evidence, or actionable problem.")); self.mapping_details_table.setMinimumHeight(360); details_layout.addWidget(self.mapping_details_table,1)
+        close_buttons=QDialogButtonBox(QDialogButtonBox.Close); close_buttons.rejected.connect(self.mapping_details_dialog.hide); details_layout.addWidget(close_buttons)
         self.pysc_connection_group = connection_group
         self.pyaml_connection_group = QGroupBox("1. Machine connection")
         self.pyaml_connection_layout = QVBoxLayout(self.pyaml_connection_group)
@@ -358,7 +362,7 @@ class CorrectMainWindow(QMainWindow):
         self.connection_guidance.setObjectName("connectionGuidance")
         self.pyaml_connection_layout.addWidget(self.connection_guidance)
         layout.insertWidget(0, self.pyaml_connection_group)
-        current_group=QGroupBox("4. Read current machine strengths — read only"); current_layout=QVBoxLayout(current_group); self.current_strength_help=QLabel("Read the present strengths from the connected machine or control system. This operation does not change magnet settings and requires valid mappings. A successful numeric readback does not independently verify physical calibration."); self.current_strength_help.setWordWrap(True); current_layout.addWidget(self.current_strength_help)
+        current_group=QGroupBox("3. Read current machine strengths — read only"); current_layout=QVBoxLayout(current_group); self.current_strength_help=QLabel("Read the present strengths from the connected machine or control system. This operation does not change magnet settings and requires valid mappings. A successful numeric readback does not independently verify physical calibration."); self.current_strength_help.setWordWrap(True); current_layout.addWidget(self.current_strength_help)
         current_row=QHBoxLayout(); self.read_current_k_button=QPushButton("Read current K from pySC Server"); self.read_current_k_button.clicked.connect(self.read_current_pysc_k); self.current_k_status=QLabel("Connect a verified pySC machine/profile and load its explicit mapping."); self.current_k_status.setWordWrap(True); current_row.addWidget(self.read_current_k_button); current_row.addWidget(self.current_k_status,1); current_layout.addLayout(current_row); layout.addWidget(current_group)
         layout.addStretch(1); return self._scroll_page(page)
 
@@ -524,7 +528,7 @@ class CorrectMainWindow(QMainWindow):
                 self.mapping_file_status.setText(
                     f"Embedded FIT Machine Mapping — {counts['mapped']} saved; connection revalidation required")
         self.correction_changes=(); self.apply_button.setEnabled(False); self.apply_status.setText("Correction loaded — preview machine changes")
-        session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False)
+        session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.mapping_details_button.setEnabled(bool(self.review.items)); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False)
         if not is_machine_mapping(embedded):self.mapping_file_status.setText("—")
         pyaml_provenance = self.pyaml_workspace.has_saved_pyaml_provenance(self.review)
         if pyaml_provenance:
@@ -1463,7 +1467,7 @@ class CorrectMainWindow(QMainWindow):
 
     def _refresh_mapping_status(self):
         if not self.review:
-            self.mapping_summary.setText("No correction source loaded"); self.mapped_status.setText("—"); self.unmapped_status.setText("—"); self.ambiguous_status.setText("—"); self.mapping_feedback.setText("Load a correction source to begin mapping."); self._refresh_mapping_details(); return
+            self.mapping_summary.setText("No correction source loaded"); self.mapped_status.setText("—"); self.unmapped_status.setText("—"); self.ambiguous_status.setText("—"); self.mapping_feedback.setText("Load a correction source to begin mapping."); self.mapping_details_button.setEnabled(False); self.mapping_details_summary.setText("No FIT magnet mapping is available."); self._refresh_mapping_details(); return
         statuses={key:sum(item.metadata.get("mapping_status")==key for item in self.review.items) for key in ("mapped","saved","unmapped","proposed","ambiguous","duplicate","invalid")}; mapped=statuses["mapped"]
         unresolved=len(self.review.items)-mapped
         total=len(self.review.items)
@@ -1485,6 +1489,12 @@ class CorrectMainWindow(QMainWindow):
         self.mapping_summary.setText(
             f"{mapped} validated · {saved} saved pending revalidation · "
             f"{unresolved - saved} unresolved · {total} fitted magnets"+complete_text)
+        self.mapping_details_button.setEnabled(bool(total))
+        self.mapping_details_summary.setText(
+            f"Machine Mapping details: {total:,} fitted magnet entr{'y' if total == 1 else 'ies'} available — "
+            f"{mapped:,} validated against the current inventory, {saved:,} retained from FIT pending revalidation, "
+            f"{max(0,unresolved-saved):,} unresolved."
+        )
         if getattr(self,"mapping_action_message","")=="automatic":
             if hasattr(self, "mapping_auto_feedback"):
                 self.automatic_mapping_feedback.setText(self.mapping_auto_feedback)
@@ -1500,6 +1510,20 @@ class CorrectMainWindow(QMainWindow):
                 self.mapping_attention_filter.findData("attention")
             )
         self._refresh_mapping_details()
+
+    def show_mapping_details(self):
+        if not self.review or not self.review.items:
+            QMessageBox.information(self,"Machine Mapping details unavailable","Load FIT results or a correction plan containing fitted magnets first.")
+            return
+        self.mapping_filter.clear()
+        all_index=self.mapping_attention_filter.findData("all")
+        if all_index>=0:self.mapping_attention_filter.setCurrentIndex(all_index)
+        self._refresh_mapping_details()
+        self.mapping_details_dialog.show()
+        self.mapping_details_dialog.raise_()
+        self.mapping_details_dialog.activateWindow()
+        self.mapping_details_table.setFocus(Qt.OtherFocusReason)
+        self.mapping_details_table.scrollToTop()
 
     def _refresh_mapping_details(self):
         if not hasattr(self,"mapping_details_table"): return

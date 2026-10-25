@@ -349,13 +349,17 @@ def test_mapping_page_is_compact_and_uses_one_action_section(window, setup):
     ]
     assert "ⓘ Mapping workflow and template format" not in visible_titles
     assert "2. Machine mapping" in visible_titles
-    assert "3. Mapping table" in visible_titles
+    assert "3. Mapping table" not in visible_titles
     assert window.automatic_mapping_group.title() == "Mapping actions"
     assert not hasattr(window, "mapping_help_body")
     assert window.mapping_template_help.isHidden()
     assert widget.clear_mapping_button.text() == "Find machine mappings"
     assert window.generate_mapping_button.text() == "Create Machine Mapping template…"
     assert window.mapping_button.text() == "Load Machine Mapping…"
+    assert window.mapping_details_button.text() == "Machine Mapping details…"
+    assert window.mapping_details_button.isEnabled()
+    window.show_mapping_details()
+    assert window.mapping_details_dialog.isVisible()
     assert window.mapping_details_table.columnCount() == 11
     assert window.mapping_details_table.horizontalHeaderItem(0).text() == "Fitted magnet"
     assert window.mapping_details_table.horizontalHeaderItem(1).text() == "AT FamName"
@@ -366,6 +370,7 @@ def test_mapping_page_is_compact_and_uses_one_action_section(window, setup):
     window.mapping_filter.setText("M2")
     assert window.mapping_details_table.rowCount() == 1
     assert window.mapping_details_table.item(0, 5).text() == "M2"
+    window.mapping_details_dialog.hide()
 
 
 def test_mapping_status_filter_and_readonly_strength_journey(window, setup):
@@ -448,6 +453,8 @@ def test_embedded_fit_mapping_is_visible_offline_then_revalidated_on_connection(
     assert "saved mapping remains unverified" in window.connection_guidance.text()
     assert all(item.metadata["mapping_status"]=="saved" for item in window.review.items)
     assert "saved pending revalidation" in window.mapping_summary.text()
+    assert window.mapping_details_button.isEnabled()
+    assert "3 fitted magnet entries available" in window.mapping_details_summary.text()
     assert window.mapping_details_table.item(0,9).text()=="Saved mapping — revalidation required"
     widget=window.pyaml_workspace
     window.backend_combo.setCurrentIndex(window.backend_combo.findData("pyaml"))
