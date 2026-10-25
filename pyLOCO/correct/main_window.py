@@ -297,44 +297,27 @@ class CorrectMainWindow(QMainWindow):
         connection_group.hide()
         self.offline_connection_group=QGroupBox("1. Machine connection"); offline_layout=QVBoxLayout(self.offline_connection_group); offline_text=QLabel("Mock is an offline, read-only review backend. It has no machine connection or live device inventory."); offline_text.setWordWrap(True); offline_layout.addWidget(offline_text); layout.addWidget(self.offline_connection_group)
 
-        mapping_group=QGroupBox("2. Machine Mapping"); mapping_group.setObjectName("machineMappingSection"); mapping_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        mapping_group=QGroupBox("2. Machine mapping"); mapping_group.setObjectName("machineMappingSection"); mapping_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
         self.mapping_summary=QLabel("No correction source loaded"); self.mapping_file_status=QLabel("—"); self.mapped_status=QLabel("—"); self.unmapped_status=QLabel("—"); self.ambiguous_status=QLabel("—")
-        mapping_grid=status_grid(mapping_group,(("Mapping status",self.mapping_summary),("Mapping file",self.mapping_file_status),("Mapped magnets",self.mapped_status),("Unmapped magnets",self.unmapped_status),("Ambiguous mappings",self.ambiguous_status)))
-        self.mapping_source_notice=QLabel("Load a correction source first to configure PETRA magnet mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,5,0,1,2)
-        self.automatic_mapping_group=QGroupBox("Find and validate"); automatic_layout=QVBoxLayout(self.automatic_mapping_group)
-        self.automatic_mapping_help=QLabel("Find unique devices using exact lattice identities from the discovered device inventory. Array positions are not used and no magnet settings are changed."); self.automatic_mapping_help.setWordWrap(True); automatic_layout.addWidget(self.automatic_mapping_help)
+        mapping_grid=status_grid(mapping_group,(("Status",self.mapping_summary),("Mapping source",self.mapping_file_status)))
+        self.mapping_source_notice=QLabel("Load a correction source to begin mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,2,0,1,2)
+        self.automatic_mapping_group=QGroupBox("Mapping actions"); automatic_layout=QVBoxLayout(self.automatic_mapping_group)
         self.automatic_mapping_actions=QHBoxLayout(); automatic_layout.addLayout(self.automatic_mapping_actions); self.automatic_mapping_actions.addStretch(1)
-        self.automatic_mapping_feedback=QLabel("Not run yet."); self.automatic_mapping_feedback.setWordWrap(True); self.automatic_mapping_feedback.setObjectName("mappingHelpText"); automatic_layout.addWidget(self.automatic_mapping_feedback); mapping_grid.addWidget(self.automatic_mapping_group,6,0,1,2)
-        manual_group=QGroupBox("Mapping file"); manual_layout=QVBoxLayout(manual_group)
-        self.manual_mapping_help=QLabel("Create a JSON template containing immutable FIT identities. Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded. Creating a template does not complete or validate the mapping."); self.manual_mapping_help.setWordWrap(True); manual_layout.addWidget(self.manual_mapping_help)
+        self.automatic_mapping_feedback=QLabel("Not run yet."); self.automatic_mapping_feedback.setWordWrap(True); self.automatic_mapping_feedback.setObjectName("mappingHelpText")
         mapping_actions=QHBoxLayout()
         self.generate_mapping_button=QPushButton("Create Machine Mapping template…"); self.generate_mapping_button.clicked.connect(self.generate_mapping_template); self.generate_mapping_button.setEnabled(False)
         self.mapping_button=QPushButton("Load Machine Mapping…"); self.mapping_button.setMinimumWidth(210); self.mapping_button.clicked.connect(self.load_petra_mapping); self.mapping_button.setEnabled(False)
         self.save_validated_mapping_button=QPushButton("Save validated Machine Mapping…"); self.save_validated_mapping_button.setEnabled(False)
-        mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.save_validated_mapping_button); mapping_actions.addStretch(1); manual_layout.addLayout(mapping_actions)
-        self.manual_mapping_feedback=QLabel("No manual mapping loaded."); self.manual_mapping_feedback.setWordWrap(True); self.manual_mapping_feedback.setObjectName("mappingHelpText"); manual_layout.addWidget(self.manual_mapping_feedback); mapping_grid.addWidget(manual_group,7,0,1,2)
+        mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.save_validated_mapping_button); mapping_actions.addStretch(1); automatic_layout.addLayout(mapping_actions)
+        self.manual_mapping_feedback=QLabel("No mapping file loaded."); self.manual_mapping_feedback.setWordWrap(True); self.manual_mapping_feedback.setObjectName("mappingHelpText"); automatic_layout.addWidget(self.automatic_mapping_feedback); automatic_layout.addWidget(self.manual_mapping_feedback); mapping_grid.addWidget(self.automatic_mapping_group,3,0,1,2)
         self.mapping_feedback=QLabel(); self.mapping_feedback.hide()
         self.mapping_note=QLabel(); self.mapping_note.hide()
-        diagnostics=QGroupBox("Technical mapping diagnostics"); diagnostics.setCheckable(True); diagnostics.setChecked(False); diagnostics_layout=QVBoxLayout(diagnostics); self.mapping_diagnostics=QLabel("No mapping diagnostics."); self.mapping_diagnostics.setWordWrap(True); self.mapping_diagnostics.setTextInteractionFlags(Qt.TextSelectableByMouse); diagnostics_layout.addWidget(self.mapping_diagnostics); self.mapping_diagnostics.setVisible(False); diagnostics.toggled.connect(self.mapping_diagnostics.setVisible); mapping_grid.addWidget(diagnostics,8,0,1,2)
+        diagnostics=QGroupBox("Technical details and mapping-file help"); diagnostics.setCheckable(True); diagnostics.setChecked(False); diagnostics_layout=QVBoxLayout(diagnostics); self.mapping_template_help=QLabel("Mapping file: keep the fitted lattice name and ordinal; fill the exact machine control name. Loading validates the file against the active inventory."); self.mapping_template_help.setWordWrap(True); self.mapping_diagnostics=QLabel("No mapping diagnostics."); self.mapping_diagnostics.setWordWrap(True); self.mapping_diagnostics.setTextInteractionFlags(Qt.TextSelectableByMouse); diagnostics_layout.addWidget(self.mapping_template_help); diagnostics_layout.addWidget(self.mapping_diagnostics); self.mapping_template_help.setVisible(False); self.mapping_diagnostics.setVisible(False); diagnostics.toggled.connect(self.mapping_template_help.setVisible); diagnostics.toggled.connect(self.mapping_diagnostics.setVisible); mapping_grid.addWidget(diagnostics,4,0,1,2)
         layout.addWidget(mapping_group)
         self.mapping_group = mapping_group
-        mapping_help=QGroupBox("ⓘ Mapping workflow and template format"); mapping_help.setCheckable(True); mapping_help.setChecked(False); mapping_help.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
-        mapping_help_layout=QVBoxLayout(mapping_help); self.mapping_help_body=QWidget(); help_grid=QGridLayout(self.mapping_help_body); help_grid.setColumnMinimumWidth(0,210); help_grid.setColumnStretch(1,1)
-        help_rows=(
-            ("Procedure", "1. Connect and discover machine devices.  2. Find machine mappings or load a completed manual mapping.  3. Review unresolved entries.  4. Validate and optionally save the reusable mapping.  5. Read current machine strengths as a separate read-only operation."),
-            ("File formats", "Create writes JSON. Load accepts JSON, YAML and YML."),
-            ("lattice_name / lattice_ordinal", "Generated from the validated FIT result. These identify the fitted element and must not be edited."),
-            ("control_name", "The only field to complete: enter the exact machine device name from the discovered inventory or an approved machine mapping."),
-            ("Derived metadata", "pyLOCO derives the component, unit and mapping status during validation. Existing full-format JSON/YAML files remain supported."),
-            ("Safety", "A typed device name is only a proposal. Duplicate, missing, ambiguous, wrong-family, component and unit checks still have to pass."),
-        )
-        for row,(term,description) in enumerate(help_rows):
-            label=QLabel(term); label.setStyleSheet("font-weight:700"); text=QLabel(description); text.setWordWrap(True); help_grid.addWidget(label,row,0,Qt.AlignTop); help_grid.addWidget(text,row,1)
-        example=QLabel('<b>Minimal unvalidated example:</b> {"lattice_name":"QD3J", "lattice_ordinal":27, "control_name":""}<br><b>Instruction:</b> Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded.'); example.setWordWrap(True); help_grid.addWidget(example,len(help_rows),0,1,2)
-        mapping_help_layout.addWidget(self.mapping_help_body); self.mapping_help_body.setVisible(False); mapping_help.toggled.connect(self.mapping_help_body.setVisible)
-
-        mapping_details=QGroupBox("3. Machine Mapping review"); details_layout=QVBoxLayout(mapping_details)
+        mapping_details=QGroupBox("3. Mapping table"); details_layout=QVBoxLayout(mapping_details)
         mapping_origin=QLabel("Fitted identities come from the FIT result; AT FamName, Device, CommonName and zero-based index come from the authoritative reference lattice or retained Complete Machine Mapping. A saved target remains a proposal until it is revalidated against the current pyAML inventory."); mapping_origin.setWordWrap(True); details_layout.addWidget(mapping_origin)
+        mapping_origin.hide()
         filter_row=QHBoxLayout(); self.mapping_filter=QLineEdit(); self.mapping_filter.setPlaceholderText("Search fitted magnet or machine device"); self.mapping_filter.textChanged.connect(self._refresh_mapping_details)
         self.mapping_attention_filter=QComboBox(); self.mapping_attention_filter.addItem("All mappings","all"); self.mapping_attention_filter.addItem("Needs attention","attention"); self.mapping_attention_filter.addItem("Validated only","validated"); self.mapping_attention_filter.currentIndexChanged.connect(self._refresh_mapping_details); filter_row.addWidget(self.mapping_filter,1); filter_row.addWidget(self.mapping_attention_filter); details_layout.addLayout(filter_row)
         self.mapping_details_table=CopyableMappingTable(0,11); self.mapping_details_table.setHorizontalHeaderLabels(["Fitted magnet","AT FamName","AT Device","AT CommonName","AT index (0-based)","pyAML target / control","Magnet type","Strength component","Units","Mapping status","Identity evidence / next action"]); configure_mapping_table(self.mapping_details_table,("Fitted magnet identity recorded in the FIT result.","FamName attribute read from the authoritative AT lattice.","Device attribute read from the authoritative AT lattice; never replaced with a control name.","CommonName attribute read from the authoritative AT lattice.","Zero-based AT lattice ordinal recorded by FIT.","Exact pyAML control identity; this is not an AT Device attribute.","Physical AT element class and fitted parameter role.","Validated control component such as B2L or A2L.","Physical units validated for the selected component.","Saved, proposed, unresolved, or validated against the active inventory.","Identity match, provenance, validation evidence, or actionable problem.")); self.mapping_details_table.setMinimumHeight(230); details_layout.addWidget(self.mapping_details_table); layout.addWidget(mapping_details)
@@ -349,9 +332,6 @@ class CorrectMainWindow(QMainWindow):
         self.connection_guidance.setObjectName("connectionGuidance")
         self.pyaml_connection_layout.addWidget(self.connection_guidance)
         layout.insertWidget(0, self.pyaml_connection_group)
-        # Keep the active connection controls at the very top of this page;
-        # the expandable background material belongs immediately below them.
-        layout.insertWidget(1, mapping_help)
         current_group=QGroupBox("4. Read current machine strengths — read only"); current_layout=QVBoxLayout(current_group); self.current_strength_help=QLabel("Read the present strengths from the connected machine or control system. This operation does not change magnet settings and requires valid mappings. A successful numeric readback does not independently verify physical calibration."); self.current_strength_help.setWordWrap(True); current_layout.addWidget(self.current_strength_help)
         current_row=QHBoxLayout(); self.read_current_k_button=QPushButton("Read current K from pySC Server"); self.read_current_k_button.clicked.connect(self.read_current_pysc_k); self.current_k_status=QLabel("Connect a verified pySC machine/profile and load its explicit mapping."); self.current_k_status.setWordWrap(True); current_row.addWidget(self.read_current_k_button); current_row.addWidget(self.current_k_status,1); current_layout.addLayout(current_row); layout.addWidget(current_group)
         layout.addStretch(1); return self._scroll_page(page)
@@ -615,16 +595,13 @@ class CorrectMainWindow(QMainWindow):
             self.offline_connection_group.setVisible(key=="mock")
             self.pyaml_workspace.extra_actions.setVisible(selected)
             self.pyaml_workspace.clear_mapping_button.setVisible(selected)
-            self.automatic_mapping_group.setVisible(selected)
+            self.automatic_mapping_group.setVisible(True)
             self.correction_representation.setEnabled(not selected)
             self._refresh_representation_explanation()
             self.undo_button.setVisible(not selected)
             self.read_current_k_button.setText("Read current integrated strengths" if selected else "Read current K from pySC Server" if key=="pysc" else "Read current machine strengths")
             self.read_current_k_button.setEnabled(key in {"pyaml","pysc"})
             self.read_current_k_button.setToolTip("Read mapped B2L/A2L values only; no magnet settings are changed." if selected else "Read mapped physical K values only; no magnet settings are changed." if key=="pysc" else "Unavailable for the offline Mock backend.")
-            self.automatic_mapping_help.setText("Find unique devices using exact fitted-lattice identities from the discovered pyAML inventory. Array positions are not used and no magnet settings are changed." if selected else "Find unique devices using exact fitted-lattice identities from the discovered device inventory. Array positions are not used.")
-            device_kind = "pyAML device" if selected else "machine device"
-            self.manual_mapping_help.setText(f"Create a JSON template containing immutable FIT identities. Fill in only the {device_kind} names. pyLOCO validates the mapping automatically when loaded. Creating a template does not complete or validate the mapping.")
             self.current_strength_help.setText("Read the present integrated quadrupole strengths (KL) from the connected pyAML machine. This is a separate read-only operation; it requires validated mappings and does not independently verify physical calibration." if selected else "Read physical K values from the connected pySC Server. This read-only operation requires validated mappings and does not change settings." if key=="pysc" else "The offline Mock backend has no live machine strengths to read.")
             self.mapping_note.setText("Automatic matching uses unique literal FIT/pyAML identities; array order is never used. Unresolved included magnets block preview and application." if selected else "Every included fitted magnet must resolve uniquely to a verified machine device before executable preview or application.")
             if selected:

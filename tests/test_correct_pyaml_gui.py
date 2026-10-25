@@ -320,16 +320,21 @@ def test_find_mapping_reuses_embedded_complete_mapping_by_ordinal(window, setup)
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
 
 
-def test_mapping_help_and_details_are_self_explanatory(window, setup):
+def test_mapping_page_is_compact_and_uses_one_action_section(window, setup):
     widget = connect_workspace(window, setup)
     widget.refresh()
-    help_text = " ".join(label.text() for label in window.mapping_help_body.findChildren(QLabel))
-    for term in ("lattice_name", "lattice_ordinal", "control_name", "Derived metadata", "mapping status", "QD3J"):
-        assert term in help_text
-    assert "Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded." in help_text
     mapping_page = window.tabs.widget(1).widget()
     assert mapping_page.layout().itemAt(0).widget().title() == "1. Machine connection"
-    assert mapping_page.layout().itemAt(1).widget().title() == "ⓘ Mapping workflow and template format"
+    visible_titles = [
+        group.title() for group in mapping_page.findChildren(QGroupBox)
+        if not group.isHidden()
+    ]
+    assert "ⓘ Mapping workflow and template format" not in visible_titles
+    assert "2. Machine mapping" in visible_titles
+    assert "3. Mapping table" in visible_titles
+    assert window.automatic_mapping_group.title() == "Mapping actions"
+    assert not hasattr(window, "mapping_help_body")
+    assert window.mapping_template_help.isHidden()
     assert widget.clear_mapping_button.text() == "Find machine mappings"
     assert window.generate_mapping_button.text() == "Create Machine Mapping template…"
     assert window.mapping_button.text() == "Load Machine Mapping…"
@@ -367,9 +372,9 @@ def test_backend_neutral_disconnected_and_zero_match_states(window, setup):
     assert widget.inventory_result.text() == "Inventory not discovered"
     assert not widget.writes.isChecked()
     window.backend_combo.setCurrentIndex(window.backend_combo.findData("mock"))
-    assert window.mapping_group.title() == "2. Machine Mapping"
+    assert window.mapping_group.title() == "2. Machine mapping"
     assert window.mapping_details_table.horizontalHeaderItem(5).text() == "pyAML target / control"
-    assert window.automatic_mapping_group.isHidden()
+    assert not window.automatic_mapping_group.isHidden()
     assert not window.offline_connection_group.isHidden()
     assert window.pysc_connection_group.isHidden()
     assert not window.read_current_k_button.isEnabled()
