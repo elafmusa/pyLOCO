@@ -919,6 +919,40 @@ class MeasureMainWindow(QMainWindow):
             "mode":self.pyaml_fields["mode"].text().strip()}
         return document
 
+    def _retain_loaded_magnet_mappings(self,proposal,loaded):
+        """Keep supported magnet rows supplied by a loaded complete mapping.
+
+        Some deployed pyAML adapters expose BPM/corrector discovery at runtime
+        but do not enumerate configured magnet groups.  A complete mapping
+        loaded by the operator must not consequently be reduced to the 896-row
+        measurement projection during details display, session save, or JSON
+        export.  These retained rows remain mapping evidence only; Correct
+        independently validates control targets, components, and units.
+        """
+        result=deepcopy(proposal)
+        if not is_machine_mapping(loaded):return result
+        supported={"normal_quadrupole","skew_quadrupole","sextupole","octupole","dipole"}
+        identities={(row.get("role"),row.get("pyaml_device")) for row in result.get("mappings",())}
+        for source in loaded.get("mappings",()):
+            identity=(source.get("role"),source.get("pyaml_device"))
+            if identity[0] not in supported or not identity[1] or identity in identities:continue
+            row=deepcopy(source); ordinal=row.get("lattice_ordinal")
+            if type(ordinal) is int and 0 <= ordinal < len(self.reference_model.ring):
+                element=self.reference_model.ring[ordinal]
+                row.update(lattice_fam_name=str(getattr(element,"FamName","") or ""),
+                    lattice_device=str(getattr(element,"Device","") or ""),
+                    lattice_common_name=str(getattr(element,"CommonName","") or ""),
+                    physical_element_type=type(element).__name__,
+                    identity_match=row.get("identity_match","") or "explicit_lattice_ordinal",
+                    status="mapped", identity_evidence=row.get("identity_evidence","") or
+                        f"Loaded complete Machine Mapping supplied explicit AT index {ordinal}; retained because the active adapter did not enumerate this magnet role.")
+            elif ordinal is not None:
+                row.update(lattice_ordinal=None,status="invalid_explicit_ordinal",
+                    identity_evidence=f"Loaded AT index {ordinal!r} is outside the active {len(self.reference_model.ring)}-element lattice.")
+            else:row.update(status=row.get("status") or "unresolved")
+            result.setdefault("mappings",[]).append(row); identities.add(identity)
+        return result
+
     def _ensure_complete_machine_mapping(self):
         """Rebuild and validate the master from the active pyAML configuration.
 
@@ -932,8 +966,10 @@ class MeasureMainWindow(QMainWindow):
         if self.reference_model is None:raise ValueError("Load the authoritative AT reference lattice first.")
         configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
         if not configuration.is_file():raise ValueError("The active pyAML configuration file is unavailable.")
-        proposal=reconcile_configured(self.machine_mapping_document,self._complete_machine_mapping_template(),
+        loaded=self.machine_mapping_document
+        proposal=reconcile_configured(loaded,self._complete_machine_mapping_template(),
                                       ring=self.reference_model.ring)
+        proposal=self._retain_loaded_magnet_mappings(proposal,loaded)
         configured=self._pyaml_named_inventories()
         measurement_inventory={role:list(configured.get(role,())) for role in
             ("bpm","horizontal_corrector","vertical_corrector")}
@@ -945,8 +981,8 @@ class MeasureMainWindow(QMainWindow):
             require_provenance=False,accept_explicit_ordinals=True)
         master=merge_measurement(proposal,checked)
         expected=sum(len(names) for names in configured.values())
-        if len(master.get("mappings",()))!=expected:
-            raise ValueError(f"Complete Machine Mapping serialization mismatch: expected {expected} configured devices, got {len(master.get('mappings',()))}.")
+        if len(master.get("mappings",()))<expected:
+            raise ValueError(f"Complete Machine Mapping serialization mismatch: expected at least {expected} configured devices, got {len(master.get('mappings',()))}.")
         self.machine_mapping_document=master
         return master
 
@@ -1069,6 +1105,7 @@ class MeasureMainWindow(QMainWindow):
                 # validate every configured measurement device afresh.
                 proposal=reconcile_configured(source,self._complete_machine_mapping_template(),
                                               ring=self.reference_model.ring)
+                proposal=self._retain_loaded_magnet_mappings(proposal,source)
                 projected=measurement_projection(proposal)
                 if template:projected={**projected,"mapping_provenance":"Externally completed complete Machine Mapping template"}
                 full_checked=validate_mapping(projected,self.reference_model.ring,full_inventory,lattice_path=self.reference_model.path,

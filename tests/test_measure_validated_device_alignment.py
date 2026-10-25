@@ -213,6 +213,27 @@ def test_mapping_statistics_text_separates_complete_and_selected_counts():
     assert "invalid: 1" in text
 
 
+def test_loaded_magnet_rows_survive_measurement_only_runtime_discovery(qapp):
+    from pyLOCO.measure.main_window import MeasureMainWindow,default_mock_devices
+    ring=[SimpleNamespace(FamName="BPM",Device="BPM"),
+          SimpleNamespace(FamName="QD3",Device="MAGNET-QD3")]
+    window=MeasureMainWindow(devices=default_mock_devices(1))
+    window.reference_model=replace(_model(ring),ring=ring)
+    proposal=machine_mapping_template({"bpm":["BPM"]})
+    loaded=machine_mapping_template({"bpm":["BPM"]},{"normal_quadrupole":["QD3-B2L"]})
+    loaded["mappings"][1]["lattice_ordinal"]=1
+    retained=window._retain_loaded_magnet_mappings(proposal,loaded)
+    assert len(retained["mappings"])==2
+    magnet=retained["mappings"][1]
+    assert magnet["role"]=="normal_quadrupole"
+    assert magnet["pyaml_device"]=="QD3-B2L"
+    assert magnet["lattice_ordinal"]==1
+    assert magnet["lattice_fam_name"]=="QD3"
+    assert magnet["lattice_device"]=="MAGNET-QD3"
+    assert magnet["status"]=="mapped"
+    window.close()
+
+
 def test_explicit_template_ordinal_does_not_require_at_name_match(tmp_path):
     lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"active lattice")
     inventory={"bpm":["PYAML-BPM"],"horizontal_corrector":[],"vertical_corrector":[]}
