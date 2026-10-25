@@ -107,8 +107,15 @@ def complete_template(ring, measurement_inventory: dict[str,list[str]],
     controls=control_inventory or {}; metadata=control_metadata or {}
     document=template(measurement_inventory,controls)
     for row in document["mappings"]:
-        row.update(metadata.get((row["role"],row["pyaml_device"]),{}))
+        device_metadata=metadata.get((row["role"],row["pyaml_device"]),{})
+        row.update(device_metadata)
         hits,method=_exact_lattice_match(ring,row["pyaml_device"],row["role"])
+        if not hits:
+            for alias in device_metadata.get("lattice_names",()) or ():
+                hits,alias_method=_exact_lattice_match(ring,str(alias),row["role"])
+                if hits:
+                    method=f"backend_lattice_identity_{alias_method}"
+                    break
         if len(hits)==1:
             ordinal=hits[0]; element=ring[ordinal]
             row.update(lattice_ordinal=ordinal,lattice_fam_name=str(getattr(element,"FamName","") or ""),

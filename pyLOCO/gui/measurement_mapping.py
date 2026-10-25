@@ -248,6 +248,8 @@ OUTPUT_PATH = {output!r}
 ring = at.load_mat(LATTICE_PATH, use=MAT_VARIABLE) if MAT_VARIABLE else at.load_lattice(LATTICE_PATH)
 with open(TEMPLATE_PATH, "r", encoding="utf-8") as stream:
     d = json.load(stream)
+if not isinstance(d, dict) or not isinstance(d.get("mappings"), list):
+    raise ValueError("Template must contain a JSON object with a mappings list")
 
 def exact_hits(attribute, identity):
     return [i for i, element in enumerate(ring)
@@ -272,6 +274,16 @@ def find_hits(row):
 
 matched = 0
 for row in d["mappings"]:
+    # Current simple template rows contain only pyaml_device, role and
+    # lattice_ordinal. Older measured_name templates remain accepted.
+    if not row.get("pyaml_device") and not row.get("measured_name"):
+        print(f"missing device name: {{row!r}}")
+        row["lattice_ordinal"] = None
+        continue
+    if not row.get("role"):
+        print(f"missing role: {{row!r}}")
+        row["lattice_ordinal"] = None
+        continue
     supplied = row.get("lattice_ordinal")
     if type(supplied) is int:
         if 0 <= supplied < len(ring):

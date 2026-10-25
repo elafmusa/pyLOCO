@@ -19,7 +19,7 @@ from typing import Sequence
 from uuid import uuid4
 
 import numpy as np
-from PySide6.QtCore import QItemSelectionModel, QObject, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
+from PySide6.QtCore import QItemSelectionModel, QObject, QSettings, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox, QInputDialog,
@@ -937,9 +937,12 @@ class MeasureMainWindow(QMainWindow):
         configured=self._pyaml_named_inventories()
         measurement_inventory={role:list(configured.get(role,())) for role in
             ("bpm","horizontal_corrector","vertical_corrector")}
-        checked=find_exact_device_mappings(self.reference_model.ring,measurement_inventory,
+        projected=measurement_projection(proposal)
+        projected={**projected,"mapping_provenance":
+            "Measure configured pyAML inventory matched to authoritative AT lattice/runtime identities"}
+        checked=validate_mapping(projected,self.reference_model.ring,measurement_inventory,
             lattice_path=self.reference_model.path,configuration_path=configuration,
-            provenance="Measure complete configured pyAML inventory matched to authoritative AT lattice")
+            require_provenance=False,accept_explicit_ordinals=True)
         master=merge_measurement(proposal,checked)
         expected=sum(len(names) for names in configured.values())
         if len(master.get("mappings",()))!=expected:
@@ -982,10 +985,15 @@ class MeasureMainWindow(QMainWindow):
             self._invalidate_device_alignment("Cannot verify: the active pyAML configuration file is unavailable."); return
         inventory=self._alignment_inventory()
         try:
-            document=find_exact_device_mappings(self.reference_model.ring,inventory,
-                lattice_path=self.reference_model.path,configuration_path=configuration,
-                provenance="Measure exact AT Device identity")
             self._ensure_complete_machine_mapping()
+            projected=measurement_projection(self.machine_mapping_document)
+            wanted={(role,name) for role,names in inventory.items() for name in names}
+            projected={**projected,"mappings":[row for row in projected["mappings"]
+                if (row.get("role"),row.get("measured_name")) in wanted],
+                "mapping_provenance":"Measure selected devices projected from Complete Machine Mapping"}
+            document=validate_mapping(projected,self.reference_model.ring,inventory,
+                lattice_path=self.reference_model.path,configuration_path=configuration,
+                require_provenance=False,accept_explicit_ordinals=True)
             counts=mapping_counts(document)
             master_total,_roles=self._master_mapping_counts(self.machine_mapping_document)
             measurement_total=sum(len(self._pyaml_named_inventories().get(role,())) for role in
@@ -1667,7 +1675,8 @@ class MeasureMainWindow(QMainWindow):
         self.delay=NoWheelDoubleSpinBox(); self.delay.setRange(0,3600); self.delay.setDecimals(3); self.delay.setSingleStep(.1); self.delay.setSuffix(" s"); self.delay.setValue(1.0)
         self.bpm_noise_convention=QComboBox(); self.bpm_noise_convention.addItem("Population standard deviation (ddof=0) — default",0); self.bpm_noise_convention.addItem("Sample standard deviation (ddof=1)",1)
         self.measurement_name=QLineEdit("pyloco-bpm-noise"); self.measurement_label=QLineEdit("pyLOCO BPM noise — Mock"); self.comments=QPlainTextEdit(); self.comments.setMaximumHeight(90)
-        self.output_directory=QLineEdit("measurements"); out=QWidget(); ol=QHBoxLayout(out); ol.setContentsMargins(0,0,0,0); ol.addWidget(self.output_directory,1); choose=QPushButton("Choose…"); choose.clicked.connect(self.choose_output); ol.addWidget(choose)
+        saved_output=str(QSettings("pyLOCO","pyLOCO Measure").value("measure/output_directory","measurements"))
+        self.output_directory=QLineEdit(saved_output); out=QWidget(); ol=QHBoxLayout(out); ol.setContentsMargins(0,0,0,0); ol.addWidget(self.output_directory,1); choose=QPushButton("Choose…"); choose.clicked.connect(self.choose_output); ol.addWidget(choose)
         self.duration=QLabel();
         for label,widget in (("Number of orbit readings",self.readings),("Delay between readings",self.delay),("BPM-noise convention",self.bpm_noise_convention),("Estimated duration",self.duration),("Measurement name",self.measurement_name),("Measurement label",self.measurement_label),("Notes",self.comments),("Output/session directory",out)): form.addRow(label,widget)
         self.bpm_noise_convention_label=form.labelForField(self.bpm_noise_convention)
@@ -2317,8 +2326,10 @@ class MeasureMainWindow(QMainWindow):
         if path: self.names_file.setText(path)
 
     def choose_output(self):
-        path=QFileDialog.getExistingDirectory(self,"Select output directory")
-        if path: self.output_directory.setText(path)
+        path=QFileDialog.getExistingDirectory(self,"Select output directory",self.output_directory.text())
+        if path:
+            self.output_directory.setText(path)
+            QSettings("pyLOCO","pyLOCO Measure").setValue("measure/output_directory",path)
 
     def _selection_snapshot(self):
         def values(method,manual,names_file,excluded,search,resolved):
@@ -4724,7 +4735,8 @@ class MeasureMainWindow(QMainWindow):
         if self.project_path is None: return self.save_project_as()
         self.project=self._collect_project(); save_measure_project(self.project_path,self.project); self.statusBar().showMessage(f"Saved {self.project_path}")
     def save_project_as(self):
-        path=QFileDialog.getSaveFileName(self,"Save pyLOCO Measure project",f"{self.measurement_type.currentData().replace('_','-')}.pyloco-measure.json","pyLOCO Measure (*.pyloco-measure.json)")[0]
+        stamp=datetime.now().strftime("%Y%m%d-%H%M%S")
+        path=QFileDialog.getSaveFileName(self,"Save pyLOCO Measure project",f"{self.measurement_type.currentData().replace('_','-')}-{stamp}.pyloco-measure.json","pyLOCO Measure (*.pyloco-measure.json)")[0]
         if not path:return
         self.project_path=Path(path).resolve(); self.save_project()
 
@@ -4733,7 +4745,8 @@ class MeasureMainWindow(QMainWindow):
         self.setWindowTitle(f"pyLOCO Measure — {name}{' *' if self._session_dirty else ''}")
 
     def save_active_session(self):
-        suggested=(self.saved_session_path if self.saved_session_path is not None else Path(self.output_directory.text()).expanduser()/"measurement-session.pyloco-session.json")
+        stamp=datetime.now().strftime("%Y%m%d-%H%M%S")
+        suggested=(self.saved_session_path if self.saved_session_path is not None else Path(self.output_directory.text()).expanduser()/f"measurement-session-{stamp}.pyloco-session.json")
         target_text=QFileDialog.getSaveFileName(self,"Save Full Measurement Session — choose destination",str(suggested),"Measurement session (*.pyloco-session.json)")[0]
         if not target_text:return False
         target=Path(target_text).expanduser().resolve(); current=self.saved_session_path

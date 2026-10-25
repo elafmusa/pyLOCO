@@ -218,6 +218,9 @@ def test_generated_script_preserves_missing_and_ambiguous_as_none(tmp_path):
     assert 'if type(supplied) is int:' in script
     assert '0 <= supplied < len(ring)' in script
     assert 'invalid ordinal:' in script
+    assert 'Current simple template rows contain only pyaml_device, role and' in script
+    assert 'missing device name:' in script
+    assert 'missing role:' in script
 
 
 REPOSITORY_ROOT = Path(__file__).parents[1]

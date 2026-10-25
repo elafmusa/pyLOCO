@@ -483,6 +483,15 @@ class PyAMLAdapter(WritableAdapter):
                 "configured_unit":unit,"hardware_unit":"",
                 "configured_component":component if component in suffix_roles else "",
                 "inventory_source":"connected pyAML runtime arrays"}
+            if magnet is not None:
+                provider=getattr(magnet,"get_lattice_names",None)
+                if callable(provider):
+                    try:
+                        aliases=provider()
+                        if isinstance(aliases,str):aliases=[aliases]
+                        else:aliases=[str(value) for value in aliases if str(value)]
+                        if aliases:metadata[(role,name)]["lattice_names"]=list(dict.fromkeys(aliases))
+                    except Exception:pass
         return inventories,metadata
 
     def list_channels(self):

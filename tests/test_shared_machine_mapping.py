@@ -121,6 +121,17 @@ def test_configured_device_without_unique_lattice_match_remains_unresolved():
     assert document["mappings"][0]["status"]=="ambiguous"
 
 
+def test_complete_mapping_uses_authoritative_backend_lattice_identity():
+    ring=[SimpleNamespace(FamName="SH1A",Device="srmag/vst-sh1/c01-a")]
+    measured={"bpm":[],"horizontal_corrector":["control/H"],"vertical_corrector":[]}
+    metadata={("horizontal_corrector","control/H"):{
+        "lattice_names":["srmag/vst-sh1/c01-a"]}}
+    row=complete_template(ring,measured,{},metadata)["mappings"][0]
+    assert row["lattice_ordinal"]==0
+    assert row["status"]=="proposed_unique_exact_match"
+    assert row["identity_match"]=="backend_lattice_identity_exact_device"
+
+
 def test_filled_template_ordinal_is_validated_and_used_before_name_search():
     ring=[SimpleNamespace(FamName="Q",Device="Q"),SimpleNamespace(FamName="Q",Device="Q")]
     filled=template({}, {"normal_quadrupole":["Q"]})
