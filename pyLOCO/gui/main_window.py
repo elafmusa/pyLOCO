@@ -3549,6 +3549,14 @@ class MainWindow(QMainWindow):
         self.save_project_action.triggered.connect(self.save_project)
         self.save_project_as_action = QAction("Save As…", self)
         self.save_project_as_action.triggered.connect(self.save_project_as)
+        self.save_project_as_toolbar_action = QAction("Save As…", self)
+        self.save_project_as_toolbar_action.setToolTip(
+            "Save the FIT project under a new filename"
+        )
+        self.save_project_as_toolbar_action.setStatusTip(
+            "Save a copy of the current FIT project and continue working in that file"
+        )
+        self.save_project_as_toolbar_action.triggered.connect(self.save_project_as)
         self.validate_project_action = QAction("Validate", self)
         self.validate_project_action.triggered.connect(self.validate_project)
         self.run_loco_action = QAction("▶ Run LOCO", self)
@@ -3651,7 +3659,12 @@ class MainWindow(QMainWindow):
         # its action widgets taller than the allocated toolbar and clip the
         # upper half of their labels after a narrow-window resize.
         toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-        for action in (self.new_project_action, self.open_project_action, self.save_project_action):
+        for action in (
+            self.new_project_action,
+            self.open_project_action,
+            self.save_project_action,
+            self.save_project_as_toolbar_action,
+        ):
             toolbar.addAction(action)
         toolbar.addSeparator()
         toolbar.addAction(self.validate_project_action)
@@ -3697,6 +3710,8 @@ class MainWindow(QMainWindow):
             if toolbar.widgetForAction(action) is self.screenshot_controller.button
         )
         self.more_menu = QMenu("More", self)
+        self.more_menu.addAction(self.save_project_as_action)
+        self.more_menu.addSeparator()
         self.more_menu.addAction(self.screenshot_controller.save_action)
         self.more_menu.addAction(self.screenshot_controller.save_as_action)
         more_appearance = self.more_menu.addMenu("Appearance")
@@ -3754,6 +3769,7 @@ class MainWindow(QMainWindow):
             return
         narrow = self.width() < 1180
         for action in (
+            self.save_project_as_toolbar_action,
             self.appearance_toolbar_action,
             self.screenshot_toolbar_action,
             self.search_button_action,

@@ -47,6 +47,8 @@ def test_fit_toolbar_reflows_secondary_controls_without_hiding_primary_actions(a
     assert window.appearance_toolbar_action.isVisible()
     assert window.screenshot_toolbar_action.isVisible()
     assert window.search_button_action.isVisible()
+    assert window.save_project_as_toolbar_action.isVisible()
+    assert window.save_project_as_toolbar_action.toolTip() == "Save the FIT project under a new filename"
     assert window.search_box_action is None
     assert not window.control_search.search_editor.isVisible()
     assert not window.control_search.popup.isVisible()
@@ -61,6 +63,7 @@ def test_fit_toolbar_reflows_secondary_controls_without_hiding_primary_actions(a
     assert not window.appearance_toolbar_action.isVisible()
     assert not window.screenshot_toolbar_action.isVisible()
     assert not window.search_button_action.isVisible()
+    assert not window.save_project_as_toolbar_action.isVisible()
     for action in (
         window.new_project_action, window.open_project_action,
         window.save_project_action, window.validate_project_action,
@@ -81,6 +84,7 @@ def test_fit_toolbar_reflows_secondary_controls_without_hiding_primary_actions(a
 def test_fit_compact_search_and_more_menu_preserve_existing_actions(app):
     window = MainWindow(); window.show(); app.processEvents(); window.resize(900, 700); app.processEvents()
     labels = [action.text().replace("&", "") for action in window.more_menu.actions()]
+    assert "Save As…" in labels
     assert "📷 Save Screenshot" in labels
     assert "Save Screenshot As…" in labels
     assert "Appearance" in labels
