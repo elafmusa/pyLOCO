@@ -314,7 +314,7 @@ def test_review_is_compact():
 
 def test_correct_file_actions_live_in_their_workflow_sections_not_toolbar():
     app=QApplication.instance() or build_application(["correct-toolbar-labels"]); window=CorrectMainWindow(); window.resize(1200,800); window.show(); app.processEvents()
-    assert window.toolbar_file_buttons == []
+    assert [button.text() for button in window.toolbar_file_buttons] == ["Open Project…", "Save Project"]
     toolbar = window.findChild(QToolBar, "mainToolbar")
     assert not any(
         isinstance(widget, QPushButton) and widget.text() in {
@@ -330,6 +330,55 @@ def test_correct_file_actions_live_in_their_workflow_sections_not_toolbar():
     assert window.save_plan_button.text() == "Save correction plan…"
     assert window.save_plan_button.accessibleName() == "Save correction plan"
     window.close()
+
+
+def test_correct_project_roundtrip_restores_workspace_but_not_machine_authority(tmp_path):
+    app=QApplication.instance() or build_application(["correct-project-roundtrip"])
+    window=CorrectMainWindow()
+    normal=item(0,control_name="QF1",individual_scale=.75,
+                metadata={"mapping_status":"saved","control_component":"B2L","control_unit":"m^-1"})
+    skew=item(1,correction_type="skew_quadrupole",control_name="QS1",included=False,
+              exclusion_reason="operator choice",metadata={"mapping_status":"saved","control_component":"A2L","control_unit":"m^-1"})
+    review=CorrectionReview([normal,skew],str(tmp_path/"fit-results"),global_scale=.15,
+                            comments="MDT shift note",application_scope="normal_quadrupole")
+    review.machine_mapping={"schema":"pyloco.machine_mapping","schema_version":3,"mappings":[]}
+    window.review=review
+    window.comments.setPlainText("MDT shift note")
+    window.backend_combo.setCurrentIndex(window.backend_combo.findData("pyaml"))
+    window.pyaml_workspace.fields["config_path"].setText("/approved/esrf.yaml")
+    window.pyaml_workspace.fields["normal_array"].setText("Quads")
+    window.pyaml_workspace.fields["skew_array"].setText("SkewQuads")
+    window.progress_increment.blockSignals(True); window.progress_increment.setValue(5); window.progress_increment.blockSignals(False)
+    window.saved_progress_record={
+        "status":"applied","fraction":.10,"increment_fraction":.10,
+        "history":[{"timestamp_utc":"2026-10-25T18:00:00Z","cumulative_fraction":.10,
+                    "increment_fraction":.10,"execution_status":"verified","measurements":{}}],
+        "changes":[],"restore_required":True,
+    }
+    path=window.save_project_to(tmp_path/"shift.pyloco-correct.json")
+    document=json.loads(path.read_text())
+    assert document["safety"]["connection_saved"] is False
+    assert document["safety"]["write_authorization_saved"] is False
+    window.close()
+
+    restored=CorrectMainWindow(); restored.load_project_path(path); app.processEvents()
+    assert restored.backend_combo.currentData()=="pyaml"
+    assert restored.pyaml_workspace.connection is None
+    assert restored.pyaml_workspace.transaction is None
+    assert not restored.pyaml_workspace.writes.isChecked()
+    assert restored.pyaml_workspace.fields["config_path"].text()=="/approved/esrf.yaml"
+    assert restored.review.application_scope=="normal_quadrupole"
+    assert restored.review.global_scale==pytest.approx(.15)
+    assert restored.review.comments=="MDT shift note"
+    assert restored.review.items[0].individual_scale==pytest.approx(.75)
+    assert restored.review.items[1].included is False
+    assert restored.review.items[1].exclusion_reason=="operator choice"
+    assert restored.review.machine_mapping["schema"]=="pyloco.machine_mapping"
+    assert restored.saved_progress_record["fraction"]==pytest.approx(.10)
+    assert restored.correction_progress.value()==10
+    assert restored.progress_history.rowCount()==1
+    assert restored.progress_increment.value()==5
+    restored.close()
 
 
 def test_correction_review_plots_use_list_indices_existing_strength_conversions_and_compact_counts():

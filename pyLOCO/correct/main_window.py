@@ -1,6 +1,9 @@
 """Correction review and explicitly gated single-B2 simulation validation."""
 from __future__ import annotations
 import json
+import copy
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +23,7 @@ from pyLOCO.gui.mapping_table import CopyableMappingTable, configure_mapping_tab
 from pyLOCO.gui.themes import theme_for_key
 from pyLOCO.gui.appearance import ensure_suite_appearance,select_suite_appearance
 from pyLOCO.control_system import AdapterCapability,InterfaceRegistry
+from pyLOCO.data_schema import CorrectionPlan,CorrectionRecord
 from .application import CorrectionApplicationService
 from .model import CorrectionReview,load_review,save_review,save_review_csv
 from .petra_readonly import MagnetMapping,apply_explicit_mapping,load_mapping
@@ -100,14 +104,16 @@ class CorrectionApplyWorker(QObject):
 class CorrectMainWindow(QMainWindow):
     COLUMNS=("Apply?","Index","Fitted magnet (AT FamName)","AT Device","AT index (0-based)","Magnet class / type","pyAML target / control","Strength component","Control units","Mapping status","Initial K [m⁻²]","Fitted K [m⁻²]","Current K [m⁻²]","Raw fitted ΔK [m⁻²]","Recommended machine ΔK [m⁻²]","ΔK/K [%]","Global scale","Individual scale","Final ΔK [m⁻²]","L [m]","Final Δ(KL) [m⁻¹]","Applied control change","Target K [m⁻²]","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason","Current KL [m⁻¹]","Target KL [m⁻¹]")
     def __init__(self, *, registry=None):
-        super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
+        super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.project_path=None; self.saved_progress_record=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
         screen=self.screen()
         if screen is not None:self.resize(min(1500,screen.availableGeometry().width()),min(900,screen.availableGeometry().height()))
 
     def _build(self):
         toolbar=QToolBar("Correct toolbar"); toolbar.setObjectName("mainToolbar"); toolbar.setMovable(False); self.addToolBar(toolbar)
         brand=QLabel("pyLOCO CORRECT"); brand.setObjectName("correctBrand"); brand.setFixedWidth(285); toolbar.addWidget(brand); toolbar.addSeparator()
-        self.toolbar_file_buttons=[]
+        self.open_project_button=QPushButton("Open Project…"); self.open_project_button.setAccessibleName("Open Correct project"); self.open_project_button.setToolTip("Open a saved pyLOCO Correct project"); self.open_project_button.clicked.connect(self.open_project); toolbar.addWidget(self.open_project_button)
+        self.save_project_button=QPushButton("Save Project"); self.save_project_button.setAccessibleName("Save Correct project"); self.save_project_button.setToolTip("Save correction plan, mappings, progress and non-sensitive settings"); self.save_project_button.clicked.connect(self.save_project); toolbar.addWidget(self.save_project_button); toolbar.addSeparator()
+        self.toolbar_file_buttons=[self.open_project_button,self.save_project_button]
         self.screenshot_controller=install_window_screenshot_actions(
             self,toolbar,application_slug="correct",
             directory_provider=self._screenshot_project_directory,
@@ -149,11 +155,10 @@ class CorrectMainWindow(QMainWindow):
     def _correction_progress_panel(self):
         group=QGroupBox("Correction Progress — verified readbacks only")
         group.setObjectName("correctionProgressPanel")
-        group.setMinimumHeight(162)
+        group.setMinimumHeight(154)
         group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         outer=QVBoxLayout(group); outer.setContentsMargins(10,8,10,8); outer.setSpacing(5)
-        steps=QLabel("1  Choose the next increment   →   2  Preview Next Step (no writes)   →   3  Apply Confirmed Step   →   4  Verify progress")
-        steps.setObjectName("mappingHelpText"); steps.setWordWrap(True); outer.addWidget(steps)
+        group.setToolTip("Choose the increment, preview without writes, explicitly confirm Apply, then verify the readback.")
         summary_row=QHBoxLayout(); summary_row.setSpacing(12)
         self.verified_percent=QLabel("Last verified: 0%")
         self.next_target_percent=QLabel("Next target: 10%")
@@ -209,13 +214,15 @@ class CorrectMainWindow(QMainWindow):
 
     def _refresh_correction_progress(self, *_):
         pyaml=self.backend_combo.currentData()=="pyaml" and hasattr(self,"pyaml_workspace")
-        transaction=(self.pyaml_workspace.transaction if pyaml else getattr(self,"fullfit_transaction",None)); record=getattr(transaction,"record",None) or {}
+        transaction=(self.pyaml_workspace.transaction if pyaml else getattr(self,"fullfit_transaction",None))
+        record=getattr(transaction,"record",None) or (self.saved_progress_record if pyaml else None) or {}
         raw_status=str(record.get("status") or "not_started")
         status="preview_verified" if pyaml and raw_status=="preview" else raw_status
         history=record.get("history",()) if isinstance(record,dict) else ()
         record_fraction=float(record.get("fraction",record.get("cumulative_fraction",0.0)))
         record_increment=float(record.get("increment_fraction",record.get("identity",{}).get("review",{}).get("global_scale",.1)))
-        verified=(float(record.get("fraction",record.get("cumulative_fraction",0.0))) if status=="applied" else
+        verified=(max(float(record.get("fraction",record.get("cumulative_fraction",0.0))),
+                      float(history[-1].get("cumulative_fraction",0.0)) if history else 0.0) if status=="applied" else
                   float(record.get("previous_fraction",max(0.0,record_fraction-record_increment))) if status=="preview_verified" else
                   float(history[-1].get("cumulative_fraction",0.0)) if history else 0.0)
         if status=="restored": verified=0.0
@@ -619,6 +626,124 @@ class CorrectMainWindow(QMainWindow):
     def open_file(self):
         path=QFileDialog.getOpenFileName(self,"Open correction plan or legacy JSON",self._browse_start("plans"),"Correction files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
         if path:self._remember_browse("plans",path); self.load_source_responsively(path)
+
+    @staticmethod
+    def _project_json_default(value):
+        if isinstance(value,np.generic):return value.item()
+        if isinstance(value,Path):return str(value)
+        raise TypeError(f"Unsupported project value: {type(value).__name__}")
+
+    def _correct_project_document(self):
+        if not self.review:raise ValueError("Load FIT results or a correction plan first")
+        self.review.comments=self.comments.toPlainText()
+        plan=asdict(self.review.to_plan("correct-project-plan"))
+        workspace=getattr(self,"pyaml_workspace",None)
+        transaction=getattr(workspace,"transaction",None) if workspace else None
+        record=copy.deepcopy(getattr(transaction,"record",None) or self.saved_progress_record)
+        pyaml_settings={}
+        if workspace:
+            pyaml_settings={
+                "config_path":workspace.fields["config_path"].text().strip(),
+                "normal_array":workspace.fields["normal_array"].text().strip(),
+                "skew_array":workspace.fields["skew_array"].text().strip(),
+                "mode":workspace.mode.currentData(),
+                "mapping_path":str(workspace.mapping_path or self.mapping_path or ""),
+            }
+        return {
+            "schema":"pyloco.correct_project","schema_version":1,
+            "saved_utc":datetime.now(timezone.utc).isoformat(),
+            "correction_plan":plan,
+            "ui_state":{
+                "backend":self.backend_combo.currentData(),"workflow_tab":self.tabs.currentIndex(),
+                "progress_increment_percent":self.progress_increment.value(),
+                "representation":self.correction_representation.currentData(),
+                "table_filter":self.filter.currentData(),"table_sort":self.sort_by.currentData(),
+                "table_search":self.search.text(),"mapping_filter":self.mapping_attention_filter.currentData(),
+                "mapping_search":self.mapping_filter.text(),"comments":self.comments.toPlainText(),
+            },
+            "pyaml":pyaml_settings,
+            "progress_record":record,
+            "safety":{
+                "connection_saved":False,"write_authorization_saved":False,
+                "message":"Opening a project never connects to a machine, authorizes writes or changes magnet strengths.",
+            },
+        }
+
+    def save_project(self):
+        if not self.review:
+            QMessageBox.information(self,"Nothing to save","Load FIT results or a correction plan first."); return
+        suggested=str(self.project_path or (Path(self.review.source_result).expanduser().parent/"correct-project.pyloco-correct.json"))
+        path=QFileDialog.getSaveFileName(self,"Save pyLOCO Correct project",suggested,"pyLOCO Correct project (*.pyloco-correct.json);;JSON (*.json)",options=QFileDialog.DontUseNativeDialog)[0]
+        if not path:return
+        target=Path(path).expanduser().resolve()
+        if not str(target).endswith(".json"):target=Path(str(target)+".pyloco-correct.json")
+        try:
+            self.save_project_to(target)
+        except Exception as exc:
+            QMessageBox.critical(self,"Cannot save Correct project",str(exc)); return
+        self.statusBar().showMessage(f"Saved Correct project: {target}",8000)
+
+    def save_project_to(self,target):
+        """Persist the complete offline Correct workspace without machine authority."""
+        target=Path(target).expanduser().resolve()
+        document=self._correct_project_document()
+        temporary=target.with_suffix(target.suffix+".tmp")
+        target.parent.mkdir(parents=True,exist_ok=True)
+        temporary.write_text(json.dumps(document,indent=2,allow_nan=False,default=self._project_json_default),encoding="utf-8")
+        temporary.replace(target)
+        self.project_path=target
+        self.setWindowTitle(f"pyLOCO Correct — {target.stem}")
+        return target
+
+    def open_project(self):
+        path=QFileDialog.getOpenFileName(self,"Open pyLOCO Correct project",self._browse_start("correct-projects"),"pyLOCO Correct project (*.pyloco-correct.json *.json)",options=QFileDialog.DontUseNativeDialog)[0]
+        if not path:return
+        source=Path(path).expanduser().resolve()
+        try:
+            self.load_project_path(source)
+        except Exception as exc:
+            QMessageBox.critical(self,"Cannot open Correct project",str(exc)); return
+        self._remember_browse("correct-projects",source)
+        self.statusBar().showMessage("Correct project restored — disconnected; machine writes remain unauthorized",10000)
+
+    def load_project_path(self,source):
+        """Restore a Correct workspace while deliberately remaining disconnected/read-only."""
+        source=Path(source).expanduser().resolve()
+        document=json.loads(source.read_text(encoding="utf-8"))
+        if document.get("schema")!="pyloco.correct_project" or document.get("schema_version")!=1:
+            raise ValueError("Not a supported pyLOCO Correct project")
+        data=document.get("correction_plan") or {}
+        records=tuple(CorrectionRecord(**row) for row in data.get("records",()))
+        plan=CorrectionPlan(plan_id=str(data.get("plan_id","")),source_result=str(data.get("source_result","")),records=records,global_scale=float(data.get("global_scale",1.0)),application_state=str(data.get("application_state","dry_run")),fraction_comparison=tuple(data.get("fraction_comparison",())),metadata=dict(data.get("metadata",{})),schema_version=str(data.get("schema_version","")),file_type=str(data.get("file_type","")))
+        plan.validate()
+        review=CorrectionReview.from_plan(plan)
+        result_path=Path(review.source_result).expanduser()
+        if not result_path.is_absolute():review.source_result=str((source.parent/result_path).resolve())
+        self._accept_loaded_review(review,review.source_result)
+        state=document.get("ui_state",{}); pyaml=document.get("pyaml",{})
+        backend=self.backend_combo.findData(state.get("backend","mock")); self.backend_combo.setCurrentIndex(backend if backend>=0 else 0)
+        if pyaml:
+            self.pyaml_workspace.fields["config_path"].setText(str(pyaml.get("config_path","") or "")); self.pyaml_workspace.fields["normal_array"].setText(str(pyaml.get("normal_array","Quads") or "Quads")); self.pyaml_workspace.fields["skew_array"].setText(str(pyaml.get("skew_array","SkewQuads") or "SkewQuads"))
+            mode=self.pyaml_workspace.mode.findData(pyaml.get("mode","live")); self.pyaml_workspace.mode.setCurrentIndex(mode if mode>=0 else 0)
+            mapping_text=str(pyaml.get("mapping_path","") or "").strip()
+            if mapping_text:
+                mapping_path=Path(mapping_text).expanduser()
+                if not mapping_path.is_absolute():mapping_path=source.parent/mapping_path
+                if mapping_path.is_file():self.pyaml_workspace.mapping_path=mapping_path.resolve(); self.mapping_path=str(mapping_path.resolve()); self.pyaml_workspace.mapping_label.setText(str(mapping_path.resolve()))
+        self.pyaml_workspace.writes.setChecked(False)
+        self.pyaml_workspace.connection=self.pyaml_workspace.transaction=None
+        self.saved_progress_record=copy.deepcopy(document.get("progress_record"))
+        self.progress_increment.blockSignals(True)
+        self.progress_increment.setValue(int(state.get("progress_increment_percent",10)))
+        self.progress_increment.blockSignals(False)
+        for combo,key in ((self.filter,"table_filter"),(self.sort_by,"table_sort"),(self.mapping_attention_filter,"mapping_filter"),(self.correction_representation,"representation")):
+            index=combo.findData(state.get(key))
+            if index>=0:combo.setCurrentIndex(index)
+        self.search.setText(str(state.get("table_search","") or "")); self.mapping_filter.setText(str(state.get("mapping_search","") or "")); self.comments.setPlainText(str(state.get("comments",review.comments) or ""))
+        self.tabs.setCurrentIndex(max(0,min(self.tabs.count()-1,int(state.get("workflow_tab",0)))))
+        self.project_path=source; self.setWindowTitle(f"pyLOCO Correct — {source.stem}")
+        self._set_connection(False,"DISCONNECTED"); self._refresh_correction_progress(); self.refresh_all()
+        return document
 
     def _pyaml_locked(self):
         workspace = getattr(self, "pyaml_workspace", None)

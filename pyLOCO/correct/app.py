@@ -36,10 +36,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             handoff.unlink(missing_ok=True)
     app=build_application(["pyloco-correct"]); window=CorrectMainWindow(); window.show(); window.raise_(); window.activateWindow()
     if source:
-        window.statusBar().showMessage(f"Loading pyLOCO Results: {source}")
-        QTimer.singleShot(0,lambda:window.load_source_responsively(
-            source, iteration=args.iteration, machine_mapping=transferred_mapping
-        ))
+        source_path=Path(source)
+        try:
+            source_document=json.loads(source_path.read_text(encoding="utf-8")) if source_path.is_file() else {}
+        except Exception:
+            source_document={}
+        if isinstance(source_document,dict) and source_document.get("schema")=="pyloco.correct_project":
+            window.statusBar().showMessage(f"Loading pyLOCO Correct project: {source}")
+            QTimer.singleShot(0,lambda:window.load_project_path(source))
+        else:
+            window.statusBar().showMessage(f"Loading pyLOCO Results: {source}")
+            QTimer.singleShot(0,lambda:window.load_source_responsively(
+                source, iteration=args.iteration, machine_mapping=transferred_mapping
+            ))
     return app.exec()
 
 if __name__=="__main__": raise SystemExit(main())

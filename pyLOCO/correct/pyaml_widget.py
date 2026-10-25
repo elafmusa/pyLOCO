@@ -1,6 +1,7 @@
 """pyAML configuration, identity mapping and correction transaction workspace."""
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
 from threading import Event
@@ -249,6 +250,20 @@ class PyAMLCorrectionWidget(QWidget):
             connection.read(row["name"])
         self.connection = connection
         self.transaction = PyAMLCorrectionTransaction(connection, Path.cwd() / "correction-transactions" / "pyaml")
+        saved_record=getattr(self.owner,"saved_progress_record",None)
+        saved_progress_message=None
+        if saved_record:
+            saved_identity=(saved_record.get("identity") or {}).get("connection")
+            if saved_identity == connection.identity():
+                self.transaction.record=copy.deepcopy(saved_record)
+                self.transaction.persist()
+                self.owner.saved_progress_record=None
+                saved_progress_message="Saved correction history restored after machine-identity verification. No writes performed."
+            else:
+                saved_progress_message=(
+                    "Connected, but saved correction progress belongs to a different machine identity. "
+                    "It remains unverified and cannot authorize the next step."
+                )
         settings = QSettings("pyLOCO", "pyLOCO Correct")
         for key, value in options.items():
             settings.setValue(f"correct/pyaml/{key}", value)
@@ -303,6 +318,9 @@ class PyAMLCorrectionWidget(QWidget):
                 self.owner.manual_mapping_feedback.setText(
                     f"Previously selected mapping is not valid for this connection: {exc}"
                 )
+        if saved_progress_message:
+            self.status.setText(saved_progress_message)
+        self.owner._refresh_correction_progress()
 
     def import_mapping(self):
         self.owner.load_petra_mapping()
