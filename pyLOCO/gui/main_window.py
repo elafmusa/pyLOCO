@@ -11,6 +11,7 @@ import hashlib
 import re
 import shutil
 import threading
+import tempfile
 import numpy as np
 from fnmatch import fnmatchcase
 from html import escape
@@ -5532,7 +5533,20 @@ class MainWindow(QMainWindow):
         if results_dir is not None:
             arguments.extend(("--results",str(results_dir)))
             if iteration is not None:arguments.extend(("--iteration",str(iteration)))
-        return self._launch_suite("correct",*arguments)
+        mapping = getattr(getattr(self, "project", None), "machine_mapping", {}) or {}
+        handoff_path = None
+        if is_machine_mapping(mapping):
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".pyloco-machine-mapping.json",
+                prefix="pyloco-fit-to-correct-", delete=False,
+            ) as stream:
+                json.dump(json_safe(mapping), stream, indent=2)
+                handoff_path = Path(stream.name)
+            arguments.extend(("--mapping-handoff", str(handoff_path)))
+        launched = self._launch_suite("correct",*arguments)
+        if not launched and handoff_path is not None:
+            handoff_path.unlink(missing_ok=True)
+        return launched
 
     @Slot()
     def _choose_measurement_session_import_mode(self, handoff, full: dict | None) -> str | None:

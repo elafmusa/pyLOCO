@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -95,6 +96,26 @@ def test_fit_to_correct_launches_distinct_app_with_selected_iteration(tmp_path,m
     assert calls==[("correct",("--results",str(tmp_path),"--iteration","3"))]
 
 
+def test_fit_to_correct_transfers_current_complete_machine_mapping(tmp_path):
+    from pyLOCO.machine_mapping import template
+
+    mapping = template({}, {"normal_quadrupole": ["Q1-B2L"]})
+    mapping["mappings"][0].update(lattice_ordinal=7, lattice_fam_name="Q1")
+    calls = []
+    dummy = SimpleNamespace(
+        project=SimpleNamespace(machine_mapping=mapping),
+        results_workspace=SimpleNamespace(loader=SimpleNamespace(result_dir=tmp_path,iteration=None)),
+        _launch_suite=lambda application,*args:(calls.append((application,args)) or True),
+    )
+
+    assert MainWindow.open_correct_app(dummy)
+    application, arguments = calls[0]
+    assert application == "correct"
+    handoff = Path(arguments[arguments.index("--mapping-handoff") + 1])
+    assert json.loads(handoff.read_text(encoding="utf-8")) == mapping
+    handoff.unlink()
+
+
 def test_measure_to_fit_uses_explicit_portable_session_path(tmp_path,monkeypatch):
     manifest=complete_session(tmp_path); calls=[]
     monkeypatch.setattr("pyLOCO.measure.main_window.launch_suite_application",lambda application,*args:(calls.append((application,args)) or (True,"process 2")))
@@ -112,14 +133,40 @@ def test_correct_handoff_shows_and_activates_before_loading_results(monkeypatch,
         def raise_(self):events.append("raise")
         def activateWindow(self):events.append("activate")
         def statusBar(self):return Status()
-        def load_source_responsively(self,path,iteration=None):events.append(("load",path,iteration))
+        def load_source_responsively(self,path,iteration=None,machine_mapping=None):events.append(("load",path,iteration,machine_mapping))
     class App:
         def exec(self):events.append("exec"); return 0
     monkeypatch.setattr(correct_app,"CorrectMainWindow",Window); monkeypatch.setattr(correct_app,"build_application",lambda _argv:App())
     monkeypatch.setattr(correct_app.QTimer,"singleShot",lambda _delay,callback:(events.append("scheduled"),callback()))
     assert correct_app.main(["--results",str(tmp_path),"--iteration","2"])==0
     assert events[:3]==["show","raise","activate"]
-    assert events.index("scheduled")<events.index(("load",str(tmp_path),2))<events.index("exec")
+    assert events.index("scheduled")<events.index(("load",str(tmp_path),2,None))<events.index("exec")
+
+
+def test_correct_consumes_fit_mapping_handoff(monkeypatch,tmp_path):
+    from pyLOCO.machine_mapping import template
+
+    mapping = template({}, {"normal_quadrupole": ["Q1-B2L"]})
+    handoff = tmp_path / "mapping.json"
+    handoff.write_text(json.dumps(mapping), encoding="utf-8")
+    observed = []
+
+    class Window:
+        def show(self): pass
+        def raise_(self): pass
+        def activateWindow(self): pass
+        def statusBar(self): return SimpleNamespace(showMessage=lambda _message: None)
+        def load_source_responsively(self,path,iteration=None,machine_mapping=None):
+            observed.append((path, iteration, machine_mapping))
+    class App:
+        def exec(self): return 0
+
+    monkeypatch.setattr(correct_app,"CorrectMainWindow",Window)
+    monkeypatch.setattr(correct_app,"build_application",lambda _argv:App())
+    monkeypatch.setattr(correct_app.QTimer,"singleShot",lambda _delay,callback:callback())
+    assert correct_app.main(["--results",str(tmp_path),"--mapping-handoff",str(handoff)]) == 0
+    assert observed == [(str(tmp_path), None, mapping)]
+    assert not handoff.exists()
 
 
 def test_portable_example_contains_no_machine_specific_paths():

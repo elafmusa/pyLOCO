@@ -514,13 +514,16 @@ class CorrectMainWindow(QMainWindow):
             status += " — saved pyAML mapping retained; connection revalidation required"
         self.statusBar().showMessage(status,5000)
 
-    def load_source_responsively(self,path,iteration=None):
+    def load_source_responsively(self,path,iteration=None,machine_mapping=None):
         if self._pyaml_locked():
             QMessageBox.warning(self, "Restore required", "Restore pyAML strengths before changing correction source.")
             return
         if self._source_load_thread is not None:
             self.statusBar().showMessage("A correction source is already loading.",3000)
             return
+        self._pending_machine_mapping = (
+            dict(machine_mapping) if is_machine_mapping(machine_mapping) else None
+        )
         self.statusBar().showMessage(f"Loading correction source… {path}")
         thread=QThread(self); worker=CorrectionSourceLoader(path,iteration); worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -532,10 +535,19 @@ class CorrectMainWindow(QMainWindow):
 
     @Slot(object,str)
     def _source_loaded(self,review,path):
+        transferred = getattr(self, "_pending_machine_mapping", None)
+        if is_machine_mapping(transferred):
+            # The current FIT project may contain a newer complete mapping
+            # than an already-completed result. Preserve it as saved evidence;
+            # Correct still requires connection/inventory revalidation before
+            # any machine operation is enabled.
+            review.machine_mapping = transferred
+        self._pending_machine_mapping = None
         self._accept_loaded_review(review,path)
 
     @Slot(str)
     def _source_load_failed(self,message):
+        self._pending_machine_mapping = None
         self.statusBar().showMessage("Correction source could not be loaded.",5000)
         QMessageBox.critical(self,"Cannot load correction source",message)
 
