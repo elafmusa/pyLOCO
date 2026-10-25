@@ -865,20 +865,29 @@ class MeasureMainWindow(QMainWindow):
                 document=yaml.safe_load(path.read_text(encoding="utf-8")) or {}
                 file_inventory,file_metadata=pyaml_configuration_inventory(document)
             except Exception:pass
+        if not isinstance(file_inventory,dict):file_inventory={}
+        if not isinstance(file_metadata,dict):file_metadata={}
         runtime_inventory={}; runtime_metadata={}
         provider=getattr(self.adapter,"machine_mapping_inventory",None)
         if self.connection_verified and callable(provider):
-            try:runtime_inventory,runtime_metadata=provider()
+            try:
+                supplied=provider()
+                if isinstance(supplied,(tuple,list)) and len(supplied)==2:
+                    runtime_inventory,runtime_metadata=supplied
             except Exception:pass
+        if not isinstance(runtime_inventory,dict):runtime_inventory={}
+        if not isinstance(runtime_metadata,dict):runtime_metadata={}
         roles=("bpm","horizontal_corrector","vertical_corrector","normal_quadrupole",
                "skew_quadrupole","sextupole","octupole","dipole")
         merged={role:list(file_inventory.get(role,())) for role in roles}
         for role in roles:
-            for name in runtime_inventory.get(role,()):
+            for name in runtime_inventory.get(role,()) or ():
                 if name not in merged[role]:merged[role].append(name)
         metadata=dict(file_metadata)
         for key,values in runtime_metadata.items():
-            combined=dict(metadata.get(key,{}))
+            previous=metadata.get(key,{})
+            combined=dict(previous) if isinstance(previous,dict) else {}
+            if not isinstance(values,dict):values={}
             combined.update({name:value for name,value in values.items() if value not in (None,"")})
             metadata[key]=combined
         return merged,metadata

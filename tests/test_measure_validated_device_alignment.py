@@ -244,6 +244,23 @@ def test_first_find_mapping_accepts_absent_previous_master(qapp):
     window.close()
 
 
+@pytest.mark.parametrize("supplied",[None,(None,None),({},None),{}])
+def test_runtime_mapping_inventory_none_values_are_treated_as_unavailable(qapp,tmp_path,supplied):
+    from pyLOCO.measure.main_window import MeasureMainWindow
+    window=MeasureMainWindow()
+    window.adapter_combo.blockSignals(True)
+    window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("pyaml"))
+    window.adapter_combo.blockSignals(False)
+    configuration=tmp_path/"minimal.yaml"; configuration.write_text("machine: test\n")
+    window.pyaml_fields["config_path"].setText(str(configuration))
+    window.adapter=SimpleNamespace(machine_mapping_inventory=lambda:supplied)
+    window.connection_verified=True
+    inventory,metadata=window._pyaml_inventory_bundle()
+    assert metadata=={}
+    assert all(inventory[role]==[] for role in inventory)
+    window.close()
+
+
 def test_explicit_template_ordinal_does_not_require_at_name_match(tmp_path):
     lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"active lattice")
     inventory={"bpm":["PYAML-BPM"],"horizontal_corrector":[],"vertical_corrector":[]}
