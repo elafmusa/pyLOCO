@@ -2658,8 +2658,16 @@ class MainWindow(QMainWindow):
         output_form.addRow(self.save_jacobian_check)
         layout.addWidget(output_group)
 
-        self.resume_current = QRadioButton("Start from current model")
-        self.resume_previous = QRadioButton("Resume from previous LOCO state")
+        self.resume_current = QRadioButton("Start Stage 1 from selected reference lattice")
+        self.resume_previous = QRadioButton("Start Stage 1 from a saved LOCO state")
+        self.resume_current.setToolTip(
+            "Initializes the whole workflow from the reference lattice selected in Machine Components. "
+            "This does not override the Starting model choice for Stage 2 or later stages."
+        )
+        self.resume_previous.setToolTip(
+            "Initializes Stage 1 from a compatible saved LOCO result. Later stages still follow the "
+            "Starting model choices in the multi-stage table."
+        )
         self.resume_current.setChecked(True)
         self.resume_directory = QLineEdit()
         self.resume_browse = QPushButton("Browse…")
@@ -2672,8 +2680,16 @@ class MainWindow(QMainWindow):
         self.resume_fit_results_file = QLineEdit("fit_results.npy")
         self.resume_metadata = QLabel("No previous state selected.")
         self.resume_metadata.setWordWrap(True)
-        resume_group = QGroupBox("Initialization / Resume")
+        resume_group = QGroupBox("Whole-workflow initialization (before Stage 1)")
         resume_form = QFormLayout(resume_group)
+        self.resume_scope_help = QLabel(
+            "This setting controls only the initial state before Stage 1. "
+            "For Stage 2 and later, use the Starting model column above; "
+            "“Continue from previous stage” uses the fitted output of the preceding stage."
+        )
+        self.resume_scope_help.setWordWrap(True)
+        self.resume_scope_help.setObjectName("fitResumeScopeHelp")
+        resume_form.addRow(self.resume_scope_help)
         resume_form.addRow(self.resume_current); resume_form.addRow(self.resume_previous)
         resume_form.addRow("Previous run or results directory", resume_path_widget)
         resume_form.addRow("Fitted lattice file", self.resume_ring_file)
@@ -4227,7 +4243,10 @@ class MainWindow(QMainWindow):
             self.resume_metadata.setText("Resume disabled until measurement compatibility validation passes.")
             return
         if not enabled:
-            self.resume_metadata.setText("Start from the currently selected lattice model.")
+            self.resume_metadata.setText(
+                "Stage 1 starts from the selected reference lattice. Later stages follow the "
+                "Starting model column in the multi-stage table."
+            )
             return
         resume = self.project.loco_config.resume
         resume.enabled = True

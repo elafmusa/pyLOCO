@@ -333,6 +333,13 @@ def test_fit_workflow_table_edits_sync_controls_and_persist(app, tmp_path, monke
     second_start.setCurrentIndex(second_start.findData("previous_stage"))
     assert window.fit_recipe.stages[1].start_from == "previous_stage"
 
+    # Whole-workflow initialization is distinct from per-stage inheritance.
+    assert window.resume_current.text() == "Start Stage 1 from selected reference lattice"
+    assert "does not override" in window.resume_current.toolTip()
+    assert "only the initial state before Stage 1" in window.resume_scope_help.text()
+    assert "Continue from previous stage" in window.resume_scope_help.text()
+    assert second_start.currentData() == "previous_stage"
+
     # Invalid table edits are rejected without corrupting the model.
     warnings = []
     monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append((args[1], args[2])))
