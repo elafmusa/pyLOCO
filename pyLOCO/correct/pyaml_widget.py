@@ -484,7 +484,7 @@ class PyAMLCorrectionWidget(QWidget):
         if not self.connection or not self.owner.review:
             raise ValueError("Connect and load a correction source first")
         self.refresh()
-        unresolved=[item.name for item in self.owner.review.items if item.included and (item.metadata.get("mapping_status")!="mapped" or not item.control_name)]
+        unresolved=[item.name for item in self.owner.review.items if self.owner.review.applies_to(item) and (item.metadata.get("mapping_status")!="mapped" or not item.control_name)]
         if unresolved:
             raise ValueError(f"Valid mappings are required before reading strengths; {len(unresolved)} included magnet(s) remain unresolved")
         read=[]
@@ -652,7 +652,7 @@ class PyAMLCorrectionWidget(QWidget):
         self.preview_button.setEnabled(active and self.connection is not None and not busy)
         if hasattr(self.owner, "save_validated_mapping_button"):
             mapped = bool(self.owner.review and self.owner.review.items and all(
-                item.metadata.get("mapping_status") == "mapped" for item in self.owner.review.items if item.included
+                item.metadata.get("mapping_status") == "mapped" for item in self.owner.review.items if self.owner.review.applies_to(item)
             ))
             self.owner.save_validated_mapping_button.setEnabled(
                 active and self.connection is not None and mapped and not busy and not locked

@@ -161,7 +161,8 @@ class CorrectItem:
 
     def warnings(self, thresholds: WarningThresholds) -> tuple[str, ...]:
         result=[]; relative=abs(self.relative_percent or 0.0)
-        if self.metadata.get("mapping_status") in {"unmapped","ambiguous","duplicate"}:result.append(f"mapping_{self.metadata['mapping_status']}")
+        mapping_status=str(self.metadata.get("mapping_status","unmapped"))
+        if mapping_status != "mapped":result.append(f"mapping_{mapping_status}")
         if relative >= thresholds.serious_relative_percent: result.append("serious_relative_correction")
         elif relative >= thresholds.noteworthy_relative_percent: result.append("noteworthy_relative_correction")
         if self.sign_difference: result.append("sign_difference")
@@ -175,13 +176,19 @@ class CorrectionReview:
     """Mutable dry-run review state; raw corrections are never modified."""
 
     def __init__(self, items: Iterable[CorrectItem], source_result: str, *, global_scale: float = .1,
-                 thresholds: WarningThresholds | None = None, comments: str = "") -> None:
+                 thresholds: WarningThresholds | None = None, comments: str = "",
+                 application_scope: str = "all") -> None:
         self.items=list(items); self.source_result=str(source_result); self.global_scale=float(global_scale)
         self.machine_mapping=(self.items[0].metadata.get("machine_mapping") or {}) if self.items else {}
         for item in self.items:item.metadata.pop("machine_mapping",None)
         self.thresholds=thresholds or WarningThresholds(); self.comments=comments
+        self.application_scope = application_scope if application_scope in {"all","normal_quadrupole","skew_quadrupole"} else "all"
         for item in self.items: item.global_scale=self.global_scale
         self._raw_snapshot=tuple(item.raw_fitted_delta for item in self.items)
+
+    def applies_to(self, item: CorrectItem) -> bool:
+        """Return whether an included item belongs to the operator-selected write scope."""
+        return bool(item.included and (self.application_scope == "all" or item.correction_type == self.application_scope))
 
     def set_global_scale(self, value: float) -> None:
         if not math.isfinite(value) or value < 0: raise ValueError("Global correction fraction must be finite and non-negative")
@@ -219,7 +226,7 @@ class CorrectionReview:
         provenance={key:self.items[0].metadata.get(key) for key in ("source_results_directory","source_iteration","source_state","fit_timestamp","measurement_session") if self.items and self.items[0].metadata.get(key) is not None}
         if self.machine_mapping:
             provenance["machine_mapping"] = self.machine_mapping
-        return CorrectionPlan(plan_id,self.source_result,tuple(records),self.global_scale,"dry_run",self.comparison(),{"created_utc":datetime.now(timezone.utc).isoformat(),"comments":self.comments,"warning_thresholds":asdict(self.thresholds),"record_states":states,"source_provenance":provenance,"safety":"OFFLINE DRY RUN — no machine setpoints changed"})
+        return CorrectionPlan(plan_id,self.source_result,tuple(records),self.global_scale,"dry_run",self.comparison(),{"created_utc":datetime.now(timezone.utc).isoformat(),"comments":self.comments,"application_scope":self.application_scope,"warning_thresholds":asdict(self.thresholds),"record_states":states,"source_provenance":provenance,"safety":"OFFLINE DRY RUN — no machine setpoints changed"})
 
     @classmethod
     def from_plan(cls, plan: CorrectionPlan) -> "CorrectionReview":
@@ -230,7 +237,7 @@ class CorrectionReview:
                 meta["magnetic_length_m"] = record.magnetic_length_m
             meta={**source_provenance,**meta}; target_current=meta.pop("target_current_ampere",None); machine_value=meta.pop("machine_value",None)
             items.append(CorrectItem(index,record.correction_type,record.name,record.lattice_ordinal,record.unit,record.initial_value,meta.pop("fitted_value",None),record.raw_fitted_delta,record.recommended_machine_delta,str(meta.pop("sign_convention","Loaded correction-plan convention")),record.family,meta.pop("control_name",None),plan.global_scale,record.individual_scale,included,reason,meta.pop("current_ampere",None),meta.pop("ampere_per_unit",None),meta.pop("min_current_ampere",None),meta.pop("max_current_ampere",None),meta.pop("calibration_difference_percent",None),bool(meta.pop("sign_difference",False)),meta,machine_value,target_current))
-        return cls(items,plan.source_result,global_scale=plan.global_scale,comments=str(plan.metadata.get("comments","")))
+        return cls(items,plan.source_result,global_scale=plan.global_scale,comments=str(plan.metadata.get("comments","")),application_scope=str(plan.metadata.get("application_scope","all")))
 
 
 def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:

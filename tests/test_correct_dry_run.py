@@ -32,6 +32,24 @@ def test_raw_correction_is_immutable_and_scales_are_explicit():
     review.items[0].included=False; assert review.items[0].final_delta==0
 
 
+def test_application_scope_is_independent_of_selection_and_persists(tmp_path):
+    normal=item(0,correction_type="normal_quadrupole")
+    skew=item(1,correction_type="skew_quadrupole")
+    review=CorrectionReview([normal,skew],str(tmp_path),application_scope="skew_quadrupole")
+    assert normal.included and skew.included
+    assert not review.applies_to(normal) and review.applies_to(skew)
+    path=tmp_path/"scope.json"; save_review(path,review)
+    restored=load_review(path)
+    assert restored.application_scope=="skew_quadrupole"
+    assert [entry.included for entry in restored.items]==[True,True]
+
+
+def test_all_nonvalidated_mapping_states_are_warnings():
+    for status in ("saved","proposed","unmapped","ambiguous","duplicate","invalid","unsupported"):
+        entry=item(metadata={"mapping_status":status})
+        assert f"mapping_{status}" in entry.warnings(CorrectionReview([entry],"fit").thresholds)
+
+
 def test_relative_warnings_fraction_comparison_and_mock_limits():
     review=CorrectionReview([item(recommended_machine_delta=.2),item(1,initial_value=-.5,recommended_machine_delta=1.0)],"mock",global_scale=1)
     apply_mock_diagnostics(review); review.items[1].current_ampere=99; review.items[1].ampere_per_unit=10; review.items[1].min_current_ampere=-100; review.items[1].max_current_ampere=100

@@ -362,12 +362,17 @@ class CorrectMainWindow(QMainWindow):
         self.correction_representation.addItem("ΔK × L — integrated strength [m⁻¹]","integrated")
         self.correction_representation.setToolTip("The explicit machine mapping must use B2/A2 for ΔK or B2L/A2L for ΔK × L.")
         self.correction_representation.currentIndexChanged.connect(self._representation_changed)
+        self.application_scope=QComboBox()
+        for text,key in (("All included magnets","all"),("Normal quadrupoles only","normal_quadrupole"),("Skew quadrupoles only","skew_quadrupole")): self.application_scope.addItem(text,key)
+        self.application_scope.setToolTip("Limits Preview and Apply to the selected magnet type. It does not modify fitted values or inclusion checkboxes.")
+        self.application_scope.setAccessibleName("Correction application scope")
+        self.application_scope.currentIndexChanged.connect(self._application_scope_changed)
         self.filter=QComboBox();
         for text,key in (("All","all"),("Normal quadrupoles","normal_quadrupole"),("Skew quadrupoles","skew_quadrupole"),("Quadrupole tilt","quadrupole_tilt"),("Included","included"),("Excluded","excluded"),("Warnings","warnings")): self.filter.addItem(text,key)
         self.filter.currentIndexChanged.connect(self.refresh_table); self.sort_by=QComboBox()
-        for text,key in (("Fitted order","index"),("Largest |ΔK/K|","relative"),("Largest |Final ΔK|","final"),("Largest |ΔI|","delta_i"),("Smallest current-limit margin","margin"),("Calibration warnings","calibration"),("Warnings first","warnings"),("Magnet name","name")):self.sort_by.addItem(text,key)
+        for text,key in (("Fitted order","index"),("Largest |ΔK/K|","relative"),("Largest |Final ΔK|","final"),("Largest |ΔI|","delta_i"),("Smallest current-limit margin","margin"),("Mapping warnings first","mapping"),("Calibration warnings","calibration"),("Warnings first (mapping included)","warnings"),("Magnet name","name")):self.sort_by.addItem(text,key)
         self.sort_by.currentIndexChanged.connect(self.refresh_table); self.search=QLineEdit(); self.search.setPlaceholderText("Search magnet/control name"); self.search.textChanged.connect(self.refresh_table)
-        first.addWidget(QLabel("Global fraction")); first.addWidget(self.fraction); first.addWidget(self.custom); first.addSpacing(12); first.addWidget(QLabel("Machine control representation")); first.addWidget(self.correction_representation); first.addSpacing(12); first.addWidget(QLabel("Filter")); first.addWidget(self.filter); first.addWidget(QLabel("Sort")); first.addWidget(self.sort_by); first.addWidget(self.search,1)
+        first.addWidget(QLabel("Global fraction")); first.addWidget(self.fraction); first.addWidget(self.custom); first.addSpacing(12); first.addWidget(QLabel("Apply to")); first.addWidget(self.application_scope); first.addSpacing(12); first.addWidget(QLabel("Representation")); first.addWidget(self.correction_representation); first.addSpacing(12); first.addWidget(QLabel("Filter")); first.addWidget(self.filter); first.addWidget(QLabel("Sort")); first.addWidget(self.sort_by); first.addWidget(self.search,1)
         include=QPushButton("Include selected"); exclude=QPushButton("Exclude selected"); reason=QLineEdit(); reason.setPlaceholderText("Exclusion reason"); include.clicked.connect(lambda:self._set_selected(True,"")); exclude.clicked.connect(lambda:self._set_selected(False,reason.text())); load=QPushButton("Load exclusion list…"); load.clicked.connect(self.load_exclusions); warn=QPushButton("Exclude warning…"); warn.setToolTip("Exclude every correction matching a selected warning category"); warn.clicked.connect(self.exclude_warning_category)
         reason.setMinimumWidth(170); second.addWidget(include); second.addWidget(exclude); second.addWidget(reason,1); second.addWidget(load); second.addWidget(warn); controls_layout.addLayout(first); controls_layout.addLayout(second)
         self.representation_explanation=QLabel(); self.representation_explanation.setWordWrap(True); self.representation_explanation.setObjectName("mappingHelpText"); controls_layout.addWidget(self.representation_explanation); layout.addWidget(controls)
@@ -493,7 +498,7 @@ class CorrectMainWindow(QMainWindow):
             if pyaml_index >= 0:
                 self.backend_combo.setCurrentIndex(pyaml_index)
             self.pyaml_workspace.apply_saved_provenance(self.review)
-        self._refresh_mapping_status(); self._sync_fraction(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all()
+        self._refresh_mapping_status(); self._sync_fraction(); self._sync_application_scope(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all()
         self.tabs.setCurrentIndex(1 if pyaml_provenance else 2)
         status = f"Loaded {len(self.review.items)} correction item(s)"
         if pyaml_provenance:
@@ -772,10 +777,10 @@ class CorrectMainWindow(QMainWindow):
             QMessageBox.warning(self,"100% reached","The full fitted correction is already applied.")
             return
 
-        included = [item for item in self.review.items if item.included]
+        included = [item for item in self.review.items if self.review.applies_to(item)]
 
         if not included:
-            QMessageBox.warning(self, "Empty correction", "No corrections are included.")
+            QMessageBox.warning(self, "Empty correction", "No included corrections match the selected application scope.")
             return
 
         # For this milestone only mapped normal B2 corrections are supported.
@@ -1576,9 +1581,10 @@ class CorrectMainWindow(QMainWindow):
 
     def _workflow_complete(self):
         source=self.review is not None
-        mapping=bool(source and self.review.items and all(item.metadata.get("mapping_status")=="mapped" for item in self.review.items))
-        plan=bool(mapping and self.review.items and any(item.included for item in self.review.items) and all(item.initial_value is not None for item in self.review.items))
-        review=bool(plan and not any(item.current_limit_status=="VIOLATION" for item in self.review.items if item.included))
+        scoped=[item for item in self.review.items if self.review.applies_to(item)] if source else []
+        mapping=bool(scoped and all(item.metadata.get("mapping_status")=="mapped" for item in scoped))
+        plan=bool(mapping and all(item.initial_value is not None for item in scoped))
+        review=bool(plan and not any(item.current_limit_status=="VIOLATION" for item in scoped))
         return source,mapping,plan,review
 
     def _update_workflow_tabs(self):
@@ -1587,6 +1593,22 @@ class CorrectMainWindow(QMainWindow):
     def _sync_fraction(self):
         if not self.review:return
         index=self.fraction.findData(self.review.global_scale); self.fraction.setCurrentIndex(index if index>=0 else self.fraction.count()-1); self.custom.setValue(self.review.global_scale*100)
+    def _sync_application_scope(self):
+        if not self.review or not hasattr(self,"application_scope"):return
+        self.application_scope.blockSignals(True)
+        index=self.application_scope.findData(self.review.application_scope)
+        self.application_scope.setCurrentIndex(max(0,index))
+        self.application_scope.blockSignals(False)
+    def _application_scope_changed(self):
+        if not self.review:return
+        if self._pyaml_locked():
+            self._sync_application_scope()
+            QMessageBox.warning(self,"Restore required","Restore the pending pyAML correction before changing the application scope.")
+            return
+        self.review.application_scope=str(self.application_scope.currentData() or "all")
+        self.correction_changes=(); self.apply_button.setEnabled(False)
+        self.apply_status.setText("Application scope changed — generate a fresh preview")
+        self._refresh_mapping_status(); self.refresh_all()
     def _sync_representation(self):
         if not self.review:return
         components={str(item.metadata.get("control_component","")).upper() for item in self.review.items}
@@ -1634,6 +1656,7 @@ class CorrectMainWindow(QMainWindow):
         elif key=="delta_i":items.sort(key=lambda item:abs(item.delta_i_ampere or 0),reverse=True)
         elif key=="margin":items.sort(key=lambda item:float("inf") if item.current_limit_margin_ampere is None else item.current_limit_margin_ampere)
         elif key=="calibration":items.sort(key=lambda item:item.calibration_status=="Calibration OK")
+        elif key=="mapping":items.sort(key=lambda item:item.metadata.get("mapping_status")=="mapped")
         elif key=="warnings":items.sort(key=lambda item:(bool(item.warnings(self.review.thresholds)),len(item.warnings(self.review.thresholds))),reverse=True)
         elif key=="name":items.sort(key=lambda item:item.name.lower())
         else:items.sort(key=lambda item:item.index)

@@ -87,6 +87,17 @@ def test_discovery_and_identity_matching_not_position(setup):
     assert [row["magnet_name"] for row in rows] == ["S1", "M2", "M1"]
 
 
+def test_preview_application_scope_can_select_only_normal_or_skew(setup):
+    setup.review.application_scope="normal_quadrupole"
+    record=setup.transaction.preview(setup.review)
+    assert {row["name"] for row in record["changes"]}=={"M1","M2"}
+    setup.transaction.record=None
+    setup.review.application_scope="skew_quadrupole"
+    record=setup.transaction.preview(setup.review)
+    assert {row["name"] for row in record["changes"]}=={"S1"}
+    assert all(item.included for item in setup.review.items)
+
+
 def test_identity_matching_accepts_exact_at_device_and_backend_aliases(setup):
     item = setup.review.items[0]
     item.name = "QF6D"

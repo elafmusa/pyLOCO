@@ -479,7 +479,7 @@ def resolve_mapping(review, inventory, explicit=()):
             status = "unsupported"
         rows.append(dict(correction_type=item.correction_type, lattice_ordinal=item.lattice_ordinal,
                          lattice_name=item.name, magnet_name=name, match_source=source,
-                         status=status, included=item.included, length=item.magnetic_length_m,
+                         status=status, included=review.applies_to(item), length=item.magnetic_length_m,
                          delta=item.final_delta, individual_scale=item.individual_scale))
     counts = Counter(row["magnet_name"] for row in rows)
     for row in rows:
