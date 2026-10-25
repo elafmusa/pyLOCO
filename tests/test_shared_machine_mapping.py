@@ -9,7 +9,8 @@ import pytest
 from pyLOCO.gui.measurement_mapping import mapping_counts, validate_mapping
 from pyLOCO.machine_mapping import (SCHEMA, VERSION, correction_projection, entry,
     complete_template, editable_template, measurement_projection, merge_corrections, merge_measurement,
-    pyaml_configuration_inventory, reconcile_configured, template)
+    mapping_statistics, pyaml_configuration_inventory, reconcile_configured,
+    retain_loaded_magnet_rows, template)
 
 
 def test_shared_template_assigns_roles_and_preserves_same_ordinal_components():
@@ -185,6 +186,18 @@ def test_reconcile_preserves_validated_mapping_when_details_are_rebuilt():
     assert row["lattice_device"]=="AT-COR"
 
 
+def test_loaded_complete_roles_survive_limited_runtime_proposal():
+    ring=[SimpleNamespace(FamName="B",Device="B"),SimpleNamespace(FamName="Q",Device="Q")]
+    loaded=template({"bpm":["B"]},{"normal_quadrupole":["Q-B2L"]})
+    loaded["mappings"][1]["lattice_ordinal"]=1
+    limited=complete_template(ring,{"bpm":["B"]},{})
+    retained=retain_loaded_magnet_rows(limited,loaded,ring)
+    assert [row["role"] for row in retained["mappings"]]==["bpm","normal_quadrupole"]
+    assert retained["mappings"][1]["lattice_ordinal"]==1
+    assert mapping_statistics(retained)=={
+        "total":2,"mapped":2,"unresolved":0,"ambiguous":0,"duplicate":0,"invalid":0}
+
+
 def test_fit_project_and_run_request_preserve_complete_machine_mapping():
     from pyLOCO.gui.backend import LocoRunRequest
     from pyLOCO.gui.models.project import ProjectMetadata
@@ -203,3 +216,17 @@ def test_correct_projects_only_supported_fitted_controls_from_master_mapping():
     assert rows==[{"correction_type":"normal_quadrupole","lattice_name":"Q",
         "lattice_ordinal":7,"lattice_device":"Q","lattice_common_name":"","physical_element_type":"",
         "control_name":"Q-B2L","component":"B2L","unit":"m^-1"}]
+
+
+def test_correct_merge_updates_fitted_subset_without_dropping_complete_mapping():
+    from pyLOCO.machine_mapping import merge_corrections
+    master=template({"bpm":["BPM"]},{"normal_quadrupole":["Q1","Q2"],"sextupole":["S1"]})
+    for ordinal,row in enumerate(master["mappings"]):row["lattice_ordinal"]=ordinal
+    bundle={"mappings":[{"correction_type":"normal_quadrupole","lattice_ordinal":1,
+        "lattice_name":"Q1","control_name":"Q1-new","component":"B2L","unit":"m^-1"}]}
+    merged=merge_corrections(master,bundle)
+    assert len(merged["mappings"])==4
+    assert any(row["pyaml_device"]=="Q2" for row in merged["mappings"])
+    assert any(row["pyaml_device"]=="S1" for row in merged["mappings"])
+    assert any(row["pyaml_device"]=="BPM" for row in merged["mappings"])
+    assert any(row["pyaml_device"]=="Q1-new" for row in merged["mappings"])

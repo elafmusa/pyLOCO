@@ -82,7 +82,8 @@ from pyLOCO.machine_mapping import (is_document as is_machine_mapping,
     is_template as is_machine_mapping_template, measurement_projection,
     merge_measurement, template as machine_mapping_template,
     complete_template as complete_machine_mapping_template,
-    editable_template as editable_machine_mapping_template,
+    editable_template as editable_machine_mapping_template, mapping_statistics as machine_mapping_statistics,
+    retain_loaded_magnet_rows,
     pyaml_configuration_inventory, reconcile_configured)
 
 from .backend import LocoRunError, LocoRunRequest, LocoRunResult, run_loco_request, _load_bad_bpm_positions, _load_measurements
@@ -6279,6 +6280,7 @@ class MainWindow(QMainWindow):
             "configuration_sha256": file_sha256(configuration),
         }
         reconciled = reconcile_configured(self.project.machine_mapping, proposal, ring=lattice)
+        reconciled = retain_loaded_magnet_rows(reconciled, self.project.machine_mapping, lattice)
         complete_measurements = find_exact_device_mappings(
             lattice, measurements, lattice_path=lattice_path,
             configuration_path=configuration,
@@ -6286,9 +6288,9 @@ class MainWindow(QMainWindow):
         )
         master = merge_measurement(reconciled, complete_measurements)
         expected = sum(len(names) for names in configured.values())
-        if len(master.get("mappings", ())) != expected:
+        if len(master.get("mappings", ())) < expected:
             raise ValueError(
-                f"Complete Machine Mapping mismatch: expected {expected} configured devices, "
+                f"Complete Machine Mapping mismatch: expected at least {expected} configured devices, "
                 f"got {len(master.get('mappings', ()))}."
             )
         return master
@@ -6673,6 +6675,7 @@ class MainWindow(QMainWindow):
         master = self.project.machine_mapping or {}
         master_rows = master.get("mappings", ()) if is_machine_mapping(master) else ()
         master_total = len(master_rows)
+        master_counts = machine_mapping_statistics(master)
         master_measurement_total = sum(
             1 for row in master_rows
             if row.get("role") in ("bpm", "horizontal_corrector", "vertical_corrector")
@@ -6693,8 +6696,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, "machine_mapping_details_button"):
             self.machine_mapping_details_button.setEnabled(bool(master_rows))
         scope = (
-            f"Machine Mapping: {master_total:,} configured devices · "
-            f"Measurement Mapping: {master_measurement_total:,} available BPM/H/V devices. "
+            f"Complete Machine Mapping: {master_total:,} entries; {master_counts['mapped']:,} mapped, "
+            f"{master_counts['unresolved']:,} unresolved, {master_counts['ambiguous']:,} ambiguous, "
+            f"{master_counts['invalid']:,} invalid · Measurement Mapping: "
+            f"{master_measurement_total:,} available BPM/H/V devices. "
             if master_rows else
             "No complete Machine Mapping is stored. "
         )

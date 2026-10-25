@@ -15,7 +15,8 @@ from .pyaml_connection import (PyAMLCorrectionConnection, load_mapping,
     file_hash, make_mapping_bundle, validate_mapping_bundle,
     validate_mapping_document)
 from pyLOCO.machine_mapping import (is_document as is_shared_machine_mapping,
-    load as load_shared_mapping, merge_corrections, correction_projection)
+    load as load_shared_mapping, merge_corrections, correction_projection,
+    mapping_statistics as machine_mapping_statistics)
 from .petra_readonly import MagnetMapping, apply_explicit_mapping
 from .pyaml_transaction import PyAMLCorrectionTransaction
 
@@ -310,6 +311,11 @@ class PyAMLCorrectionWidget(QWidget):
         if self.pending():
             raise RuntimeError("Restore before changing mapping")
         if path:
+            complete=None
+            try:
+                candidate=load_shared_mapping(path)
+                if is_shared_machine_mapping(candidate):complete=candidate
+            except Exception:pass
             entries = load_mapping(path)
             provenance = "explicit"
             if self.owner.review and self.connection:
@@ -319,16 +325,21 @@ class PyAMLCorrectionWidget(QWidget):
                     operator_selected=True,
                 )
             self.explicit = entries
+            if complete is not None and self.owner.review is not None:
+                self.owner.review.machine_mapping=complete
             self._embedded_mapping_error = None
             self.mapping_path = Path(path)
             self.mapping_hash = file_hash(self.mapping_path)
             self.owner.mapping_path = str(self.mapping_path.resolve())
             self.mapping_label.setText(str(path))
             self.owner.mapping_action_message = "loaded"
+            complete_counts=machine_mapping_statistics(complete) if complete is not None else None
+            complete_text=(f" Complete Machine Mapping retained: {complete_counts['total']:,} entries, "
+                           f"{complete_counts['mapped']:,} mapped." if complete_counts else "")
             self.owner.manual_mapping_feedback.setText(
-                (f"Mapping loaded and validated — {len(entries)} fitted magnet(s), {provenance}."
+                (f"Mapping loaded and validated — {len(entries)} fitted magnet(s), {provenance}."+complete_text
                  if self.connection else
-                 f"Mapping loaded — {len(entries)} fitted magnet proposal(s); connect to revalidate.")
+                 f"Mapping loaded — {len(entries)} fitted magnet proposal(s); connect to revalidate."+complete_text)
             )
             self.owner.automatic_mapping_feedback.setText(
                 "Not run — a validated manual mapping is active." if self.connection else
@@ -439,7 +450,8 @@ class PyAMLCorrectionWidget(QWidget):
             self.owner.review, self.connection, entries, lattice,
             provenance="validated in pyLOCO Correct",
         )
-        preserved=None
+        embedded=getattr(self.owner.review,"machine_mapping",{}) or {}
+        preserved=embedded if is_shared_machine_mapping(embedded) else None
         if self.mapping_path:
             try:
                 candidate=load_shared_mapping(self.mapping_path)
@@ -461,7 +473,8 @@ class PyAMLCorrectionWidget(QWidget):
             "correct/pyaml/approved_mapping_path", str(target.resolve())
         )
         self.owner.manual_mapping_feedback.setText(
-            f"Validated reusable mapping saved — {len(bundle['mappings'])} magnet(s)."
+            f"Validated reusable mapping saved — Complete Machine Mapping: {len(bundle['mappings']):,} entries; "
+            f"{len(entries):,} fitted magnet mapping(s) updated."
         )
 
     def export_mapping(self):

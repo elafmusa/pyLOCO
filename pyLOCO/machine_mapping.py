@@ -286,6 +286,48 @@ def reconcile_configured(document: dict[str,Any]|None, configured: dict[str,Any]
     return result
 
 
+def retain_loaded_magnet_rows(proposal: dict[str,Any], loaded: dict[str,Any]|None, ring) -> dict[str,Any]:
+    """Retain supported loaded magnet rows missing from limited discovery.
+
+    The retained rows are mapping evidence, not write authorization.  Correct
+    still validates their target, component and unit against its live inventory.
+    """
+    result=deepcopy(proposal)
+    if not loaded or not is_document(loaded):return result
+    identities={(row.get("role"),row.get("pyaml_device")) for row in result.get("mappings",())}
+    for source in loaded.get("mappings",()):
+        identity=(source.get("role"),source.get("pyaml_device"))
+        if identity[0] not in MACHINE_MAGNET_ROLES or not identity[1] or identity in identities:continue
+        row=deepcopy(source); ordinal=row.get("lattice_ordinal")
+        if type(ordinal) is int and 0 <= ordinal < len(ring):
+            element=ring[ordinal]
+            row.update(lattice_fam_name=str(getattr(element,"FamName","") or ""),
+                lattice_device=str(getattr(element,"Device","") or ""),
+                lattice_common_name=str(getattr(element,"CommonName","") or ""),
+                physical_element_type=type(element).__name__,
+                identity_match=row.get("identity_match","") or "explicit_lattice_ordinal",
+                status="mapped",identity_evidence=row.get("identity_evidence","") or
+                    f"Loaded complete Machine Mapping supplied explicit AT index {ordinal}; retained because current discovery did not enumerate this magnet role.")
+        elif ordinal is not None:
+            row.update(lattice_ordinal=None,status="invalid_explicit_ordinal",
+                identity_evidence=f"Loaded AT index {ordinal!r} is outside the active {len(ring)}-element lattice.")
+        else:row.update(status=row.get("status") or "unresolved")
+        result.setdefault("mappings",[]).append(row); identities.add(identity)
+    return result
+
+
+def mapping_statistics(document: dict[str,Any]|None) -> dict[str,int]:
+    counts={"total":0,"mapped":0,"unresolved":0,"ambiguous":0,"duplicate":0,"invalid":0}
+    for row in (document or {}).get("mappings",()):
+        counts["total"]+=1; status=str(row.get("status","") or "").lower()
+        if "duplicate" in status:counts["duplicate"]+=1
+        elif "ambiguous" in status:counts["ambiguous"]+=1
+        elif "invalid" in status:counts["invalid"]+=1
+        elif type(row.get("lattice_ordinal")) is int:counts["mapped"]+=1
+        else:counts["unresolved"]+=1
+    return counts
+
+
 def merge_measurement(document: dict[str,Any]|None, validated: dict[str,Any]) -> dict[str,Any]:
     """Replace only measurement roles; preserve every correction-role entry."""
     base=deepcopy(document) if document and is_document(document) else {"schema":SCHEMA,"schema_version":VERSION,"mappings":[]}
@@ -314,7 +356,17 @@ def merge_corrections(document: dict[str,Any]|None, bundle: dict[str,Any]) -> di
     """Replace only correction roles; preserve measurement entries."""
     base=deepcopy(document) if document and is_document(document) else {"schema":SCHEMA,"schema_version":VERSION,"mappings":[]}
     _require_same_machine(base,bundle)
-    preserved=[row for row in base.get("mappings",()) if row.get("role") not in CORRECTION_ROLES]
+    incoming=list(bundle.get("mappings",()))
+    def replaced(row):
+        for candidate in incoming:
+            if row.get("role")!=candidate.get("correction_type"):continue
+            old_ordinal=row.get("lattice_ordinal"); new_ordinal=candidate.get("lattice_ordinal")
+            if type(old_ordinal) is int and type(new_ordinal) is int and old_ordinal==new_ordinal:return True
+            if row.get("pyaml_device") and row.get("pyaml_device")==candidate.get("control_name"):return True
+            lattice_name=candidate.get("lattice_name")
+            if lattice_name and lattice_name in (row.get("lattice_fam_name"),row.get("pyaml_device")):return True
+        return False
+    preserved=[row for row in base.get("mappings",()) if not replaced(row)]
     converted=[entry(role=row.get("correction_type"),pyaml_device=row.get("control_name",""),
         lattice_ordinal=row.get("lattice_ordinal"),lattice_fam_name=row.get("lattice_name",""),
         lattice_device=row.get("lattice_device",""),physical_element_type=row.get("physical_element_type",row.get("element_class","")),component=row.get("component"),unit=row.get("unit"),

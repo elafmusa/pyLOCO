@@ -26,7 +26,7 @@ from .petra_readonly import MagnetMapping,apply_explicit_mapping,load_mapping
 from pyLOCO.machine_mapping import (SCHEMA as MACHINE_MAPPING_SCHEMA,
     VERSION as MACHINE_MAPPING_VERSION, correction_projection,
     editable_template as editable_machine_mapping_template,
-    is_document as is_machine_mapping)
+    is_document as is_machine_mapping, mapping_statistics as machine_mapping_statistics)
 
 AMBER_QSS="""
 QLabel#correctBrand { color:#E88B22; font-size:24pt; font-weight:850; padding:2px 8px; }
@@ -1438,7 +1438,14 @@ class CorrectMainWindow(QMainWindow):
         else:
             feedback=f"{unresolved} magnet{'s' if unresolved != 1 else ''} still need mapping"
         saved=statuses["saved"]
-        self.mapping_summary.setText(f"{mapped} validated · {saved} saved pending revalidation · {unresolved - saved} unresolved · {total} fitted magnets")
+        master=getattr(self.review,"machine_mapping",{}) or {}
+        complete=machine_mapping_statistics(master) if is_machine_mapping(master) else None
+        complete_text=(f" · Complete Machine Mapping: {complete['total']:,} entries, "
+                       f"{complete['mapped']:,} mapped, {complete['unresolved']:,} unresolved"
+                       if complete else "")
+        self.mapping_summary.setText(
+            f"{mapped} validated · {saved} saved pending revalidation · "
+            f"{unresolved - saved} unresolved · {total} fitted magnets"+complete_text)
         if getattr(self,"mapping_action_message","")=="automatic":
             if hasattr(self, "mapping_auto_feedback"):
                 self.automatic_mapping_feedback.setText(self.mapping_auto_feedback)
