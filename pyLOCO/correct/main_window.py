@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, QSettings, QSize, Qt, Signal, Slot, QThread, QUrl, QEvent
 from PySide6.QtGui import QColor, QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QMainWindow,QMessageBox,QPlainTextEdit,QProgressBar,QPushButton,QScrollArea,QSizePolicy,QSpinBox,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
+from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QLayout,QMainWindow,QMessageBox,QPlainTextEdit,QProgressBar,QPushButton,QScrollArea,QSizePolicy,QSpinBox,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
 
 from pyLOCO.gui import __version__ as PYLOCO_VERSION
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
@@ -270,7 +270,8 @@ class CorrectMainWindow(QMainWindow):
     @staticmethod
     def _scroll_page(content):
         content.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
-        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setAlignment(Qt.AlignTop|Qt.AlignLeft); scroll.setWidget(content); return scroll
+        if content.layout() is not None:content.layout().setSizeConstraint(QLayout.SetMinimumSize)
+        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setAlignment(Qt.AlignTop|Qt.AlignLeft); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded); scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded); scroll.setWidget(content); return scroll
 
     def _source_page(self):
         page=QWidget(); layout=QVBoxLayout(page); layout.setAlignment(Qt.AlignTop); layout.setContentsMargins(22,22,22,22)

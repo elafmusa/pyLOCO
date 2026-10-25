@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtGui import QImage
-from PySide6.QtWidgets import QApplication, QScrollArea
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea
 
 from pyLOCO.correct.main_window import CorrectMainWindow
 from pyLOCO.gui.main_window import MainWindow
@@ -118,6 +119,20 @@ def test_one_click_creates_timestamped_session_screenshot_folder(tmp_path):
     assert saved.suffix == ".png"
     assert saved.is_file()
     window.close()
+
+
+def test_screenshot_captures_active_error_dialog_without_desktop(tmp_path):
+    app=_app(); window=MeasureMainWindow(); window.show(); app.processEvents()
+    message=QMessageBox(QMessageBox.Critical,"Measurement error","Example acquisition error",parent=window)
+    message.setWindowModality(Qt.ApplicationModal); message.show(); app.processEvents()
+    assert QApplication.activeModalWidget() is message
+    target=tmp_path/"error-dialog.png"
+    assert window.screenshot_controller.capture_to(target)==target.resolve()
+    image=QImage(str(target)); expected=message.grab()
+    assert (image.width(),image.height())==(expected.width(),expected.height())
+    assert (image.width(),image.height())!=(window.grab().width(),window.grab().height())
+    assert window.screenshot_controller.save_action.shortcut().toString()=="F8"
+    message.close(); window.close(); app.processEvents()
 
 
 def test_split_button_has_one_clear_alternative_action():

@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QSettings, QTimer, Qt, Slot
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QMainWindow, QMenu, QMessageBox, QToolBar, QToolButton
+from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtWidgets import QApplication, QMainWindow, QMenu, QMessageBox, QToolBar, QToolButton
 
 from .file_dialogs import FileDialog as QFileDialog
 
@@ -27,9 +27,14 @@ class WindowScreenshotController(QObject):
         self.settings = QSettings("pyLOCO", "pyLOCO")
         self.save_action = QAction("📷 Save Screenshot", window)
         self.save_action.setToolTip(
-            "Save the visible application window now using the automatic screenshots folder"
+            "Save the visible application window now using the automatic screenshots folder (F8)"
         )
+        self.save_action.setShortcut(QKeySequence("F8"))
+        self.save_action.setShortcutContext(Qt.ApplicationShortcut)
         self.save_action.triggered.connect(self.save_screenshot)
+        # Keep the shortcut available when a modal warning/error dialog owns
+        # focus.  Toolbar actions alone cannot be clicked through a modal.
+        window.addAction(self.save_action)
         self.save_as_action = QAction("Save Screenshot As…", window)
         self.save_as_action.setToolTip("Choose another PNG filename and folder")
         self.save_as_action.triggered.connect(self.save_screenshot_as)
@@ -71,9 +76,13 @@ class WindowScreenshotController(QObject):
         path = Path(target).expanduser().resolve(strict=False)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # QWidget.grab() captures this window only and preserves the
-            # currently visible scroll positions and plot state.
-            pixmap = self.window.grab()
+            # When a message box is open it is the current application
+            # window. Capture it directly; otherwise capture the main window.
+            # QWidget.grab() remains desktop-independent and preserves the
+            # visible scroll positions and plot state.
+            modal=QApplication.activeModalWidget()
+            capture_widget=modal if modal is not None and modal.isVisible() else self.window
+            pixmap = capture_widget.grab()
             if pixmap.isNull():
                 raise RuntimeError("Qt returned an empty window image")
             if not pixmap.save(str(path), "PNG"):
@@ -117,7 +126,8 @@ def install_window_screenshot_actions(window: QMainWindow, toolbar: QToolBar, *,
     button.setAccessibleName("Save Screenshot")
     button.setToolTip(
         "Click the camera to save now in the automatic screenshots folder. "
-        "Use the arrow to choose another location or filename."
+        "Use the arrow to choose another location or filename. Press F8 while "
+        "an error or warning dialog is open to capture that dialog."
     )
     toolbar.addWidget(button)
     if file_menu is not None:

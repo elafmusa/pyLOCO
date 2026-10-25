@@ -24,7 +24,7 @@ from PySide6.QtGui import QAction, QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox, QInputDialog,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QMenu,
-    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QLayout,
     QDoubleSpinBox, QSizePolicy, QTabWidget, QTableWidget, QTableWidgetItem, QToolBar, QToolButton,
     QVBoxLayout, QWidget,
 )
@@ -601,10 +601,9 @@ class MeasureMainWindow(QMainWindow):
         # determine the visible pane height. This prevents content-heavy
         # modes such as Dispersion from making the Measurement workspace
         # appear much taller than BPM Noise.
-        content.setSizePolicy(
-            QSizePolicy.Expanding,
-            QSizePolicy.Ignored,
-        )
+        content.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        if content.layout() is not None:
+            content.layout().setSizeConstraint(QLayout.SetMinimumSize)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)

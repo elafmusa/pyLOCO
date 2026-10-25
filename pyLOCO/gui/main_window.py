@@ -1996,6 +1996,10 @@ class MainWindow(QMainWindow):
 
     def _measurements_page(self) -> QWidget:
         page = self._page("Measurement Import")
+        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded); scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        content=QWidget(); content_layout=QVBoxLayout(content); content_layout.setContentsMargins(0,0,8,12)
+        content_layout.setSizeConstraint(QLayout.SetMinimumSize); scroll.setWidget(content); page.layout().addWidget(scroll,1)
         self.measurement_role = QComboBox()
         self.measurement_role.addItems(
             ["orm", "dispersion", "bpm_noise", "other"]
@@ -2046,7 +2050,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.measurement_session_import_summary); layout.addWidget(self.measurement_metadata_label)
         layout.addLayout(file_status_row)
         layout.addWidget(self.measurement_list)
-        page.layout().addWidget(group)
+        content_layout.addWidget(group); content_layout.addStretch(1)
         self.measurement_role.currentTextChanged.connect(self._update_measurement_hint)
         self._update_measurement_hint(self.measurement_role.currentText())
         return page
@@ -2056,9 +2060,13 @@ class MainWindow(QMainWindow):
         page = self._page("LOCO Configuration")
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.fit_scroll = scroll
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setSizeConstraint(QLayout.SetMinimumSize)
 
         self.fit_configuration_actions = QGroupBox("Reusable FIT configuration")
         action_layout = QVBoxLayout(self.fit_configuration_actions)
