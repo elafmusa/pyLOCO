@@ -2084,7 +2084,7 @@ class MeasureMainWindow(QMainWindow):
                 reason=candidates[0].get("reason","No validated A1L counterpart") if candidates else "No A1L device maps to the same AT element"
                 preview.append({"horizontal":device.name,"vertical":"","status":"Missing","reason":reason}); continue
             target=valid[0]; matched.add(target["measured_name"])
-            preview.append({"horizontal":device.name,"vertical":target["measured_name"],"status":"Matched","reason":f"Exact Device identity; AT index {source['lattice_ordinal']} (0-based; B1L → A1L)"})
+            preview.append({"horizontal":device.name,"vertical":target["measured_name"],"status":"Matched","reason":f"Validated Machine Mapping: shared AT index {source['lattice_ordinal']} (0-based; B1L → A1L)"})
         ordered=tuple(device for device in self.vertical_correctors if device.name in matched)
         return {"rows":preview,"devices":ordered}
 
@@ -2150,10 +2150,24 @@ class MeasureMainWindow(QMainWindow):
 
     def _h_to_v_proposal(self):
         proposal=self._h_to_v_proposal_from_inventory()
-        # Preserve the former AT path as an optional fallback, but only for an
-        # unrecognized naming convention.  Recognized missing/ambiguous pairs
-        # must not be silently substituted.
+        # A completed mapping is stronger evidence than a device-name suffix.
+        # This is particularly important for ESRF inventories whose controls
+        # end in ``-H``/``-V`` while the mapped lattice components are B1L/A1L.
+        # Reuse the validated row identities and their shared AT ordinal rather
+        # than attempting another name match or pairing rows by position.
         unresolved={row["horizontal"] for row in proposal["rows"] if row.get("pairing")=="unrecognized"}
+        if unresolved and self.measurement_device_alignment:
+            mapped=self._h_to_v_proposal_from_document(self.measurement_device_alignment)
+            mapped_rows={row["horizontal"]:row for row in mapped["rows"]}
+            for index,row in enumerate(proposal["rows"]):
+                fallback=mapped_rows.get(row["horizontal"])
+                if row.get("pairing")=="unrecognized" and fallback and fallback["status"]=="Matched":
+                    proposal["rows"][index]={**fallback,"pairing":"validated_machine_mapping"}
+            matched={row["vertical"] for row in proposal["rows"] if row["status"]=="Matched"}
+            proposal["devices"]=tuple(device for device in self.vertical_correctors if device.name in matched)
+            unresolved={row["horizontal"] for row in proposal["rows"] if row.get("pairing")=="unrecognized"}
+        # Preserve the former AT path as an optional last fallback, but only
+        # for identities not resolved by backend metadata or saved mapping.
         if not unresolved or self.reference_model is None:return proposal
         configuration=Path(self.pyaml_fields["config_path"].text()).expanduser()
         inventory={"bpm":[],"horizontal_corrector":[device.name for device in self.selected_hcorrectors if device.name in unresolved],"vertical_corrector":[device.name for device in self.vertical_correctors]}

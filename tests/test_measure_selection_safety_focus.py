@@ -452,6 +452,32 @@ def test_h_to_v_uses_authoritative_backend_pairing_metadata_without_name_guessin
     window.close()
 
 
+def test_h_to_v_reuses_completed_mapping_for_esrf_h_v_control_names(app):
+    horizontal=(CorrectorDevice("SJ2A-C04-H","H.SP","H.RBV","H"),)
+    vertical=(CorrectorDevice("SJ2A-C04-V","V.SP","V.RBV","V"),)
+    window=MeasureMainWindow(
+        devices=(BpmDevice("BPM","x","y"),),
+        horizontal_correctors=horizontal,
+        vertical_correctors=vertical,
+    )
+    # These real ESRF-style names are intentionally not the older terminal
+    # -B1L/-A1L convention.  Their validated mappings establish the pair.
+    window.measurement_device_alignment={"mappings":[
+        {"measured_name":"SJ2A-C04-H","role":"horizontal_corrector","component":"B1L",
+         "lattice_ordinal":23,"status":"mapped","reason":"validated"},
+        {"measured_name":"SJ2A-C04-V","role":"vertical_corrector","component":"A1L",
+         "lattice_ordinal":23,"status":"mapped","reason":"validated"},
+    ]}
+    proposal=window._h_to_v_proposal()
+    assert proposal["rows"]==[{
+        "horizontal":"SJ2A-C04-H","vertical":"SJ2A-C04-V","status":"Matched",
+        "reason":"Validated Machine Mapping: shared AT index 23 (0-based; B1L → A1L)",
+        "pairing":"validated_machine_mapping",
+    }]
+    assert [device.name for device in proposal["devices"]]==["SJ2A-C04-V"]
+    window.close()
+
+
 def test_copy_h_to_v_apply_is_independent_and_persists(app,tmp_path,monkeypatch):
     window=_window(); window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm")); window._select_device_subset("hcor","first",3); window._clear_correctors("vcor")
     proposal=window._h_to_v_proposal_from_document(_counterpart_document(window)); monkeypatch.setattr(window,"_h_to_v_proposal",lambda:proposal); monkeypatch.setattr(window,"_show_h_to_v_preview",lambda _proposal:"replace")
