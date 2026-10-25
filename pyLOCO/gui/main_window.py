@@ -7760,6 +7760,8 @@ class MainWindow(QMainWindow):
         self._pending_continue_results = str(continuation) if continuation else ""
         self._run_preparing = True
         self._run_cancel_requested = False
+        self._last_logged_workflow_stage = None
+        self._logged_parameter_progress = {}
         self._set_waiting_game_status("running")
         self._run_started_at = __import__("time").monotonic()
         self.results_workspace.begin_run()
@@ -7911,10 +7913,33 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_loco_progress(self, event: dict) -> None:
-        if "workflow_stage" in event:
+        if not hasattr(self, "_logged_parameter_progress"):
+            self._logged_parameter_progress = {}
+        stage = int(event.get("workflow_stage", 0) or 0)
+        stages = int(event.get("workflow_stages", 0) or 0)
+        stage_key = (stage, stages, str(event.get("stage_name") or "FIT stage"))
+        if stage > 0 and stage_key != getattr(self, "_last_logged_workflow_stage", None):
             self._append_run_log(
-                f"Stage {event['workflow_stage']}/{event['workflow_stages']} — {event['stage_name']}"
+                f"===== Stage {stage}/{stages} — {stage_key[2]} ====="
             )
+            self._last_logged_workflow_stage = stage_key
+
+        done = int(event.get("parameters_done", 0) or 0)
+        total = int(event.get("parameters_total", 0) or 0)
+        if done > 0 and total > 0:
+            # Keep the log readable for large numerical Jacobians: record the
+            # first parameter, ten-percent milestones, and completion. The
+            # live status label still updates for every parameter.
+            bucket = min(10, int(10 * done / total))
+            progress_key = (
+                stage,
+                int(event.get("iteration", 0) or 0),
+                str(event.get("parameter_block") or "Jacobian"),
+            )
+            previous_bucket = getattr(self, "_logged_parameter_progress", {}).get(progress_key, -1)
+            if done == 1 or done == total or bucket > previous_bucket:
+                self._append_run_log(str(event.get("message") or ""))
+                self._logged_parameter_progress[progress_key] = bucket
         self.results_workspace.update_progress(event)
 
     @Slot(object)

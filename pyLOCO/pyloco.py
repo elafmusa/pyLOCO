@@ -39,18 +39,20 @@ class _WorkflowProgressReporter:
         self.total_iterations = max(0, int(total_iterations))
         self.last_fraction = 0.0
 
-    def emit(self, phase, fraction, message, *, iteration=0):
+    def emit(self, phase, fraction, message, *, iteration=0, **details):
         if self.callback is None:
             return
         bounded = min(1.0, max(self.last_fraction, float(fraction)))
         self.last_fraction = bounded
-        self.callback({
+        event = {
             "phase": str(phase),
             "iteration": int(iteration),
             "total_iterations": self.total_iterations,
             "workflow_fraction": bounded,
             "message": str(message),
-        })
+        }
+        event.update(details)
+        self.callback(event)
 
     def iteration_fraction(self, iteration, phase_fraction):
         total = max(1, self.total_iterations)
@@ -6265,6 +6267,9 @@ def pyloco(
                 f"Jacobian ({plane}): {done} / {total} "
                 f"parameters, elapsed {elapsed:.1f} s.",
                 iteration=iteration,
+                parameter_block=str(plane),
+                parameters_done=int(done),
+                parameters_total=int(total),
             )
 
         Jfull, dq, dskew, dtilt = compute_jacobian(
