@@ -2369,7 +2369,26 @@ class MeasureMainWindow(QMainWindow):
         path=QFileDialog.getOpenFileName(self,"Load device selection configuration","","pyLOCO Measure (*.pyloco-measure.json *.json)")[0]
         if not path:return
         try:
-            project=load_measure_project(path); state=project.measurement_selections.get(self._active_selection_kind,{})
+            project=load_measure_project(path)
+            active_state=project.measurement_selections.get(self._active_selection_kind,{})
+            orm_state=project.measurement_selections.get("orm",{})
+            def saved_corrector(role):
+                value=dict(orm_state.get(role,{}) or {})
+                # Compatibility with early selection files that wrote all
+                # three roles only into the active measurement-type block.
+                if not value.get("resolved_names") and active_state.get(role,{}).get("resolved_names"):
+                    value=dict(active_state[role])
+                return value
+            # BPM selection follows the active measurement workspace.  H/V
+            # correctors are authoritative ORM selections and therefore live
+            # in the ORM state even when this action is used from BPM Noise or
+            # RF Dispersion.  Treat the three together as one device-selection
+            # configuration for the user-facing save/load workflow.
+            state={
+                "bpm":dict(active_state.get("bpm",{})),
+                "hcor":saved_corrector("hcor"),
+                "vcor":saved_corrector("vcor"),
+            }
             inventories={"bpm":self.devices,"hcor":self.horizontal_correctors,"vcor":self.vertical_correctors}
             missing=[]; duplicates=[]
             for key,devices in inventories.items():
@@ -2383,15 +2402,32 @@ class MeasureMainWindow(QMainWindow):
                 raise ValueError("\n\n".join(details))
         except Exception as exc:
             QMessageBox.warning(self,"Selection configuration incompatible",str(exc)); return
-        answer=QMessageBox.question(self,"Replace current device selection?",f"Replace the current {self._active_selection_kind.replace('_',' ')} BPM/H/V selection with the validated selection from:\n{path}?",QMessageBox.Yes|QMessageBox.No,QMessageBox.No)
+        counts={key:len(state[key].get("resolved_names",())) for key in ("bpm","hcor","vcor")}
+        answer=QMessageBox.question(
+            self,"Replace current device selection?",
+            "Replace the current BPM and corrector selections with the validated device selection "
+            f"({counts['bpm']} BPM, {counts['hcor']} H corrector, {counts['vcor']} V corrector) from:\n{path}?",
+            QMessageBox.Yes|QMessageBox.No,QMessageBox.No,
+        )
         if answer!=QMessageBox.Yes:return
-        self._selection_states[self._active_selection_kind]={key:dict(value) for key,value in state.items()}
+        self._selection_states[self._active_selection_kind]["bpm"]=dict(state["bpm"])
+        self._selection_states["orm"]["hcor"]=dict(state["hcor"])
+        self._selection_states["orm"]["vcor"]=dict(state["vcor"])
         self._restore_selection(self._active_selection_kind)
-        self.statusBar().showMessage("Device selection loaded and validated against the current inventory")
+        self.statusBar().showMessage(
+            f"Device selection loaded: {counts['bpm']} BPM, {counts['hcor']} H corrector, "
+            f"{counts['vcor']} V corrector; validated against the current inventory"
+        )
 
     def _store_active_selection(self):
         if not self._loading_selection_state and hasattr(self,"selection_method"):
-            self._selection_states[self._active_selection_kind]=self._selection_snapshot()
+            snapshot=self._selection_snapshot()
+            self._selection_states[self._active_selection_kind]=snapshot
+            # Save-selection may be invoked from any measurement tab.  Always
+            # keep its currently displayed H/V controls in the authoritative
+            # ORM state used by session persistence and subsequent loading.
+            self._selection_states["orm"]["hcor"]=dict(snapshot["hcor"])
+            self._selection_states["orm"]["vcor"]=dict(snapshot["vcor"])
 
     def _measurement_view_snapshot(self):
         """Return serializable per-measurement controls shared by the one UI."""

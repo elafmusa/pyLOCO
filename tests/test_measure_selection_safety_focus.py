@@ -386,6 +386,35 @@ def test_loading_selection_replaces_all_three_roles_after_confirmation(app,tmp_p
     source.close(); target.close()
 
 
+def test_loading_selection_from_bpm_noise_restores_saved_orm_correctors_and_clear_message(app,tmp_path,monkeypatch):
+    source=_window()
+    assert source._active_selection_kind=="bpm_noise"
+    source._select_device_subset("bpm","uniform",3)
+    source._select_device_subset("hcor","first",2)
+    source._select_device_subset("vcor","uniform",3)
+    path=tmp_path/"all-device-selection.pyloco-measure.json"
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getSaveFileName",lambda *args,**kwargs:(str(path),""))
+    source._save_selection_configuration()
+    saved=load_measure_project(path)
+    assert saved.measurement_selections["orm"]["hcor"]["resolved_names"]==[item.name for item in source.selected_hcorrectors]
+    assert saved.measurement_selections["orm"]["vcor"]["resolved_names"]==[item.name for item in source.selected_vcorrectors]
+
+    target=_window(); target._clear_bpms(); target._clear_correctors("hcor"); target._clear_correctors("vcor")
+    prompt=[]
+    monkeypatch.setattr("pyLOCO.measure.main_window.QFileDialog.getOpenFileName",lambda *args,**kwargs:(str(path),""))
+    def accept(_parent,title,message,*_args):
+        prompt.extend((title,message)); return QMessageBox.Yes
+    monkeypatch.setattr("pyLOCO.measure.main_window.QMessageBox.question",accept)
+    target._load_selection_configuration()
+
+    assert [item.name for item in target.selected_devices]==[item.name for item in source.selected_devices]
+    assert [item.name for item in target.selected_hcorrectors]==[item.name for item in source.selected_hcorrectors]
+    assert [item.name for item in target.selected_vcorrectors]==[item.name for item in source.selected_vcorrectors]
+    assert "3 BPM, 2 H corrector, 3 V corrector" in prompt[1]
+    assert "bpm noise" not in prompt[1].lower()
+    source.close(); target.close()
+
+
 def _counterpart_document(window, *, missing=(), ambiguous=()):
     rows=[]
     for ordinal,device in enumerate(window.selected_hcorrectors):
