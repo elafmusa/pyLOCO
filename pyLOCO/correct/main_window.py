@@ -149,16 +149,18 @@ class CorrectMainWindow(QMainWindow):
     def _correction_progress_panel(self):
         group=QGroupBox("Correction Progress — verified readbacks only")
         group.setObjectName("correctionProgressPanel")
-        group.setMinimumHeight(142)
+        group.setMinimumHeight(162)
         group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
         outer=QVBoxLayout(group); outer.setContentsMargins(10,8,10,8); outer.setSpacing(5)
+        steps=QLabel("1  Choose the next increment   →   2  Preview Next Step (no writes)   →   3  Apply Confirmed Step   →   4  Verify progress")
+        steps.setObjectName("mappingHelpText"); steps.setWordWrap(True); outer.addWidget(steps)
         summary_row=QHBoxLayout(); summary_row.setSpacing(12)
         self.verified_percent=QLabel("Last verified: 0%")
         self.next_target_percent=QLabel("Next target: 10%")
         self.progress_machine_status=QLabel("Machine state: not reconciled")
         self.progress_machine_status.setWordWrap(False)
         summary_row.addWidget(self.verified_percent); summary_row.addWidget(self.next_target_percent); summary_row.addWidget(self.progress_machine_status,1)
-        summary_row.addWidget(QLabel("Increment")); self.progress_increment=QSpinBox(); self.progress_increment.setRange(1,100); self.progress_increment.setValue(10); self.progress_increment.setSuffix(" %"); self.progress_increment.valueChanged.connect(self._refresh_correction_progress); summary_row.addWidget(self.progress_increment)
+        summary_row.addWidget(QLabel("Increment")); self.progress_increment=QSpinBox(); self.progress_increment.setRange(1,100); self.progress_increment.setValue(10); self.progress_increment.setSuffix(" %"); self.progress_increment.valueChanged.connect(self._progress_increment_changed); summary_row.addWidget(self.progress_increment)
         outer.addLayout(summary_row)
 
         progress_row=QHBoxLayout(); progress_row.setSpacing(3)
@@ -183,27 +185,38 @@ class CorrectMainWindow(QMainWindow):
         return group
 
     def _populate_progress_magnets(self, record):
-        items=(record or {}).get("items",())
+        record=record or {}
+        pyaml="changes" in record and "items" not in record
+        self.progress_magnets.setHorizontalHeaderLabels(["Magnet","Baseline KL [m⁻¹]","Full correction ΔKL [m⁻¹]","Target KL [m⁻¹]","Adapter get()","Difference","Status"] if pyaml else ["Magnet","Baseline K","Full correction","Target K","Actual readback","Readback error","Status"])
+        items=record.get("changes",()) if pyaml else record.get("items",())
         self.progress_magnets.setRowCount(len(items))
         for row,item in enumerate(items):
-            readback=(item.get("applied_readback") or {}).get("physical")
-            target=item.get("expected_physical_k")
+            readback=item.get("readback") if pyaml else (item.get("applied_readback") or {}).get("physical")
+            target=item.get("target") if pyaml else item.get("expected_physical_k")
             error=None if readback is None or target is None else float(readback)-float(target)
-            status=("Verified" if item.get("verified") else
+            status=(str(item.get("status","Planned")).replace("_"," ").title() if pyaml else
+                    "Verified" if item.get("verified") else
                     "Commanded" if item.get("set_completed") else
                     "Pending" if (record or {}).get("status")=="preview_verified" else
                     "Failed" if (record or {}).get("status") in {"restore_failed","write_pending"} else "Planned")
-            values=(item.get("control",""),item.get("restore_physical_k"),item.get("full_physical_delta"),target,readback,error,status)
+            values=((item.get("name","") if pyaml else item.get("control","")),
+                    (item.get("original") if pyaml else item.get("restore_physical_k")),
+                    (item.get("full_delta_kl_m1",item.get("applied_delta_kl_m1")) if pyaml else item.get("full_physical_delta")),
+                    target,readback,error,status)
             for column,value in enumerate(values):
                 text="Not read yet" if value is None else f"{value:.12g}" if isinstance(value,(int,float)) else str(value)
                 self.progress_magnets.setItem(row,column,QTableWidgetItem(text))
 
     def _refresh_correction_progress(self, *_):
-        transaction=getattr(self,"fullfit_transaction",None); record=getattr(transaction,"record",None) or {}
-        status=str(record.get("status") or "not_started")
+        pyaml=self.backend_combo.currentData()=="pyaml" and hasattr(self,"pyaml_workspace")
+        transaction=(self.pyaml_workspace.transaction if pyaml else getattr(self,"fullfit_transaction",None)); record=getattr(transaction,"record",None) or {}
+        raw_status=str(record.get("status") or "not_started")
+        status="preview_verified" if pyaml and raw_status=="preview" else raw_status
         history=record.get("history",()) if isinstance(record,dict) else ()
-        verified=(float(record.get("cumulative_fraction",0.0)) if status=="applied" else
-                  float(record.get("previous_fraction",0.0)) if status=="preview_verified" else
+        record_fraction=float(record.get("fraction",record.get("cumulative_fraction",0.0)))
+        record_increment=float(record.get("increment_fraction",record.get("identity",{}).get("review",{}).get("global_scale",.1)))
+        verified=(float(record.get("fraction",record.get("cumulative_fraction",0.0))) if status=="applied" else
+                  float(record.get("previous_fraction",max(0.0,record_fraction-record_increment))) if status=="preview_verified" else
                   float(history[-1].get("cumulative_fraction",0.0)) if history else 0.0)
         if status=="restored": verified=0.0
         increment=self.progress_increment.value()/100.0 if hasattr(self,"progress_increment") else .1
@@ -216,10 +229,15 @@ class CorrectMainWindow(QMainWindow):
         for index,segment in enumerate(self.progress_segments):
             filled=verified+1e-12 >= (index+1)/10
             segment.setStyleSheet("border:1px solid #777;border-radius:2px;font-size:8pt;padding:1px;"+("background:#2E9C68;color:white;font-weight:700" if filled else "background:#35384B;color:#BFC4D8"))
-        self.progress_history.setRowCount(len(history))
-        for row,step in enumerate(history):
+        display_history=list(history)
+        if record and not display_history and status=="applied":
+            display_history=[{"cumulative_fraction":record_fraction,"increment_fraction":record_increment,"execution_status":"verified","measurements":{}}]
+        if status=="preview_verified":
+            display_history.append({"cumulative_fraction":record_fraction,"increment_fraction":record_increment,"execution_status":"pending preview — no writes","measurements":{}})
+        self.progress_history.setRowCount(len(display_history))
+        for row,step in enumerate(display_history):
             measurements=step.get("measurements") or {}
-            measurement_text=str(measurements.get("session_id") or measurements.get("manifest") or "Not associated") if isinstance(measurements,dict) else str(measurements or "Not associated")
+            measurement_text=(str(measurements.get("session_id") or measurements.get("manifest") or (f"{len(measurements.get('files',()))} file(s)" if measurements.get("files") else "Not associated")) if isinstance(measurements,dict) else str(measurements or "Not associated"))
             values=(str(step.get("timestamp_utc") or "Not recorded"),f"{float(step.get('cumulative_fraction',0))*100:g}%",f"{float(step.get('increment_fraction',.1))*100:g}%",str(step.get("execution_status") or "Verified").title(),measurement_text)
             for column,text in enumerate(values): self.progress_history.setItem(row,column,QTableWidgetItem(text))
         pending=status=="preview_verified"; applied=status=="applied"; unsafe=status in {"write_pending","restoring","restore_failed"}
@@ -227,10 +245,18 @@ class CorrectMainWindow(QMainWindow):
         self.progress_restore_button.setEnabled(bool(record.get("restore_required")) and not unsafe)
         self.progress_preview_button.setEnabled(not unsafe and verified < 1.0 and status not in {"preview_verified"})
         self.progress_measured_button.setEnabled(status=="applied" and bool(history))
+        self.progress_increment.setEnabled(not pending and not unsafe)
         self._populate_progress_magnets(record)
 
+    def _progress_increment_changed(self, value):
+        if (hasattr(self,"backend_combo") and self.backend_combo.currentData()=="pyaml"
+                and self.review and not self._pyaml_locked()):
+            self.review.set_global_scale(float(value)/100.0)
+            self._sync_fraction()
+        self._refresh_correction_progress()
+
     def associate_progress_measurement(self):
-        transaction=getattr(self,"fullfit_transaction",None)
+        transaction=(self.pyaml_workspace.transaction if self.backend_combo.currentData()=="pyaml" else getattr(self,"fullfit_transaction",None))
         if transaction is None:
             QMessageBox.warning(self,"No verified step","Apply and verify a correction step first."); return
         path,_=QFileDialog.getOpenFileName(self,"Associate measurement with latest verified step",self._browse_start("measurements"),"Measurement files (*.h5 *.hdf5 *.json);;All files (*)",options=QFileDialog.DontUseNativeDialog)
@@ -612,6 +638,9 @@ class CorrectMainWindow(QMainWindow):
             self.correction_representation.setEnabled(not selected)
             self._refresh_representation_explanation()
             self.undo_button.setVisible(not selected)
+            self.preview_apply_button.setVisible(not selected)
+            self.apply_button.setVisible(not selected)
+            self.restore_button.setVisible(not selected)
             self.read_current_k_button.setText("Read current integrated strengths" if selected else "Read current K from pySC Server" if key=="pysc" else "Read current machine strengths")
             self.read_current_k_button.setEnabled(key in {"pyaml","pysc"})
             self.read_current_k_button.setToolTip("Read mapped B2L/A2L values only; no magnet settings are changed." if selected else "Read mapped physical K values only; no magnet settings are changed." if key=="pysc" else "Unavailable for the offline Mock backend.")
@@ -629,6 +658,7 @@ class CorrectMainWindow(QMainWindow):
         key=self.backend_combo.currentData(); descriptor=self.registry.descriptor(key); self.badge.setText(descriptor.badge); self.backend_session=None; self.correction_changes=(); self.apply_button.setEnabled(False)
         self._set_connection(False,"OFFLINE" if key=="mock" else "DISCONNECTED"); self._style_backend_badge(key); self._populate_machine_changes(())
         self.apply_status.setText("Mock is read-only" if key=="mock" else "Backend selected — preview reads current values")
+        self._refresh_correction_progress()
 
     def _pysc_profile_selected(self,*_):
         """Selecting a pySC machine/profile also selects its backend.
@@ -1601,6 +1631,10 @@ class CorrectMainWindow(QMainWindow):
     def _sync_fraction(self):
         if not self.review:return
         index=self.fraction.findData(self.review.global_scale); self.fraction.setCurrentIndex(index if index>=0 else self.fraction.count()-1); self.custom.setValue(self.review.global_scale*100)
+        if self.backend_combo.currentData()=="pyaml":
+            self.progress_increment.blockSignals(True)
+            self.progress_increment.setValue(max(1,min(100,round(self.review.global_scale*100))))
+            self.progress_increment.blockSignals(False)
     def _sync_application_scope(self):
         if not self.review or not hasattr(self,"application_scope"):return
         self.application_scope.blockSignals(True)
@@ -1650,7 +1684,11 @@ class CorrectMainWindow(QMainWindow):
         custom=self.fraction.currentData() is None; self.custom.setVisible(custom)
         if not custom:self._set_fraction(float(self.fraction.currentData()))
     def _set_fraction(self,value):
-        if self.review:self.review.set_global_scale(float(value)); self.refresh_all()
+        if self.review:
+            self.review.set_global_scale(float(value))
+            if self.backend_combo.currentData()=="pyaml":
+                self.progress_increment.blockSignals(True); self.progress_increment.setValue(max(1,min(100,round(float(value)*100)))); self.progress_increment.blockSignals(False)
+            self.refresh_all(); self._refresh_correction_progress()
 
     @staticmethod
     def _fmt(value): return "Not available" if value is None or (isinstance(value,float) and not np.isfinite(value)) else f"{value:.8g}" if isinstance(value,(int,float,np.number)) else str(value)

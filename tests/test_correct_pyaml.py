@@ -463,6 +463,8 @@ def test_adapter_strength_get_accepts_control_precision_quantization(setup):
     record=setup.transaction.apply(setup.review,confirmed=True)
     assert record["status"]=="applied"
     assert record["changes"][0]["readback"]==pytest.approx(record["changes"][0]["target"]+5e-8)
+    assert record["history"][-1]["cumulative_fraction"]==pytest.approx(.1)
+    assert record["history"][-1]["increment_fraction"]==pytest.approx(.1)
 
 
 def test_adapter_strength_get_waits_for_delayed_adapter_update(setup):

@@ -83,6 +83,24 @@ def connect_workspace(window, setup):
     return widget
 
 
+def test_shared_progress_uses_pyaml_steps_and_operator_increment(window,setup):
+    widget=connect_workspace(window,setup); widget.timer.stop()
+    window.progress_increment.setValue(5)
+    widget.preview()
+    assert setup.review.global_scale==pytest.approx(.05)
+    assert setup.transaction.record["fraction"]==pytest.approx(.05)
+    assert window.verified_percent.text()=="Last verified: 0%"
+    assert "5%" in window.next_target_percent.text()
+    assert window.progress_history.rowCount()==1
+    setup.transaction.apply(setup.review,confirmed=True)
+    window._refresh_correction_progress()
+    assert window.verified_percent.text()=="Last verified: 5%"
+    assert window.correction_progress.value()==5
+    assert window.progress_history.rowCount()==1
+    assert window.progress_magnets.rowCount()==3
+    assert window.progress_magnets.horizontalHeaderItem(1).text()=="Baseline KL [m⁻¹]"
+
+
 def test_transaction_recovery_controls_are_separate_and_explain_possible_writes(window):
     widget=window.pyaml_workspace
     assert widget.recover_button.text()=="Restore after interrupted application…"

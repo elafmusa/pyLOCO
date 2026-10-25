@@ -6,6 +6,7 @@ import json
 import math
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -116,6 +117,7 @@ class PyAMLCorrectionTransaction:
             original = prior["original"] if prior else current
             applied_delta_k = (row["delta"] / step_fraction) * fraction
             applied_delta_kl = applied_delta_k * length
+            full_delta_kl = (row["delta"] / step_fraction) * length
             target = original + applied_delta_kl
             if not math.isfinite(target):
                 raise ValueError(f"Nonfinite target: {name}")
@@ -124,13 +126,17 @@ class PyAMLCorrectionTransaction:
                              verification_source="magnet.strength.get()",
                              status="preview", component="B2L" if row["correction_type"] == "normal_quadrupole" else "A2L",
                              unit="m^-1", magnetic_length_m=length,
+                             full_delta_kl_m1=full_delta_kl,
                              applied_delta_k_m2=applied_delta_k,
                              applied_delta_kl_m1=applied_delta_kl))
         if not rows:
             raise ValueError("No included corrections")
         if not previous:
             self.path = None
+        history=copy.deepcopy(previous.get("history",[])) if previous else []
         self.record = dict(schema="pyloco.pyaml_correction.v1", identity=identity, fraction=fraction,
+                           previous_fraction=(previous["fraction"] if previous else 0.0),
+                           increment_fraction=step_fraction, history=history,
                            status="preview", restore_required=bool(previous), changes=rows,
                            attempted=list(previous["attempted"]) if previous else [])
         self.persist()
@@ -166,6 +172,12 @@ class PyAMLCorrectionTransaction:
             if cancel and cancel.is_set():
                 raise RuntimeError("Correction cancelled")
             self.record["status"] = "applied"
+            self.record.setdefault("history",[]).append(dict(
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                cumulative_fraction=self.record["fraction"],
+                increment_fraction=self.record.get("increment_fraction",0.0),
+                execution_status="verified", measurements={},
+            ))
             self.persist()
         except Exception as exc:
             self.record["error"] = str(exc)
@@ -178,6 +190,14 @@ class PyAMLCorrectionTransaction:
             except Exception as restore_error:
                 raise RuntimeError(f"{exc}; restoration failed: {restore_error}") from exc
             raise RuntimeError(f"{exc}; original strengths restored") from exc
+        return self.record
+
+    def mark_latest_measured(self, paths):
+        if not self.record or self.record.get("status") != "applied" or not self.record.get("history"):
+            raise RuntimeError("No verified pyAML correction step is available")
+        self.record["history"][-1]["measurements"]={"files":[str(Path(path).resolve()) for path in paths]}
+        self.record["history"][-1]["execution_status"]="measured"
+        self.persist()
         return self.record
 
     def restore(self):

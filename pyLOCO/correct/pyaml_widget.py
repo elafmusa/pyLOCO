@@ -506,13 +506,16 @@ class PyAMLCorrectionWidget(QWidget):
             raise RuntimeError("Wait for correction source loading to finish")
         self.transaction.mapping_path = self.mapping_path
         record = self.transaction.preview(self.owner.review, self.current_mapping())
-        self.status.setText(f"Preview verified: {record['fraction'] * 100:.6g}% cumulative; {len(record['changes'])} magnets. No writes.")
+        self.status.setText(f"Next step ready: {record['previous_fraction'] * 100:.6g}% → {record['fraction'] * 100:.6g}% cumulative; {len(record['changes'])} magnets. No writes.")
+        self.owner._refresh_correction_progress()
 
     def apply(self):
         if not self.transaction or not self.owner.review or self.thread:
             return
-        if QMessageBox.question(self, "Apply pyAML quadrupole correction?",
-            "Apply the displayed integrated-strength targets to the connected machine? Restoration can fail; inspect all results.",
+        record=self.transaction.record or {}
+        if QMessageBox.question(self, "Apply confirmed pyAML correction step?",
+            f"Apply the previewed correction from {float(record.get('previous_fraction',0))*100:g}% to {float(record.get('fraction',0))*100:g}% "
+            f"for {len(record.get('changes',()))} magnets?\n\nThe adapter get() value is verified after every write. Restoration can fail; inspect all results.",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         try:
@@ -549,6 +552,7 @@ class PyAMLCorrectionWidget(QWidget):
         except Exception as exc:
             self.error(str(exc))
         self.refresh()
+        self.owner._refresh_correction_progress()
 
     def error(self, message):
         self.status.setText(message)
@@ -556,6 +560,7 @@ class PyAMLCorrectionWidget(QWidget):
             self.owner.mapping_diagnostics.setText(message)
         QMessageBox.warning(self, "pyAML correction", message)
         self.refresh()
+        self.owner._refresh_correction_progress()
 
     def start(self, action):
         self.thread = QThread(self)
@@ -571,10 +576,12 @@ class PyAMLCorrectionWidget(QWidget):
     def completed(self, record):
         self.status.setText(f"{record['status']} — {record['fraction'] * 100:.6g}% cumulative. Journal: {self.transaction.path}")
         self._update_recovery_display(True,self.pending(),False,record)
+        self.owner._refresh_correction_progress()
 
     def finished(self):
         self.thread.deleteLater(); self.thread = None; self.worker = None
         self.refresh()
+        self.owner._refresh_correction_progress()
 
     def _update_recovery_display(self,active,pending,busy,record):
         owner=self.owner
