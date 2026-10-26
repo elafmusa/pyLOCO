@@ -1918,6 +1918,7 @@ class MeasureMainWindow(QMainWindow):
         result_tab_bar.setExpanding(True)
         result_tab_bar.setUsesScrollButtons(False)
         result_tab_bar.setElideMode(Qt.ElideRight)
+        self.results_tabs.currentChanged.connect(self._result_plot_tab_changed)
         self.x_plot=PlotCanvas(minimum_height=260); self.y_plot=PlotCanvas(minimum_height=260)
         self.raw_x_plot=PlotCanvas(minimum_height=260); self.raw_y_plot=PlotCanvas(minimum_height=260)
         self.mean_x_plot=PlotCanvas(minimum_height=260); self.mean_y_plot=PlotCanvas(minimum_height=260)
@@ -3150,6 +3151,20 @@ class MeasureMainWindow(QMainWindow):
             index=self.results_tabs.addTab(widget,label)
             self.results_tabs.setTabToolTip(index,label)
         if kind in {"orm","dispersion"}:self.results_tabs.setCurrentIndex(0)
+
+    def _result_plot_tab_changed(self,_index):
+        """Keep the reference-model ORM tab free of measured diagnostics."""
+        if not hasattr(self,"stats_group"):
+            return
+        model_only=(
+            self.measurement_type.currentData()=="orm"
+            and self.results_tabs.currentWidget() is self.orm_model_plot
+            and isinstance(getattr(self,"result",None),ORMResult)
+        )
+        if model_only:
+            self.stats_group.setVisible(False)
+        else:
+            self._update_diagnostics_visibility()
 
     def _update_measurement_help(self, *_):
         if not hasattr(self,"measurement_help_text"): return

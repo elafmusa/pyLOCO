@@ -282,6 +282,12 @@ def test_loading_reference_model_after_completed_orm_refreshes_comparison(app,mo
     assert window.orm_difference_plot.figure.axes[0].get_title()=="Measured − MODEL ORM"
     assert window.orm_model_plot.figure.axes[0].images
     assert window.orm_difference_plot.figure.axes[0].images
+    model_index=window.results_tabs.indexOf(window.orm_model_plot)
+    measured_index=window.results_tabs.indexOf(window.x_plot)
+    window.results_tabs.setCurrentIndex(model_index)
+    assert window.stats_group.isHidden()
+    window.results_tabs.setCurrentIndex(measured_index)
+    assert not window.stats_group.isHidden()
     window.close()
 
 def test_evolving_orm_does_not_invent_identity_for_unacquired_cells(app):
