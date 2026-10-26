@@ -3561,7 +3561,15 @@ class MeasureMainWindow(QMainWindow):
         elif phase=="acquiring":
             names={"reference":"Reference RF","positive":"Positive RF","negative":"Negative RF"}; index=int(details["index"])+1; count=int(details["count"]); offset=float(details["offset_hz"])
             sign="0" if offset==0 else f"{offset:+g}"
-            self.log.appendPlainText(f"{index}/{count} {names.get(details['label'],details['label'])}: offset = {sign} Hz; RF = {details['rf_hz']:.6f} Hz; acquire {details['label']}-state orbit.")
+            self.log.appendPlainText(f"{index}/{count} {names.get(details['label'],details['label'])}: requested offset = {sign} Hz; requested RF = {details['rf_hz']:.6f} Hz; waiting for verified readback.")
+        elif phase=="rf_readback":
+            index=int(details["index"])+1; count=int(details["count"])
+            requested=float(details["requested_rf_hz"]); actual=float(details["actual_rf_hz"])
+            self.log.appendPlainText(
+                f"{index}/{count} {details['label']} RF readback VERIFIED: "
+                f"requested {requested:.9f} Hz; actual {actual:.9f} Hz; "
+                f"error {actual-requested:+.9g} Hz. Acquiring orbit."
+            )
 
     @Slot(object)
     def _on_orm_event(self,event):

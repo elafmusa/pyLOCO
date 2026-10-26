@@ -38,6 +38,32 @@ class AutomaticDispersionAcquirer:
                 if settling_delay_seconds and cancel.wait(settling_delay_seconds):
                     raise AcquisitionCancelled("Dispersion acquisition was cancelled during RF settling")
                 actual = float(self.adapter.get_rf_frequency())
+                # A number of control systems acknowledge an RF write before
+                # the public readback has caught up.  Do not acquire an orbit
+                # against that stale state: retry briefly, then fail at the RF
+                # transition instead of producing an invalid zero-span result
+                # that only becomes visible when the user saves the file.
+                retry_delay = min(0.25, max(0.05, float(settling_delay_seconds) / 5.0))
+                for _ in range(10):
+                    if abs(actual - requested) <= restoration_tolerance_hz:
+                        break
+                    if cancel.is_set():
+                        raise AcquisitionCancelled("Dispersion acquisition was cancelled while verifying the RF readback")
+                    sleeper(retry_delay)
+                    actual = float(self.adapter.get_rf_frequency())
+                if status:
+                    status("rf_readback", {
+                        "index": index, "count": len(offsets), "label": label,
+                        "offset_hz": offset, "requested_rf_hz": requested,
+                        "actual_rf_hz": actual,
+                    })
+                if not np.isfinite(actual) or abs(actual - requested) > restoration_tolerance_hz:
+                    raise RuntimeError(
+                        f"RF readback did not reach the requested {label} state: "
+                        f"requested {requested:.9f} Hz, read back {actual:.9f} Hz "
+                        f"after settling (tolerance {restoration_tolerance_hz:g} Hz). "
+                        "No orbit was recorded for this RF state."
+                    )
                 state = DispersionStateAcquirer(self.adapter, self.devices).acquire(
                     label,
                     requested, readings, delay_seconds, actual_rf_hz=actual,
@@ -58,6 +84,12 @@ class AutomaticDispersionAcquirer:
                 if settling_delay_seconds:
                     sleeper(settling_delay_seconds)
                 final_readback = float(self.adapter.get_rf_frequency())
+                retry_delay = min(0.25, max(0.05, float(settling_delay_seconds) / 5.0))
+                for _ in range(10):
+                    if abs(final_readback - original) <= restoration_tolerance_hz:
+                        break
+                    sleeper(retry_delay)
+                    final_readback = float(self.adapter.get_rf_frequency())
                 restoration = "restored" if abs(final_readback - original) <= restoration_tolerance_hz else "verification_failed"
             except Exception:
                 restoration = "restore_failed"
