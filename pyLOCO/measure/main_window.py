@@ -19,10 +19,10 @@ from typing import Sequence
 from uuid import uuid4
 
 import numpy as np
-from PySide6.QtCore import QItemSelectionModel, QObject, QSettings, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
+from PySide6.QtCore import QEvent, QItemSelectionModel, QObject, QSettings, QThread, Qt, Signal, Slot, QSize, QTimer, QUrl
 from PySide6.QtGui import QAction, QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QApplication, QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox, QInputDialog,
+    QApplication, QAbstractItemView, QAbstractScrollArea, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QGridLayout, QGroupBox, QInputDialog,
     QFrame, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox, QMenu,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QSplitter, QLayout,
     QDoubleSpinBox, QSizePolicy, QTabWidget, QTableWidget, QTableWidgetItem, QToolBar, QToolButton,
@@ -172,6 +172,31 @@ class NoWheelDoubleSpinBox(QDoubleSpinBox):
     def wheelEvent(self, event):  # type: ignore[override]
         if not self.hasFocus(): event.ignore(); return
         super().wheelEvent(event)
+
+
+class MeasureScrollArea(QScrollArea):
+    """Page scroll area that remains usable while hovering over plots/forms."""
+
+    def setWidget(self, widget):  # type: ignore[override]
+        super().setWidget(widget)
+        widget.installEventFilter(self)
+        for child in widget.findChildren(QWidget):
+            child.installEventFilter(self)
+
+    def eventFilter(self, watched, event):  # type: ignore[override]
+        if event.type() == QEvent.Wheel and self.verticalScrollBar().maximum() > 0:
+            ancestor = watched
+            while ancestor is not None and ancestor is not self:
+                if isinstance(ancestor, QAbstractScrollArea):
+                    return super().eventFilter(watched, event)
+                ancestor = ancestor.parentWidget() if hasattr(ancestor, "parentWidget") else None
+            delta = event.angleDelta().y()
+            if delta:
+                bar = self.verticalScrollBar()
+                bar.setValue(bar.value() - delta)
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
 
 
 class ElidedPathLabel(QLabel):
@@ -605,11 +630,12 @@ class MeasureMainWindow(QMainWindow):
         if content.layout() is not None:
             content.layout().setSizeConstraint(QLayout.SetMinimumSize)
 
-        scroll = QScrollArea()
+        scroll = MeasureScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        scroll.setStyleSheet("QScrollBar:vertical { min-width: 18px; }")
         scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         scroll.setWidget(content)
         return scroll
@@ -1895,6 +1921,8 @@ class MeasureMainWindow(QMainWindow):
         self.raw_x_plot=PlotCanvas(minimum_height=260); self.raw_y_plot=PlotCanvas(minimum_height=260)
         self.mean_x_plot=PlotCanvas(minimum_height=260); self.mean_y_plot=PlotCanvas(minimum_height=260)
         self.rf_shift_x_plot=PlotCanvas(minimum_height=260); self.rf_shift_y_plot=PlotCanvas(minimum_height=260)
+        self.dispersion_model_x_plot=PlotCanvas(minimum_height=260); self.dispersion_model_y_plot=PlotCanvas(minimum_height=260)
+        self.dispersion_residual_x_plot=PlotCanvas(minimum_height=260); self.dispersion_residual_y_plot=PlotCanvas(minimum_height=260)
         self.orm_vv_plot=PlotCanvas(minimum_height=260); self.orm_column_plot=PlotCanvas(minimum_height=260); self.orm_kick_plot=PlotCanvas(minimum_height=260)
         self.orm_model_plot=PlotCanvas(minimum_height=260); self.orm_difference_plot=PlotCanvas(minimum_height=260)
         self.results_tabs.addTab(self.x_plot,"Horizontal BPM noise"); self.results_tabs.addTab(self.y_plot,"Vertical BPM noise"); self.results_tabs.addTab(self.mean_x_plot,"Mean horizontal orbit"); self.results_tabs.addTab(self.mean_y_plot,"Mean vertical orbit"); layout.addWidget(self.results_tabs)
@@ -3115,7 +3143,7 @@ class MeasureMainWindow(QMainWindow):
         while self.results_tabs.count():self.results_tabs.removeTab(0)
         if kind=="orm":
             entries=((self.x_plot,"Full ORM"),(self.y_plot,"Direct H→X"),(self.orm_vv_plot,"Direct V→Y"),(self.mean_x_plot,"Coupling V→X"),(self.mean_y_plot,"Coupling H→Y"),(self.orm_model_plot,"Model ORM"),(self.orm_difference_plot,"Measured − Model"),(self.orm_column_plot,"Selected ORM column"),(self.orm_kick_plot,"Kick diagnostics"))
-        elif kind=="dispersion":entries=((self.raw_x_plot,"RF orbit difference Δx_RF [mm]"),(self.raw_y_plot,"RF orbit difference Δy_RF [mm]"),(self.rf_shift_x_plot,"RF-induced horizontal shifts"),(self.rf_shift_y_plot,"RF-induced vertical shifts"),(self.x_plot,"Physical Dx [mm] — optional AT"),(self.y_plot,"Physical Dy [mm] — optional AT"))
+        elif kind=="dispersion":entries=((self.raw_x_plot,"RF orbit difference Δx_RF [mm]"),(self.raw_y_plot,"RF orbit difference Δy_RF [mm]"),(self.rf_shift_x_plot,"RF-induced horizontal shifts"),(self.rf_shift_y_plot,"RF-induced vertical shifts"),(self.x_plot,"Measured physical Dx [mm]"),(self.y_plot,"Measured physical Dy [mm]"),(self.dispersion_model_x_plot,"Reference-model Dx [mm]"),(self.dispersion_model_y_plot,"Reference-model Dy [mm]"),(self.dispersion_residual_x_plot,"Measured − model Dx [mm]"),(self.dispersion_residual_y_plot,"Measured − model Dy [mm]"))
         else:entries=((self.x_plot,"Horizontal BPM noise"),(self.y_plot,"Vertical BPM noise"),(self.mean_x_plot,"Mean horizontal orbit"),(self.mean_y_plot,"Mean vertical orbit"))
         for widget,label in entries:
             index=self.results_tabs.addTab(widget,label)
@@ -4647,12 +4675,29 @@ class MeasureMainWindow(QMainWindow):
         self._refresh_dispersion_highlights()
         model_comparison=""
         model_comparison_html="<b>Not calculated.</b><br>Enable <i>Compare measurements with reference model</i> before or after the measurement."
+        comparison_canvases=(self.dispersion_model_x_plot,self.dispersion_model_y_plot,
+                             self.dispersion_residual_x_plot,self.dispersion_residual_y_plot)
+        for canvas in comparison_canvases:
+            canvas.clear(); ax=canvas.figure.add_subplot(111)
+            ax.text(.5,.5,"Enable reference-model comparison and provide a complete BPM mapping.",
+                    ha="center",va="center",wrap=True,transform=ax.transAxes)
+            ax.set_axis_off(); canvas.apply_theme()
         if physical_x is not None and self.compare_reference.isChecked() and self.reference_model is not None:
             try:
                 mapping=self._model_mapping_kwargs(bpms=result.devices,hcorrectors=(),vcorrectors=())
                 model_x,model_y=model_dispersion(self.reference_model,result.devices,bpm_ordinals=mapping.get("bpm_ordinals"))
                 for canvas,measured,model_values,plane in ((self.x_plot,physical_x,model_x,"X"),(self.y_plot,physical_y,model_y,"Y")):
                     ax=canvas.figure.axes[0]; ax.plot(model_values*1e3,"--",linewidth=1.5,label=f"MODEL D{plane.lower()} — reference lattice"); ax.plot((measured-model_values)*1e3,":",linewidth=1.2,label="Measured − MODEL"); ax.legend(); canvas.apply_theme()
+                for canvas,values,title,color in (
+                    (self.dispersion_model_x_plot,model_x,"Reference-model horizontal dispersion Dₓ","#496FD8"),
+                    (self.dispersion_model_y_plot,model_y,"Reference-model vertical dispersion Dᵧ","#8B5CF6"),
+                    (self.dispersion_residual_x_plot,physical_x-model_x,"Measured − model horizontal dispersion Dₓ","#D946EF"),
+                    (self.dispersion_residual_y_plot,physical_y-model_y,"Measured − model vertical dispersion Dᵧ","#E88B22"),
+                ):
+                    canvas.clear(); ax=canvas.figure.add_subplot(111); shown=np.asarray(values)*1e3; positions=np.arange(len(shown))
+                    if self.dispersion_connect_points.isChecked():ax.plot(positions,shown,color=color,linewidth=.8,alpha=.65)
+                    ax.scatter(positions,shown,color=color,s=18); ax.axhline(0,color="#64748B",linewidth=.8)
+                    ax.set_title(title); ax.set_xlabel("BPM index (zero-based)"); ax.set_ylabel("Physical dispersion [mm]"); ax.grid(True,alpha=.25); canvas.apply_theme()
                 mx=comparison_metrics(physical_x,model_x); my=comparison_metrics(physical_y,model_y)
                 model_comparison=(f"\nReference-model comparison\n"
                                   f"X: RMS measured/model/difference {mx['rms_measured']*1e3:.4g} / {mx['rms_model']*1e3:.4g} / {mx['rms_difference']*1e3:.4g} mm; max |difference| {mx['max_abs_difference']*1e3:.4g} mm\n"

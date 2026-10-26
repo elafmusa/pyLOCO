@@ -633,6 +633,16 @@ def test_rf_restoration_uses_configured_absolute_hz_tolerance(offset,expected):
     assert diagnostics["tolerance_hz"]==pytest.approx(.1)
 
 
+def test_rf_restoration_waits_for_settling_before_readback():
+    interface=_RFInterface(); adapter=AbstractInterfaceAdapter(interface,("B1","B2"),(),())
+    devices=tuple(BpmDevice(**item) for item in adapter.list_devices("bpm")); sleeps=[]
+    AutomaticDispersionAcquirer(adapter,devices).acquire(
+        100,2,0,direction="bipolar",settling_delay_seconds=.25,
+        verify_restored_orbit=False,sleeper=sleeps.append,
+    )
+    assert sleeps[-1]==pytest.approx(.25)  # restoration settles before its readback
+
+
 def test_rf_restoration_missing_readback_remains_blocked():
     interface=_RFInterface(fail_restore_readback=True); adapter=AbstractInterfaceAdapter(interface,("B1","B2"),(),()); devices=tuple(BpmDevice(**item) for item in adapter.list_devices("bpm")); cancel=Event()
     def progress(*_):cancel.set()

@@ -51,6 +51,12 @@ class AutomaticDispersionAcquirer:
             try:
                 if status: status("restoring", {"offset_hz":0.0,"rf_hz":original})
                 self.adapter.set_rf_frequency(original)
+                # Some control-system and simulator adapters acknowledge the
+                # write before their public read accessor exposes the new RF.
+                # Apply the same settling interval used for measurement states
+                # before deciding whether restoration succeeded.
+                if settling_delay_seconds:
+                    sleeper(settling_delay_seconds)
                 final_readback = float(self.adapter.get_rf_frequency())
                 restoration = "restored" if abs(final_readback - original) <= restoration_tolerance_hz else "verification_failed"
             except Exception:

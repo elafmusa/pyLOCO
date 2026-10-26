@@ -237,7 +237,9 @@ def test_dispersion_results_expose_physical_raw_rf_state_and_shift_views(app):
     assert [window.results_tabs.tabText(i) for i in range(window.results_tabs.count())]==[
         "RF orbit difference Δx_RF [mm]","RF orbit difference Δy_RF [mm]",
         "RF-induced horizontal shifts","RF-induced vertical shifts",
-        "Physical Dx [mm] — optional AT","Physical Dy [mm] — optional AT",
+        "Measured physical Dx [mm]","Measured physical Dy [mm]",
+        "Reference-model Dx [mm]","Reference-model Dy [mm]",
+        "Measured − model Dx [mm]","Measured − model Dy [mm]",
     ]
     window.dispersion_display.setCurrentIndex(window.dispersion_display.findData("physical"))
     assert window.results_tabs.currentWidget() is window.x_plot
