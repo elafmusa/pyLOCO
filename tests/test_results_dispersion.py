@@ -101,6 +101,9 @@ def test_dispersion_statistics_match_direct_numpy(tmp_path):
 
 def test_optics_results_are_plane_separated_and_use_saved_arrays(app, tmp_path):
     _request(tmp_path / "run_request.json", included=True)
+    request=json.loads((tmp_path/"run_request.json").read_text())
+    request["backend_mapping"]["MachineElements"]={"bpm_ords":[0,2]}
+    (tmp_path/"run_request.json").write_text(json.dumps(request))
     measured_x, measured_y, initial_x, initial_y, fitted_x, fitted_y = _persisted(tmp_path, included=True)
     loader = ResultsLoader(tmp_path)
     view = OpticsView(); view.resize(1200, 800); view.show(); view.set_loader(loader); app.processEvents()
@@ -125,6 +128,11 @@ def test_optics_results_are_plane_separated_and_use_saved_arrays(app, tmp_path):
     )
     assert view.dispersion_tables["x"].rowCount() == 2
     assert view.beta_tables["x"].rowCount() == 2
+    assert view.beta_tables["x"].horizontalHeaderItem(4).text()=="RMS beta beating [%]"
+    assert "RMS beta beating" in view.beta_messages["x"].text()
+    np.testing.assert_allclose(view.beta_plots["x"]["curves_bpms"].figure.axes[0].lines[0].get_xdata(),[0.0,20.0])
+    bpm_beating_lines=[line for line in view.beta_plots["x"]["beating_bpms"].figure.axes[0].lines if "β beating" in line.get_label()]
+    np.testing.assert_allclose(bpm_beating_lines[-1].get_xdata(),[0.0,20.0])
     assert loader.beta_beating_statistics["x"]["initial"]["rms"] == pytest.approx(
         100.0 * np.sqrt(np.mean(np.array([.1, -.05, .05]) ** 2))
     )

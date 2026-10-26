@@ -76,15 +76,20 @@ class OpticsView(QWidget):
     def _make_beta_page(plane):
         page = QWidget(); layout = QVBoxLayout(page)
         message = QLabel(f"No β{plane} results loaded."); message.setWordWrap(True); message.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        table = _table(["State", "Min [%]", "Max [%]", "Mean [%]", "RMS [%]", "Max |error| [%]"])
+        table = _table(["Beta-beating state", "Min beta beating [%]", "Max beta beating [%]", "Mean beta beating [%]", "RMS beta beating [%]", "Max |beta beating| [%]"])
         plot_tabs = QTabWidget(); plots = {
             # Keep the chart visible in the shorter Results viewport used by
             # laptop displays.  The plot still expands to consume all spare
             # space, but no longer forces its lower half below the viewport.
             "curves": PlotCanvas(show_toolbar=True, minimum_height=320),
             "beating": PlotCanvas(show_toolbar=True, minimum_height=320),
+            "curves_bpms": PlotCanvas(show_toolbar=True, minimum_height=320),
+            "beating_bpms": PlotCanvas(show_toolbar=True, minimum_height=320),
         }
-        plot_tabs.addTab(plots["curves"], f"β{plane} curves"); plot_tabs.addTab(plots["beating"], f"β{plane} beating")
+        plot_tabs.addTab(plots["curves"], f"β{plane} curves — all lattice positions")
+        plot_tabs.addTab(plots["beating"], f"β{plane} beating — all lattice positions")
+        plot_tabs.addTab(plots["curves_bpms"], f"β{plane} curves — BPMs only")
+        plot_tabs.addTab(plots["beating_bpms"], f"β{plane} beating — BPMs only")
         layout.addWidget(message); layout.addWidget(table); layout.addWidget(plot_tabs, 1)
         return _scrollable_page(page), message, table, plots
 
@@ -127,7 +132,11 @@ class OpticsView(QWidget):
             "resumed_fitted_lattice": "the resumed fitted lattice before this stage's corrections.",
             "workflow_input_lattice": "the original lattice at the start of the complete FIT workflow.",
         }.get(reference_kind, "the input lattice at the start of this run.")
-        message.setText(f"β{plane} uses saved longitudinal position s [m]. Reference: {reference_label}")
+        message.setText(
+            f"β{plane} uses saved longitudinal position s [m]. Reference: {reference_label} "
+            "The table contains beta-beating percentages, not beta-function values; "
+            "RMS beta beating = sqrt(mean(beta-beating [%]²))."
+        )
         axis = np.asarray(data["s"], dtype=float); curve_axis = plots["curves"].figure.add_subplot(111); curve_count = 0
         for state, label, style in (("reference", "Reference", ":"), ("initial", "Initial", "-."), ("fitted", "Fitted", "-")):
             values = data.get(f"beta_{plane}_{state}")
@@ -144,6 +153,29 @@ class OpticsView(QWidget):
         beating_axis.axhline(0, color="#8d95a8", linewidth=.8); beating_axis.set(xlabel="Longitudinal position s [m]", ylabel=f"β{plane} beating [%]"); beating_axis.grid(True, alpha=.25)
         if beating_count: beating_axis.legend()
         else: beating_axis.text(.5, .5, "Beta-beating arrays were not saved for this run.", ha="center", va="center", transform=beating_axis.transAxes)
+        mapping=loader.request.get("backend_mapping",{}) if isinstance(loader.request,dict) else {}
+        machine=mapping.get("MachineElements",{}) if isinstance(mapping,dict) else {}
+        rm_config=mapping.get("RMConfig",{}) if isinstance(mapping,dict) else {}
+        bpm_ordinals=machine.get("bpm_ords") or rm_config.get("bpm_ords") or []
+        bpm_indices=np.asarray(bpm_ordinals,dtype=int).reshape(-1) if len(bpm_ordinals) else np.asarray([],dtype=int)
+        bpm_indices=bpm_indices[(bpm_indices>=0)&(bpm_indices<axis.size)]
+        bpm_axis=axis[bpm_indices] if bpm_indices.size else np.asarray([],dtype=float)
+        bpm_curve_axis=plots["curves_bpms"].figure.add_subplot(111); bpm_curve_count=0
+        bpm_beating_axis=plots["beating_bpms"].figure.add_subplot(111); bpm_beating_count=0
+        for state,label,style in (("reference","Reference",":"),("initial","Initial","-."),("fitted","Fitted","-")):
+            values=data.get(f"beta_{plane}_{state}")
+            if values is not None and bpm_indices.size:
+                bpm_curve_axis.plot(bpm_axis,np.asarray(values,dtype=float)[bpm_indices],style,label=label,linewidth=1.2,marker=".",markersize=3); bpm_curve_count+=1
+        for key,label,style in ((f"beta_beating_{plane}_initial","Initial β beating",":"),(f"beta_beating_{plane}","Fitted β beating","-")):
+            values=data.get(key)
+            if values is not None and bpm_indices.size:
+                bpm_beating_axis.plot(bpm_axis,100.0*np.asarray(values,dtype=float)[bpm_indices],style,label=label,linewidth=1.2,marker=".",markersize=3); bpm_beating_count+=1
+        bpm_curve_axis.set(xlabel="BPM longitudinal position s [m]",ylabel=f"β{plane} at BPMs [m]"); bpm_curve_axis.grid(True,alpha=.25)
+        bpm_beating_axis.axhline(0,color="#8d95a8",linewidth=.8); bpm_beating_axis.set(xlabel="BPM longitudinal position s [m]",ylabel=f"β{plane} beating at BPMs [%]"); bpm_beating_axis.grid(True,alpha=.25)
+        if bpm_curve_count:bpm_curve_axis.legend()
+        else:bpm_curve_axis.text(.5,.5,"Mapped BPM lattice positions are unavailable for this run.",ha="center",va="center",transform=bpm_curve_axis.transAxes)
+        if bpm_beating_count:bpm_beating_axis.legend()
+        else:bpm_beating_axis.text(.5,.5,"Mapped BPM lattice positions are unavailable for this run.",ha="center",va="center",transform=bpm_beating_axis.transAxes)
         stats = loader.beta_beating_statistics.get(plane, {})
         for state in ("initial", "fitted"):
             values = stats.get(state)
