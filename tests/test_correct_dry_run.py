@@ -476,6 +476,8 @@ def test_integrated_machine_strength_plot_requires_valid_mapping_and_readback():
 
 def test_correction_plan_background_clears_highlight_and_last_columns_are_reachable():
     app=QApplication.instance() or build_application(["correct-table-navigation"]); window=CorrectMainWindow(); window._load(Path("Examples/Correct/mock_corrections.json").resolve()); window.tabs.setCurrentIndex(2); window.show(); app.processEvents()
+    assert window.COLUMNS[1] == "Correction-row position"
+    assert "not a lattice index" in window.comparison_help.text()
     window.table.selectRow(0); assert window.table.selectionModel().hasSelection()
     QTest.mouseClick(window.plan_page,Qt.LeftButton,pos=QPoint(2,2)); app.processEvents()
     assert not window.table.selectionModel().hasSelection()

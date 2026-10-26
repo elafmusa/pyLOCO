@@ -13,9 +13,9 @@ from .plot_canvas import PlotCanvas
 
 
 class ParametersView(QWidget):
-    GENERIC_HEADERS = ["Index", "Fitted magnet (AT FamName)", "AT Device", "AT index (0-based)",
+    GENERIC_HEADERS = ["Fitted-vector position", "Fitted magnet (AT FamName)", "AT Device", "AT index (0-based)",
                        "Initialization", "Fitted value", "Change from initialization", "Unit"]
-    QUAD_HEADERS = ["Index", "Fitted magnet (AT FamName)", "AT Device", "AT index (0-based)",
+    QUAD_HEADERS = ["Fitted-vector position", "Fitted magnet (AT FamName)", "AT Device", "AT index (0-based)",
                     "Initial K", "Fitted K", "ΔK", "ΔK/K [%]", "Unit"]
 
     def __init__(self, parent=None):
@@ -30,6 +30,11 @@ class ParametersView(QWidget):
         self.correction_mode.currentIndexChanged.connect(self._render)
         self.summary = QLabel("No parameter results loaded.")
         self.summary.setWordWrap(True)
+        self.comparison_help = QLabel(
+            "Compare with pyLOCO Correct using AT FamName, AT Device, or AT index (0-based). "
+            "Fitted-vector position is only the row's position in the optimizer vector; it is not a lattice index."
+        )
+        self.comparison_help.setWordWrap(True); self.comparison_help.setObjectName("mappingHelpText")
         top = QHBoxLayout(); top.addWidget(QLabel("Parameter block")); top.addWidget(self.selector, 1)
         top.addWidget(QLabel("Correction shown")); top.addWidget(self.correction_mode)
         self.export_csv = QPushButton("Save fitted data CSV…"); self.export_json = QPushButton("Save fitted data JSON…")
@@ -54,7 +59,8 @@ class ParametersView(QWidget):
         summary_group = QGroupBox("Summary"); summary_layout = QVBoxLayout(summary_group); summary_layout.addWidget(self.summary)
         summary_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         content = QWidget(); content.setMinimumHeight(680); content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored); content_layout = QVBoxLayout(content)
-        content_layout.addWidget(title); content_layout.addLayout(top); content_layout.addWidget(summary_group, 0); content_layout.addWidget(self.content_splitter, 1)
+        content_layout.addWidget(title); content_layout.addLayout(top); content_layout.addWidget(summary_group, 0)
+        content_layout.addWidget(self.comparison_help); content_layout.addWidget(self.content_splitter, 1)
         scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setWidget(content)
         layout = QVBoxLayout(self); layout.setContentsMargins(0, 0, 0, 0); layout.addWidget(scroll)
 

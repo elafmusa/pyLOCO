@@ -51,6 +51,8 @@ def test_quadrupole_plot_and_table_share_exact_individual_order(app, tmp_path, m
 
     view = ParametersView(); view.set_loader(loader)
     assert view.selector.currentData() == "quads"
+    assert view.table.horizontalHeaderItem(0).text() == "Fitted-vector position"
+    assert "not a lattice index" in view.comparison_help.text()
     assert view.table.horizontalHeaderItem(1).text() == "Fitted magnet (AT FamName)"
     assert view.table.item(0, 1).text() == "Q1"
     assert view.table.item(0, 2).text() == "device/Q1/0"
