@@ -150,14 +150,22 @@ def test_legacy_component_suffix_mapping_remains_supported_and_records_method(tm
 def test_ebs_plane_suffix_correctors_match_base_at_device(tmp_path):
     lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"plane suffix lattice")
     # One physical combined steerer legitimately supplies both B1L and A1L.
-    ring=[Multipole("SJ2A", "SJ2A-C04")]
+    ring=[Multipole("SJ2A", "srmag/m-sf2/c04-a")]
     inventory={"bpm":[], "horizontal_corrector":["SJ2A-C04-H"],
                "vertical_corrector":["SJ2A-C04-V"]}
     checked=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
     assert mapping_counts(checked)["mapped"]==2
     assert ordered_ordinals(checked,"horizontal_corrector")==[0]
     assert ordered_ordinals(checked,"vertical_corrector")==[0]
-    assert {row["identity_match"] for row in checked["mappings"]}=={"plane_suffix_device"}
+    assert {row["identity_match"] for row in checked["mappings"]}=={"ebs_fam_cell_alias"}
+
+
+def test_ebs_alias_requires_matching_famname_subcell(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"wrong subcell lattice")
+    ring=[Multipole("SJ2B", "srmag/m-sf2/c04-a")]
+    inventory={"bpm":[], "horizontal_corrector":["SJ2B-C04-H"], "vertical_corrector":[]}
+    checked=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
+    assert mapping_counts(checked)["unresolved"]==1
 
 
 def test_revalidation_rejects_order_inventory_lattice_and_configuration_changes(example, tmp_path):

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -51,7 +52,7 @@ def _element_identity(element: Any) -> tuple[str, str]:
 
 
 def _device_lookup(ring) -> dict[str, dict[str, list[int]]]:
-    result: dict[str, dict[str, list[int]]] = {"device": {}, "fam_name": {}}
+    result: dict[str, dict[str, list[int]]] = {"device": {}, "fam_name": {}, "ebs_alias": {}}
     for ordinal, element in enumerate(ring):
         device = getattr(element, "Device", None)
         if device not in (None, ""):
@@ -59,7 +60,24 @@ def _device_lookup(ring) -> dict[str, dict[str, list[int]]]:
         family = getattr(element, "FamName", None)
         if family not in (None, ""):
             result["fam_name"].setdefault(str(family), []).append(ordinal)
+        alias = _ebs_fam_cell_alias(element)
+        if alias:
+            result["ebs_alias"].setdefault(alias, []).append(ordinal)
     return result
+
+
+def _ebs_fam_cell_alias(element: Any) -> str:
+    """Build the measured EBS ``FamName-Cxx`` identity from two AT fields."""
+    family = str(getattr(element, "FamName", "") or "")
+    device = str(getattr(element, "Device", "") or "")
+    match = re.search(r"/c(\d{2})-([a-z])(?:$|/)", device, flags=re.IGNORECASE)
+    if not re.fullmatch(r"[A-Z]{2}\d[A-Z]", family, flags=re.IGNORECASE) or not match:
+        return ""
+    # The final FamName letter and Device subcell must agree; this prevents a
+    # coincidental cell-number match from becoming an identity.
+    if family[-1].upper() != match.group(2).upper():
+        return ""
+    return f"{family.upper()}-C{match.group(1)}"
 
 
 def _device_identities(measured_name: str, role: str) -> tuple[tuple[str, str], ...]:
@@ -95,6 +113,10 @@ def _identity_hits(lookup: dict[str, dict[str, list[int]]], measured_name: str,
         namespace = "device" if method.endswith("device") else "fam_name"
         hits = lookup[namespace].get(identity, [])
         if hits:return list(hits), method
+    for interpretation, identity in _device_identities(measured_name, role):
+        if interpretation == "plane_suffix":
+            hits = lookup["ebs_alias"].get(identity.upper(), [])
+            if hits:return list(hits), "ebs_fam_cell_alias"
     return [], ""
 
 
@@ -104,6 +126,11 @@ def _identity_match_for_element(measured_name: str, role: str, element: Any) -> 
     for method, identity in _identity_candidates(measured_name, role):
         actual = device if method.endswith("device") else family
         if actual and actual == identity:return method, identity
+    alias = _ebs_fam_cell_alias(element)
+    if alias:
+        for interpretation, identity in _device_identities(measured_name, role):
+            if interpretation == "plane_suffix" and alias == identity.upper():
+                return "ebs_fam_cell_alias", identity
     return "", ""
 
 
@@ -115,6 +142,7 @@ def _match_label(method: str) -> str:
         "legacy_component_fam_name": "legacy component suffix interpreted, then exact AT FamName",
         "plane_suffix_device": "H/V plane suffix interpreted, then exact AT Device",
         "plane_suffix_fam_name": "H/V plane suffix interpreted, then exact AT FamName",
+        "ebs_fam_cell_alias": "EBS FamName plus exact Device cell identity",
     }.get(method, "no exact identity match")
 
 
@@ -164,7 +192,7 @@ def find_exact_device_mappings(ring, inventory: dict[str, list[str]], *,
                 "revalidated for exact identity and steering capability."
                 if status == "ambiguous" else
                 f"No exact identity match for measured {role_label} {measured_name!r}: no AT Device or "
-                "FamName matched (role-compatible -B1L/-A1L and -H/-V suffix interpretations were also checked)."
+                "FamName matched (role-compatible suffixes and the EBS FamName-plus-Device-cell identity were also checked)."
             )
             if ordinal is not None:
                 lattice_name, element_class = _element_identity(ring[ordinal])
@@ -395,7 +423,7 @@ def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[s
                     status, reason = "invalid", (
                         f"No exact identity match: measured {role_label} {name!r}; selected AT index {ordinal} (0-based); "
                         f"FamName={lattice_name!r}; Device={lattice_device!r}. Exact Device, exact FamName, "
-                        "and role-compatible -B1L/-A1L and -H/-V suffix interpretations all failed. Select the AT "
+                        "role-compatible suffixes, and the EBS FamName-plus-Device-cell identity all failed. Select the AT "
                         "element with the matching Device or FamName."
                     )
                 elif not explicit and ambiguous_identity and not evidence:

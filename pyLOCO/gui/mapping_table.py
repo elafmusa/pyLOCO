@@ -16,6 +16,7 @@ IDENTITY_MATCH_LABELS = {
     "legacy_component_fam_name": "Legacy suffix → exact AT FamName",
     "plane_suffix_device": "H/V suffix → exact AT Device",
     "plane_suffix_fam_name": "H/V suffix → exact AT FamName",
+    "ebs_fam_cell_alias": "EBS FamName + Device cell",
     "explicit_lattice_ordinal": "Explicit AT index",
 }
 
