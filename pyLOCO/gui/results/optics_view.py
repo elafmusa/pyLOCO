@@ -159,7 +159,10 @@ class OpticsView(QWidget):
         bpm_ordinals=machine.get("bpm_ords") or rm_config.get("bpm_ords") or []
         bpm_indices=np.asarray(bpm_ordinals,dtype=int).reshape(-1) if len(bpm_ordinals) else np.asarray([],dtype=int)
         bpm_indices=bpm_indices[(bpm_indices>=0)&(bpm_indices<axis.size)]
-        bpm_axis=axis[bpm_indices] if bpm_indices.size else np.asarray([],dtype=float)
+        # The BPM-only view is indexed by the selected BPM ordering.  Using
+        # longitudinal metres here made a 230-BPM selection appear to contain
+        # ~800 points because the EBS circumference is about 844 m.
+        bpm_axis=np.arange(bpm_indices.size,dtype=int)
         bpm_curve_axis=plots["curves_bpms"].figure.add_subplot(111); bpm_curve_count=0
         bpm_beating_axis=plots["beating_bpms"].figure.add_subplot(111); bpm_beating_count=0
         for state,label,style in (("reference","Reference",":"),("initial","Initial","-."),("fitted","Fitted","-")):
@@ -170,8 +173,8 @@ class OpticsView(QWidget):
             values=data.get(key)
             if values is not None and bpm_indices.size:
                 bpm_beating_axis.plot(bpm_axis,100.0*np.asarray(values,dtype=float)[bpm_indices],style,label=label,linewidth=1.2,marker=".",markersize=3); bpm_beating_count+=1
-        bpm_curve_axis.set(xlabel="BPM longitudinal position s [m]",ylabel=f"β{plane} at BPMs [m]"); bpm_curve_axis.grid(True,alpha=.25)
-        bpm_beating_axis.axhline(0,color="#8d95a8",linewidth=.8); bpm_beating_axis.set(xlabel="BPM longitudinal position s [m]",ylabel=f"β{plane} beating at BPMs [%]"); bpm_beating_axis.grid(True,alpha=.25)
+        bpm_curve_axis.set(title=f"β{plane} at {bpm_indices.size} mapped BPMs",xlabel="Selected BPM index (zero-based)",ylabel=f"β{plane} at BPMs [m]"); bpm_curve_axis.grid(True,alpha=.25)
+        bpm_beating_axis.axhline(0,color="#8d95a8",linewidth=.8); bpm_beating_axis.set(title=f"β{plane} beating at {bpm_indices.size} mapped BPMs",xlabel="Selected BPM index (zero-based)",ylabel=f"β{plane} beating at BPMs [%]"); bpm_beating_axis.grid(True,alpha=.25)
         if bpm_curve_count:bpm_curve_axis.legend()
         else:bpm_curve_axis.text(.5,.5,"Mapped BPM lattice positions are unavailable for this run.",ha="center",va="center",transform=bpm_curve_axis.transAxes)
         if bpm_beating_count:bpm_beating_axis.legend()

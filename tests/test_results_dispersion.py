@@ -130,9 +130,11 @@ def test_optics_results_are_plane_separated_and_use_saved_arrays(app, tmp_path):
     assert view.beta_tables["x"].rowCount() == 2
     assert view.beta_tables["x"].horizontalHeaderItem(4).text()=="RMS beta beating [%]"
     assert "RMS beta beating" in view.beta_messages["x"].text()
-    np.testing.assert_allclose(view.beta_plots["x"]["curves_bpms"].figure.axes[0].lines[0].get_xdata(),[0.0,20.0])
+    np.testing.assert_allclose(view.beta_plots["x"]["curves_bpms"].figure.axes[0].lines[0].get_xdata(),[0,1])
+    assert view.beta_plots["x"]["curves_bpms"].figure.axes[0].get_xlabel()=="Selected BPM index (zero-based)"
+    assert view.beta_plots["x"]["curves_bpms"].figure.axes[0].get_title()=="βx at 2 mapped BPMs"
     bpm_beating_lines=[line for line in view.beta_plots["x"]["beating_bpms"].figure.axes[0].lines if "β beating" in line.get_label()]
-    np.testing.assert_allclose(bpm_beating_lines[-1].get_xdata(),[0.0,20.0])
+    np.testing.assert_allclose(bpm_beating_lines[-1].get_xdata(),[0,1])
     assert loader.beta_beating_statistics["x"]["initial"]["rms"] == pytest.approx(
         100.0 * np.sqrt(np.mean(np.array([.1, -.05, .05]) ** 2))
     )
