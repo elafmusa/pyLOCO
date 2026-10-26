@@ -3606,7 +3606,11 @@ class MainWindow(QMainWindow):
         self.about_action = QAction("About pyLOCO GUI", self)
         self.about_action.triggered.connect(self._show_about_dialog)
         self.open_measure_action=QAction("Open pyLOCO Measure",self); self.open_measure_action.triggered.connect(self.open_measure_app)
-        self.open_correct_action=QAction("Open pyLOCO Correct",self); self.open_correct_action.triggered.connect(self.open_correct_app)
+        self.open_correct_action=QAction("Open Results in Correct…",self)
+        self.open_correct_action.setToolTip("Choose the final FIT result or a specific stage/iteration to review in pyLOCO Correct")
+        self.open_correct_action.setEnabled(False)
+        self.open_correct_action.triggered.connect(self.open_correct_app)
+        self.results_workspace.results_availability_changed.connect(self.open_correct_action.setEnabled)
         self.open_session_action=QAction("Open Measurement Session…",self); self.open_session_action.triggered.connect(self.open_measurement_session)
 
     def _create_menu_bar(self) -> None:
@@ -3671,6 +3675,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.validate_project_action)
         toolbar.addAction(self.run_loco_action)
         toolbar.addAction(self.continue_loco_action)
+        toolbar.addAction(self.open_correct_action)
         toolbar.addSeparator()
         # Keep the compatibility combo as the single source used by the
         # existing appearance handler, but present theme and accent choices in
@@ -5523,12 +5528,55 @@ class MainWindow(QMainWindow):
     @Slot()
     def open_measure_app(self):self._launch_suite("measure")
 
+    def _choose_correct_result(self):
+        choices=self.results_workspace.correction_result_choices()
+        if not choices:return None
+        # Automated/headless use receives the unambiguous final completed state.
+        if not self.isVisible():
+            stage=choices[-1]; state=stage["states"][-1]
+            return stage["results_dir"],state["iteration"]
+        dialog=QDialog(self); dialog.setWindowTitle("Choose FIT result for pyLOCO Correct")
+        layout=QVBoxLayout(dialog)
+        explanation=QLabel(
+            "Choose exactly which fitted lattice and correction vector to send. "
+            "Final result means the final state of the last completed FIT stage; it does not depend on the result currently displayed."
+        ); explanation.setWordWrap(True); layout.addWidget(explanation)
+        form=QFormLayout(); stage_combo=QComboBox(); state_combo=QComboBox()
+        for stage in choices:stage_combo.addItem(stage["stage_label"],stage)
+        form.addRow("FIT stage",stage_combo); form.addRow("Fitted state",state_combo); layout.addLayout(form)
+        selection=QLabel(); selection.setWordWrap(True); selection.setTextInteractionFlags(Qt.TextSelectableByMouse); layout.addWidget(selection)
+        def populate_states(index):
+            stage=stage_combo.itemData(index); state_combo.blockSignals(True); state_combo.clear()
+            for state in stage["states"]:state_combo.addItem(state["label"],state["iteration"])
+            state_combo.setCurrentIndex(max(0,state_combo.count()-1)); state_combo.blockSignals(False)
+            selection.setText(f"Will open: {stage['stage_label']} — {state_combo.currentText()}\n{stage['results_dir']}")
+        def update_selection(*_):
+            stage=stage_combo.currentData()
+            if stage:selection.setText(f"Will open: {stage['stage_label']} — {state_combo.currentText()}\n{stage['results_dir']}")
+        stage_combo.currentIndexChanged.connect(populate_states); state_combo.currentIndexChanged.connect(update_selection)
+        stage_combo.setCurrentIndex(stage_combo.count()-1); populate_states(stage_combo.currentIndex())
+        final_button=QPushButton("Use Final Result"); final_button.setObjectName("primary")
+        buttons=QDialogButtonBox(QDialogButtonBox.Open|QDialogButtonBox.Cancel)
+        def accept_final():
+            stage_combo.setCurrentIndex(stage_combo.count()-1); state_combo.setCurrentIndex(state_combo.count()-1); dialog.accept()
+        final_button.clicked.connect(accept_final)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        actions=QHBoxLayout(); actions.addWidget(final_button); actions.addStretch(1); actions.addWidget(buttons); layout.addLayout(actions)
+        if dialog.exec()!=QDialog.Accepted:return False
+        stage=stage_combo.currentData()
+        return stage["results_dir"],state_combo.currentData()
+
     @Slot()
     def open_correct_app(self):
         results_dir=None; iteration=None
-        if getattr(self.results_workspace,"loader",None) is not None:
-            results_dir=Path(self.results_workspace.loader.result_dir)
-            iteration=self.results_workspace.loader.iteration
+        if hasattr(self.results_workspace,"correction_result_choices"):
+            choices=self.results_workspace.correction_result_choices()
+            if choices:
+                selected=self._choose_correct_result()
+                if selected is False:return False
+                if selected is not None:results_dir,iteration=selected
+        elif getattr(self.results_workspace,"loader",None) is not None:
+            results_dir=Path(self.results_workspace.loader.result_dir); iteration=self.results_workspace.loader.iteration
         arguments=[]
         if results_dir is not None:
             arguments.extend(("--results",str(results_dir)))

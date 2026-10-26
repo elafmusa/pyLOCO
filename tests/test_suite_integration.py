@@ -96,6 +96,34 @@ def test_fit_to_correct_launches_distinct_app_with_selected_iteration(tmp_path,m
     assert calls==[("correct",("--results",str(tmp_path),"--iteration","3"))]
 
 
+def test_fit_to_correct_defaults_to_final_stage_not_current_view(tmp_path):
+    stage1=tmp_path/"stage-1"; stage2=tmp_path/"stage-2"; stage1.mkdir(); stage2.mkdir()
+    choices=[
+        {"stage_label":"Stage 1 — gains","results_dir":str(stage1),"states":[{"label":"Iteration 1 / Final","iteration":1}]},
+        {"stage_label":"Stage 2 — quads","results_dir":str(stage2),"states":[{"label":"Iteration 1","iteration":1},{"label":"Iteration 2 / Final","iteration":2}]},
+    ]
+    calls=[]
+    dummy=SimpleNamespace(
+        results_workspace=SimpleNamespace(correction_result_choices=lambda:choices),
+        isVisible=lambda:False,project=SimpleNamespace(machine_mapping={}),
+        _choose_correct_result=lambda:MainWindow._choose_correct_result(dummy),
+        _launch_suite=lambda application,*args:(calls.append((application,args)) or True),
+    )
+    assert MainWindow.open_correct_app(dummy)
+    assert calls==[("correct",("--results",str(stage2),"--iteration","2"))]
+
+
+def test_fit_top_correct_action_is_result_gated_and_visible_in_toolbar():
+    app=QApplication.instance() or build_application(["fit-correct-toolbar"])
+    window=MainWindow()
+    assert not window.open_correct_action.isEnabled()
+    assert window.main_toolbar.widgetForAction(window.open_correct_action) is not None
+    assert window.open_correct_action.text()=="Open Results in Correct…"
+    window.results_workspace.results_availability_changed.emit(True); app.processEvents()
+    assert window.open_correct_action.isEnabled()
+    window.close()
+
+
 def test_fit_to_correct_transfers_current_complete_machine_mapping(tmp_path):
     from pyLOCO.machine_mapping import template
 
