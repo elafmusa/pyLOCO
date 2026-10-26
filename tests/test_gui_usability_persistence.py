@@ -40,6 +40,33 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+def test_reference_lattice_change_invalidates_saved_mapping_evidence(app):
+    window = MainWindow()
+    window.project.measurements["orm"] = ImportedDataset("orm", "measurement.h5", "h5", 1, {})
+    window.project.lattice.path = "new-reference.mat"
+    window.project.measurement_device_mapping = {
+        "mappings": [{"role": "bpm", "measured_name": "BPM1", "status": "mapped"}],
+    }
+    window.project.machine_mapping = {"schema": "pyloco.machine_mapping", "mappings": [{"role": "bpm"}]}
+    window.project.loco_config.element_selection_state["bpm_ords"] = {
+        "method": "validated_measurement_mapping", "lattice_sha256": "old",
+    }
+    window.project.loco_config.element_selection_state["normal_quadrupole_ords"] = {
+        "method": "manual", "resolved_ords": [1],
+    }
+
+    window._invalidate_mapping_for_reference_lattice_change()
+
+    assert window.project.measurement_device_mapping == {}
+    assert window.project.machine_mapping == {}
+    assert "bpm_ords" not in window.project.loco_config.element_selection_state
+    assert window.project.loco_config.element_selection_state["normal_quadrupole_ords"]["method"] == "manual"
+    assert window.use_measurement_mappings_button.isEnabled() is False
+    assert "No validated mapping exists for the active reference lattice" in window.measurement_mapping_feedback.text()
+    window.project.modified = False
+    window.close()
+
+
 def test_use_validated_measurement_mapping_applies_exact_order_to_all_stages_and_gates_run(app, tmp_path, monkeypatch):
     class BPM:
         def __init__(self, name, device): self.FamName, self.Device = name, device

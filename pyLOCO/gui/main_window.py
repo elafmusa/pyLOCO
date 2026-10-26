@@ -6836,7 +6836,8 @@ class MainWindow(QMainWindow):
         if not counts["total"]:
             ready = bool(self.project.measurements.get("orm") and self.project.lattice.path)
             self.measurement_mapping_feedback.setText(
-                scope + ("Ready. Step 1: Find measured-device mappings."
+                scope + ("No validated mapping exists for the active reference lattice. "
+                "Step 1: Find Machine Mapping, then review and use it in FIT."
                 if ready else "Load measurements and a reference lattice to begin.")
             )
             self.save_measurement_mapping_button.setEnabled(False)
@@ -6866,6 +6867,25 @@ class MainWindow(QMainWindow):
         self.measurement_mapping_details_button.setEnabled(True)
         self.save_measurement_mapping_button.setEnabled(not unresolved)
         self.use_measurement_mappings_button.setEnabled(not unresolved)
+
+    def _invalidate_mapping_for_reference_lattice_change(self) -> None:
+        """Discard mapping evidence that is cryptographically bound to the old lattice.
+
+        Keep the current FIT selections as an editable proposal, but do not keep
+        presenting the old mapping as complete or allow it to be applied to the
+        newly selected lattice.  ``Find Machine Mapping`` rebuilds both views
+        from the active measurement inventory and reference lattice.
+        """
+        self.project.measurement_device_mapping = {}
+        self.project.machine_mapping = {}
+        for field in ("bpm_ords", "horizontal_corrector_ords", "vertical_corrector_ords"):
+            state = self.project.loco_config.element_selection_state.get(field) or {}
+            if state.get("method") == "validated_measurement_mapping":
+                self.project.loco_config.element_selection_state.pop(field, None)
+        self.project.loco_config.element_selection_state.pop("measurement_session_names", None)
+        if hasattr(self, "measurement_mapping_feedback"):
+            self._refresh_measurement_mapping_table()
+            self._refresh_measurement_mapping_feedback()
 
     def _select_measurement_mapping_filter_after_operation(self, mapping: dict) -> None:
         """Choose the useful post-operation view without disturbing later user choices."""
@@ -7026,6 +7046,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Invalid reference-lattice RF configuration", str(exc))
             return
         self.project.lattice = candidate_project.lattice
+        self._invalidate_mapping_for_reference_lattice_change()
         self.project.loco_config.fixed_parameters = candidate_project.loco_config.fixed_parameters
         self.project.loco_config.response_matrix.Frequency = candidate_project.loco_config.response_matrix.Frequency
         self.project.loco_config.response_matrix.HarmNumber = candidate_project.loco_config.response_matrix.HarmNumber
@@ -7097,6 +7118,7 @@ class MainWindow(QMainWindow):
             return
         self.project.lattice.mat_variable = selected.variable
         self.project.lattice.element_count = len(lattice)
+        self._invalidate_mapping_for_reference_lattice_change()
         self.project.modified = True
         self._mark_compatibility_stale("Reference-lattice MAT variable changed; validation is required.")
         self._element_preview_signature = None
