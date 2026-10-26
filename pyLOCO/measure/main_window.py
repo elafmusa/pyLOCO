@@ -1870,7 +1870,7 @@ class MeasureMainWindow(QMainWindow):
                 if label=="Settling delay":self.settling_plan_widgets.extend((name,value))
         self.plan_output=self.plan_values["output"]
         run_group=QGroupBox("Measurement status"); self.run_group=run_group; rl=QVBoxLayout(run_group); self.step_instruction=QLabel(); self.step_instruction.setWordWrap(True); self.step_instruction.setObjectName("planValue"); self.step_instruction.setMaximumHeight(52); self.step_instruction.setToolTip("Full measurement sequence is available in the Measurement plan."); rl.addWidget(self.step_instruction); self.reading_status=QLabel("Ready"); self.reading_status.setObjectName("runState"); self.progress=QProgressBar(); self.progress.setMinimumHeight(34); self.progress.setFormat("Ready — 0 / 0"); rl.addWidget(self.reading_status); rl.addWidget(self.progress)
-        status_row=QHBoxLayout(); self.elapsed=QLabel("Elapsed: 0.00 s"); self.remaining=QLabel("Remaining: —"); self.samples=QLabel("Samples: 0 / 0")
+        status_row=QHBoxLayout(); self.elapsed=QLabel("Total time: 0.00 s"); self.remaining=QLabel(); self.remaining.setVisible(False); self.samples=QLabel("Samples: 0 / 0")
         for metric in (self.elapsed,self.remaining,self.samples): metric.setObjectName("runMetric"); status_row.addWidget(metric)
         status_row.addStretch(1); rl.addLayout(status_row)
         self.live_plot=PlotCanvas(show_toolbar=False,minimum_height=230); self.live_plot.save_button.setVisible(False); self.live_plot.include_title.setVisible(False); rl.addWidget(self.live_plot)
@@ -2685,7 +2685,7 @@ class MeasureMainWindow(QMainWindow):
             self.reading_status.setText("Ready")
 
         if hasattr(self, "elapsed"):
-            self.elapsed.setText("Elapsed: 0.00 s")
+            self.elapsed.setText("Total time: 0.00 s")
 
         if hasattr(self, "remaining"):
             self.remaining.setText("Remaining: —")
@@ -3496,7 +3496,7 @@ class MeasureMainWindow(QMainWindow):
         if self.measurement_type.currentData()=="orm": return self._start_orm()
         if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="automatic": return self._start_automatic_dispersion()
         if self.measurement_type.currentData()=="dispersion": return self._start_dispersion_step()
-        self._active_acquisition_kind="bpm_noise"; self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat(f"Starting — 0 / {self.readings.value()}"); self.reading_status.setText("Starting…"); self.elapsed.setText("Elapsed: 0.00 s"); self.remaining.setText(f"Remaining: ~{max(0,self.readings.value()-1)*self.delay.value():.2f} s"); self.samples.setText(f"Samples: 0 / {self.readings.value()}"); self._reset_live_plot(); self.log.clear(); self.log.appendPlainText(f"Starting BPM-noise measurement through {self.status_badge.text()}…")
+        self._active_acquisition_kind="bpm_noise"; self.cancel_event=Event(); self.result=None; self.progress.setValue(0); self.progress.setFormat(f"Starting — 0 / {self.readings.value()}"); self.reading_status.setText("Starting…"); self.elapsed.setText("Total time: 0.00 s"); self.samples.setText(f"Samples: 0 / {self.readings.value()}"); self._reset_live_plot(); self.log.clear(); self.log.appendPlainText(f"Starting BPM-noise measurement through {self.status_badge.text()}…")
         self.thread=QThread(self); self.worker=AcquisitionWorker(BpmNoiseAcquirer(self.adapter,self.selected_devices,ddof=int(self.bpm_noise_convention.currentData())),self.readings.value(),self.delay.value(),self.cancel_event); self.worker.moveToThread(self.thread); self.thread.started.connect(self.worker.run); self.worker.progress.connect(self._on_progress); self.worker.completed.connect(self._on_completed); self.worker.cancelled.connect(self._on_cancelled); self.worker.failed.connect(self._on_failed)
         for signal in (self.worker.completed,self.worker.cancelled,self.worker.failed): signal.connect(self._finish_thread)
         self._set_acquisition_running(True); self.thread.start()
@@ -3547,7 +3547,7 @@ class MeasureMainWindow(QMainWindow):
         offset=self._rf_offset_hz()
         preview={0:"Orbit preview — reference RF",1:f"Orbit preview — positive RF (+{offset:g} Hz)",2:f"Orbit preview — negative RF (−{offset:g} Hz)",3:"Orbit preview — restored reference RF"}.get(state_index,f"Orbit preview — {label}")
         if state_index==0:self._live_dispersion_reference=(np.asarray(x,dtype=float).copy(),np.asarray(y,dtype=float).copy())
-        self.progress.setValue(round(100*overall/overall_total)); self.progress.setFormat(f"{label} — orbit {current} / {total}"); self.reading_status.setText(f"Automatic RF: {label} — reading {current} / {total}"); self.samples.setText(f"Samples: {overall} / {overall_total}"); self.elapsed.setText(f"Elapsed: {elapsed:.2f} s"); self._update_live_orbit(x,y,title=preview,dispersion=True)
+        self.progress.setValue(round(100*overall/overall_total)); self.progress.setFormat(f"{label} — orbit {current} / {total}"); self.reading_status.setText(f"Automatic RF: {label} — reading {current} / {total}"); self.samples.setText(f"Samples: {overall} / {overall_total}"); self.elapsed.setText(f"Total time: {elapsed:.2f} s"); self._update_live_orbit(x,y,title=preview,dispersion=True)
 
     @Slot(str,object)
     def _on_automatic_dispersion_status(self,phase,details):
@@ -3575,18 +3575,24 @@ class MeasureMainWindow(QMainWindow):
     def _on_orm_event(self,event):
         total=max(1,int(event.get("correctors",1))); current=int(event.get("corrector",1)); state=event.get("state","")
         if event.get("event")=="intermediate_restore":
-            self.reading_status.setText(f"Corrector {current} / {total} — restoring original K0 before negative kick")
+            phase_text=f"Corrector {current} / {total} — {event.get('device')} — restoring original K0 before negative kick"
+            self.reading_status.setText(phase_text)
             self.progress.setFormat(f"Corrector {current} / {total} — restore K0 before K−")
+            self._show_pending_orm_phase(phase_text)
             self.log.appendPlainText(f"{event.get('device')}: positive orbit acquired; restoring original K0 before applying K−.")
             return
         if event.get("event")=="intermediate_restored":
             error=(float(event["readback"])-float(event["original"]))*1e6
-            self.reading_status.setText(f"Corrector {current} / {total} — original K0 restored and verified; negative kick may proceed")
+            phase_text=f"Corrector {current} / {total} — {event.get('device')} — acquiring restored reference before negative kick"
+            self.reading_status.setText(phase_text)
+            self._show_pending_orm_phase(phase_text)
             self.log.appendPlainText(f"{event.get('device')}: intermediate K0 restoration VERIFIED (readback error {error:+.9g} µrad).")
             return
         if event.get("event")=="final_restored":
             error=(float(event["readback"])-float(event["original"]))*1e6
-            self.reading_status.setText(f"Corrector {current} / {total} — final K0 restored; acquiring return orbit")
+            phase_text=f"Corrector {current} / {total} — {event.get('device')} — final K0 restored; acquiring return orbit"
+            self.reading_status.setText(phase_text)
+            self._show_pending_orm_phase(phase_text)
             self.log.appendPlainText(f"{event.get('device')}: final K0 restoration VERIFIED (readback error {error:+.9g} µrad); acquiring diagnostic return orbit.")
             return
         if event.get("event")=="orbit":
@@ -3611,8 +3617,14 @@ class MeasureMainWindow(QMainWindow):
                     event["y"],
                     title=f"{event.get('device')} — {state}",
                 )
-        else:fraction=(current-1)/total; self.reading_status.setText(f"Corrector {current} / {total} — {event.get('plane','')} — {event.get('device','')} — {state}")
-        self.progress.setValue(round(100*fraction)); self.progress.setFormat(f"Corrector {current} / {total}"); elapsed=float(event.get("elapsed",0)); self.elapsed.setText(f"Elapsed: {elapsed:.2f} s")
+        else:
+            fraction=(current-1)/total
+            phase_text=f"Corrector {current} / {total} — {event.get('plane','')} — {event.get('device','')} — preparing {state}"
+            self.reading_status.setText(phase_text)
+            if event.get("event")=="state":
+                self.samples.setText("Waiting for first orbit reading")
+                self._show_pending_orm_phase(phase_text)
+        self.progress.setValue(round(100*fraction)); self.progress.setFormat(f"Corrector {current} / {total}"); elapsed=float(event.get("elapsed",0)); self.elapsed.setText(f"Total time: {elapsed:.2f} s")
         if event.get("event")=="column":
             column=np.asarray(event["column"]); self.log.appendPlainText(f"Completed ORM column {current}/{total}; restoration pending.")
             model=getattr(self,"_model_orm_cache",None)
@@ -3666,13 +3678,13 @@ class MeasureMainWindow(QMainWindow):
             if self.dispersion_step_index==0:self._live_dispersion_reference=(np.asarray(x,dtype=float).copy(),np.asarray(y,dtype=float).copy())
         else:
             remaining=(elapsed/current)*(total-current) if current else 0.0; self.progress.setValue(round(100*current/total)); self.progress.setFormat(f"Reading {current} / {total}"); self.reading_status.setText(f"Reading {current} / {total}"); self.samples.setText(f"Samples: {current} / {total}")
-        self.elapsed.setText(f"Elapsed: {elapsed:.2f} s"); self.remaining.setText(f"Remaining: ~{remaining:.2f} s")
+        self.elapsed.setText(f"Total time: {elapsed:.2f} s")
         if current in (1,total) or current % max(1,total//20)==0:self._update_live_orbit(x,y,dispersion=self.measurement_type.currentData()=="dispersion")
 
     @Slot(object)
     def _on_completed(self,result):
         if isinstance(result,ORMResult):
-            self.result=result; total=len(result.correctors); self.reading_status.setText("Done — all correctors restored"); self.progress.setValue(100); self.progress.setFormat(f"Done — {total} / {total} correctors"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Correctors: {total} / {total}"); self.log.appendPlainText("ORM complete. Saving…")
+            self.result=result; total=len(result.correctors); self.reading_status.setText("Done — all correctors restored"); self.progress.setValue(100); self.progress.setFormat(f"Done — {total} / {total} correctors"); self.elapsed.setText(f"Total time: {result.elapsed_seconds:.2f} s"); self.samples.setText(f"Correctors: {total} / {total}"); self.log.appendPlainText("ORM complete. Saving…")
             evidence_levels={self.adapter.corrector_restoration_evidence(device.name).get("level") for device in result.correctors}
             if evidence_levels=={"independent"}:
                 self.log.appendPlainText("Correctors restored — independent readback matched.")
@@ -3682,11 +3694,11 @@ class MeasureMainWindow(QMainWindow):
             except Exception as exc:self.log.appendPlainText(f"Saving failed: {exc}"); QMessageBox.critical(self,"Save failed",str(exc)); return
             self._show_result(result); self._update_diagnostics_visibility(); self._set_completed_result_view(True); self.start_button.setVisible(False); self.repeat_button.setVisible(True); self.validate_button.setEnabled(True); self.open_button.setEnabled(True); self.log.appendPlainText("ORM saved and validated for pyLOCO."); self._update_workflow_tabs(); return
         if isinstance(result,DispersionResult):
-            self.result=result; self._restored_rf_readback=float(self.adapter.get_rf_frequency()); total=sum(state.orbits_x_m.shape[0] for state in result.states); self.reading_status.setText("Done — RF restored"); self.progress.setValue(100); self.progress.setFormat("Done — RF restored"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Samples: {total} / {total}"); self.log.appendPlainText("RF measurement complete. Saving…")
+            self.result=result; self._restored_rf_readback=float(self.adapter.get_rf_frequency()); total=sum(state.orbits_x_m.shape[0] for state in result.states); self.reading_status.setText("Done — RF restored"); self.progress.setValue(100); self.progress.setFormat("Done — RF restored"); self.elapsed.setText(f"Total time: {result.elapsed_seconds:.2f} s"); self.samples.setText(f"Samples: {total} / {total}"); self.log.appendPlainText("RF measurement complete. Saving…")
             try:self._save_result(result)
             except Exception as exc:self.log.appendPlainText(f"Saving failed: {exc}"); QMessageBox.critical(self,"Save failed",str(exc)); return
             self.dispersion_display.setCurrentIndex(self.dispersion_display.findData("raw")); self._show_result(result); self._update_diagnostics_visibility(); self._set_completed_result_view(True); self.start_button.setVisible(False); self.repeat_button.setVisible(True); self.validate_button.setEnabled(True); self.open_button.setEnabled(True); self._update_workflow_tabs(); return
-        self.result=result; total=result.orbits_x_m.shape[0]; self.reading_status.setText("Done"); self.progress.setValue(100); self.progress.setFormat(f"Done — {total} / {total}"); self.elapsed.setText(f"Elapsed: {result.elapsed_seconds:.2f} s"); self.remaining.setText("Remaining: 0.00 s"); self.samples.setText(f"Samples: {total} / {total}"); self.log.appendPlainText("Measurement complete. Saving…")
+        self.result=result; total=result.orbits_x_m.shape[0]; self.reading_status.setText("Done"); self.progress.setValue(100); self.progress.setFormat(f"Done — {total} / {total}"); self.elapsed.setText(f"Total time: {result.elapsed_seconds:.2f} s"); self.samples.setText(f"Samples: {total} / {total}"); self.log.appendPlainText("Measurement complete. Saving…")
         try: self._save_result(result)
         except Exception as exc: self.log.appendPlainText(f"Saving failed: {exc}"); QMessageBox.critical(self,"Save failed",str(exc)); return
         self._show_result(result); self._update_diagnostics_visibility(); self._set_completed_result_view(True); self.start_button.setVisible(False); self.repeat_button.setVisible(True); self.validate_button.setEnabled(True); self.open_button.setEnabled(True); self.log.appendPlainText("Saved and validated for pyLOCO."); self._update_workflow_tabs()
@@ -3861,6 +3873,13 @@ class MeasureMainWindow(QMainWindow):
 
     def _reset_live_plot(self):
         self.live_plot.clear(); axis=self.live_plot.figure.add_subplot(111); axis.set_title("Orbit Preview"); axis.set_xlabel("BPM selection position"); axis.set_ylabel("Orbit [µm]"); axis.grid(True,alpha=.25); self.live_plot.apply_theme()
+
+    def _show_pending_orm_phase(self,title):
+        """Keep the ORM plot honest while a new machine state is settling."""
+        self._live_orbit_absolute=None; self._live_dispersion_plot_state=None
+        self.live_plot.clear(); axis=self.live_plot.figure.add_subplot(111)
+        axis.set_title(title); axis.text(.5,.5,"Waiting for the first orbit reading in this phase",ha="center",va="center",wrap=True,transform=axis.transAxes)
+        axis.set_axis_off(); self.live_plot.apply_theme()
 
     def _update_live_orbit(self,x,y,*,title="Orbit preview — most recent reading",dispersion=False):
         x=np.asarray(x,dtype=float); y=np.asarray(y,dtype=float); self._live_orbit_absolute=(x.copy(),y.copy(),title,dispersion)

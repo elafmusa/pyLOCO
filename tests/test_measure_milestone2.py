@@ -328,9 +328,26 @@ def test_measurement_plan_and_acquisition_status_are_structured(app):
 
     window._on_progress(7, 20, .35, np.zeros(3), np.ones(3) * 1e-6)
     assert window.reading_status.text() == "Reading 7 / 20"
-    assert window.elapsed.text() == "Elapsed: 0.35 s"
+    assert window.elapsed.text() == "Total time: 0.35 s"
+    assert window.remaining.isHidden()
     assert window.samples.text() == "Samples: 7 / 20"
     assert len(window.live_plot.figure.axes[0].lines) == 2
+    window.close()
+
+
+def test_orm_progress_and_plot_describe_the_same_phase(app):
+    window = MeasureMainWindow(devices=default_mock_devices(3))
+    window.measurement_type.setCurrentIndex(window.measurement_type.findData("orm"))
+    preparing={"event":"state","corrector":11,"correctors":64,"plane":"Horizontal","device":"SF2A-C14-H","state":"−kick","elapsed":194.0}
+    window._on_orm_event(preparing)
+    assert "preparing −kick" in window.reading_status.text()
+    assert window.live_plot.figure.axes[0].get_title()==window.reading_status.text()
+    assert window.samples.text()=="Waiting for first orbit reading"
+    orbit={**preparing,"event":"orbit","reading":1,"readings":2,"x":np.zeros(3),"y":np.ones(3)*1e-6,"elapsed":195.0}
+    window._on_orm_event(orbit)
+    assert "−kick — orbit 1 / 2" in window.reading_status.text()
+    assert window.live_plot.figure.axes[0].get_title()=="SF2A-C14-H — −kick"
+    assert window.elapsed.text()=="Total time: 195.00 s"
     window.close()
 
 
