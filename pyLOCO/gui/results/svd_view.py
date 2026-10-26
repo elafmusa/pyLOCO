@@ -49,15 +49,37 @@ class SvdView(QWidget):
         self.note.setText(f"Singular values loaded from the persisted {source_note}.{suffix}"); self.plot.show()
         axis = self.plot.figure.add_subplot(111)
         plotted = np.where(positive, values, np.nan)
-        axis.plot(np.arange(values.size), plotted, color="#19a974")
+        axis.plot(np.arange(values.size), plotted, color="#19a974", label="Singular values")
         if np.any(positive):
             axis.set_yscale("log")
             low = float(np.min(values[positive])); high = float(np.max(values[positive]))
+            method=str(metadata.get("method") or "")
+            threshold=metadata.get("threshold")
+            rank=metadata.get("rank")
+            cutoff=None
+            if method=="threshold" and threshold is not None and np.isfinite(float(threshold)):
+                cutoff=float(threshold)*high
+                axis.axhline(cutoff,color="#E88B22",linestyle="--",linewidth=1.4,
+                             label=f"Cutoff = {float(threshold):.3g} × σmax = {cutoff:.4g}")
+                self.note.setText(self.note.text()+f" Absolute cutoff: {cutoff:.6g} ({float(threshold):.6g} × maximum singular value {high:.6g}).")
+            if rank is not None:
+                retained=max(0,min(int(rank),values.size))
+                if 0<retained<values.size:
+                    axis.axvline(retained-.5,color="#8B5CF6",linestyle=":",linewidth=1.4,
+                                 label=f"Retained rank = {retained}")
+                if retained:
+                    smallest=float(values[retained-1])
+                    if np.isfinite(smallest) and smallest>0:
+                        self.note.setText(self.note.text()+f" Smallest retained singular value at rank {retained}: {smallest:.6g}.")
             # A constant or extremely narrow spectrum otherwise gives
             # effectively coincident log tick labels.  Add symmetric padding
             # in log space without changing any persisted values.
             if np.isclose(np.log10(low), np.log10(high), rtol=0.0, atol=1e-9):
                 axis.set_ylim(low / 10.0, high * 10.0)
+            if cutoff is not None and cutoff>0:
+                bottom,top=axis.get_ylim()
+                if cutoff<bottom:axis.set_ylim(cutoff/2.0,top)
+                elif cutoff>top:axis.set_ylim(bottom,cutoff*2.0)
             from matplotlib.ticker import LogLocator
             axis.yaxis.set_major_locator(LogLocator(base=10.0, numticks=7))
         else:
@@ -66,6 +88,7 @@ class SvdView(QWidget):
                 ha="center", va="center", transform=axis.transAxes,
             )
         axis.set(xlabel="Singular-value index", ylabel="Singular value", title="Singular-value spectrum")
+        if len(axis.lines)>1:axis.legend()
         axis.grid(True, alpha=.25); self.plot.apply_theme(); self.plot.canvas.draw_idle()
 
     def _save_jacobian(self):

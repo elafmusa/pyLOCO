@@ -286,6 +286,10 @@ def test_svd_view_has_readable_log_axis_for_narrow_spectrum():
     assert view.plot.minimumHeight() == 300
     assert axis.get_yscale() == "log"
     assert axis.get_title() == "Singular-value spectrum"
+    cutoff_lines=[line for line in axis.lines if line.get_label().startswith("Cutoff =")]
+    assert len(cutoff_lines)==1
+    np.testing.assert_allclose(cutoff_lines[0].get_ydata(),[1e-5,1e-5])
+    assert "Absolute cutoff: 1e-05" in view.note.text()
     low, high = axis.get_ylim()
     assert low < 100.0 < high
     assert len(axis.get_yticks()) <= 7
