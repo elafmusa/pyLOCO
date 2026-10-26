@@ -6758,6 +6758,25 @@ class MainWindow(QMainWindow):
             self._loaded_machine_mapping_document=source if common else None
             self.project.machine_mapping=deepcopy(source) if common else {}
         except Exception as exc:
+            if "different reference lattice" in str(exc).lower():
+                dialog = QMessageBox(self)
+                dialog.setWindowTitle("Mapping belongs to another reference lattice")
+                dialog.setIcon(QMessageBox.Warning)
+                dialog.setText(
+                    "This validated mapping was created for a different reference-lattice checksum."
+                )
+                dialog.setInformativeText(
+                    "Saved AT indices cannot be copied safely to the active lattice because their element order "
+                    "may differ. Rebuild compares the measured Device/FamName identities with the active lattice "
+                    "and shows any devices that still need attention."
+                )
+                rebuild = dialog.addButton("Rebuild for active lattice", QMessageBox.AcceptRole)
+                cancel = dialog.addButton("Cancel", QMessageBox.RejectRole)
+                dialog.setDefaultButton(rebuild)
+                dialog.exec()
+                if dialog.clickedButton() is rebuild:
+                    return self.find_measurement_mappings()
+                return False
             QMessageBox.warning(self, "Measurement mapping is incompatible", str(exc)); return False
         self.project.measurement_device_mapping = mapping
         self.project.modified = True

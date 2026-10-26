@@ -92,6 +92,44 @@ def test_incomplete_mapping_opens_actionable_measurement_rows(app, monkeypatch):
     window.close()
 
 
+def test_loading_mapping_for_old_lattice_offers_safe_rebuild(app, tmp_path, monkeypatch):
+    old_lattice = tmp_path / "old.mat"
+    current_lattice = tmp_path / "current.mat"
+    old_lattice.write_bytes(b"old lattice")
+    current_lattice.write_bytes(b"current lattice")
+    inventory = {"bpm": [], "horizontal_corrector": [], "vertical_corrector": []}
+    document = find_exact_device_mappings([], inventory, lattice_path=old_lattice)
+    mapping_path = tmp_path / "old-mapping.json"
+    mapping_path.write_text(json.dumps(document), encoding="utf-8")
+
+    window = MainWindow()
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *_args, **_kwargs: (str(mapping_path), ""))
+    monkeypatch.setattr(window, "_measurement_mapping_context", lambda: (
+        [], current_lattice, {}, inventory, None,
+    ))
+    rebuilt = []
+    monkeypatch.setattr(window, "find_measurement_mappings", lambda: rebuilt.append(True) or True)
+
+    class RebuildDialog:
+        Warning, AcceptRole, RejectRole = 1, 2, 3
+        def __init__(self, *_args): self.buttons = []
+        def setWindowTitle(self, *_args): pass
+        def setIcon(self, *_args): pass
+        def setText(self, *_args): pass
+        def setInformativeText(self, *_args): pass
+        def addButton(self, label, *_args):
+            button = object(); self.buttons.append((label, button)); return button
+        def setDefaultButton(self, *_args): pass
+        def exec(self): return 0
+        def clickedButton(self): return self.buttons[0][1]
+
+    monkeypatch.setattr("pyLOCO.gui.main_window.QMessageBox", RebuildDialog)
+    assert window.load_measurement_mapping() is True
+    assert rebuilt == [True]
+    window.project.modified = False
+    window.close()
+
+
 def test_use_validated_measurement_mapping_applies_exact_order_to_all_stages_and_gates_run(app, tmp_path, monkeypatch):
     class BPM:
         def __init__(self, name, device): self.FamName, self.Device = name, device
