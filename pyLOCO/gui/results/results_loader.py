@@ -659,7 +659,8 @@ class ResultsLoader:
         machine = self.request.get("backend_mapping", {}).get("MachineElements", {})
         key_map = {"hbpm_gain": "bpm_ords", "vbpm_gain": "bpm_ords", "hbpm_coupling": "bpm_ords", "vbpm_coupling": "bpm_ords", "hcor_cal": "horizontal_corrector_ords", "hcor_coupling": "horizontal_corrector_ords", "vcor_cal": "vertical_corrector_ords", "vcor_coupling": "vertical_corrector_ords", "quads": "normal_quadrupole_ords", "quads_tilt": "normal_quadrupole_ords", "skew_quads": "skew_quadrupole_ords"}
         ordinals = machine.get(key_map.get(block_key, "")) or []
-        result = {"selected_list_position": index, "lattice_ordinal": None, "element_name": None}
+        result = {"selected_list_position": index, "lattice_ordinal": None,
+                  "element_name": None, "at_device": None}
         if index < len(ordinals):
             result["lattice_ordinal"] = int(ordinals[index])
             try:
@@ -667,7 +668,9 @@ class ResultsLoader:
                 if ring is None:
                     ring = self._load_reference_lattice()
                     self._cache["parameter_identity_ring"] = ring
-                result["element_name"] = str(getattr(ring[int(ordinals[index])], "FamName", ordinals[index]))
+                element = ring[int(ordinals[index])]
+                result["element_name"] = str(getattr(element, "FamName", ordinals[index]))
+                result["at_device"] = str(getattr(element, "Device", "") or "") or None
             except Exception: pass
         return result
 
@@ -743,6 +746,7 @@ class ResultsLoader:
                                     "name": source[
                                         "representative_name"
                                     ],
+                                    "at_device": None,
                                     "lattice_ordinal": int(
                                         source[
                                             "representative_lattice_index"
@@ -799,7 +803,9 @@ class ResultsLoader:
                 return float(raw[attribute_index]) if raw.ndim else float(raw)
 
             if individuals:
-                identities = [{"name": str(getattr(ring[o], "FamName", o)), "ordinal": o, "members": [o]} for o in ordinals]
+                identities = [{"name": str(getattr(ring[o], "FamName", o)),
+                               "device": str(getattr(ring[o], "Device", "") or "") or None,
+                               "ordinal": o, "members": [o]} for o in ordinals]
                 if baseline is None and len(ordinals) == values.size:
                     baseline = np.asarray([strength(o) for o in ordinals], dtype=float)
             else:
@@ -810,7 +816,7 @@ class ResultsLoader:
                     if match is None:
                         match = [family, []]; groups.append(match)
                     match[1].append(ordinal)
-                identities = [{"name": family, "ordinal": None, "members": members} for family, members in groups]
+                identities = [{"name": family, "device": None, "ordinal": None, "members": members} for family, members in groups]
                 if baseline is None and len(groups) == values.size:
                     baseline = np.asarray([strength(members[0]) for _family, members in groups], dtype=float)
         except Exception:
@@ -818,12 +824,13 @@ class ResultsLoader:
 
         rows = []
         for index, fitted in enumerate(values):
-            identity = identities[index] if index < len(identities) else {"name": None, "ordinal": None, "members": []}
+            identity = identities[index] if index < len(identities) else {"name": None, "device": None, "ordinal": None, "members": []}
             initial = float(baseline[index]) if baseline is not None and index < baseline.size else None
             delta = None if initial is None else float(fitted - initial)
             relative = None if delta is None or initial == 0 else float(100.0 * delta / initial)
             rows.append({
-                "index": index, "name": identity["name"], "lattice_ordinal": identity["ordinal"],
+                "index": index, "name": identity["name"], "at_device": identity.get("device"),
+                "lattice_ordinal": identity["ordinal"],
                 "member_ordinals": list(identity["members"]), "initial": initial,
                 "fitted": float(fitted), "delta_k": delta, "relative_percent": relative,
                 "unit": block.unit, "mode": "individual" if individuals else "family",
