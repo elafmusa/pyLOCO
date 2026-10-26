@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 from pyLOCO.control_system.backends import AbstractInterfaceAdapter
 from pyLOCO.measure.acquisition import AcquisitionCancelled, BpmDevice, CorrectorDevice
 from pyLOCO.measure.automatic import AutomaticDispersionAcquirer
-from pyLOCO.measure.main_window import MeasureMainWindow, _device_filter_terms, _device_matches_filter
+from pyLOCO.measure.main_window import MeasureMainWindow, MeasureScrollArea, _device_filter_terms, _device_matches_filter
 from pyLOCO.measure.project import load_measure_project, save_measure_project
 
 
@@ -23,6 +23,14 @@ def _window():
     h=tuple(CorrectorDevice(f"H-{index}",f"h{index}.SP",f"h{index}.RBV","H") for index in range(8))
     v=tuple(CorrectorDevice(f"V-{index}",f"v{index}.SP",f"v{index}.RBV","V") for index in range(7))
     return MeasureMainWindow(devices=bpms,horizontal_correctors=h,vertical_correctors=v)
+
+
+def test_measure_pages_expose_both_scrollbars_in_compact_windows(app):
+    window=_window(); areas=window.findChildren(MeasureScrollArea)
+    assert areas
+    assert all(area.horizontalScrollBarPolicy()==Qt.ScrollBarAlwaysOn for area in areas)
+    assert all(area.verticalScrollBarPolicy()==Qt.ScrollBarAlwaysOn for area in areas)
+    window.close()
 
 
 def _visible_names(table):

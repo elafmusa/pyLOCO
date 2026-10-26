@@ -184,15 +184,16 @@ class MeasureScrollArea(QScrollArea):
             child.installEventFilter(self)
 
     def eventFilter(self, watched, event):  # type: ignore[override]
-        if event.type() == QEvent.Wheel and self.verticalScrollBar().maximum() > 0:
+        if event.type() == QEvent.Wheel:
             ancestor = watched
             while ancestor is not None and ancestor is not self:
                 if isinstance(ancestor, QAbstractScrollArea):
                     return super().eventFilter(watched, event)
                 ancestor = ancestor.parentWidget() if hasattr(ancestor, "parentWidget") else None
-            delta = event.angleDelta().y()
+            horizontal = bool(event.modifiers() & Qt.ShiftModifier) or bool(event.angleDelta().x())
+            bar = self.horizontalScrollBar() if horizontal else self.verticalScrollBar()
+            delta = event.angleDelta().x() or event.angleDelta().y()
             if delta:
-                bar = self.verticalScrollBar()
                 bar.setValue(bar.value() - delta)
                 event.accept()
                 return True
@@ -633,9 +634,9 @@ class MeasureMainWindow(QMainWindow):
         scroll = MeasureScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
-        scroll.setStyleSheet("QScrollBar:vertical { min-width: 18px; }")
+        scroll.setStyleSheet("QScrollBar:vertical { min-width: 18px; } QScrollBar:horizontal { min-height: 18px; }")
         scroll.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         scroll.setWidget(content)
         return scroll
