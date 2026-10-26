@@ -247,7 +247,7 @@ class CorrectMainWindow(QMainWindow):
             measurement_text=(str(measurements.get("session_id") or measurements.get("manifest") or (f"{len(measurements.get('files',()))} file(s)" if measurements.get("files") else "Not associated")) if isinstance(measurements,dict) else str(measurements or "Not associated"))
             values=(str(step.get("timestamp_utc") or "Not recorded"),f"{float(step.get('cumulative_fraction',0))*100:g}%",f"{float(step.get('increment_fraction',.1))*100:g}%",str(step.get("execution_status") or "Verified").title(),measurement_text)
             for column,text in enumerate(values): self.progress_history.setItem(row,column,QTableWidgetItem(text))
-        pending=status=="preview_verified"; applied=status=="applied"; unsafe=status in {"write_pending","restoring","restore_failed"}
+        pending=status=="preview_verified"; applied=status=="applied"; unsafe=(status in {"write_pending","restoring","restore_failed"} or self._apply_thread is not None or (pyaml and self.pyaml_workspace.thread is not None))
         self.progress_apply_button.setEnabled(pending and not unsafe)
         self.progress_restore_button.setEnabled(bool(record.get("restore_required")) and not unsafe)
         self.progress_preview_button.setEnabled(not unsafe and verified < 1.0 and status not in {"preview_verified"})
@@ -331,9 +331,13 @@ class CorrectMainWindow(QMainWindow):
         self.offline_connection_group=QGroupBox("1. Machine connection"); offline_layout=QVBoxLayout(self.offline_connection_group); offline_text=QLabel("Mock is an offline, read-only review backend. It has no machine connection or live device inventory."); offline_text.setWordWrap(True); offline_layout.addWidget(offline_text); layout.addWidget(self.offline_connection_group)
 
         mapping_group=QGroupBox("2. Machine mapping"); mapping_group.setObjectName("machineMappingSection"); mapping_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        self.mapping_complete_banner=QLabel("MAPPING NOT READY")
+        self.mapping_complete_banner.setAlignment(Qt.AlignCenter); self.mapping_complete_banner.setMinimumHeight(42)
+        self.mapping_complete_banner.setAccessibleName("Machine mapping completion status")
         self.mapping_summary=QLabel("No correction source loaded"); self.mapping_file_status=QLabel("—"); self.mapped_status=QLabel("—"); self.unmapped_status=QLabel("—"); self.ambiguous_status=QLabel("—")
         mapping_grid=status_grid(mapping_group,(("Status",self.mapping_summary),("Mapping source",self.mapping_file_status)))
-        self.mapping_source_notice=QLabel("Load a correction source to begin mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,2,0,1,2)
+        mapping_grid.addWidget(self.mapping_complete_banner,2,0,1,2)
+        self.mapping_source_notice=QLabel("Load a correction source to begin mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,3,0,1,2)
         self.automatic_mapping_group=QGroupBox("Mapping actions"); automatic_layout=QVBoxLayout(self.automatic_mapping_group)
         self.automatic_mapping_actions=QHBoxLayout(); automatic_layout.addLayout(self.automatic_mapping_actions); self.automatic_mapping_actions.addStretch(1)
         self.automatic_mapping_feedback=QLabel("Not run yet."); self.automatic_mapping_feedback.setWordWrap(True); self.automatic_mapping_feedback.setObjectName("mappingHelpText")
@@ -343,11 +347,11 @@ class CorrectMainWindow(QMainWindow):
         self.mapping_details_button=QPushButton("Machine Mapping details…"); self.mapping_details_button.clicked.connect(self.show_mapping_details); self.mapping_details_button.setEnabled(False)
         self.save_validated_mapping_button=QPushButton("Save validated Machine Mapping…"); self.save_validated_mapping_button.setEnabled(False)
         mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.mapping_details_button); mapping_actions.addWidget(self.save_validated_mapping_button); mapping_actions.addStretch(1); automatic_layout.addLayout(mapping_actions)
-        self.manual_mapping_feedback=QLabel("No mapping file loaded."); self.manual_mapping_feedback.setWordWrap(True); self.manual_mapping_feedback.setObjectName("mappingHelpText"); automatic_layout.addWidget(self.automatic_mapping_feedback); automatic_layout.addWidget(self.manual_mapping_feedback); mapping_grid.addWidget(self.automatic_mapping_group,3,0,1,2)
+        self.manual_mapping_feedback=QLabel("No mapping file loaded."); self.manual_mapping_feedback.setWordWrap(True); self.manual_mapping_feedback.setObjectName("mappingHelpText"); automatic_layout.addWidget(self.automatic_mapping_feedback); automatic_layout.addWidget(self.manual_mapping_feedback); mapping_grid.addWidget(self.automatic_mapping_group,4,0,1,2)
         self.mapping_feedback=QLabel(); self.mapping_feedback.hide()
         self.mapping_note=QLabel(); self.mapping_note.hide()
-        self.mapping_details_summary=QLabel("No FIT magnet mapping is available."); self.mapping_details_summary.setWordWrap(True); self.mapping_details_summary.setObjectName("mappingHelpText"); mapping_grid.addWidget(self.mapping_details_summary,4,0,1,2)
-        diagnostics=QGroupBox("Technical details and mapping-file help"); diagnostics.setCheckable(True); diagnostics.setChecked(False); diagnostics_layout=QVBoxLayout(diagnostics); self.mapping_template_help=QLabel("Mapping file: keep the fitted lattice name and ordinal; fill the exact machine control name. Loading validates the file against the active inventory."); self.mapping_template_help.setWordWrap(True); self.mapping_diagnostics=QLabel("No mapping diagnostics."); self.mapping_diagnostics.setWordWrap(True); self.mapping_diagnostics.setTextInteractionFlags(Qt.TextSelectableByMouse); diagnostics_layout.addWidget(self.mapping_template_help); diagnostics_layout.addWidget(self.mapping_diagnostics); self.mapping_template_help.setVisible(False); self.mapping_diagnostics.setVisible(False); diagnostics.toggled.connect(self.mapping_template_help.setVisible); diagnostics.toggled.connect(self.mapping_diagnostics.setVisible); mapping_grid.addWidget(diagnostics,5,0,1,2)
+        self.mapping_details_summary=QLabel("No FIT magnet mapping is available."); self.mapping_details_summary.setWordWrap(True); self.mapping_details_summary.setObjectName("mappingHelpText"); mapping_grid.addWidget(self.mapping_details_summary,5,0,1,2)
+        diagnostics=QGroupBox("Technical details and mapping-file help"); diagnostics.setCheckable(True); diagnostics.setChecked(False); diagnostics_layout=QVBoxLayout(diagnostics); self.mapping_template_help=QLabel("Mapping file: keep the fitted lattice name and ordinal; fill the exact machine control name. Loading validates the file against the active inventory."); self.mapping_template_help.setWordWrap(True); self.mapping_diagnostics=QLabel("No mapping diagnostics."); self.mapping_diagnostics.setWordWrap(True); self.mapping_diagnostics.setTextInteractionFlags(Qt.TextSelectableByMouse); diagnostics_layout.addWidget(self.mapping_template_help); diagnostics_layout.addWidget(self.mapping_diagnostics); self.mapping_template_help.setVisible(False); self.mapping_diagnostics.setVisible(False); diagnostics.toggled.connect(self.mapping_template_help.setVisible); diagnostics.toggled.connect(self.mapping_diagnostics.setVisible); mapping_grid.addWidget(diagnostics,6,0,1,2)
         layout.addWidget(mapping_group)
         self.mapping_group = mapping_group
         self.mapping_details_dialog=QDialog(self); self.mapping_details_dialog.setWindowTitle("Machine Mapping details — pyLOCO Correct"); self.mapping_details_dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); self.mapping_details_dialog.setSizeGripEnabled(True); self.mapping_details_dialog.setMinimumSize(900,520); self.mapping_details_dialog.resize(1250,700)
@@ -419,7 +423,7 @@ class CorrectMainWindow(QMainWindow):
         self.correction_type_counts.setAccessibleName("Normal and skew quadrupole correction counts")
         layout.addWidget(self.correction_type_counts)
         legend_row=QHBoxLayout(); legend=QLabel('● Normal &nbsp;&nbsp; <span style="color:#D99029">● Amber: attention</span> &nbsp;&nbsp; <span style="color:#D32F2F">● Red: blocked / unsafe</span> &nbsp;&nbsp; <span style="color:#888888">● Gray: excluded</span>'); legend.setTextFormat(Qt.RichText); legend.setObjectName("warningLegend"); legend.setToolTip("Only diagnostic cells are highlighted; excluded rows are muted."); legend_row.addWidget(legend); legend_row.addStretch(1)
-        self.clear_table_selection_button=QPushButton("Clear highlight"); self.clear_table_selection_button.clicked.connect(lambda:self.table.clearSelection()); self.show_first_columns_button=QPushButton("← First columns"); self.show_first_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().minimum())); self.show_last_columns_button=QPushButton("Show last columns →"); self.show_last_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().maximum())); legend_row.addWidget(self.clear_table_selection_button); legend_row.addWidget(self.show_first_columns_button); legend_row.addWidget(self.show_last_columns_button); layout.addLayout(legend_row)
+        self.clear_table_selection_button=QPushButton("Clear highlight"); self.clear_table_selection_button.clicked.connect(lambda:self.table.clearSelection()); self.show_first_rows_button=QPushButton("↑ First rows"); self.show_first_rows_button.clicked.connect(lambda:self.table.scrollToTop()); self.show_last_rows_button=QPushButton("↓ Last rows"); self.show_last_rows_button.clicked.connect(lambda:self.table.scrollToBottom()); self.show_first_columns_button=QPushButton("← First columns"); self.show_first_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().minimum())); self.show_last_columns_button=QPushButton("Last columns →"); self.show_last_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().maximum())); legend_row.addWidget(self.clear_table_selection_button); legend_row.addWidget(self.show_first_rows_button); legend_row.addWidget(self.show_last_rows_button); legend_row.addWidget(self.show_first_columns_button); legend_row.addWidget(self.show_last_columns_button); layout.addLayout(legend_row)
         self.table=CopyableMappingTable(0,len(self.COLUMNS)); self.table.setMinimumHeight(260); self.table.setHorizontalHeaderLabels(self.COLUMNS); configure_mapping_table(self.table,tuple("Correction-plan value. Full content is available in each cell tooltip." for _ in self.COLUMNS),editable=True); self.table.horizontalHeader().setSectionResizeMode(len(self.COLUMNS)-1,QHeaderView.Interactive); self.table.setColumnWidth(len(self.COLUMNS)-1,220); self.table.itemChanged.connect(self._item_changed); layout.addWidget(self.table,1)
         self.plan_page=page; self._selection_clear_surfaces=(page,convention,controls,legend)
         for surface in self._selection_clear_surfaces:surface.installEventFilter(self)
@@ -427,6 +431,7 @@ class CorrectMainWindow(QMainWindow):
 
     def _review_page(self):
         page=QWidget(); layout=QVBoxLayout(page); actions=QHBoxLayout(); self.apply_status=QLabel("Select a backend and preview before Apply"); self.apply_status.setObjectName("safetyBadge"); self.apply_status.setAlignment(Qt.AlignCenter); self.apply_status.setMinimumWidth(500); self.apply_status.setMaximumWidth(650); actions.addWidget(self.apply_status); actions.addStretch(); self.preview_apply_button=QPushButton("Preview machine changes"); self.preview_apply_button.clicked.connect(self.preview_machine_changes); actions.addWidget(self.preview_apply_button); self.apply_button=QPushButton("Apply…"); self.apply_button.setEnabled(False); self.apply_button.clicked.connect(self.apply_machine_changes); actions.addWidget(self.apply_button); self.undo_button=QPushButton("Undo last 10%…"); self.undo_button.setEnabled(False); self.undo_button.setToolTip("Return to the preceding verified cumulative correction level"); self.undo_button.clicked.connect(self.undo_last_machine_changes); actions.addWidget(self.undo_button); self.restore_button=QPushButton("Restore original…"); self.restore_button.setEnabled(False); self.restore_button.setToolTip("Restore exact pre-Apply B2 values in the pySC simulation"); self.restore_button.clicked.connect(self.restore_machine_changes); actions.addWidget(self.restore_button); export=QPushButton("Export CSV…"); export.setToolTip("Export the human-readable correction table"); export.clicked.connect(self.export_csv); actions.addWidget(export); layout.addLayout(actions)
+        self.apply_activity_progress=QProgressBar(); self.apply_activity_progress.setRange(0,0); self.apply_activity_progress.setFormat("Applying correction — waiting for verified readbacks…"); self.apply_activity_progress.setVisible(False); layout.addWidget(self.apply_activity_progress)
         progress_details=QGroupBox("Correction step history and readbacks"); progress_details.setCheckable(True); progress_details.setChecked(True); progress_layout=QVBoxLayout(progress_details); progress_body=QWidget(); progress_body_layout=QVBoxLayout(progress_body); progress_body_layout.setContentsMargins(0,0,0,0); progress_body_layout.addWidget(self.progress_history); progress_body_layout.addWidget(self.progress_magnets); progress_layout.addWidget(progress_body); progress_details.toggled.connect(progress_body.setVisible); layout.addWidget(progress_details)
         self.review_actions = layout
         metrics=QGroupBox(); self.review_metrics_group=metrics; metrics.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); grid=QGridLayout(metrics); self.review_metrics={}
@@ -1343,9 +1348,12 @@ class CorrectMainWindow(QMainWindow):
 
         self.apply_button.setEnabled(False)
         self.preview_apply_button.setEnabled(False)
+        self.progress_apply_button.setEnabled(False)
         self.restore_button.setEnabled(False)
         self.undo_button.setEnabled(False)
         self.apply_status.setText("Applying verified correction…")
+        self.apply_activity_progress.setFormat("Applying correction — waiting for verified readbacks…")
+        self.apply_activity_progress.setVisible(True)
         self._refresh_correction_progress()
         thread=QThread(self); worker=CorrectionApplyWorker(transaction); worker.moveToThread(thread)
         thread.started.connect(worker.run); worker.progress.connect(self._apply_progress)
@@ -1422,6 +1430,7 @@ class CorrectMainWindow(QMainWindow):
 
     @Slot(str)
     def _apply_failed(self,message):
+        self.apply_activity_progress.setVisible(False)
         self.apply_button.setEnabled(False)
         self.preview_apply_button.setText("Preview machine changes")
         self.preview_apply_button.setEnabled(True)
@@ -1431,6 +1440,7 @@ class CorrectMainWindow(QMainWindow):
 
     @Slot()
     def _apply_finished(self):
+        self.apply_activity_progress.setVisible(False)
         self._apply_thread=None; self._apply_worker=None
 
     def undo_last_machine_changes(self):
@@ -1592,6 +1602,8 @@ class CorrectMainWindow(QMainWindow):
 
     def _refresh_mapping_status(self):
         if not self.review:
+            self.mapping_complete_banner.setText("MAPPING NOT READY")
+            self.mapping_complete_banner.setStyleSheet("background:#5A3B13;color:#FFE0A3;border:2px solid #D99029;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
             self.mapping_summary.setText("No correction source loaded"); self.mapped_status.setText("—"); self.unmapped_status.setText("—"); self.ambiguous_status.setText("—"); self.mapping_feedback.setText("Load a correction source to begin mapping."); self.mapping_details_button.setEnabled(False); self.mapping_details_summary.setText("No FIT magnet mapping is available."); self._refresh_mapping_details(); return
         statuses={key:sum(item.metadata.get("mapping_status")==key for item in self.review.items) for key in ("mapped","saved","unmapped","proposed","ambiguous","duplicate","invalid")}; mapped=statuses["mapped"]
         unresolved=len(self.review.items)-mapped
@@ -1599,12 +1611,20 @@ class CorrectMainWindow(QMainWindow):
         self.mapped_status.setText(str(mapped)); self.unmapped_status.setText(str(statuses["unmapped"])); self.ambiguous_status.setText(f"{statuses['ambiguous']} ambiguous; {statuses['duplicate']} duplicate")
         if not unresolved:
             feedback="Mapping validated — ready to read current strengths"
+            self.mapping_complete_banner.setText(f"✓ MAPPING IS COMPLETE — {mapped:,}/{total:,} FITTED MAGNETS VALIDATED")
+            self.mapping_complete_banner.setStyleSheet("background:#123D2A;color:#8AF0B4;border:2px solid #38B875;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
         elif statuses["ambiguous"] or statuses["duplicate"] or statuses["invalid"]:
             feedback=f"{unresolved} magnets need attention — resolve ambiguous, invalid or duplicate mappings"
+            self.mapping_complete_banner.setText(f"⚠ MAPPING INCOMPLETE — {unresolved:,} MAGNETS NEED ATTENTION")
+            self.mapping_complete_banner.setStyleSheet("background:#552020;color:#FFB0B0;border:2px solid #D96666;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
         elif getattr(self,"mapping_action_message","") == "automatic":
             feedback=f"Automatic matching could not find a unique device for {unresolved} magnet{'s' if unresolved != 1 else ''}"
+            self.mapping_complete_banner.setText(f"⚠ MAPPING INCOMPLETE — {unresolved:,} MAGNETS UNRESOLVED")
+            self.mapping_complete_banner.setStyleSheet("background:#5A3B13;color:#FFE0A3;border:2px solid #D99029;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
         else:
             feedback=f"{unresolved} magnet{'s' if unresolved != 1 else ''} still need mapping"
+            self.mapping_complete_banner.setText(f"MAPPING REQUIRES VALIDATION — {unresolved:,} NOT CURRENTLY VERIFIED")
+            self.mapping_complete_banner.setStyleSheet("background:#5A3B13;color:#FFE0A3;border:2px solid #D99029;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
         saved=statuses["saved"]
         master=getattr(self.review,"machine_mapping",{}) or {}
         complete=machine_mapping_statistics(master) if is_machine_mapping(master) else None

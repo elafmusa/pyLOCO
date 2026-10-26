@@ -7,8 +7,8 @@ from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QObject, QSettings, QThread, QTimer, Signal, Slot
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFormLayout,
-    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout,
+    QHBoxLayout, QLabel, QLineEdit, QMessageBox, QProgressBar, QPushButton, QVBoxLayout, QWidget)
 from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 
 from .pyaml_connection import (PyAMLCorrectionConnection, load_mapping,
@@ -83,6 +83,9 @@ class PyAMLCorrectionWidget(QWidget):
         self.connect_button = QPushButton("Test connection and discover devices")
         self.connect_button.clicked.connect(lambda: self.run(self.connect_machine))
         form.addRow(self.connect_button)
+        self.connection_progress=QProgressBar(); self.connection_progress.setRange(0,0)
+        self.connection_progress.setFormat("Testing connection and reading inventory…")
+        self.connection_progress.setVisible(False); form.addRow(self.connection_progress)
         self.connection_result=QLabel("Disconnected"); self.inventory_result=QLabel("Inventory not discovered"); self.authorization_result=QLabel("READ ONLY — writes not authorized")
         form.addRow("Connection",self.connection_result); form.addRow("Device inventory",self.inventory_result); form.addRow("Authorization",self.authorization_result)
         layout.addWidget(self.settings_box)
@@ -541,13 +544,14 @@ class PyAMLCorrectionWidget(QWidget):
         except Exception as exc:
             self.error(str(exc)); return
         self.cancel = Event()
-        self.start(lambda: self.transaction.apply(self.owner.review, explicit, confirmed=True, cancel=self.cancel))
+        self.start(lambda: self.transaction.apply(self.owner.review, explicit, confirmed=True, cancel=self.cancel),
+                   "Applying correction — waiting for verified readbacks…")
 
     def restore(self):
         if self.pending() and not self.thread:
             if QMessageBox.question(self, "Restore original strengths?", "Write and verify every original pre-correction strength?",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
-                self.start(self.transaction.restore)
+                self.start(self.transaction.restore,"Restoring original strengths — waiting for verified readbacks…")
 
     def recover(self):
         if not self.transaction:
@@ -565,10 +569,17 @@ class PyAMLCorrectionWidget(QWidget):
         self.owner.recovery_activity_status.setText("Cancellation requested. The current operation will stop between magnet operations and attempt restoration of affected magnets.")
 
     def run(self, action):
+        connection_test=action==self.connect_machine
+        if connection_test:
+            self.connect_button.setEnabled(False); self.connection_progress.setVisible(True)
+            self.connection_result.setText("Testing connection…"); QApplication.processEvents()
         try:
             action()
         except Exception as exc:
             self.error(str(exc))
+        finally:
+            if connection_test:
+                self.connection_progress.setVisible(False); self.connect_button.setEnabled(True)
         self.refresh()
         self.owner._refresh_correction_progress()
 
@@ -580,8 +591,11 @@ class PyAMLCorrectionWidget(QWidget):
         self.refresh()
         self.owner._refresh_correction_progress()
 
-    def start(self, action):
+    def start(self, action, activity="Machine operation in progress…"):
         self.thread = QThread(self)
+        self.owner.apply_activity_progress.setFormat(activity)
+        self.owner.apply_activity_progress.setVisible(True)
+        self.status.setText(activity)
         self.worker = TransactionWorker(action); self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.finished.connect(self.completed)
@@ -592,11 +606,21 @@ class PyAMLCorrectionWidget(QWidget):
         self.refresh(); self.thread.start()
 
     def completed(self, record):
-        self.status.setText(f"{record['status']} — {record['fraction'] * 100:.6g}% cumulative. Journal: {self.transaction.path}")
+        if record.get("status")=="applied":
+            self.status.setText(f"✓ CORRECTION APPLIED AND READBACK VERIFIED — {record['fraction'] * 100:.6g}% cumulative. Journal: {self.transaction.path}")
+            self.status.setStyleSheet("font-weight: 700; color: #22c55e;")
+            self.owner.statusBar().showMessage(
+                f"Correction applied and verified • {record['fraction'] * 100:g}% cumulative • "
+                f"{len(record.get('changes',()))} magnets",
+                15000,
+            )
+        else:
+            self.status.setText(f"{record['status']} — {record['fraction'] * 100:.6g}% cumulative. Journal: {self.transaction.path}")
         self._update_recovery_display(True,self.pending(),False,record)
         self.owner._refresh_correction_progress()
 
     def finished(self):
+        self.owner.apply_activity_progress.setVisible(False)
         self.thread.deleteLater(); self.thread = None; self.worker = None
         self.refresh()
         self.owner._refresh_correction_progress()

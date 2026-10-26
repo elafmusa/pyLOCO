@@ -800,8 +800,9 @@ class MeasureMainWindow(QMainWindow):
         self.alignment_details_button=QPushButton("Machine Mapping details…"); self.alignment_details_button.setEnabled(False)
         self.alignment_details_button.clicked.connect(self._show_alignment_details)
         alignment_actions=QWidget(); aal=QGridLayout(alignment_actions); aal.setContentsMargins(0,0,0,0); aal.addWidget(self.verify_alignment_button,0,0); aal.addWidget(self.load_mapping_button,0,1); aal.addWidget(self.mapping_template_button,1,0); aal.addWidget(self.mapping_python_helper_button,1,1); aal.addWidget(self.save_mapping_button,2,0); aal.addWidget(self.alignment_details_button,0,2,3,1); aal.setColumnStretch(3,1)
+        self.mapping_complete_banner=QLabel("MAPPING NOT READY"); self.mapping_complete_banner.setAlignment(Qt.AlignCenter); self.mapping_complete_banner.setMinimumHeight(42); self.mapping_complete_banner.setAccessibleName("Machine mapping completion status")
         self.device_alignment_status=QLabel("Load a reference lattice and connect pyAML, then find or load an exact Machine Mapping."); self.device_alignment_status.setWordWrap(True); self.device_alignment_status.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("Lattice elements",self.reference_model_element_count); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Machine Mapping",alignment_actions); reference_layout.addRow("Mapping status",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
+        reference_layout.addRow("Requirement",self.reference_model_requirement); reference_layout.addRow("Reference lattice",reference_row); reference_layout.addRow("MAT lattice variable",variable_row); reference_layout.addRow("Lattice elements",self.reference_model_element_count); reference_layout.addRow("MODEL — not live machine data",self.reference_model_summary); reference_layout.addRow("Machine Mapping",alignment_actions); reference_layout.addRow(self.mapping_complete_banner); reference_layout.addRow("Mapping status",self.device_alignment_status); reference_layout.addRow("",self.compare_reference)
         layout.addWidget(reference_group); return self._scroll_page(content)
 
     def _choose_reference_model(self):
@@ -1039,6 +1040,15 @@ class MeasureMainWindow(QMainWindow):
         required=self.adapter_combo.currentData()=="pyaml"
         counts=mapping_counts(self.measurement_device_alignment) if self.measurement_device_alignment else {}
         ready=(not required or bool(counts) and counts["mapped"]==counts["total"])
+        if hasattr(self,"mapping_complete_banner"):
+            complete=bool(counts) and counts.get("total",0)>0 and counts["mapped"]==counts["total"]
+            if complete:
+                self.mapping_complete_banner.setText(f"✓ MAPPING IS COMPLETE — {counts['mapped']:,}/{counts['total']:,} MEASUREMENT DEVICES VALIDATED")
+                self.mapping_complete_banner.setStyleSheet("background:#123D2A;color:#8AF0B4;border:2px solid #38B875;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
+            else:
+                unresolved=max(0,int(counts.get("total",0))-int(counts.get("mapped",0))) if counts else 0
+                self.mapping_complete_banner.setText("MAPPING NOT READY" if not counts else f"⚠ MAPPING INCOMPLETE — {unresolved:,} DEVICES NEED ATTENTION")
+                self.mapping_complete_banner.setStyleSheet("background:#5A3B13;color:#FFE0A3;border:2px solid #D99029;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
         self.compare_reference.setEnabled(ready)
         if required and not ready:self.compare_reference.setToolTip("Validate the exact pyAML device mapping before calculating a reference-model comparison.")
         else:self.compare_reference.setToolTip("Read-only diagnostic comparison; acquisition and saved measurements are unchanged.")
@@ -3801,7 +3811,16 @@ class MeasureMainWindow(QMainWindow):
         if self.measurement_type.currentData()=="dispersion" and self.rf_control_mode.currentData()=="manual" and self.result is None and (self.dispersion_step_index or self.thread is not None):
             self.cancel_event.set()
             QMessageBox.warning(self,"Manual RF restoration required","The manual dispersion workflow is incomplete."+self._manual_rf_restore_instruction())
+        active=bool(self.thread is not None or getattr(self,"connection_thread",None) is not None)
+        if active:
+            self.cancel_event.set(); self.hide(); event.ignore(); self._close_after_workers=True
+            QTimer.singleShot(100,self._finish_close_when_idle); return
         super().closeEvent(event)
+
+    def _finish_close_when_idle(self):
+        if self.thread is None and getattr(self,"connection_thread",None) is None:
+            self._close_after_workers=False; self.close(); return
+        QTimer.singleShot(100,self._finish_close_when_idle)
 
     def _reset_live_plot(self):
         self.live_plot.clear(); axis=self.live_plot.figure.add_subplot(111); axis.set_title("Orbit Preview"); axis.set_xlabel("BPM selection position"); axis.set_ylabel("Orbit [µm]"); axis.grid(True,alpha=.25); self.live_plot.apply_theme()

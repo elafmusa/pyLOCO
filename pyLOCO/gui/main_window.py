@@ -1412,8 +1412,18 @@ class MainWindow(QMainWindow):
         self._refresh_ui("Ready — create or open a project")
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        if getattr(self,"_close_after_workers",False):
+            self._save_window_layout(); self._settings.sync(); event.accept(); return
         if not self._confirm_discard_changes():
             event.ignore()
+            return
+        active_run=self._run_thread is not None or self._run_preparing
+        active_comparison=self._reference_comparison_thread is not None
+        if active_run or active_comparison:
+            if self._run_worker is not None:self.cancel_loco_run()
+            if self._reference_comparison_worker is not None:self._reference_comparison_worker.cancel_requested=True
+            self._close_after_workers=True; self.hide(); event.ignore()
+            self._finish_close_when_idle()
             return
         if self._reference_comparison_worker is not None:
             self._reference_comparison_worker.cancel_requested = True
@@ -1425,6 +1435,11 @@ class MainWindow(QMainWindow):
         self._save_window_layout()
         self._settings.sync()
         event.accept()
+
+    def _finish_close_when_idle(self):
+        if self._run_thread is None and self._reference_comparison_thread is None and not self._run_preparing:
+            self.close(); return
+        QTimer.singleShot(100,self._finish_close_when_idle)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -1936,6 +1951,8 @@ class MainWindow(QMainWindow):
         mapping_review_actions.addStretch(1); measurement_mapping_layout.addLayout(mapping_review_actions)
         self.measurement_mapping_feedback = QLabel("Not run yet — load modern Measure data and a reference lattice.")
         self.measurement_mapping_feedback.setWordWrap(True); self.measurement_mapping_feedback.setObjectName("mappingHelpText")
+        self.measurement_mapping_complete_banner=QLabel("MAPPING NOT READY"); self.measurement_mapping_complete_banner.setAlignment(Qt.AlignCenter); self.measurement_mapping_complete_banner.setMinimumHeight(42); self.measurement_mapping_complete_banner.setAccessibleName("Machine mapping completion status")
+        measurement_mapping_layout.addWidget(self.measurement_mapping_complete_banner)
         measurement_mapping_layout.addWidget(self.measurement_mapping_feedback)
         self.use_measurement_mappings_button = QPushButton("Use mapped devices in FIT…")
         self.use_measurement_mappings_button.setEnabled(False)
@@ -6777,6 +6794,14 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "measurement_mapping_feedback"): return
         mapping = self.project.measurement_device_mapping or {}
         counts = measurement_mapping_counts(mapping)
+        complete_mapping=bool(counts["total"] and counts["mapped"]==counts["total"])
+        if complete_mapping:
+            self.measurement_mapping_complete_banner.setText(f"✓ MAPPING IS COMPLETE — {counts['mapped']:,}/{counts['total']:,} MEASUREMENT DEVICES VALIDATED")
+            self.measurement_mapping_complete_banner.setStyleSheet("background:#123D2A;color:#8AF0B4;border:2px solid #38B875;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
+        else:
+            unresolved=max(0,counts["total"]-counts["mapped"])
+            self.measurement_mapping_complete_banner.setText("MAPPING NOT READY" if not counts["total"] else f"⚠ MAPPING INCOMPLETE — {unresolved:,} DEVICES NEED ATTENTION")
+            self.measurement_mapping_complete_banner.setStyleSheet("background:#5A3B13;color:#FFE0A3;border:2px solid #D99029;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
         master = self.project.machine_mapping or {}
         master_rows = master.get("mappings", ()) if is_machine_mapping(master) else ()
         master_total = len(master_rows)

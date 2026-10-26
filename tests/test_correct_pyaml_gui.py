@@ -4,7 +4,8 @@ from types import SimpleNamespace
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication, QFileDialog, QGroupBox, QLabel, QMessageBox
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QFileDialog, QAbstractItemView, QGroupBox, QLabel, QMessageBox
 
 from pyLOCO.correct.main_window import CorrectMainWindow
 from pyLOCO.correct import pyaml_widget
@@ -73,6 +74,20 @@ def test_defaults_browser_cancel_and_connection_confirmation(window, setup, monk
     assert all(not magnet.strength.writes for magnet in setup.magnets.values())
     widget.fields["skew_array"].setText("Other")
     assert widget.connection is None
+
+
+def test_connection_action_shows_progress_and_prevents_duplicate_click(window, monkeypatch):
+    widget = window.pyaml_workspace
+    observed = []
+
+    def connect():
+        observed.append((not widget.connection_progress.isHidden(), widget.connect_button.isEnabled()))
+
+    monkeypatch.setattr(widget, "connect_machine", connect)
+    widget.run(widget.connect_machine)
+    assert observed == [(True, False)]
+    assert widget.connection_progress.isHidden()
+    assert widget.connect_button.isEnabled()
 
 
 def connect_workspace(window, setup):
@@ -377,6 +392,9 @@ def test_mapping_status_filter_and_readonly_strength_journey(window, setup):
     widget = connect_workspace(window, setup)
     widget.refresh()
     assert window.mapping_summary.text().startswith("3 validated")
+    assert "MAPPING IS COMPLETE" in window.mapping_complete_banner.text()
+    assert window.mapping_details_table.verticalScrollBarPolicy() == Qt.ScrollBarAlwaysOn
+    assert window.mapping_details_table.verticalScrollMode() == QAbstractItemView.ScrollPerPixel
     window.mapping_attention_filter.setCurrentIndex(window.mapping_attention_filter.findData("attention"))
     assert window.mapping_details_table.rowCount() == 0
     window.mapping_attention_filter.setCurrentIndex(window.mapping_attention_filter.findData("all"))
@@ -409,6 +427,7 @@ def test_backend_neutral_disconnected_and_zero_match_states(window, setup):
         item.name = f"NO_MATCH_{index}"
     widget.clear_mapping(); widget.refresh()
     assert window.mapping_summary.text().startswith("0 validated")
+    assert "MAPPING INCOMPLETE" in window.mapping_complete_banner.text()
     feedback=window.automatic_mapping_feedback.text()
     assert "Matching completed — 0 validated, 3 unresolved, 0 ambiguous" in feedback
     assert "create a template" in feedback

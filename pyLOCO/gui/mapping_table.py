@@ -52,6 +52,11 @@ def configure_mapping_table(table: QTableWidget, header_help: tuple[str, ...], *
     table.setSelectionMode(QAbstractItemView.ExtendedSelection)
     table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
     table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+    table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+    table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+    table.verticalScrollBar().setSingleStep(36)
+    table.setMouseTracking(True)
+    table.setFocusPolicy(Qt.StrongFocus)
     # Callers must populate the whole table before enabling sorting. Qt can
     # relocate a partially populated row as soon as the value in the active
     # sort column is inserted, which mixes cells from different records.
