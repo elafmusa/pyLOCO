@@ -9,7 +9,7 @@ import pytest
 
 from pyLOCO.gui.models.project import ProjectMetadata
 from pyLOCO.gui.measurement_mapping import (
-    find_exact_device_mappings, inventory_fingerprint, mapping_counts,
+    fill_missing_mapping_entries, find_exact_device_mappings, inventory_fingerprint, mapping_counts,
     mapping_template, ordered_ordinals, validate_mapping,
 )
 
@@ -166,6 +166,22 @@ def test_ebs_alias_requires_matching_famname_subcell(tmp_path):
     inventory={"bpm":[], "horizontal_corrector":["SJ2B-C04-H"], "vertical_corrector":[]}
     checked=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
     assert mapping_counts(checked)["unresolved"]==1
+
+
+def test_missing_loaded_rows_are_filled_without_overwriting_explicit_rows(tmp_path):
+    lattice=tmp_path/"ring.mat"; lattice.write_bytes(b"fill missing lattice")
+    ring=[BPM("BPM1", "BPM1"), Multipole("SJ2A", "srmag/m-sf2/c04-a")]
+    inventory={"bpm":["BPM1"], "horizontal_corrector":["SJ2A-C04-H"],
+               "vertical_corrector":[]}
+    discovered=find_exact_device_mappings(ring,inventory,lattice_path=lattice)
+    validated=deepcopy(discovered)
+    validated["mappings"][0].update(status="unresolved",reason="operator chose to leave unresolved")
+    validated["mappings"][1].update(status="unresolved",reason="No mapping entry",
+                                      lattice_ordinal=None,lattice_name="",lattice_device="")
+    merged=fill_missing_mapping_entries(validated,discovered)
+    assert merged["mappings"][0]["reason"]=="operator chose to leave unresolved"
+    assert merged["mappings"][1]["status"]=="mapped"
+    assert merged["mappings"][1]["identity_match"]=="ebs_fam_cell_alias"
 
 
 def test_revalidation_rejects_order_inventory_lattice_and_configuration_changes(example, tmp_path):

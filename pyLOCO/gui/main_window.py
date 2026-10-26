@@ -71,7 +71,8 @@ from .fit_workflow import (
     FitRecipe, FitStage, execute_workflow, file_sha256, inspect_measurement_files, preflight_recipe,
 )
 from .measurement_mapping import (
-    find_exact_device_mappings, inventory_fingerprint as measurement_inventory_fingerprint,
+    fill_missing_mapping_entries, find_exact_device_mappings,
+    inventory_fingerprint as measurement_inventory_fingerprint,
     is_unvalidated_mapping_template,
     load_document as load_measurement_mapping_document, mapping_counts as measurement_mapping_counts,
     mapping_template as measurement_mapping_template, measurement_inventory,
@@ -6755,6 +6756,13 @@ class MainWindow(QMainWindow):
                 accept_explicit_ordinals=template,
             )
             mapping["mapping_provenance"] = f"loaded and revalidated from {Path(filename).name}"
+            if any(row.get("reason") == "No mapping entry" for row in mapping.get("mappings", ())):
+                discovered = find_exact_device_mappings(
+                    lattice, inventory, lattice_path=lattice_path,
+                    configuration_path=configuration,
+                    provenance="exact active-lattice identities used to fill missing loaded mapping rows",
+                )
+                mapping = fill_missing_mapping_entries(mapping, discovered)
             self._loaded_machine_mapping_document=source if common else None
             self.project.machine_mapping=deepcopy(source) if common else {}
         except Exception as exc:

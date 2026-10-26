@@ -253,6 +253,35 @@ def mapping_template(inventory: dict[str, list[str]]) -> dict[str, Any]:
     }
 
 
+def fill_missing_mapping_entries(validated: dict[str, Any], discovered: dict[str, Any]) -> dict[str, Any]:
+    """Fill absent source rows from a fresh identity-only discovery result.
+
+    Existing loaded rows, including unresolved or manually evidenced rows, are
+    preserved. Only rows produced as ``No mapping entry`` by validation are
+    eligible for replacement, so a loaded mapping can never silently override
+    an explicit operator choice.
+    """
+    result = {**validated, "mappings": [dict(row) for row in validated.get("mappings", ())]}
+    candidates = {
+        (str(row.get("role", "")), str(row.get("measured_name", ""))): row
+        for row in discovered.get("mappings", ())
+    }
+    filled = 0
+    for index, row in enumerate(result["mappings"]):
+        if row.get("status") != "unresolved" or row.get("reason") != "No mapping entry":
+            continue
+        candidate = candidates.get((str(row.get("role", "")), str(row.get("measured_name", ""))))
+        if candidate is not None:
+            result["mappings"][index] = dict(candidate)
+            filled += 1
+    if filled:
+        result["mapping_provenance"] = (
+            f"{validated.get('mapping_provenance', 'loaded mapping')}; "
+            f"{filled} missing row(s) discovered from exact active-lattice identities"
+        )
+    return result
+
+
 def is_unvalidated_mapping_template(document: dict[str, Any]) -> bool:
     """Identify the editable template format without trusting it as provenance."""
     return (
