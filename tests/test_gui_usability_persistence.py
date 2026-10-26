@@ -108,10 +108,17 @@ def test_loading_mapping_for_old_lattice_offers_safe_rebuild(app, tmp_path, monk
         [], current_lattice, {}, inventory, None,
     ))
     rebuilt = []
-    monkeypatch.setattr(window, "find_measurement_mappings", lambda: rebuilt.append(True) or True)
+    def rebuild():
+        rebuilt.append(True)
+        window.project.measurement_device_mapping = {
+            "mappings": [{"role": "bpm", "measured_name": "BPM1", "status": "unresolved"}],
+        }
+        return False
+    monkeypatch.setattr(window, "find_measurement_mappings", rebuild)
 
     class RebuildDialog:
         Warning, AcceptRole, RejectRole = 1, 2, 3
+        notices = []
         def __init__(self, *_args): self.buttons = []
         def setWindowTitle(self, *_args): pass
         def setIcon(self, *_args): pass
@@ -122,10 +129,17 @@ def test_loading_mapping_for_old_lattice_offers_safe_rebuild(app, tmp_path, monk
         def setDefaultButton(self, *_args): pass
         def exec(self): return 0
         def clickedButton(self): return self.buttons[0][1]
+        @staticmethod
+        def information(*args, **_kwargs): RebuildDialog.notices.append(args)
+        @staticmethod
+        def warning(*args, **_kwargs): RebuildDialog.notices.append(args)
 
     monkeypatch.setattr("pyLOCO.gui.main_window.QMessageBox", RebuildDialog)
-    assert window.load_measurement_mapping() is True
+    assert window.load_measurement_mapping() is False
     assert rebuilt == [True]
+    assert RebuildDialog.notices
+    assert "1 of 1 measured devices matched; 0 remain unresolved" not in RebuildDialog.notices[0][-1]
+    assert "0 of 1 measured devices matched; 1 remain unresolved" in RebuildDialog.notices[0][-1]
     window.project.modified = False
     window.close()
 

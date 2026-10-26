@@ -6775,7 +6775,28 @@ class MainWindow(QMainWindow):
                 dialog.setDefaultButton(rebuild)
                 dialog.exec()
                 if dialog.clickedButton() is rebuild:
-                    return self.find_measurement_mappings()
+                    complete = self.find_measurement_mappings()
+                    counts = measurement_mapping_counts(self.project.measurement_device_mapping or {})
+                    unresolved = max(0, counts["total"] - counts["mapped"])
+                    if complete:
+                        QMessageBox.information(
+                            self, "Mapping rebuilt for active lattice",
+                            f"Mapping is complete: {counts['mapped']} of {counts['total']} measured devices "
+                            "matched the active lattice. Review the mapping, then select Use mapped devices in FIT.",
+                        )
+                    else:
+                        QMessageBox.warning(
+                            self, "Mapping rebuilt — devices still need attention",
+                            f"The rebuild finished: {counts['mapped']} of {counts['total']} measured devices matched; "
+                            f"{unresolved} remain unresolved.\n\nThe Needs attention table now lists those devices and "
+                            "the reason each identity was not found. The old mapping's AT indices were not reused, "
+                            "because they may refer to different elements in this lattice.",
+                        )
+                    self.statusBar().showMessage(
+                        f"Mapping rebuild finished: {counts['mapped']}/{counts['total']} matched; "
+                        f"{unresolved} need attention.", 12000,
+                    )
+                    return complete
                 return False
             QMessageBox.warning(self, "Measurement mapping is incompatible", str(exc)); return False
         self.project.measurement_device_mapping = mapping
