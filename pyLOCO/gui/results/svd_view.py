@@ -15,6 +15,10 @@ class SvdView(QWidget):
         self.form = QFormLayout(); self.values = {}
         for key, label in (("method", "Saved SVD method"), ("threshold", "Threshold"), ("rank", "Configured rank"), ("measurement_values", "Measurement-vector values"), ("fitted_dofs", "Fitted DOFs")):
             widget = QLabel("—"); self.values[key] = widget; self.form.addRow(label, widget)
+        for key, label in (("included", "Included singular values"),
+                           ("rejected", "Cut singular values"),
+                           ("absolute_cutoff", "Absolute cutoff")):
+            widget = QLabel("—"); self.values[key] = widget; self.form.addRow(label, widget)
         self.note = QLabel(); self.note.setWordWrap(True)
         self.save_jacobian = QPushButton("Save Jacobian…"); self.save_jacobian.setEnabled(False)
         self.save_jacobian.clicked.connect(self._save_jacobian)
@@ -26,7 +30,11 @@ class SvdView(QWidget):
 
     def set_loader(self, loader):
         self.loader = loader; metadata = loader.svd_metadata
-        for key, widget in self.values.items(): widget.setText("Not persisted" if metadata.get(key) is None else str(metadata[key]))
+        for key in ("method", "threshold", "rank", "measurement_values", "fitted_dofs"):
+            value = metadata.get(key)
+            self.values[key].setText("Not persisted" if value is None else str(value))
+        for key in ("included", "rejected", "absolute_cutoff"):
+            self.values[key].setText("—")
         self.save_jacobian.setEnabled(loader.jacobian_available)
         spectrum = metadata.get("spectrum")
         self.plot.clear()
@@ -48,8 +56,7 @@ class SvdView(QWidget):
         )
         self.note.setText(f"Singular values loaded from the persisted {source_note}.{suffix}"); self.plot.show()
         axis = self.plot.figure.add_subplot(111)
-        plotted = np.where(positive, values, np.nan)
-        axis.plot(np.arange(values.size), plotted, color="#19a974", label="Singular values")
+        indices = np.arange(values.size)
         if np.any(positive):
             axis.set_yscale("log")
             low = float(np.min(values[positive])); high = float(np.max(values[positive]))
@@ -59,9 +66,9 @@ class SvdView(QWidget):
             cutoff=None
             if method=="threshold" and threshold is not None and np.isfinite(float(threshold)):
                 cutoff=float(threshold)*high
-                axis.axhline(cutoff,color="#E88B22",linestyle="--",linewidth=1.4,
-                             label=f"Cutoff = {float(threshold):.3g} × σmax = {cutoff:.4g}")
+                self.values["absolute_cutoff"].setText(f"{cutoff:.6g}")
                 self.note.setText(self.note.text()+f" Absolute cutoff: {cutoff:.6g} ({float(threshold):.6g} × maximum singular value {high:.6g}).")
+            retained = int(np.count_nonzero(positive))
             if rank is not None:
                 retained=max(0,min(int(rank),values.size))
                 if 0<retained<values.size:
@@ -71,6 +78,16 @@ class SvdView(QWidget):
                     smallest=float(values[retained-1])
                     if np.isfinite(smallest) and smallest>0:
                         self.note.setText(self.note.text()+f" Smallest retained singular value at rank {retained}: {smallest:.6g}.")
+            retained_mask = positive & (indices < retained)
+            rejected_mask = positive & ~retained_mask
+            self.values["included"].setText(str(int(np.count_nonzero(retained_mask))))
+            self.values["rejected"].setText(str(int(np.count_nonzero(rejected_mask))))
+            axis.plot(indices, np.where(retained_mask, values, np.nan), color="#19a974", linewidth=1.8,
+                      marker="o", markersize=2.5, label=f"Included ({np.count_nonzero(retained_mask)})")
+            if np.any(rejected_mask):
+                axis.plot(indices, np.where(rejected_mask, values, np.nan), color="#8B93A7", linewidth=1.2,
+                          alpha=.8, label=f"Cut ({np.count_nonzero(rejected_mask)})")
+                axis.axvspan(retained-.5, values.size-.5, color="#E88B22", alpha=.08)
             # A constant or extremely narrow spectrum otherwise gives
             # effectively coincident log tick labels.  Add symmetric padding
             # in log space without changing any persisted values.
@@ -78,8 +95,15 @@ class SvdView(QWidget):
                 axis.set_ylim(low / 10.0, high * 10.0)
             if cutoff is not None and cutoff>0:
                 bottom,top=axis.get_ylim()
-                if cutoff<bottom:axis.set_ylim(cutoff/2.0,top)
-                elif cutoff>top:axis.set_ylim(bottom,cutoff*2.0)
+                if bottom <= cutoff <= top:
+                    axis.axhline(cutoff,color="#E88B22",linestyle="--",linewidth=1.4,
+                                 label=f"Threshold cutoff = {cutoff:.4g}")
+                else:
+                    location = "below" if cutoff < bottom else "above"
+                    axis.text(.99, .03 if location == "below" else .97,
+                              f"Threshold cutoff {cutoff:.4g} ({location} visible spectrum)",
+                              color="#E88B22", ha="right", va="bottom" if location == "below" else "top",
+                              transform=axis.transAxes)
             from matplotlib.ticker import LogLocator
             axis.yaxis.set_major_locator(LogLocator(base=10.0, numticks=7))
         else:

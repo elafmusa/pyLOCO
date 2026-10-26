@@ -286,10 +286,13 @@ def test_svd_view_has_readable_log_axis_for_narrow_spectrum():
     assert view.plot.minimumHeight() == 300
     assert axis.get_yscale() == "log"
     assert axis.get_title() == "Singular-value spectrum"
-    cutoff_lines=[line for line in axis.lines if line.get_label().startswith("Cutoff =")]
-    assert len(cutoff_lines)==1
-    np.testing.assert_allclose(cutoff_lines[0].get_ydata(),[1e-5,1e-5])
+    cutoff_lines=[line for line in axis.lines if line.get_label().startswith("Threshold cutoff =")]
+    assert cutoff_lines == []
+    assert any("below visible spectrum" in text.get_text() for text in axis.texts)
     assert "Absolute cutoff: 1e-05" in view.note.text()
+    assert view.values["included"].text() == "3"
+    assert view.values["rejected"].text() == "0"
+    assert view.values["absolute_cutoff"].text() == "1e-05"
     low, high = axis.get_ylim()
     assert low < 100.0 < high
     assert len(axis.get_yticks()) <= 7
@@ -313,10 +316,37 @@ def test_svd_view_reports_values_omitted_from_log_axis():
         result_dir=Path("/tmp/result"),
     )
     view = SvdView(); view.set_loader(loader)
-    plotted = view.plot.figure.axes[0].lines[0].get_ydata()
+    plotted = next(
+        line for line in view.plot.figure.axes[0].lines
+        if line.get_label().startswith("Included (")
+    ).get_ydata()
     assert plotted[0] == 4.0
     assert np.isnan(plotted[1:]).all()
     assert "2 zero or non-finite value(s)" in view.note.text()
+    view.close()
+
+
+def test_svd_view_separates_included_and_cut_singular_values():
+    from pyLOCO.gui.results.svd_view import SvdView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    loader = SimpleNamespace(
+        svd_metadata={
+            "method": "rank", "threshold": None, "rank": 2,
+            "measurement_values": 8, "fitted_dofs": 4,
+            "spectrum": np.asarray([10.0, 2.0, .5, .1]),
+            "spectrum_source": "/tmp/result/loco_results.npz",
+        },
+        jacobian_available=False, jacobian_metadata={}, result_dir=Path("/tmp/result"),
+    )
+    view = SvdView(); view.set_loader(loader)
+    axis = view.plot.figure.axes[0]
+    assert view.values["included"].text() == "2"
+    assert view.values["rejected"].text() == "2"
+    labels = {line.get_label() for line in axis.lines}
+    assert "Included (2)" in labels
+    assert "Cut (2)" in labels
+    assert "Retained rank = 2" in labels
     view.close()
 
 
