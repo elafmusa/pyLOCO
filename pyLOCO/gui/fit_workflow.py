@@ -250,13 +250,35 @@ def inspect_measurement_files(measurements: dict[str, str],
                     if role == "dispersion":
                         entry["unit"] = str(handle.attrs.get("measured_eta_unit", metadata.get("canonical_measured_eta_unit", "")))
                         from pyLOCO.dispersion_convention import canonical_dispersion_convention
-                        convention = canonical_dispersion_convention(handle.attrs)
-                        entry["rf_step_hz"] = convention.rf_step_hz
-                        entry["rf_difference_sign_convention"] = "positive_minus_negative"
-                        entry["source_rf_difference_sign_convention"] = convention.source_sign
+                        has_rf_metadata = "rf_step_hz" in handle.attrs or "rf_signed_step_hz" in handle.attrs
+                        if has_rf_metadata:
+                            convention = canonical_dispersion_convention(handle.attrs)
+                            entry["rf_step_hz"] = convention.rf_step_hz
+                            entry["rf_difference_sign_convention"] = "positive_minus_negative"
+                            entry["source_rf_difference_sign_convention"] = convention.source_sign
+                        elif legacy_trusted:
+                            # Historical measurements predate embedded provenance.  Their
+                            # scientific convention may be recovered only when the file
+                            # bytes match the recipe-pinned checksum exactly.
+                            legacy_step = float(options.get(role, {}).get(
+                                "rf_step_hz", trusted_identity.get("rf_step_hz", 0.0)
+                            ))
+                            if not np.isfinite(legacy_step) or legacy_step == 0:
+                                raise ValueError("trusted historical recipe does not define a valid rf_step_hz")
+                            source_sign = str(options.get(role, {}).get(
+                                "sign_convention", "positive_minus_negative"
+                            ))
+                            if source_sign not in {"positive_minus_negative", "negative_minus_positive"}:
+                                raise ValueError("trusted historical recipe has an unsupported RF subtraction convention")
+                            entry["rf_step_hz"] = abs(legacy_step)
+                            entry["rf_difference_sign_convention"] = "positive_minus_negative"
+                            entry["source_rf_difference_sign_convention"] = source_sign
+                        else:
+                            # Modern or replacement files must carry their own RF
+                            # convention; project options alone cannot authenticate them.
+                            canonical_dispersion_convention(handle.attrs)
                         if not entry["unit"] and legacy_trusted:
                             entry["unit"] = trusted_identity.get("units", {}).get("dispersion", "")
-                            entry["rf_step_hz"] = abs(float(options.get(role, {}).get("rf_step_hz", 0.0)))
                     else:
                         entry["unit"] = str(metadata.get("bpm_noise_unit", ""))
                         if not entry["unit"] and legacy_trusted:
