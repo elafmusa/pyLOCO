@@ -547,6 +547,13 @@ class PyAMLCorrectionWidget(QWidget):
         self.start(lambda: self.transaction.apply(self.owner.review, explicit, confirmed=True, cancel=self.cancel),
                    "Applying correction — waiting for verified readbacks…")
 
+    def cancel_preview(self):
+        if not self.transaction:
+            raise ValueError("Connect before cancelling a preview")
+        self.transaction.cancel_preview()
+        self.status.setText("Preview cancelled — no writes were made. Change the correction percentage and preview again.")
+        self.owner._refresh_correction_progress()
+
     def restore(self):
         if self.pending() and not self.thread:
             if QMessageBox.question(self, "Restore original strengths?", "Write and verify every original pre-correction strength?",

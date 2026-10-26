@@ -32,6 +32,8 @@ class PyAMLCorrectionTransaction:
         self.record = None
         self.path = None
         self.mapping_path = None
+        self._record_before_preview = None
+        self._path_before_preview = None
 
     @property
     def pending(self):
@@ -131,6 +133,8 @@ class PyAMLCorrectionTransaction:
                              applied_delta_kl_m1=applied_delta_kl))
         if not rows:
             raise ValueError("No included corrections")
+        self._record_before_preview = copy.deepcopy(previous)
+        self._path_before_preview = self.path
         if not previous:
             self.path = None
         history=copy.deepcopy(previous.get("history",[])) if previous else []
@@ -140,6 +144,28 @@ class PyAMLCorrectionTransaction:
                            status="preview", restore_required=bool(previous), changes=rows,
                            attempted=list(previous["attempted"]) if previous else [])
         self.persist()
+        return self.record
+
+    def cancel_preview(self):
+        if not self.record or self.record.get("status") != "preview":
+            raise RuntimeError("There is no read-only preview to cancel")
+        cancelled = self.record
+        prior = copy.deepcopy(self._record_before_preview)
+        prior_path = self._path_before_preview
+        if prior is None:
+            # Retain an audit record that this preview made no writes, while
+            # clearing it from the active transaction state.
+            cancelled["status"] = "cancelled"
+            cancelled["restore_required"] = False
+            self.persist()
+            self.record = None
+            self.path = None
+        else:
+            self.record = prior
+            self.path = prior_path
+            self.persist()
+        self._record_before_preview = None
+        self._path_before_preview = None
         return self.record
 
     def apply(self, review, explicit=(), *, confirmed=False, cancel=None):

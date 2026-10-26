@@ -169,9 +169,9 @@ class CorrectMainWindow(QMainWindow):
         outer.addLayout(summary_row)
 
         progress_row=QHBoxLayout(); progress_row.setSpacing(3)
-        self.progress_preview_button=QPushButton("Preview Next Step"); self.progress_apply_button=QPushButton("Apply Confirmed Step"); self.progress_restore_button=QPushButton("Restore Baseline"); self.progress_measured_button=QPushButton("Associate Measurement…"); self.progress_apply_button.setEnabled(False); self.progress_restore_button.setEnabled(False); self.progress_measured_button.setEnabled(False)
-        for button in (self.progress_preview_button,self.progress_apply_button,self.progress_restore_button,self.progress_measured_button):button.setFixedHeight(28)
-        self.progress_preview_button.clicked.connect(self.preview_machine_changes); self.progress_apply_button.clicked.connect(self.apply_machine_changes); self.progress_restore_button.clicked.connect(self.restore_machine_changes); self.progress_measured_button.clicked.connect(self.associate_progress_measurement)
+        self.progress_preview_button=QPushButton("Preview Next Step"); self.progress_cancel_preview_button=QPushButton("Cancel Preview / Edit %"); self.progress_apply_button=QPushButton("Apply Confirmed Step"); self.progress_restore_button=QPushButton("Restore Baseline"); self.progress_measured_button=QPushButton("Associate Measurement…"); self.progress_cancel_preview_button.setEnabled(False); self.progress_apply_button.setEnabled(False); self.progress_restore_button.setEnabled(False); self.progress_measured_button.setEnabled(False)
+        for button in (self.progress_preview_button,self.progress_cancel_preview_button,self.progress_apply_button,self.progress_restore_button,self.progress_measured_button):button.setFixedHeight(28)
+        self.progress_preview_button.clicked.connect(self.preview_machine_changes); self.progress_cancel_preview_button.clicked.connect(self.cancel_machine_preview); self.progress_apply_button.clicked.connect(self.apply_machine_changes); self.progress_restore_button.clicked.connect(self.restore_machine_changes); self.progress_measured_button.clicked.connect(self.associate_progress_measurement)
         self.progress_segments=[]
         for index in range(10):
             segment=QLabel(str((index+1)*10)); segment.setAlignment(Qt.AlignCenter); segment.setFixedHeight(22); segment.setMinimumWidth(28); segment.setProperty("verified",False); segment.setStyleSheet("border:1px solid #777;border-radius:2px;font-size:8pt;padding:1px;background:#35384B;color:#BFC4D8")
@@ -180,6 +180,7 @@ class CorrectMainWindow(QMainWindow):
 
         action_row=QHBoxLayout(); action_row.setSpacing(8)
         action_row.addWidget(self.progress_preview_button)
+        action_row.addWidget(self.progress_cancel_preview_button)
         action_row.addWidget(self.progress_apply_button)
         action_row.addWidget(self.progress_restore_button)
         action_row.addWidget(self.progress_measured_button)
@@ -249,11 +250,34 @@ class CorrectMainWindow(QMainWindow):
             for column,text in enumerate(values): self.progress_history.setItem(row,column,QTableWidgetItem(text))
         pending=status=="preview_verified"; applied=status=="applied"; unsafe=(status in {"write_pending","restoring","restore_failed"} or self._apply_thread is not None or (pyaml and self.pyaml_workspace.thread is not None))
         self.progress_apply_button.setEnabled(pending and not unsafe)
+        self.progress_cancel_preview_button.setEnabled(pending and not unsafe)
         self.progress_restore_button.setEnabled(bool(record.get("restore_required")) and not unsafe)
         self.progress_preview_button.setEnabled(not unsafe and verified < 1.0 and status not in {"preview_verified"})
         self.progress_measured_button.setEnabled(status=="applied" and bool(history))
         self.progress_increment.setEnabled(not pending and not unsafe)
         self._populate_progress_magnets(record)
+
+    def cancel_machine_preview(self):
+        """Discard a read-only preview and return to editable correction settings."""
+        if self.backend_combo.currentData() == "pyaml":
+            try:
+                self.pyaml_workspace.cancel_preview()
+            except Exception as exc:
+                QMessageBox.warning(self, "Cannot cancel preview", str(exc))
+            return
+        transaction=getattr(self,"fullfit_transaction",None)
+        if transaction is None or not transaction.record or transaction.record.get("status")!="preview_verified":
+            return
+        self.fullfit_transaction=getattr(self,"_fullfit_before_preview",None)
+        self._fullfit_before_preview=None
+        self.correction_changes=()
+        self._populate_machine_changes(())
+        self.apply_button.setEnabled(False)
+        self.preview_apply_button.setEnabled(True)
+        self.preview_apply_button.setText("Preview machine changes")
+        self.apply_status.setText("Preview cancelled — no writes were made. Change the correction percentage and preview again.")
+        self._refresh_correction_progress()
+        self.statusBar().showMessage("Preview cancelled — correction settings are editable; no writes were made")
 
     def _progress_increment_changed(self, value):
         if (hasattr(self,"backend_combo") and self.backend_combo.currentData()=="pyaml"
@@ -921,6 +945,7 @@ class CorrectMainWindow(QMainWindow):
         # Preview is read-only. An applied pass may be continued only after
         # its complete live state has been independently verified.
         existing=getattr(self,"fullfit_transaction",None)
+        self._fullfit_before_preview=existing
         previous_record = None
         if existing is not None and existing.record is not None:
             status = existing.record.get("status")

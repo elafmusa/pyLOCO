@@ -247,7 +247,7 @@ def test_correction_progress_panel_advances_only_for_verified_readbacks():
     for control in (
         window.verified_percent,window.next_target_percent,
         window.progress_machine_status,window.progress_increment,
-        window.progress_preview_button,window.progress_apply_button,
+        window.progress_preview_button,window.progress_cancel_preview_button,window.progress_apply_button,
         window.progress_restore_button,window.progress_measured_button,
         window.correction_progress,*window.progress_segments,
     ):
@@ -265,6 +265,14 @@ def test_correction_progress_panel_advances_only_for_verified_readbacks():
     assert window.correction_progress.value()==10
     assert window.verified_percent.text()=="Last verified: 10%"
     assert window.progress_magnets.item(0,4).text()=="Not read yet"
+    assert window.progress_cancel_preview_button.isEnabled()
+    prior=SimpleNamespace(record={"status":"applied","cumulative_fraction":.1,"history":preview["history"],"items":[]})
+    window._fullfit_before_preview=prior
+    window.cancel_machine_preview()
+    assert window.fullfit_transaction is prior
+    assert window.progress_increment.isEnabled()
+    assert "no writes were made" in window.apply_status.text()
+    window.fullfit_transaction=SimpleNamespace(record=preview)
     applied={**preview,"status":"applied","history":preview["history"]+[
         {"timestamp_utc":"2026-10-24T00:01:00Z","cumulative_fraction":.2,
          "increment_fraction":.1,"execution_status":"verified"}]}

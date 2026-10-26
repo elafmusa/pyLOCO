@@ -467,6 +467,30 @@ def test_adapter_strength_get_accepts_control_precision_quantization(setup):
     assert record["history"][-1]["increment_fraction"]==pytest.approx(.1)
 
 
+def test_read_only_preview_can_be_cancelled_and_fraction_changed(setup):
+    record=setup.transaction.preview(setup.review)
+    assert record["status"]=="preview"
+    assert not setup.magnets["M1"].strength.writes
+    assert setup.transaction.cancel_preview() is None
+    assert setup.transaction.record is None
+    setup.review.set_global_scale(.25)
+    replacement=setup.transaction.preview(setup.review)
+    assert replacement["increment_fraction"]==pytest.approx(.25)
+    assert replacement["fraction"]==pytest.approx(.25)
+    assert not setup.magnets["M1"].strength.writes
+
+
+def test_cancel_next_preview_preserves_last_applied_step(setup):
+    setup.transaction.preview(setup.review)
+    applied=setup.transaction.apply(setup.review,confirmed=True)
+    writes=len(setup.magnets["M1"].strength.writes)
+    setup.transaction.preview(setup.review)
+    restored=setup.transaction.cancel_preview()
+    assert restored["status"]=="applied"
+    assert restored["fraction"]==applied["fraction"]==pytest.approx(.1)
+    assert len(setup.magnets["M1"].strength.writes)==writes
+
+
 def test_adapter_strength_get_waits_for_delayed_adapter_update(setup):
     strength=setup.magnets["M1"].strength
     state={"remaining":0,"old":strength.value}
