@@ -244,6 +244,8 @@ def test_dispersion_results_expose_physical_raw_rf_state_and_shift_views(app):
     window.dispersion_display.setCurrentIndex(window.dispersion_display.findData("physical"))
     assert window.results_tabs.currentWidget() is window.x_plot
     assert window.dispersion_display_label.text()=="Showing: physical dispersion"
+    assert window.x_plot.figure.axes[0].get_title().startswith("Physical horizontal dispersion")
+    assert len(window.x_plot.figure.axes[0].lines)==1  # measured curve only; model/residual have dedicated tabs
     assert "mm" in window.summary_x.text() and "Mean" in window.summary_x.text()
     window.dispersion_display.setCurrentIndex(window.dispersion_display.findData("raw"))
     assert window.results_tabs.currentWidget() is window.raw_x_plot

@@ -4687,8 +4687,6 @@ class MeasureMainWindow(QMainWindow):
             try:
                 mapping=self._model_mapping_kwargs(bpms=result.devices,hcorrectors=(),vcorrectors=())
                 model_x,model_y=model_dispersion(self.reference_model,result.devices,bpm_ordinals=mapping.get("bpm_ordinals"))
-                for canvas,measured,model_values,plane in ((self.x_plot,physical_x,model_x,"X"),(self.y_plot,physical_y,model_y,"Y")):
-                    ax=canvas.figure.axes[0]; ax.plot(model_values*1e3,"--",linewidth=1.5,label=f"MODEL D{plane.lower()} — reference lattice"); ax.plot((measured-model_values)*1e3,":",linewidth=1.2,label="Measured − MODEL"); ax.legend(); canvas.apply_theme()
                 for canvas,values,title,color in (
                     (self.dispersion_model_x_plot,model_x,"Reference-model horizontal dispersion Dₓ","#496FD8"),
                     (self.dispersion_model_y_plot,model_y,"Reference-model vertical dispersion Dᵧ","#8B5CF6"),
