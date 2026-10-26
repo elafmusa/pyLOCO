@@ -62,25 +62,30 @@ def _device_lookup(ring) -> dict[str, dict[str, list[int]]]:
     return result
 
 
-def _device_identity(measured_name: str, role: str) -> str | None:
-    """Return the optional legacy component-stripped device identity.
+def _device_identities(measured_name: str, role: str) -> tuple[tuple[str, str], ...]:
+    """Return supported role-specific suffix interpretations.
 
-    ``-B1L``/``-A1L`` are supported EBS component conventions, not mandatory
-    parts of corrector identity. Exact Device/FamName matching is attempted
-    before this compatibility interpretation.
+    ``-B1L``/``-A1L`` are component conventions and ``-H``/``-V`` are the
+    plane conventions used by older EBS measurement files.  Exact identity is
+    always attempted before either compatibility interpretation.
     """
-    if role == "bpm":return None
-    component = ROLE_COMPONENT[role]
-    suffix = f"-{component}"
-    return measured_name[:-len(suffix)] if measured_name.endswith(suffix) else None
+    suffixes = {
+        "horizontal_corrector": (("legacy_component", "-B1L"), ("plane_suffix", "-H")),
+        "vertical_corrector": (("legacy_component", "-A1L"), ("plane_suffix", "-V")),
+    }.get(role, ())
+    return tuple(
+        (method, measured_name[:-len(suffix)])
+        for method, suffix in suffixes
+        if measured_name.endswith(suffix) and len(measured_name) > len(suffix)
+    )
 
 
 def _identity_candidates(measured_name: str, role: str) -> tuple[tuple[str, str], ...]:
     """Return exact identity comparisons in documented precedence order."""
     candidates = [("exact_device", measured_name), ("exact_fam_name", measured_name)]
-    legacy = _device_identity(measured_name, role)
-    if legacy is not None:
-        candidates.extend((("legacy_component_device", legacy), ("legacy_component_fam_name", legacy)))
+    for interpretation, identity in _device_identities(measured_name, role):
+        candidates.extend(((f"{interpretation}_device", identity),
+                           (f"{interpretation}_fam_name", identity)))
     return tuple(candidates)
 
 
@@ -108,6 +113,8 @@ def _match_label(method: str) -> str:
         "exact_fam_name": "exact AT FamName",
         "legacy_component_device": "legacy component suffix interpreted, then exact AT Device",
         "legacy_component_fam_name": "legacy component suffix interpreted, then exact AT FamName",
+        "plane_suffix_device": "H/V plane suffix interpreted, then exact AT Device",
+        "plane_suffix_fam_name": "H/V plane suffix interpreted, then exact AT FamName",
     }.get(method, "no exact identity match")
 
 
@@ -157,7 +164,7 @@ def find_exact_device_mappings(ring, inventory: dict[str, list[str]], *,
                 "revalidated for exact identity and steering capability."
                 if status == "ambiguous" else
                 f"No exact identity match for measured {role_label} {measured_name!r}: no AT Device or "
-                "FamName matched (optional legacy -B1L/-A1L component interpretation was also checked)."
+                "FamName matched (role-compatible -B1L/-A1L and -H/-V suffix interpretations were also checked)."
             )
             if ordinal is not None:
                 lattice_name, element_class = _element_identity(ring[ordinal])
@@ -259,13 +266,15 @@ def find_hits(row):
     name = str(row.get("pyaml_device", row.get("measured_name", "")))
     role = str(row["role"])
     identities = [("Device", name), ("FamName", name)]
-    suffix = {{"horizontal_corrector": "-B1L", "vertical_corrector": "-A1L",
-               "normal_quadrupole": "-B2L", "skew_quadrupole": "-A2L",
-               "sextupole": "-B3L", "octupole": "-B4L",
-               "dipole": "-B1L"}}.get(role)
-    if suffix and name.endswith(suffix):
-        base = name[:-len(suffix)]
-        identities += [("Device", base), ("FamName", base)]
+    suffixes = {{"horizontal_corrector": ("-B1L", "-H"),
+                 "vertical_corrector": ("-A1L", "-V"),
+                 "normal_quadrupole": ("-B2L",), "skew_quadrupole": ("-A2L",),
+                 "sextupole": ("-B3L",), "octupole": ("-B4L",),
+                 "dipole": ("-B1L",)}}.get(role, ())
+    for suffix in suffixes:
+        if name.endswith(suffix) and len(name) > len(suffix):
+            base = name[:-len(suffix)]
+            identities += [("Device", base), ("FamName", base)]
     for attribute, identity in identities:
         hits = exact_hits(attribute, identity)
         if hits:
@@ -386,7 +395,7 @@ def validate_mapping(document: dict[str, Any], ring, inventory: dict[str, list[s
                     status, reason = "invalid", (
                         f"No exact identity match: measured {role_label} {name!r}; selected AT index {ordinal} (0-based); "
                         f"FamName={lattice_name!r}; Device={lattice_device!r}. Exact Device, exact FamName, "
-                        "and optional legacy -B1L/-A1L component interpretation all failed. Select the AT "
+                        "and role-compatible -B1L/-A1L and -H/-V suffix interpretations all failed. Select the AT "
                         "element with the matching Device or FamName."
                     )
                 elif not explicit and ambiguous_identity and not evidence:
