@@ -6450,22 +6450,30 @@ class MainWindow(QMainWindow):
             "required": True, "status": "validation_required",
             "issues": ["Measurement-device mapping changed; validation is required."],
         }
-        self._select_measurement_mapping_filter_after_operation(mapping)
-        scope_index = self.mapping_table_scope.findData("machine")
+        counts = measurement_mapping_counts(mapping)
+        mapping_complete = bool(counts["total"] and counts["mapped"] == counts["total"])
+        master_has_rows = bool((master or {}).get("mappings"))
+        # An incomplete measured-device mapping needs operator attention. Show
+        # those actionable rows immediately instead of switching to an empty
+        # complete-machine table, which made a successful partial match look
+        # as if no mapping had been performed.
+        target_scope = "machine" if mapping_complete and master_has_rows else "measurement"
+        scope_index = self.mapping_table_scope.findData(target_scope)
         if scope_index >= 0:
             self.mapping_table_scope.setCurrentIndex(scope_index)
         role_index = self.mapping_table_role_filter.findData("")
         if role_index >= 0:
             self.mapping_table_role_filter.setCurrentIndex(role_index)
-        all_index = self.measurement_mapping_filter.findData("all")
-        if all_index >= 0:
-            self.measurement_mapping_filter.setCurrentIndex(all_index)
+        target_filter = "all" if mapping_complete else "attention"
+        filter_index = self.measurement_mapping_filter.findData(target_filter)
+        if filter_index >= 0:
+            self.measurement_mapping_filter.setCurrentIndex(filter_index)
         self.measurement_mapping_search.clear()
         self._refresh_measurement_mapping_table(); self._refresh_measurement_mapping_feedback()
         self.measurement_mapping_table.setFocus(Qt.OtherFocusReason)
         self.measurement_mapping_table.scrollToTop()
         self._refresh_ui("Measurement-device mapping changed; validate before running FIT")
-        return measurement_mapping_counts(mapping)["mapped"] == measurement_mapping_counts(mapping)["total"]
+        return mapping_complete
 
     def _validated_mapping_fit_proposal(self) -> dict:
         """Return an ordered, revalidated BPM/H/V selection proposal.

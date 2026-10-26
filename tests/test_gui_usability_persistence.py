@@ -67,6 +67,31 @@ def test_reference_lattice_change_invalidates_saved_mapping_evidence(app):
     window.close()
 
 
+def test_incomplete_mapping_opens_actionable_measurement_rows(app, monkeypatch):
+    window = MainWindow()
+    mapping = {
+        "mappings": [
+            {"role": "bpm", "measured_name": "BPM1", "status": "mapped"},
+            {"role": "horizontal_corrector", "measured_name": "CH1", "status": "unresolved",
+             "reason": "No exact identity match"},
+        ],
+    }
+    monkeypatch.setattr(window, "_measurement_mapping_context", lambda: (
+        [], "reference.mat", {}, {"bpm": ["BPM1"], "horizontal_corrector": ["CH1"],
+                                   "vertical_corrector": []}, None,
+    ))
+    monkeypatch.setattr("pyLOCO.gui.main_window.find_exact_device_mappings", lambda *_args, **_kwargs: mapping)
+    monkeypatch.setattr(window, "_find_complete_machine_mapping", lambda *_args: {})
+
+    assert window.find_measurement_mappings() is False
+    assert window.mapping_table_scope.currentData() == "measurement"
+    assert window.measurement_mapping_filter.currentData() == "attention"
+    assert window.measurement_mapping_table.rowCount() == 1
+    assert window.measurement_mapping_table.item(0, 0).text() == "CH1"
+    window.project.modified = False
+    window.close()
+
+
 def test_use_validated_measurement_mapping_applies_exact_order_to_all_stages_and_gates_run(app, tmp_path, monkeypatch):
     class BPM:
         def __init__(self, name, device): self.FamName, self.Device = name, device
