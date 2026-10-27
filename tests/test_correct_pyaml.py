@@ -467,6 +467,66 @@ def test_adapter_strength_get_accepts_control_precision_quantization(setup):
     assert record["history"][-1]["increment_fraction"]==pytest.approx(.1)
 
 
+def test_undo_last_verified_step_preserves_earlier_step(setup):
+    setup.review.set_global_scale(.1)
+    setup.transaction.preview(setup.review)
+    setup.transaction.apply(setup.review, confirmed=True)
+    setup.transaction.preview(setup.review)
+    setup.transaction.apply(setup.review, confirmed=True)
+
+    record = setup.transaction.undo_last()
+
+    assert record["status"] == "applied"
+    assert record["fraction"] == pytest.approx(.1)
+    assert record["restore_required"] is True
+    assert record["history"][-1]["execution_status"] == "undo_verified"
+    assert record["history"][-1]["increment_fraction"] == pytest.approx(-.1)
+    by_name = {row["name"]: row for row in record["changes"]}
+    assert setup.magnets["M1"].strength.value == pytest.approx(by_name["M1"]["original"] + .1 * by_name["M1"]["full_delta_kl_m1"])
+    assert setup.magnets["M2"].strength.value == pytest.approx(by_name["M2"]["original"] + .1 * by_name["M2"]["full_delta_kl_m1"])
+
+
+def test_repeated_undo_reaches_baseline_without_full_restore(setup):
+    setup.review.set_global_scale(.1)
+    for _ in range(2):
+        setup.transaction.preview(setup.review)
+        setup.transaction.apply(setup.review, confirmed=True)
+
+    setup.transaction.undo_last()
+    record = setup.transaction.undo_last()
+
+    assert record["status"] == "restored"
+    assert record["fraction"] == 0
+    assert record["restore_required"] is False
+    assert setup.magnets["M1"].strength.value == pytest.approx(1)
+    assert setup.magnets["M2"].strength.value == pytest.approx(2)
+    assert setup.magnets["S1"].strength.value == pytest.approx(3)
+
+
+def test_failed_undo_restores_pre_undo_correction_state(setup):
+    setup.review.set_global_scale(.1)
+    setup.transaction.preview(setup.review)
+    applied = setup.transaction.apply(setup.review, confirmed=True)
+    applied_values = {row["name"]: row["target"] for row in applied["changes"]}
+    strength = setup.magnets["M1"].strength
+    failed = {"once": False}
+
+    def reject_first_undo(value):
+        if not failed["once"] and value != applied_values["M1"]:
+            failed["once"] = True
+            return True
+        return False
+
+    strength.fail = reject_first_undo
+    with pytest.raises(RuntimeError, match="pre-undo correction state restored"):
+        setup.transaction.undo_last()
+
+    assert setup.transaction.record["status"] == "applied"
+    assert setup.transaction.record["fraction"] == pytest.approx(.1)
+    assert all(setup.magnets[name].strength.value == pytest.approx(value)
+               for name, value in applied_values.items())
+
+
 def test_read_only_preview_can_be_cancelled_and_fraction_changed(setup):
     record=setup.transaction.preview(setup.review)
     assert record["status"]=="preview"

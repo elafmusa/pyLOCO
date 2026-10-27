@@ -226,6 +226,113 @@ class PyAMLCorrectionTransaction:
         self.persist()
         return self.record
 
+    def _verified_step_stack(self):
+        """Return the still-applied increments represented by the audit history."""
+        history = self.record.get("history", ()) if self.record else ()
+        steps = []
+        for event in history:
+            status = event.get("execution_status")
+            increment = float(event.get("increment_fraction", 0.0))
+            if status == "undo_verified":
+                if steps:
+                    steps.pop()
+            elif increment > 0 and status in {"verified", "measured"}:
+                steps.append(increment)
+        if not history and self.record and float(self.record.get("fraction", 0.0)) > 0:
+            # Compatibility with journals written before per-step history was
+            # introduced: the current cumulative fraction is one undoable step.
+            steps.append(float(self.record["fraction"]))
+        return steps
+
+    def undo_last(self):
+        """Undo one verified correction increment, never the whole baseline implicitly.
+
+        Every live value must still match the latest verified target.  If a
+        write or verification fails, magnets already touched by the undo are
+        returned to their pre-undo targets and verified before the error is
+        reported.
+        """
+        if not self.record or self.record.get("status") != "applied":
+            raise RuntimeError("No verified correction step is available to undo")
+        if not self.connection.allow_writes:
+            raise PermissionError("pyAML writes disabled")
+        if self.connection.identity() != self.record["identity"]["connection"]:
+            raise RuntimeError("Connection identity mismatch; undo blocked")
+        steps = self._verified_step_stack()
+        if not steps:
+            raise RuntimeError("No verified correction step is available to undo")
+        increment = steps[-1]
+        current_fraction = float(self.record["fraction"])
+        target_fraction = max(0.0, current_fraction - increment)
+        before = copy.deepcopy(self.record)
+        targets = {}
+        for row in self.record["changes"]:
+            live = self.connection.read(row["name"])
+            if not close(live, row["target"]):
+                raise RuntimeError(
+                    f"Stale adapter strength.get() value before undo: {row['name']}; "
+                    f"expected {row['target']:.12g}, returned {live:.12g}"
+                )
+            targets[row["name"]] = (
+                float(row["original"])
+                + float(row["full_delta_kl_m1"]) * target_fraction
+            )
+        self.record["status"] = "undo_pending"
+        self.persist()
+        touched = []
+        try:
+            for row in self.record["changes"]:
+                name = row["name"]
+                touched.append(name)
+                self.connection.write(name, targets[name])
+                row["readback"] = self._verified_get(name, targets[name])
+                row["status"] = "undo_verified"
+                self.persist()
+        except Exception as exc:
+            rollback_errors = []
+            prior = {row["name"]: row["target"] for row in before["changes"]}
+            for name in reversed(touched):
+                try:
+                    self.connection.write(name, prior[name])
+                    self._verified_get(name, prior[name])
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"{name}: {rollback_exc}")
+            if rollback_errors:
+                self.record["status"] = "restore_failed"
+                self.record["restore_required"] = True
+                self.record["restoration_errors"] = rollback_errors
+                self.persist()
+                raise RuntimeError(
+                    f"Undo failed: {exc}; pre-undo rollback failed: "
+                    + "; ".join(rollback_errors)
+                ) from exc
+            self.record = before
+            self.record["error"] = f"Undo failed and pre-undo state was restored: {exc}"
+            self.persist()
+            raise RuntimeError(
+                f"Undo failed: {exc}; pre-undo correction state restored"
+            ) from exc
+
+        for row in self.record["changes"]:
+            row["current"] = targets[row["name"]]
+            row["target"] = targets[row["name"]]
+            row["status"] = "applied" if target_fraction > 0 else "restored"
+        self.record["fraction"] = target_fraction
+        self.record["previous_fraction"] = target_fraction
+        self.record["increment_fraction"] = 0.0
+        self.record["status"] = "applied" if target_fraction > 0 else "restored"
+        self.record["restore_required"] = target_fraction > 0
+        self.record.setdefault("history", []).append(dict(
+            timestamp_utc=datetime.now(timezone.utc).isoformat(),
+            cumulative_fraction=target_fraction,
+            increment_fraction=-increment,
+            execution_status="undo_verified",
+            measurements={},
+        ))
+        self.record.pop("error", None)
+        self.persist()
+        return self.record
+
     def restore(self):
         if not self.pending:
             raise RuntimeError("No pending restoration")

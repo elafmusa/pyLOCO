@@ -560,6 +560,29 @@ class PyAMLCorrectionWidget(QWidget):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
                 self.start(self.transaction.restore,"Restoring original strengths — waiting for verified readbacks…")
 
+    def undo_last(self):
+        if not self.transaction or self.thread:
+            return
+        record = self.transaction.record or {}
+        if record.get("status") != "applied" or not self.transaction._verified_step_stack():
+            QMessageBox.information(self, "Nothing to undo", "No verified pyAML correction step is available to undo.")
+            return
+        increment = self.transaction._verified_step_stack()[-1]
+        current = float(record.get("fraction", 0.0))
+        target = max(0.0, current - increment)
+        if QMessageBox.question(
+            self,
+            "Undo last verified pyAML step?",
+            f"Return only the latest verified correction step from {current * 100:g}% "
+            f"to {target * 100:g}% cumulative?\n\n"
+            "Every current and resulting magnet strength will be checked through adapter strength.get(). "
+            "This does not restore the full baseline unless the latest step is the only applied step.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        ) == QMessageBox.Yes:
+            self.start(self.transaction.undo_last,
+                       "Undoing latest correction step — waiting for verified readbacks…")
+
     def recover(self):
         if not self.transaction:
             raise ValueError("Reconnect to the matching configuration before recovery")
@@ -613,7 +636,16 @@ class PyAMLCorrectionWidget(QWidget):
         self.refresh(); self.thread.start()
 
     def completed(self, record):
-        if record.get("status")=="applied":
+        latest=(record.get("history") or [{}])[-1]
+        if latest.get("execution_status")=="undo_verified":
+            self.status.setText(f"✓ LAST CORRECTION STEP UNDONE AND READBACK VERIFIED — {record['fraction'] * 100:.6g}% cumulative. Journal: {self.transaction.path}")
+            self.status.setStyleSheet("font-weight: 700; color: #22c55e;")
+            self.owner.statusBar().showMessage(
+                f"Last correction step undone and verified • {record['fraction'] * 100:g}% cumulative • "
+                f"{len(record.get('changes',()))} magnets",
+                15000,
+            )
+        elif record.get("status")=="applied":
             self.status.setText(f"✓ CORRECTION APPLIED AND READBACK VERIFIED — {record['fraction'] * 100:.6g}% cumulative. Journal: {self.transaction.path}")
             self.status.setStyleSheet("font-weight: 700; color: #22c55e;")
             self.owner.statusBar().showMessage(
