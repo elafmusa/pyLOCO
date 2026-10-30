@@ -1,6 +1,6 @@
 """
 formulas from
-A.Franchi (ESRF), Z.Marti (CELLS),
+A.Franchi (ESRF), Z.Marti (CELLS), Simone Maria Liuzzo (ESRF)
 "Analytic formulas for the rapid evaluation of the orbit response matrix and chromatic functions from lattice
 parameters in circular accelerators" arXiv:1711:06589v2 17 Apr 2018
 
