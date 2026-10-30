@@ -397,6 +397,12 @@
     "orm_convention": "raw bipolar orbit difference; X BPM rows then Y BPM rows; H columns then V columns",
     "dispersion_convention": "raw RF orbit difference; X then Y; negative RF state minus positive RF state",
     "rf_convention": "total bipolar separation 200 Hz",
+    "measurement_sha256": {
+      "orm": "c086b7cea36d90322be67aad77f28e7244310d0d5228a340a117b1237954c322",
+      "dispersion": "9536c784ca71808706c8c6bd9c7072112ccfe90a190c898da5817b25bd486b38",
+      "bpm_noise": "fc7a5ced1ddf87a2b9cd59a7ff787619011bfb9987925d0216b4f6e39767e6ce"
+    },
+    "rf_step_hz": 200.0,
     "units": {
       "orm": "m",
       "dispersion": "m",

@@ -4,6 +4,8 @@ from .correction import CorrectionPlan, CorrectionRecord, load_correction_plan, 
 from .measurement import (
     SCHEMA_VERSION,
     write_bpm_noise,
+    read_bpm_noise_review_annotations,
+    write_bpm_noise_review_annotations,
     write_dispersion,
     write_orm,
     validate_measurement_file,
@@ -22,6 +24,8 @@ __all__ = [
     "save_session",
     "validate_measurement_file",
     "write_bpm_noise",
+    "read_bpm_noise_review_annotations",
+    "write_bpm_noise_review_annotations",
     "write_dispersion",
     "write_orm",
 ]

@@ -4,7 +4,9 @@ import numpy as np
 import pyLOCO.pyloco as pyloco_module
 from pyLOCO.config import FitInitConfig, RMConfig
 from pyLOCO.pyloco import calculate_quads_dispersion_jacobian
-from pyLOCO.response_matrix import calculate_rf_response, response_matrix
+from pyLOCO.response_matrix import (
+    calculate_rf_response, corrector_steering_compatibility, response_matrix,
+)
 
 
 def _fodo_ring_with_correctors():
@@ -100,6 +102,35 @@ def test_tracking_orm_converts_distinct_finite_multipole_lengths_to_integrated_k
     assert np.vdot(tracking[:, 1], linear[:, 1]) > 0.0
     np.testing.assert_array_equal(horizontal.PolynomB, [0.0])
     np.testing.assert_array_equal(vertical.PolynomA, [0.0])
+
+
+def test_case_c_sextupoles_are_supported_steerers_and_match_linear_tracking_response():
+    ring = at.load_lattice("Examples/EBS/multistage_fit/data/betamodel.mat")
+    ring.disable_6d()
+    correctors = np.asarray(at.get_refpts(ring, "S[FIJ]2A*"), dtype=int)
+    bpms = np.asarray(at.get_refpts(ring, at.elements.Monitor), dtype=int)[:8]
+    assert len(correctors) == 32
+    assert [ring[int(correctors[0])].FamName, ring[int(correctors[-1])].FamName] == ["SJ2A", "SI2A"]
+    for plane in (0, 1):
+        compatible, representation = corrector_steering_compatibility(
+            ring[int(correctors[0])], plane, calculator="Numerical"
+        )
+        assert compatible
+        # pyAT exposes the sextupole dipole coefficients through its
+        # KickAngle compatibility property in this lattice/version.
+        assert representation == "AT KickAngle"
+
+    selected = [correctors[:1], correctors[-1:]]
+    kicks = [[1.0e-6], [1.0e-6]]
+    common = dict(
+        bpm_ords=bpms, cm_ords=selected, dkick=kicks, bidirectional=True,
+        includeDispersion=False, fixedpathlength=False,
+    )
+    linear = response_matrix(ring, config=RMConfig(calculator="Linear", **common))
+    numerical = response_matrix(ring, config=RMConfig(calculator="Numerical", **common))
+    np.testing.assert_allclose(numerical, linear, rtol=2e-5, atol=2e-12)
+    assert np.all(np.isfinite(linear))
+    assert linear.shape == numerical.shape == (16, 2)
 
 
 def test_tracking_orm_uses_integrated_polynomials_for_thin_correctors():

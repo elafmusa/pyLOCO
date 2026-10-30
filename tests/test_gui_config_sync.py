@@ -251,6 +251,8 @@ def test_jacobian_gui_controls_restore_and_disable_without_losing_values():
         config = window.project.loco_config
         config.rejection.quad_jacobian_calculator = "Analytical"
         config.rejection.skew_jacobian_calculator = "Analytical"
+        config.parameters.quads = True
+        config.parameters.skew_quads = True
         config.rejection.analytical_verbose = True
         config.rejection.analytical_implementation = "legacy"
         config.rejection.analytical_dispersion_calculator = "Tracking"

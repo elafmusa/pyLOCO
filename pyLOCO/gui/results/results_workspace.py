@@ -23,10 +23,13 @@ from .run_summary_view import RunSummaryView
 
 class ResultsWorkspace(QWidget):
     open_correct_requested=Signal()
+    results_availability_changed=Signal(bool)
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.loader = None
         self.base_loader = None
+        self._workflow_stage_index = 0
+        self._workflow_stage_count = 1
         title = QLabel("Results Workspace"); title.setObjectName("pageTitle")
         self.run_status_label = QLabel("No LOCO run has been started.")
         self.run_status_label.setWordWrap(True)
@@ -114,7 +117,10 @@ class ResultsWorkspace(QWidget):
         selector_row.addWidget(QLabel("View fitted state:"))
         selector_row.addWidget(self.iteration_selector)
         selector_row.addWidget(self.iteration_notice, 1)
-        self.open_correct_button=QPushButton("Open in pyLOCO Correct…"); self.open_correct_button.setEnabled(False); self.open_correct_button.clicked.connect(self.open_correct_requested.emit); selector_row.addWidget(self.open_correct_button)
+        self.open_correct_button=QPushButton("Choose result for pyLOCO Correct…")
+        self.open_correct_button.setAccessibleName("Choose FIT result for pyLOCO Correct")
+        self.open_correct_button.setToolTip("Choose Final or a specific FIT stage and iteration; the current result view is not assumed")
+        self.open_correct_button.setEnabled(False); self.open_correct_button.clicked.connect(self.open_correct_requested.emit); selector_row.addWidget(self.open_correct_button)
         layout = QVBoxLayout(self); layout.setContentsMargins(16, 14, 16, 16)
         layout.addWidget(title); layout.addLayout(monitor_row); layout.addWidget(self.compact_monitor)
         layout.addLayout(selector_row); layout.addWidget(self.tabs, 1)
@@ -125,6 +131,8 @@ class ResultsWorkspace(QWidget):
 
     def begin_run(self) -> None:
         self.loader = None
+        self.open_correct_button.setEnabled(False)
+        self.results_availability_changed.emit(False)
         self.log.clear_for_run()
         self.run_status_label.setText("Initializing LOCO fit…")
         self.run_iteration_label.setText("Preparing workflow")
@@ -225,6 +233,8 @@ class ResultsWorkspace(QWidget):
 
     def load_results(self, results_dir, *, runtime=None, workflow_stage: bool = False) -> None:
         if not workflow_stage:
+            self._workflow_stage_index = 0
+            self._workflow_stage_count = 1
             self.stage_selector.blockSignals(True)
             self.stage_selector.clear()
             self.stage_selector.blockSignals(False)
@@ -232,8 +242,12 @@ class ResultsWorkspace(QWidget):
             self.stage_selector.hide()
         path = Path(results_dir).expanduser()
         if not path.exists():
-            self.loader = None; self.run_status_label.setText(f"Saved results directory is unavailable: {path}"); return
+            self.loader = None; self.open_correct_button.setEnabled(False); self.results_availability_changed.emit(False); self.run_status_label.setText(f"Saved results directory is unavailable: {path}"); return
         self.base_loader = ResultsLoader(path, runtime=runtime)
+        if not workflow_stage:
+            self.files.set_workflow_stages([
+                {"index": 1, "name": "FIT run", "path": path},
+            ])
         entries = self.base_loader.iteration_entries
         self.iteration_selector.blockSignals(True)
         self.iteration_selector.clear()
@@ -249,6 +263,7 @@ class ResultsWorkspace(QWidget):
         self._select_iteration(self.iteration_selector.currentIndex())
         self.loader = self.loader or self.base_loader
         self.open_correct_button.setEnabled(True)
+        self.results_availability_changed.emit(True)
         log_path = path / "backend.log"
         if log_path.exists():
             try: self.log.set_log(log_path.read_text(encoding="utf-8"))
@@ -269,6 +284,7 @@ class ResultsWorkspace(QWidget):
         if not checkpoints:
             raise ValueError("The FIT workflow session contains no complete stage checkpoints.")
         preferred = str(Path(preferred_result).resolve()) if preferred_result else ""
+        self._workflow_stage_count = len(checkpoints)
         selected = len(checkpoints) - 1
         self.stage_selector.blockSignals(True)
         self.stage_selector.clear()
@@ -282,6 +298,11 @@ class ResultsWorkspace(QWidget):
         self.stage_selector.setCurrentIndex(selected)
         self.stage_selector.blockSignals(False)
         self.stage_selector_label.show(); self.stage_selector.show()
+        self.files.set_workflow_stages([
+            {"index": position + 1, "name": checkpoint.stage_name,
+             "path": checkpoint.results_dir}
+            for position, checkpoint in enumerate(checkpoints)
+        ])
         self._select_stage(selected)
 
     def _select_stage(self, index: int) -> None:
@@ -289,6 +310,7 @@ class ResultsWorkspace(QWidget):
             return
         results_dir = self.stage_selector.itemData(index)
         if results_dir:
+            self._workflow_stage_index = index
             self.load_results(results_dir, workflow_stage=True)
 
     def _select_iteration(self, index: int) -> None:
@@ -296,8 +318,32 @@ class ResultsWorkspace(QWidget):
             return
         iteration = self.iteration_selector.itemData(index)
         self.loader = self.base_loader.for_iteration(iteration)
+        self.overview.set_comparison_context(
+            stage_index=self._workflow_stage_index,
+            stage_count=self._workflow_stage_count,
+        )
         for view in (self.overview, self.orm, self.optics, self.parameters, self.summary, self.svd, self.files):
             view.set_loader(self.loader)
+
+    def correction_result_choices(self) -> list[dict]:
+        """Return completed stages and their explicit fitted states for Correct."""
+        stage_sources=[]
+        if not self.stage_selector.isHidden() and self.stage_selector.count():
+            for index in range(self.stage_selector.count()):
+                path=self.stage_selector.itemData(index)
+                if path:stage_sources.append((self.stage_selector.itemText(index),Path(path)))
+        elif self.base_loader is not None:
+            stage_sources.append(("FIT result",Path(self.base_loader.result_dir)))
+        choices=[]
+        for stage_position,(stage_label,path) in enumerate(stage_sources):
+            if not path.is_dir():continue
+            loader=ResultsLoader(path)
+            states=[{"label":str(entry.get("label") or "Final"),"iteration":entry.get("iteration")}
+                    for entry in loader.iteration_entries]
+            if states:
+                choices.append({"stage_index":stage_position,"stage_label":stage_label,
+                                "results_dir":str(path.resolve()),"states":states})
+        return choices
 
     def fail_run(self, *, cancelled: bool = False) -> Path | None:
         self.run_progress.setRange(0, 100); self.run_progress.setValue(self._last_progress_value)

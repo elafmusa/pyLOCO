@@ -57,6 +57,10 @@ class CorrectItem:
         return None if value is None else float(value)
 
     @property
+    def control_is_integrated(self) -> bool:
+        return str(self.metadata.get("control_component", "")).upper() in {"B2L", "A2L"}
+
+    @property
     def integrated_recommended_delta(self) -> float | None:
         length = self.magnetic_length_m
         return None if length is None else self.recommended_machine_delta * length
@@ -89,8 +93,34 @@ class CorrectItem:
         return self.recommended_machine_delta * self.global_scale * self.individual_scale if self.included else 0.0
 
     @property
+    def current_gradient_value(self) -> float | None:
+        """Current physical K [m^-2], normalized from KL when required."""
+        if self.machine_value is None:
+            return None
+        if not self.control_is_integrated:
+            return self.machine_value
+        length = self.magnetic_length_m
+        return None if length is None or length <= 0 else self.machine_value / length
+
+    @property
+    def current_integrated_value(self) -> float | None:
+        """Current physical KL [m^-1], integrated from K when required."""
+        if self.machine_value is None:
+            return None
+        if self.control_is_integrated:
+            return self.machine_value
+        length = self.magnetic_length_m
+        return None if length is None else self.machine_value * length
+
+    @property
+    def target_integrated_value(self) -> float | None:
+        current = self.current_integrated_value
+        delta = self.integrated_final_delta
+        return None if current is None or delta is None else current + delta
+
+    @property
     def target_value(self) -> float | None:
-        baseline=self.machine_value if self.machine_value is not None else self.initial_value
+        baseline=self.current_gradient_value if self.machine_value is not None else self.initial_value
         return None if baseline is None else baseline + self.final_delta
 
     @property
@@ -131,7 +161,8 @@ class CorrectItem:
 
     def warnings(self, thresholds: WarningThresholds) -> tuple[str, ...]:
         result=[]; relative=abs(self.relative_percent or 0.0)
-        if self.metadata.get("mapping_status") in {"unmapped","ambiguous","duplicate"}:result.append(f"mapping_{self.metadata['mapping_status']}")
+        mapping_status=str(self.metadata.get("mapping_status","unmapped"))
+        if mapping_status != "mapped":result.append(f"mapping_{mapping_status}")
         if relative >= thresholds.serious_relative_percent: result.append("serious_relative_correction")
         elif relative >= thresholds.noteworthy_relative_percent: result.append("noteworthy_relative_correction")
         if self.sign_difference: result.append("sign_difference")
@@ -145,11 +176,19 @@ class CorrectionReview:
     """Mutable dry-run review state; raw corrections are never modified."""
 
     def __init__(self, items: Iterable[CorrectItem], source_result: str, *, global_scale: float = .1,
-                 thresholds: WarningThresholds | None = None, comments: str = "") -> None:
+                 thresholds: WarningThresholds | None = None, comments: str = "",
+                 application_scope: str = "all") -> None:
         self.items=list(items); self.source_result=str(source_result); self.global_scale=float(global_scale)
+        self.machine_mapping=(self.items[0].metadata.get("machine_mapping") or {}) if self.items else {}
+        for item in self.items:item.metadata.pop("machine_mapping",None)
         self.thresholds=thresholds or WarningThresholds(); self.comments=comments
+        self.application_scope = application_scope if application_scope in {"all","normal_quadrupole","skew_quadrupole"} else "all"
         for item in self.items: item.global_scale=self.global_scale
         self._raw_snapshot=tuple(item.raw_fitted_delta for item in self.items)
+
+    def applies_to(self, item: CorrectItem) -> bool:
+        """Return whether an included item belongs to the operator-selected write scope."""
+        return bool(item.included and (self.application_scope == "all" or item.correction_type == self.application_scope))
 
     def set_global_scale(self, value: float) -> None:
         if not math.isfinite(value) or value < 0: raise ValueError("Global correction fraction must be finite and non-negative")
@@ -185,7 +224,9 @@ class CorrectionReview:
             records.append(CorrectionRecord(item.correction_type,item.name,item.lattice_ordinal,item.unit,float(item.initial_value),item.raw_fitted_delta,item.recommended_machine_delta,item.individual_scale,None,item.family,metadata,item.magnetic_length_m,item.integrated_recommended_delta))
             states[str(item.index)]={"included":item.included,"exclusion_reason":item.exclusion_reason}
         provenance={key:self.items[0].metadata.get(key) for key in ("source_results_directory","source_iteration","source_state","fit_timestamp","measurement_session") if self.items and self.items[0].metadata.get(key) is not None}
-        return CorrectionPlan(plan_id,self.source_result,tuple(records),self.global_scale,"dry_run",self.comparison(),{"created_utc":datetime.now(timezone.utc).isoformat(),"comments":self.comments,"warning_thresholds":asdict(self.thresholds),"record_states":states,"source_provenance":provenance,"safety":"OFFLINE DRY RUN — no machine setpoints changed"})
+        if self.machine_mapping:
+            provenance["machine_mapping"] = self.machine_mapping
+        return CorrectionPlan(plan_id,self.source_result,tuple(records),self.global_scale,"dry_run",self.comparison(),{"created_utc":datetime.now(timezone.utc).isoformat(),"comments":self.comments,"application_scope":self.application_scope,"warning_thresholds":asdict(self.thresholds),"record_states":states,"source_provenance":provenance,"safety":"OFFLINE DRY RUN — no machine setpoints changed"})
 
     @classmethod
     def from_plan(cls, plan: CorrectionPlan) -> "CorrectionReview":
@@ -196,13 +237,14 @@ class CorrectionReview:
                 meta["magnetic_length_m"] = record.magnetic_length_m
             meta={**source_provenance,**meta}; target_current=meta.pop("target_current_ampere",None); machine_value=meta.pop("machine_value",None)
             items.append(CorrectItem(index,record.correction_type,record.name,record.lattice_ordinal,record.unit,record.initial_value,meta.pop("fitted_value",None),record.raw_fitted_delta,record.recommended_machine_delta,str(meta.pop("sign_convention","Loaded correction-plan convention")),record.family,meta.pop("control_name",None),plan.global_scale,record.individual_scale,included,reason,meta.pop("current_ampere",None),meta.pop("ampere_per_unit",None),meta.pop("min_current_ampere",None),meta.pop("max_current_ampere",None),meta.pop("calibration_difference_percent",None),bool(meta.pop("sign_difference",False)),meta,machine_value,target_current))
-        return cls(items,plan.source_result,global_scale=plan.global_scale,comments=str(plan.metadata.get("comments","")))
+        return cls(items,plan.source_result,global_scale=plan.global_scale,comments=str(plan.metadata.get("comments","")),application_scope=str(plan.metadata.get("application_scope","all")))
 
 
 def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
-    loader=ResultsLoader(path,iteration=iteration); result=[]; correction=loader.quadrupole_corrections; provenance={"source_results_directory":str(loader.result_dir),"source_iteration":iteration,"source_state":"Final" if iteration is None else f"Iteration {iteration}","fit_timestamp":loader.summary.get("completed_utc",loader.summary.get("timestamp")),"measurement_session":loader.request.get("measurement_session",{})}
+    loader=ResultsLoader(path,iteration=iteration); result=[]; correction=loader.quadrupole_corrections; provenance={"source_results_directory":str(loader.result_dir),"source_iteration":iteration,"source_state":"Final" if iteration is None else f"Iteration {iteration}","fit_timestamp":loader.summary.get("completed_utc",loader.summary.get("timestamp")),"measurement_session":loader.request.get("measurement_session",{}),"machine_mapping":loader.request.get("machine_mapping",{})}
     lengths_by_ordinal: dict[int, float] = {}
     common_names_by_ordinal: dict[int, str] = {}
+    lattice_identity_by_ordinal: dict[int, dict[str, Any]] = {}
     skew_lengths: list[float] = []
     legacy_strengths = loader.result_dir / "correction" / "quad_skew_deltas_lengths.json"
     if legacy_strengths.exists():
@@ -221,21 +263,25 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
     # the optional legacy correction diagnostics were not requested.  Use
     # that authoritative lattice metadata so integrated-strength controls do
     # not depend on a historical sidecar JSON file.
-    if not lengths_by_ordinal:
-        lattice_candidates = [
-            loader.result_dir / "final_lattice.mat",
-            loader.result_dir / "ring_pyloco.mat",
-        ]
+    if not lengths_by_ordinal or not lattice_identity_by_ordinal:
+        # Identity comes from the original reference lattice first.  The
+        # fitted lattice is a numerical state and is only a fallback if the
+        # original input is no longer available.
+        lattice_candidates = []
         request_lattice = loader.request.get("lattice_path")
         if request_lattice:
-            lattice_candidates.append(Path(request_lattice).expanduser())
-        for lattice_path in lattice_candidates:
-            if not lattice_path.is_file():
+            lattice_candidates.append((loader._resolve_reference(request_lattice), True))
+        lattice_candidates.extend(((loader.result_dir / "final_lattice.mat", False),
+                                   (loader.result_dir / "ring_pyloco.mat", False)))
+        for lattice_path, is_reference in lattice_candidates:
+            if lattice_path is None or not lattice_path.is_file():
                 continue
             try:
-                import at
-
-                ring = at.load_lattice(str(lattice_path))
+                if is_reference:
+                    ring = loader._load_reference_lattice(lattice_path)
+                else:
+                    import at
+                    ring = at.load_lattice(str(lattice_path))
                 lengths_by_ordinal = {
                     int(index): float(length)
                     for index, element in enumerate(ring)
@@ -244,18 +290,53 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
                     and float(length) > 0
                 }
                 common_names_by_ordinal = {}
+                lattice_identity_by_ordinal = {}
                 for index, element in enumerate(ring):
-                    name = (
-                        getattr(element, "CommonName", None)
-                        or getattr(element, "Device", None)
-                        or getattr(element, "Name", None)
-                    )
-                    if name:
-                        common_names_by_ordinal[int(index)] = str(name)
+                    fam_name = str(getattr(element, "FamName", "") or "")
+                    device = str(getattr(element, "Device", "") or "")
+                    common_name = str(getattr(element, "CommonName", "") or "")
+                    lattice_identity_by_ordinal[int(index)] = {
+                        "lattice_fam_name": fam_name,
+                        "lattice_device": device,
+                        "lattice_common_name": common_name,
+                        "lattice_device_defined": bool(device),
+                        "lattice_identity_source": (
+                            "original AT reference lattice" if is_reference else "saved fitted AT lattice"
+                        ),
+                        "element_class": type(element).__name__,
+                    }
+                    if common_name:
+                        common_names_by_ordinal[int(index)] = common_name
             except Exception:
                 continue
             if lengths_by_ordinal:
                 break
+    master_mapping = loader.request.get("machine_mapping") or {}
+    master_rows = master_mapping.get("mappings", ()) if isinstance(master_mapping, dict) else ()
+    mapped_identity = {
+        (str(row.get("role") or ""), row.get("lattice_ordinal")): row
+        for row in master_rows if isinstance(row, dict) and type(row.get("lattice_ordinal")) is int
+    }
+
+    def enrich_identity(metadata, correction_type, ordinal):
+        ordinal = None if ordinal is None else int(ordinal)
+        if ordinal in lattice_identity_by_ordinal:
+            metadata.update(lattice_identity_by_ordinal[ordinal])
+        row = mapped_identity.get((correction_type, ordinal))
+        if row:
+            # The original lattice wins when it was readable; the retained
+            # mapping supplies provenance and is an authoritative fallback.
+            metadata.setdefault("lattice_fam_name", str(row.get("lattice_fam_name") or ""))
+            metadata.setdefault("lattice_device", str(row.get("lattice_device") or ""))
+            metadata.setdefault("lattice_common_name", str(row.get("lattice_common_name") or ""))
+            metadata.setdefault("lattice_device_defined", bool(row.get("lattice_device")))
+            metadata["saved_mapping_status"] = str(row.get("status") or "")
+            metadata["saved_mapping_identity_match"] = str(row.get("identity_match") or "")
+            metadata["saved_mapping_evidence"] = str(row.get("evidence") or row.get("identity_evidence") or "")
+            metadata["saved_mapping_provenance"] = str(
+                row.get("provenance") or master_mapping.get("mapping_provenance") or "Complete Machine Mapping")
+            metadata["physical_element_type"] = str(row.get("physical_element_type") or "")
+        return row
     if correction is not None:
         # ResultsLoader can expose the expanded physical-quadrupole
         # correction directly. For family-mode runs, enrich those rows
@@ -307,6 +388,7 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
             family = family_by_ordinal.get(ordinal)
 
             metadata = dict(provenance)
+            enrich_identity(metadata, "normal_quadrupole", ordinal)
             if ordinal in lengths_by_ordinal:
                 metadata["magnetic_length_m"] = lengths_by_ordinal[ordinal]
             if ordinal in common_names_by_ordinal:
@@ -468,6 +550,7 @@ def _result_items(path: Path,iteration: int|None=None) -> list[CorrectItem]:
             identity=loader.parameter_identity(block.key,i); initial=None if block.baseline is None else float(block.baseline[i]); raw=float(value)-(initial or 0.0)
             metadata = dict(provenance)
             ordinal = identity.get("lattice_ordinal")
+            enrich_identity(metadata, type_map[block.key], ordinal)
             if ordinal is not None and int(ordinal) in lengths_by_ordinal:
                 metadata["magnetic_length_m"] = lengths_by_ordinal[int(ordinal)]
             elif block.key == "skew_quads" and i < len(skew_lengths) and skew_lengths[i] > 0:

@@ -2,6 +2,7 @@ import json
 import sys
 import types
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -106,6 +107,249 @@ def test_old_final_only_results_remain_loadable(tmp_path):
     np.testing.assert_allclose(loader.parameter_vector, [1.0, 2.0])
 
 
+def test_results_loader_uses_recorded_iteration_start_without_inference(tmp_path):
+    records = [
+        {"iteration": 1, "chi2_before": 100.0, "chi2_after": 80.0},
+        # Deliberately differs from iteration 1's end: the GUI must not infer 80.
+        {"iteration": 2, "chi2_before": 75.0, "chi2_after": 50.0},
+    ]
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "initial_chi2": 100.0,
+        "chi2_history": [80.0, 50.0],
+        "iteration_metrics": records,
+    }))
+
+    final = ResultsLoader(tmp_path)
+    iteration_1 = ResultsLoader(tmp_path, iteration=1)
+    assert final.stage_initial_chi2 == 100.0
+    assert final.selected_iteration_chi2_before == 75.0
+    assert final.selected_iteration_chi2_after == 50.0
+    assert iteration_1.selected_iteration_chi2_before == 100.0
+    assert iteration_1.selected_iteration_chi2_after == 80.0
+
+
+def test_results_overview_comparison_levels_and_missing_historical_start(tmp_path):
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "initial_chi2": 100.0,
+        "chi2_history": [80.0, 50.0],
+        "iteration_metrics": [
+            {"iteration": 1, "chi2_before": 100.0, "chi2_after": 80.0},
+            {"iteration": 2, "chi2_before": 75.0, "chi2_after": 50.0},
+        ],
+    }))
+    from pyLOCO.gui.results.overview_view import OverviewView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    view = OverviewView()
+    view.set_loader(ResultsLoader(tmp_path))
+
+    # Current stage is the default: 100 -> 50.
+    assert view.comparison_selector.currentData() == "stage"
+    assert view.metrics["initial"].value.text() == "1.000e+02"
+    assert view.metrics["final"].value.text() == "5.000e+01"
+
+    view.comparison_selector.setCurrentIndex(0)
+    assert view.metrics["initial"].value.text() == "7.500e+01"
+    assert view.metrics["final"].value.text() == "5.000e+01"
+
+    # Cross-stage original-reference comparison is deliberately unavailable.
+    view.set_comparison_context(stage_index=1, stage_count=2)
+    view.comparison_selector.setCurrentIndex(2)
+    assert view.metrics["initial"].value.text() == "Not available"
+    assert "fixed-definition" in view.comparison_definition.text()
+
+    # Historical metrics lacking chi2_before must remain explicit.
+    legacy = tmp_path / "legacy-metrics"
+    legacy.mkdir()
+    (legacy / "summary.json").write_text(json.dumps({
+        "chi2_history": [4.0],
+        "iteration_metrics": [{"iteration": 1, "chi2_after": 4.0}],
+    }))
+    view.set_comparison_context(stage_index=0, stage_count=1)
+    view.set_loader(ResultsLoader(legacy))
+    view.comparison_selector.setCurrentIndex(0)
+    assert view.metrics["initial"].value.text() == "Not recorded"
+    view.close()
+
+
+def test_stage_initial_selection_uses_recorded_initial_chi2(tmp_path):
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "initial_chi2": 123.0,
+        "chi2_history": [80.0],
+        "iteration_metrics": [{"iteration": 1, "chi2_before": 123.0, "chi2_after": 80.0}],
+    }))
+    iterations = tmp_path / "iterations"
+    (iterations / "iteration_000").mkdir(parents=True)
+    (iterations / "manifest.json").write_text(json.dumps({
+        "iterations": [{"iteration": 0, "directory": "iteration_000"}],
+        "run_status": "completed",
+    }))
+    from pyLOCO.gui.results.overview_view import OverviewView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    loader = ResultsLoader(tmp_path).for_iteration(0)
+    view = OverviewView(); view.set_loader(loader)
+    assert view.status.text() == "Viewing stage initial model (before fitting)"
+    assert view.metrics["initial"].value.text() == "1.230e+02"
+    assert view.metrics["final"].value.text() == "1.230e+02"
+    view.comparison_selector.setCurrentIndex(0)
+    assert view.metrics["initial"].value.text() == "Not recorded"
+    assert view.metrics["final"].value.text() == "1.230e+02"
+    assert "no previous optimizer iteration" in view.comparison_definition.text().lower()
+    view.close()
+
+
+def test_final_iteration_uses_root_svd_spectrum_and_reopens_without_refit(tmp_path):
+    """The completed final state owns the root spectrum; earlier states do not."""
+    final_spectrum = np.asarray([9.0, 3.0, 1.0])
+    np.savez_compressed(
+        tmp_path / "loco_results.npz",
+        singular_values=final_spectrum,
+        orm_model=np.zeros((4, 2)),
+        chi2_history=np.asarray([5.0]),
+    )
+    (tmp_path / "summary.json").write_text(json.dumps({
+        "initial_chi2": 10.0, "chi2_history": [5.0], "blocks": {},
+    }))
+    (tmp_path / "run_request.json").write_text(json.dumps({
+        "backend_mapping": {
+            "LOCOOptions": {"show_svd_plot": True, "svd_selection_method": "threshold"},
+            "MachineElements": {},
+        },
+    }))
+    iterations = tmp_path / "iterations"
+    for number in (0, 1):
+        directory = iterations / f"iteration_{number:03d}"
+        directory.mkdir(parents=True)
+        (directory / "iteration.json").write_text(json.dumps({
+            "iteration": number, "completed": True, "chi2_before": 10.0,
+            "chi2_after": 10.0 / (number + 1),
+        }))
+        # A local final-iteration value must not override the authoritative
+        # post-run spectrum saved at the root.
+        arrays = {"orm_model": np.zeros((4, 2))}
+        if number == 1:
+            arrays["singular_values"] = np.asarray([0.25])
+        np.savez_compressed(directory / "loco_results.npz", **arrays)
+    (iterations / "manifest.json").write_text(json.dumps({
+        "run_status": "completed",
+        "iterations": [
+            {"iteration": 0, "directory": "iteration_000"},
+            {"iteration": 1, "directory": "iteration_001"},
+        ],
+    }))
+
+    from pyLOCO.gui.results.results_workspace import ResultsWorkspace
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    workspace = ResultsWorkspace()
+    workspace.load_results(tmp_path)
+    assert workspace.iteration_selector.currentText() == "Iteration 1 / Final"
+    np.testing.assert_array_equal(workspace.loader.svd_metadata["spectrum"], final_spectrum)
+    assert Path(workspace.loader.svd_metadata["spectrum_source"]) == tmp_path / "loco_results.npz"
+    assert "final-run artifact" in workspace.svd.note.text()
+
+    workspace.iteration_selector.setCurrentIndex(0)
+    app.processEvents()
+    assert workspace.loader.iteration == 0
+    assert workspace.loader.svd_metadata["spectrum"] is None
+    assert "not persisted" in workspace.svd.note.text()
+    workspace.close()
+
+    # Reopening the saved result performs no backend calculation and resolves
+    # the same persisted root artifact again.
+    reopened = ResultsWorkspace()
+    reopened.load_results(tmp_path)
+    np.testing.assert_array_equal(reopened.loader.svd_metadata["spectrum"], final_spectrum)
+    assert reopened.iteration_selector.currentText() == "Iteration 1 / Final"
+    reopened.close()
+
+
+def test_svd_view_has_readable_log_axis_for_narrow_spectrum():
+    from pyLOCO.gui.results.svd_view import SvdView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+
+    loader = SimpleNamespace(
+        svd_metadata={
+            "method": "threshold", "threshold": 1e-7, "rank": 3,
+            "measurement_values": 6, "fitted_dofs": 3,
+            "spectrum": np.asarray([100.0, 100.0, 100.0]),
+            "spectrum_source": "/tmp/result/loco_results.npz",
+        },
+        jacobian_available=False,
+        jacobian_metadata={},
+        result_dir=Path("/tmp/result"),
+    )
+    view = SvdView(); view.set_loader(loader)
+    axis = view.plot.figure.axes[0]
+    assert view.plot.minimumHeight() == 300
+    assert axis.get_yscale() == "log"
+    assert axis.get_title() == "Singular-value spectrum"
+    cutoff_lines=[line for line in axis.lines if line.get_label().startswith("Threshold cutoff =")]
+    assert cutoff_lines == []
+    assert any("below visible spectrum" in text.get_text() for text in axis.texts)
+    assert "Absolute cutoff: 1e-05" in view.note.text()
+    assert view.values["included"].text() == "3"
+    assert view.values["rejected"].text() == "0"
+    assert view.values["absolute_cutoff"].text() == "1e-05"
+    low, high = axis.get_ylim()
+    assert low < 100.0 < high
+    assert len(axis.get_yticks()) <= 7
+    view.close()
+
+
+def test_svd_view_reports_values_omitted_from_log_axis():
+    from pyLOCO.gui.results.svd_view import SvdView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+
+    loader = SimpleNamespace(
+        svd_metadata={
+            "method": "threshold", "threshold": 1e-7, "rank": 1,
+            "measurement_values": 3, "fitted_dofs": 1,
+            "spectrum": np.asarray([4.0, 0.0, np.nan]),
+            "spectrum_source": "/tmp/result/loco_results.npz",
+        },
+        jacobian_available=False,
+        jacobian_metadata={},
+        result_dir=Path("/tmp/result"),
+    )
+    view = SvdView(); view.set_loader(loader)
+    plotted = next(
+        line for line in view.plot.figure.axes[0].lines
+        if line.get_label().startswith("Included (")
+    ).get_ydata()
+    assert plotted[0] == 4.0
+    assert np.isnan(plotted[1:]).all()
+    assert "2 zero or non-finite value(s)" in view.note.text()
+    view.close()
+
+
+def test_svd_view_separates_included_and_cut_singular_values():
+    from pyLOCO.gui.results.svd_view import SvdView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    loader = SimpleNamespace(
+        svd_metadata={
+            "method": "rank", "threshold": None, "rank": 2,
+            "measurement_values": 8, "fitted_dofs": 4,
+            "spectrum": np.asarray([10.0, 2.0, .5, .1]),
+            "spectrum_source": "/tmp/result/loco_results.npz",
+        },
+        jacobian_available=False, jacobian_metadata={}, result_dir=Path("/tmp/result"),
+    )
+    view = SvdView(); view.set_loader(loader)
+    axis = view.plot.figure.axes[0]
+    assert view.values["included"].text() == "2"
+    assert view.values["rejected"].text() == "2"
+    labels = {line.get_label() for line in axis.lines}
+    assert "Included (2)" in labels
+    assert "Cut (2)" in labels
+    assert "Retained rank = 2" in labels
+    view.close()
+
+
 def test_results_workspace_selector_switches_all_views(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "at", types.SimpleNamespace(
         save_lattice=lambda ring, path: Path(path).write_text(str(ring.scale))))
@@ -178,9 +422,109 @@ def test_results_workspace_switches_workflow_stages_and_their_iterations(tmp_pat
     assert workspace.stage_selector.currentText() == "Stage 2 — Normal optics"
     assert workspace.iteration_selector.count() == 3
     assert workspace.iteration_selector.currentText() == "Iteration 2 / Final"
+    assert workspace.overview.comparison_selector.currentData() == "stage"
+    assert workspace.overview.metrics["initial"].value.text() == "1.000e+01"
+    workspace.overview.comparison_selector.setCurrentIndex(2)
+    assert workspace.overview.metrics["initial"].value.text() == "Not available"
     workspace.stage_selector.setCurrentIndex(0)
     assert workspace.iteration_selector.count() == 2
     assert workspace.iteration_selector.currentText() == "Iteration 1 / Final"
+    assert workspace.overview.metrics["initial"].value.text() == "1.000e+01"
+    assert workspace.overview.metrics["final"].value.text() == "5.000e+00"
     workspace.iteration_selector.setCurrentIndex(0)
     assert workspace.loader.iteration == 0
+    workspace.close()
+
+
+def test_files_view_browses_and_exports_every_stage_and_iteration(tmp_path, monkeypatch):
+    """The Files tab keeps stage-final and iteration artifacts associated."""
+    monkeypatch.setitem(sys.modules, "at", types.SimpleNamespace(
+        save_lattice=lambda ring, path: Path(path).write_text(str(ring.scale))))
+    request = _request(tmp_path)
+    stage_dirs = []
+    for stage_number in (1, 2):
+        stage_dir = tmp_path / f"stage-{stage_number}"
+        stage_dir.mkdir()
+        for number in (0, 1):
+            _save_iteration_snapshot(
+                stage_dir, _record(number, [stage_number, number], 1 + number / 10),
+                diagnostics={"iteration": number, "chi2_after": 1.0 / (number + 1)},
+                reference_ring=_Ring(1.0), measured={"dispersion_supplied": False},
+                include_dispersion=False, bpm_ords=[0, 1], rf_step=1.0,
+                rf_frequency=1.0, momentum_compaction=1.0, request=request)
+        _write_iteration_manifest(stage_dir, run_status="completed")
+        (stage_dir / "ring_pyloco.mat").write_text(f"stage {stage_number}")
+        (stage_dir / "loco_results.npz").write_bytes(
+            (stage_dir / "iterations" / "iteration_001" / "loco_results.npz").read_bytes())
+        (stage_dir / "optics_results.npz").write_bytes(
+            (stage_dir / "iterations" / "iteration_001" / "optics_results.npz").read_bytes())
+        for name in ("fit_dict.pkl", "fit_results.npy", "blocks.pkl"):
+            (stage_dir / name).touch()
+        stage_dirs.append(stage_dir)
+
+    from pyLOCO.gui.results.files_view import FilesView
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    view = FilesView()
+    view.set_workflow_stages([
+        {"index": 1, "name": "Alignment", "path": stage_dirs[0]},
+        {"index": 2, "name": "Optics", "path": stage_dirs[1]},
+    ])
+    assert view.stage_selector.itemText(0) == "All stages"
+    assert {record.stage for record in view.records} == {1, 2}
+    for stage in (1, 2):
+        for iteration in (0, 1):
+            scoped = [record for record in view.records
+                      if record.stage == stage and record.iteration == iteration]
+            assert {record.category for record in scoped} >= {
+                "Fitted lattices", "ORM", "Optics", "Parameters", "Diagnostics"}
+            lattice = next(record for record in scoped if record.category == "Fitted lattices")
+            assert lattice.path == stage_dirs[stage - 1] / "iterations" / f"iteration_{iteration:03d}" / "fitted_lattice.mat"
+    assert any(record.artifact == "Full Jacobian (optional)" and
+               record.status == "Not saved (optional)" for record in view.records)
+
+    view.stage_selector.setCurrentIndex(view.stage_selector.findData(2))
+    view.iteration_selector.setCurrentIndex(view.iteration_selector.findData(1))
+    destination = view.export_filtered_records(tmp_path / "exported")
+    manifest = json.loads((destination / "export_manifest.json").read_text())
+    assert manifest["artifacts"]
+    assert {item["stage"] for item in manifest["artifacts"]} == {2}
+    assert {item["iteration"] for item in manifest["artifacts"]} == {1}
+    assert (destination / "stage-02" / "iteration-001" / "fitted-lattices" /
+            "fitted_lattice.mat").is_file()
+    view.close()
+
+
+def test_workflow_reopen_restores_complete_files_browser(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "at", types.SimpleNamespace(
+        save_lattice=lambda ring, path: Path(path).write_text(str(ring.scale))))
+    request = _request(tmp_path)
+    stage_dirs = []
+    for stage_number in (1, 2):
+        stage_dir = tmp_path / f"reopen-stage-{stage_number}"
+        stage_dir.mkdir()
+        _save_iteration_snapshot(
+            stage_dir, _record(0, [stage_number, 0], 1.0),
+            diagnostics={"iteration": 0, "chi2_after": 1.0}, reference_ring=_Ring(1.0),
+            measured={"dispersion_supplied": False}, include_dispersion=False,
+            bpm_ords=[0, 1], rf_step=1.0, rf_frequency=1.0,
+            momentum_compaction=1.0, request=request)
+        _write_iteration_manifest(stage_dir, run_status="completed")
+        (stage_dir / "run_request.json").write_text(json.dumps({"backend_mapping": request.backend_mapping}))
+        (stage_dir / "summary.json").write_text(json.dumps({"chi2_history": [1.0]}))
+        for name in ("ring_pyloco.mat", "fit_dict.pkl", "fit_results.npy", "blocks.pkl"):
+            (stage_dir / name).touch()
+        stage_dirs.append(stage_dir)
+    from pyLOCO.gui.fit_workflow import FitRunSession, StageCheckpoint
+    checkpoints = [StageCheckpoint(i, f"Stage {i + 1}", str(path), "ring_pyloco.mat",
+                                   "fit_dict.pkl", "fit_results.npy", {}, {}, "blocks.pkl", "summary.json")
+                   for i, path in enumerate(stage_dirs)]
+    session = FitRunSession({}, "ring.mat", "checksum", {}, {}, checkpoints).save(
+        tmp_path / "reopen-fit-run-session.json")
+    from pyLOCO.gui.results.results_workspace import ResultsWorkspace
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    workspace = ResultsWorkspace(); workspace.load_workflow_session(session)
+    assert workspace.files.stage_selector.count() == 3  # All + two completed stages
+    assert {record.stage for record in workspace.files.records} == {1, 2}
     workspace.close()

@@ -1,0 +1,2748 @@
+{
+  "reference_lattice": {
+    "path": "../lattice/betamodel.mat",
+    "sha256": "1b674487814734f60f9d4d988e4061c630adeb0476fa7ff0fc7bdfabcb846419",
+    "element_count": 4434,
+    "mat_variable": "betamodel"
+  },
+  "strategy": {
+    "normal": [
+      "QD3[AE]*",
+      "QF4[ABDE]*",
+      "QD5[BD]*"
+    ],
+    "skew": "S[HFDIJ]*",
+    "ordinal_convention": "zero-based AT lattice ordinal"
+  },
+  "groups": {
+    "QD3": {
+      "pattern": "QD3[AE]*",
+      "count": 62,
+      "elements": [
+        {
+          "ordinal": 127,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 172,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 277,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 313,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 411,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 458,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 563,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 599,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 699,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 735,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 835,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 871,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 969,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1005,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1103,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1139,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1237,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1273,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1371,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1407,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1512,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1551,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1649,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1688,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1788,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1824,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1924,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1960,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2065,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2101,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2199,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2235,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2335,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2371,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2469,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2505,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2603,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2644,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2749,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2785,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2883,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2926,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3031,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3067,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3167,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3203,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3303,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3339,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3439,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3475,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3580,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3619,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3719,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3755,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3860,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3896,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3996,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4032,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4137,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4173,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4273,
+          "name": "QD3E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4309,
+          "name": "QD3A",
+          "physical_type": "Quadrupole"
+        }
+      ]
+    },
+    "QF4": {
+      "pattern": "QF4[ABDE]*",
+      "count": 126,
+      "elements": [
+        {
+          "ordinal": 42,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 114,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 120,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 179,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 185,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 264,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 270,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 320,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 326,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 398,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 404,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 465,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 471,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 550,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 556,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 606,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 612,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 686,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 692,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 742,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 748,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 822,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 828,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 878,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 884,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 956,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 962,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1012,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1018,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1090,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1096,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1146,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1152,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1224,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1230,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1280,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1286,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1358,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1364,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1414,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1420,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1499,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1505,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1558,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1564,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1636,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1642,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1695,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1701,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1775,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1781,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1831,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1837,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1911,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1917,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1967,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1973,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2052,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2058,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2108,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2114,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2186,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2192,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2242,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2248,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2322,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2328,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2378,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2384,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2456,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2462,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2512,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2518,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2590,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2596,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2651,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2657,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2736,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2742,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2792,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2798,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2870,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2876,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2933,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2939,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3018,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3024,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3074,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3080,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3154,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3160,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3210,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3216,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3290,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3296,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3346,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3352,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3426,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3432,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3482,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3488,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3567,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3573,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3626,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3632,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3706,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3712,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3762,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3768,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3847,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3853,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3903,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3909,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3983,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3989,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4039,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4045,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4124,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4130,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4180,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4186,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4260,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4266,
+          "name": "QF4E",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4316,
+          "name": "QF4A",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4322,
+          "name": "QF4B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4394,
+          "name": "QF4D",
+          "physical_type": "Quadrupole"
+        }
+      ]
+    },
+    "QD5": {
+      "pattern": "QD5[BD]*",
+      "count": 64,
+      "elements": [
+        {
+          "ordinal": 51,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 105,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 194,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 255,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 335,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 389,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 480,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 541,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 621,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 677,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 757,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 813,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 893,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 947,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1027,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1081,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1161,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1215,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1295,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1349,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1429,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1490,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1573,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1627,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1710,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1766,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1846,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1902,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 1982,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2043,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2123,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2177,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2257,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2313,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2393,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2447,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2527,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2581,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2666,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2727,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2807,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2861,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 2948,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3009,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3089,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3145,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3225,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3281,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3361,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3417,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3497,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3558,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3641,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3697,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3777,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3838,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3918,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 3974,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4054,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4115,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4195,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4251,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4331,
+          "name": "QD5B",
+          "physical_type": "Quadrupole"
+        },
+        {
+          "ordinal": 4385,
+          "name": "QD5D",
+          "physical_type": "Quadrupole"
+        }
+      ]
+    },
+    "skew": {
+      "pattern": "S[HFDIJ]*",
+      "count": 288,
+      "elements": [
+        {
+          "ordinal": 6,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 30,
+          "name": "SJ1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 39,
+          "name": "SJ2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 48,
+          "name": "SJ1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 73,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 108,
+          "name": "SJ1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 117,
+          "name": "SJ2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 124,
+          "name": "SJ1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 139,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 160,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 175,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 182,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 191,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 216,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 258,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 267,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 274,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 289,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 301,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 316,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 323,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 332,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 357,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 392,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 401,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 408,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 423,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 444,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 461,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 468,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 477,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 502,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 544,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 553,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 560,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 575,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 587,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 602,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 609,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 618,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 643,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 680,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 689,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 696,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 711,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 723,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 738,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 745,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 754,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 779,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 816,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 825,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 832,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 847,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 859,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 874,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 881,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 890,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 915,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 950,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 959,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 966,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 981,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 993,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1008,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1015,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1024,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1049,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1084,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1093,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1100,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1115,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1127,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1142,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1149,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1158,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1183,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1218,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1227,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1234,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1249,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1261,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1276,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1283,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1292,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1317,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1352,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1361,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1368,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1383,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1395,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1410,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1417,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1426,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1451,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1493,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1502,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1509,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1524,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1539,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1554,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1561,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1570,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1595,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1630,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1639,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1646,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1661,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1676,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1691,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1698,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1707,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1732,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1769,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1778,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1785,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1800,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1812,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1827,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1834,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1843,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1868,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1905,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1914,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1921,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1936,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1948,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 1963,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1970,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 1979,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2004,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2046,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2055,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2062,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2077,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2089,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2104,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2111,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2120,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2145,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2180,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2189,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2196,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2211,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2223,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2238,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2245,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2254,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2279,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2316,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2325,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2332,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2347,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2359,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2374,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2381,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2390,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2415,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2450,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2459,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2466,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2481,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2493,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2508,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2515,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2524,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2549,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2584,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2593,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2600,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2615,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2632,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2647,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2654,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2663,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2688,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2730,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2739,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2746,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2761,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2773,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2788,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2795,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2804,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2829,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2864,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2873,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2880,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2895,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2912,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 2929,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2936,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2945,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 2970,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3012,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3021,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3028,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3043,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3055,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3070,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3077,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3086,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3111,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3148,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3157,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3164,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3179,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3191,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3206,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3213,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3222,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3247,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3284,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3293,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3300,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3315,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3327,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3342,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3349,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3358,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3383,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3420,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3429,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3436,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3451,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3463,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3478,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3485,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3494,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3519,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3561,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3570,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3577,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3592,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3607,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3622,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3629,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3638,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3663,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3700,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3709,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3716,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3731,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3743,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3758,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3765,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3774,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3799,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3841,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3850,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3857,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3872,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3884,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3899,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3906,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3915,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3940,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 3977,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3986,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 3993,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4008,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4020,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4035,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4042,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4051,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4076,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4118,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4127,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4134,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4149,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4161,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4176,
+          "name": "SD1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4183,
+          "name": "SF2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4192,
+          "name": "SD1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4217,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4254,
+          "name": "SD1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4263,
+          "name": "SF2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4270,
+          "name": "SD1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4285,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4297,
+          "name": "SH1A",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4312,
+          "name": "SI1A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4319,
+          "name": "SI2A",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4328,
+          "name": "SI1B",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4353,
+          "name": "SH2B",
+          "physical_type": "Multipole"
+        },
+        {
+          "ordinal": 4388,
+          "name": "SI1D",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4397,
+          "name": "SI2E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4406,
+          "name": "SI1E",
+          "physical_type": "Sextupole"
+        },
+        {
+          "ordinal": 4430,
+          "name": "SH3E",
+          "physical_type": "Multipole"
+        }
+      ]
+    }
+  },
+  "unmatched_patterns": [],
+  "ambiguous_elements": [],
+  "normal_total": 252,
+  "skew_total": 288,
+  "skew_polynom_a1_validated": 288
+}

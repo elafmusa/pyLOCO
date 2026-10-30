@@ -1,24 +1,36 @@
 """Correction review and explicitly gated single-B2 simulation validation."""
 from __future__ import annotations
 import json
+import copy
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 from PySide6.QtCore import QObject, QSettings, QSize, Qt, Signal, Slot, QThread, QUrl, QEvent
 from PySide6.QtGui import QColor, QDesktopServices
-from PySide6.QtWidgets import (QAbstractItemView,QApplication,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFileDialog,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QMainWindow,QMessageBox,QPlainTextEdit,QPushButton,QScrollArea,QSizePolicy,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
+from PySide6.QtWidgets import (QAbstractItemView,QApplication,QCheckBox,QComboBox,QDialog,QDialogButtonBox,QDoubleSpinBox,QFormLayout,QGridLayout,QGroupBox,QHBoxLayout,QHeaderView,QInputDialog,QLabel,QLineEdit,QLayout,QMainWindow,QMessageBox,QPlainTextEdit,QProgressBar,QPushButton,QScrollArea,QSizePolicy,QSpinBox,QTabWidget,QTableWidget,QTableWidgetItem,QToolBar,QVBoxLayout,QWidget)
 
 from pyLOCO.gui import __version__ as PYLOCO_VERSION
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
+from pyLOCO.gui.screenshots import install_window_screenshot_actions
+from pyLOCO.gui.control_search import install_control_search
 from pyLOCO.gui.branding import DISPLAY_ASSET,set_asset,application_icon
 from pyLOCO.gui.project_info import (PROJECT_ACKNOWLEDGEMENTS,PROJECT_CONTRIBUTORS,PROJECT_DOCUMENTATION,PROJECT_ISSUES,PROJECT_LICENSE,PROJECT_PAPER_TITLE,PROJECT_PAPER_URL,PROJECT_REPOSITORY,bibtex_text,citation_text)
 from pyLOCO.gui.suite import present_single_about_dialog
 from pyLOCO.gui.results.plot_canvas import PlotCanvas
+from pyLOCO.gui.mapping_table import CopyableMappingTable, configure_mapping_table
 from pyLOCO.gui.themes import theme_for_key
 from pyLOCO.gui.appearance import ensure_suite_appearance,select_suite_appearance
 from pyLOCO.control_system import AdapterCapability,InterfaceRegistry
+from pyLOCO.data_schema import CorrectionPlan,CorrectionRecord
 from .application import CorrectionApplicationService
 from .model import CorrectionReview,load_review,save_review,save_review_csv
-from .petra_readonly import apply_explicit_mapping,load_mapping
+from .petra_readonly import MagnetMapping,apply_explicit_mapping,load_mapping
+from pyLOCO.machine_mapping import (SCHEMA as MACHINE_MAPPING_SCHEMA,
+    VERSION as MACHINE_MAPPING_VERSION, correction_projection,
+    editable_template as editable_machine_mapping_template,
+    is_document as is_machine_mapping, mapping_statistics as machine_mapping_statistics)
 
 AMBER_QSS="""
 QLabel#correctBrand { color:#E88B22; font-size:24pt; font-weight:850; padding:2px 8px; }
@@ -90,26 +102,34 @@ class CorrectionApplyWorker(QObject):
             self.completed.emit(record)
 
 class CorrectMainWindow(QMainWindow):
-    COLUMNS=("Apply?","Index","Lattice ordinal","Element/family name","Control / power-supply name","Mapping status","Type","Initial K","Fitted K","Current machine K","Raw fitted ΔK","Recommended machine ΔK","ΔK/K [%]","Global scale","Individual scale","Final ΔK","Length [m]","Final ΔKL [m⁻¹]","Applied correction","Target K","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason")
+    COLUMNS=("Apply?","Correction-row position","Fitted magnet (AT FamName)","AT Device","AT index (0-based)","Magnet class / type","pyAML target / control","Strength component","Control units","Mapping status","Initial K [m⁻²]","Fitted K [m⁻²]","Current K [m⁻²]","Raw fitted ΔK [m⁻²]","Recommended machine ΔK [m⁻²]","ΔK/K [%]","Global scale","Individual scale","Final ΔK [m⁻²]","L [m]","Final Δ(KL) [m⁻¹]","Applied control change","Target K [m⁻²]","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason","Current KL [m⁻¹]","Target KL [m⁻¹]")
     def __init__(self, *, registry=None):
-        super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
+        super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.project_path=None; self.saved_progress_record=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
         screen=self.screen()
         if screen is not None:self.resize(min(1500,screen.availableGeometry().width()),min(900,screen.availableGeometry().height()))
 
     def _build(self):
         toolbar=QToolBar("Correct toolbar"); toolbar.setObjectName("mainToolbar"); toolbar.setMovable(False); self.addToolBar(toolbar)
         brand=QLabel("pyLOCO CORRECT"); brand.setObjectName("correctBrand"); brand.setFixedWidth(285); toolbar.addWidget(brand); toolbar.addSeparator()
-        for text,tip,slot in (("Results…","Open a current pyLOCO Results directory",self.open_results),("Plan…","Open a correction plan or explicit legacy correction JSON",self.open_file),("Save…","Save correction plan as JSON or YAML",self.save_plan)):
-            button=QPushButton(text); button.setFixedWidth(96); button.setToolTip(tip); button.clicked.connect(slot); toolbar.addWidget(button)
+        self.open_project_button=QPushButton("Open Project…"); self.open_project_button.setAccessibleName("Open Correct project"); self.open_project_button.setToolTip("Open a saved pyLOCO Correct project"); self.open_project_button.clicked.connect(self.open_project); toolbar.addWidget(self.open_project_button)
+        self.save_project_button=QPushButton("Save Project"); self.save_project_button.setAccessibleName("Save Correct project"); self.save_project_button.setToolTip("Save correction plan, mappings, progress and non-sensitive settings"); self.save_project_button.clicked.connect(self.save_project); toolbar.addWidget(self.save_project_button); toolbar.addSeparator()
+        self.toolbar_file_buttons=[self.open_project_button,self.save_project_button]
+        self.screenshot_controller=install_window_screenshot_actions(
+            self,toolbar,application_slug="correct",
+            directory_provider=self._screenshot_project_directory,
+        )
+        self.control_search=install_control_search(self,toolbar)
         spacer=QWidget(); spacer.setSizePolicy(spacer.sizePolicy().horizontalPolicy().Expanding,spacer.sizePolicy().verticalPolicy()); toolbar.addWidget(spacer)
         self.backend_combo=QComboBox()
-        for descriptor in self.registry.descriptors():self.backend_combo.addItem(descriptor.label,descriptor.key)
+        for descriptor in self.registry.descriptors():
+            self.backend_combo.addItem(descriptor.label,descriptor.key)
         self.backend_combo.currentIndexChanged.connect(self._backend_changed); toolbar.addWidget(self.backend_combo)
         self.badge=QLabel("MOCK • READ ONLY"); self.badge.setObjectName("safetyBadge"); self.badge.setFixedWidth(230); self.badge.setAlignment(Qt.AlignCenter); toolbar.addWidget(self.badge); self.connection_badge=QLabel("● OFFLINE"); self.connection_badge.setObjectName("correctConnection"); self.connection_badge.setProperty("connected",True); toolbar.addWidget(self.connection_badge); self.theme_button=QPushButton("☾ Dark"); self.theme_button.setFixedWidth(80); self.theme_button.clicked.connect(self.toggle_theme); toolbar.addWidget(self.theme_button)
         self.logo_button=ClickableLogo(); set_asset(self.logo_button,QSize(70,29),DISPLAY_ASSET,crop_transparency=False); self.logo_button.clicked.connect(self.about); toolbar.addWidget(self.logo_button)
         root=QWidget(); layout=QVBoxLayout(root); layout.setContentsMargins(18,14,18,18)
         heading_row=QHBoxLayout(); title=QLabel("Correction Review"); title.setStyleSheet("font-size:22pt;font-weight:800"); heading_row.addWidget(title); heading_row.addStretch(); layout.addLayout(heading_row)
-        self.workflow_banner=QLabel("1  LOAD   →   2  PREVIEW   →   3  CONFIRM   →   4  APPLY   →   5  READBACK"); self.workflow_banner.setObjectName("workflowBanner"); self.workflow_banner.setAlignment(Qt.AlignCenter); self.workflow_banner.setMaximumHeight(38); layout.addWidget(self.workflow_banner)
+        self.workflow_banner=QLabel("1  LOAD   →   2  PREVIEW   →   3  CONFIRM   →   4  APPLY   →   5  READBACK"); self.workflow_banner.setObjectName("workflowBanner"); self.workflow_banner.setAlignment(Qt.AlignCenter); self.workflow_banner.setMaximumHeight(38); self.workflow_banner.hide(); layout.addWidget(self.workflow_banner)
+        layout.addWidget(self._correction_progress_panel())
         self.profile_badge=QLabel('Machine/profile not selected'); self.profile_badge.setWordWrap(True); self.profile_badge.setMaximumWidth(360); self.profile_badge.setVisible(False)
         self.tabs=QTabWidget(); self.tabs.setDocumentMode(True); layout.addWidget(self.tabs,1); self.setCentralWidget(root)
         self.workflow_names=("Correction Source","Machine / Mapping","Correction Plan","Review && Validate")
@@ -118,19 +138,193 @@ class CorrectMainWindow(QMainWindow):
         from .quadrupole_widget import QuadrupoleWidget
         self.quadrupole_workspace = QuadrupoleWidget(self)
         self.tabs.addTab(self._source_page(),self.workflow_names[0]); self.tabs.addTab(self._mapping_page(),self.workflow_names[1]); self.tabs.addTab(self._plan_page(),self.workflow_names[2]); self.tabs.addTab(self._review_page(),self.workflow_names[3])
+        from .pyaml_widget import PyAMLCorrectionWidget
+        self.pyaml_workspace = PyAMLCorrectionWidget(self)
+        self.save_validated_mapping_button.clicked.connect(
+            lambda: self.pyaml_workspace.run(self.pyaml_workspace.save_validated_mapping)
+        )
+        self.pyaml_connection_layout.addWidget(self.pyaml_workspace.settings_box)
+        self.transaction_recovery_layout.addWidget(self.pyaml_workspace.extra_actions)
+        self.pyaml_workspace.hide()
+        self.pyaml_connection_group.hide()
         self.tabs.tabBar().setExpanding(False); self.tabs.tabBar().setElideMode(Qt.ElideNone); self._update_workflow_tabs()
         self.backend_combo.currentIndexChanged.connect(self.quadrupole_workspace.invalidate)
         self.quadrupole_workspace.profile.currentIndexChanged.connect(self._pysc_profile_selected)
         self.statusBar().showMessage("Load a correction file; control-system writes remain confirmation-gated")
 
+    def _correction_progress_panel(self):
+        group=QGroupBox("Correction Progress — verified readbacks only")
+        group.setObjectName("correctionProgressPanel")
+        group.setMinimumHeight(154)
+        group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Fixed)
+        outer=QVBoxLayout(group); outer.setContentsMargins(10,8,10,8); outer.setSpacing(5)
+        group.setToolTip("Choose the increment, preview without writes, explicitly confirm Apply, then verify the readback.")
+        summary_row=QHBoxLayout(); summary_row.setSpacing(12)
+        self.verified_percent=QLabel("Last verified: 0%")
+        self.next_target_percent=QLabel("Next target: 10%")
+        self.progress_machine_status=QLabel("Machine state: not reconciled")
+        self.progress_machine_status.setWordWrap(False)
+        summary_row.addWidget(self.verified_percent); summary_row.addWidget(self.next_target_percent); summary_row.addWidget(self.progress_machine_status,1)
+        summary_row.addWidget(QLabel("Increment")); self.progress_increment=QSpinBox(); self.progress_increment.setRange(1,100); self.progress_increment.setValue(10); self.progress_increment.setSuffix(" %"); self.progress_increment.valueChanged.connect(self._progress_increment_changed); summary_row.addWidget(self.progress_increment)
+        outer.addLayout(summary_row)
+
+        progress_row=QHBoxLayout(); progress_row.setSpacing(3)
+        self.progress_preview_button=QPushButton("Preview Next Step"); self.progress_cancel_preview_button=QPushButton("Cancel Preview / Edit %"); self.progress_apply_button=QPushButton("Apply Confirmed Step"); self.progress_undo_button=QPushButton("Undo Last Step"); self.progress_restore_button=QPushButton("Restore Baseline"); self.progress_measured_button=QPushButton("Associate Measurement…"); self.progress_cancel_preview_button.setEnabled(False); self.progress_apply_button.setEnabled(False); self.progress_undo_button.setEnabled(False); self.progress_restore_button.setEnabled(False); self.progress_measured_button.setEnabled(False)
+        self.progress_undo_button.setToolTip("Return only the most recent verified increment, with per-magnet readback verification")
+        for button in (self.progress_preview_button,self.progress_cancel_preview_button,self.progress_apply_button,self.progress_undo_button,self.progress_restore_button,self.progress_measured_button):button.setFixedHeight(28)
+        self.progress_preview_button.clicked.connect(self.preview_machine_changes); self.progress_cancel_preview_button.clicked.connect(self.cancel_machine_preview); self.progress_apply_button.clicked.connect(self.apply_machine_changes); self.progress_undo_button.clicked.connect(self.undo_last_machine_changes); self.progress_restore_button.clicked.connect(self.restore_machine_changes); self.progress_measured_button.clicked.connect(self.associate_progress_measurement)
+        self.progress_segments=[]
+        for index in range(10):
+            segment=QLabel(str((index+1)*10)); segment.setAlignment(Qt.AlignCenter); segment.setFixedHeight(22); segment.setMinimumWidth(28); segment.setProperty("verified",False); segment.setStyleSheet("border:1px solid #777;border-radius:2px;font-size:8pt;padding:1px;background:#35384B;color:#BFC4D8")
+            progress_row.addWidget(segment,1); self.progress_segments.append(segment)
+        self.correction_progress=QProgressBar(); self.correction_progress.setRange(0,100); self.correction_progress.setValue(0); self.correction_progress.setFormat("0% verified"); self.correction_progress.setTextVisible(True); self.correction_progress.setMinimumWidth(150); self.correction_progress.setFixedHeight(22); progress_row.addWidget(self.correction_progress,3); outer.addLayout(progress_row)
+
+        action_row=QHBoxLayout(); action_row.setSpacing(8)
+        action_row.addWidget(self.progress_preview_button)
+        action_row.addWidget(self.progress_cancel_preview_button)
+        action_row.addWidget(self.progress_apply_button)
+        action_row.addWidget(self.progress_undo_button)
+        action_row.addWidget(self.progress_restore_button)
+        action_row.addWidget(self.progress_measured_button)
+        action_row.addStretch(1)
+        outer.addLayout(action_row)
+        self.progress_history=QTableWidget(0,5); self.progress_history.setHorizontalHeaderLabels(["Time","Target","Increment","Status","Measurements"]); self.progress_history.setEditTriggers(QAbstractItemView.NoEditTriggers); self.progress_history.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.progress_history.setMinimumHeight(115)
+        self.progress_magnets=QTableWidget(0,7); self.progress_magnets.setHorizontalHeaderLabels(["Magnet","Baseline K","Full correction","Target K","Actual readback","Readback error","Status"]); self.progress_magnets.setEditTriggers(QAbstractItemView.NoEditTriggers); self.progress_magnets.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.progress_magnets.setMinimumHeight(135)
+        return group
+
+    def _populate_progress_magnets(self, record):
+        record=record or {}
+        pyaml="changes" in record and "items" not in record
+        self.progress_magnets.setHorizontalHeaderLabels(["Magnet","Baseline KL [m⁻¹]","Full correction ΔKL [m⁻¹]","Target KL [m⁻¹]","Adapter get()","Difference","Status"] if pyaml else ["Magnet","Baseline K","Full correction","Target K","Actual readback","Readback error","Status"])
+        items=record.get("changes",()) if pyaml else record.get("items",())
+        self.progress_magnets.setRowCount(len(items))
+        for row,item in enumerate(items):
+            readback=item.get("readback") if pyaml else (item.get("applied_readback") or {}).get("physical")
+            target=item.get("target") if pyaml else item.get("expected_physical_k")
+            error=None if readback is None or target is None else float(readback)-float(target)
+            status=(str(item.get("status","Planned")).replace("_"," ").title() if pyaml else
+                    "Verified" if item.get("verified") else
+                    "Commanded" if item.get("set_completed") else
+                    "Pending" if (record or {}).get("status")=="preview_verified" else
+                    "Failed" if (record or {}).get("status") in {"restore_failed","write_pending"} else "Planned")
+            values=((item.get("name","") if pyaml else item.get("control","")),
+                    (item.get("original") if pyaml else item.get("restore_physical_k")),
+                    (item.get("full_delta_kl_m1",item.get("applied_delta_kl_m1")) if pyaml else item.get("full_physical_delta")),
+                    target,readback,error,status)
+            for column,value in enumerate(values):
+                text="Not read yet" if value is None else f"{value:.12g}" if isinstance(value,(int,float)) else str(value)
+                self.progress_magnets.setItem(row,column,QTableWidgetItem(text))
+
+    def _refresh_correction_progress(self, *_):
+        pyaml=self.backend_combo.currentData()=="pyaml" and hasattr(self,"pyaml_workspace")
+        transaction=(self.pyaml_workspace.transaction if pyaml else getattr(self,"fullfit_transaction",None))
+        record=getattr(transaction,"record",None) or (self.saved_progress_record if pyaml else None) or {}
+        raw_status=str(record.get("status") or "not_started")
+        status="preview_verified" if pyaml and raw_status=="preview" else raw_status
+        history=record.get("history",()) if isinstance(record,dict) else ()
+        record_fraction=float(record.get("fraction",record.get("cumulative_fraction",0.0)))
+        record_increment=float(record.get("increment_fraction",record.get("identity",{}).get("review",{}).get("global_scale",.1)))
+        verified=(max(float(record.get("fraction",record.get("cumulative_fraction",0.0))),
+                      float(history[-1].get("cumulative_fraction",0.0)) if history else 0.0) if status=="applied" else
+                  float(record.get("previous_fraction",max(0.0,record_fraction-record_increment))) if status=="preview_verified" else
+                  float(history[-1].get("cumulative_fraction",0.0)) if history else 0.0)
+        if status=="restored": verified=0.0
+        increment=self.progress_increment.value()/100.0 if hasattr(self,"progress_increment") else .1
+        next_target=min(1.0,verified+increment)
+        self.verified_percent.setText(f"Last verified: {verified*100:g}%")
+        self.next_target_percent.setText(f"Next target: {next_target*100:g}% (+{(next_target-verified)*100:g}%)")
+        state={"applied":"readback verified","preview_verified":"pending — preview verified","write_pending":"in progress — write pending","restore_failed":"FAILED — restoration unresolved","restored":"baseline verified"}.get(status,"not reconciled")
+        self.progress_machine_status.setText(f"Machine state: {state}")
+        value=round(verified*100); self.correction_progress.setValue(value); self.correction_progress.setFormat(f"{verified*100:g}% verified")
+        for index,segment in enumerate(self.progress_segments):
+            filled=verified+1e-12 >= (index+1)/10
+            segment.setStyleSheet("border:1px solid #777;border-radius:2px;font-size:8pt;padding:1px;"+("background:#2E9C68;color:white;font-weight:700" if filled else "background:#35384B;color:#BFC4D8"))
+        display_history=list(history)
+        if record and not display_history and status=="applied":
+            display_history=[{"cumulative_fraction":record_fraction,"increment_fraction":record_increment,"execution_status":"verified","measurements":{}}]
+        if status=="preview_verified":
+            display_history.append({"cumulative_fraction":record_fraction,"increment_fraction":record_increment,"execution_status":"pending preview — no writes","measurements":{}})
+        self.progress_history.setRowCount(len(display_history))
+        for row,step in enumerate(display_history):
+            measurements=step.get("measurements") or {}
+            measurement_text=(str(measurements.get("session_id") or measurements.get("manifest") or (f"{len(measurements.get('files',()))} file(s)" if measurements.get("files") else "Not associated")) if isinstance(measurements,dict) else str(measurements or "Not associated"))
+            values=(str(step.get("timestamp_utc") or "Not recorded"),f"{float(step.get('cumulative_fraction',0))*100:g}%",f"{float(step.get('increment_fraction',.1))*100:g}%",str(step.get("execution_status") or "Verified").title(),measurement_text)
+            for column,text in enumerate(values): self.progress_history.setItem(row,column,QTableWidgetItem(text))
+        pending=status=="preview_verified"; applied=status=="applied"; unsafe=(status in {"write_pending","restoring","restore_failed"} or self._apply_thread is not None or (pyaml and self.pyaml_workspace.thread is not None))
+        self.progress_apply_button.setEnabled(pending and not unsafe)
+        self.progress_cancel_preview_button.setEnabled(pending and not unsafe)
+        undoable=bool(status=="applied" and verified > 0 and any(
+            float(step.get("increment_fraction",0.0)) > 0 and
+            step.get("execution_status") in {"verified","measured"}
+            for step in history
+        ))
+        self.progress_undo_button.setEnabled(undoable and not unsafe)
+        self.progress_restore_button.setEnabled(bool(record.get("restore_required")) and not unsafe)
+        self.progress_preview_button.setEnabled(not unsafe and verified < 1.0 and status not in {"preview_verified"})
+        self.progress_measured_button.setEnabled(status=="applied" and bool(history))
+        self.progress_increment.setEnabled(not pending and not unsafe)
+        self._populate_progress_magnets(record)
+
+    def cancel_machine_preview(self):
+        """Discard a read-only preview and return to editable correction settings."""
+        if self.backend_combo.currentData() == "pyaml":
+            try:
+                self.pyaml_workspace.cancel_preview()
+            except Exception as exc:
+                QMessageBox.warning(self, "Cannot cancel preview", str(exc))
+            return
+        transaction=getattr(self,"fullfit_transaction",None)
+        if transaction is None or not transaction.record or transaction.record.get("status")!="preview_verified":
+            return
+        self.fullfit_transaction=getattr(self,"_fullfit_before_preview",None)
+        self._fullfit_before_preview=None
+        self.correction_changes=()
+        self._populate_machine_changes(())
+        self.apply_button.setEnabled(False)
+        self.preview_apply_button.setEnabled(True)
+        self.preview_apply_button.setText("Preview machine changes")
+        self.apply_status.setText("Preview cancelled — no writes were made. Change the correction percentage and preview again.")
+        self._refresh_correction_progress()
+        self.statusBar().showMessage("Preview cancelled — correction settings are editable; no writes were made")
+
+    def _progress_increment_changed(self, value):
+        if (hasattr(self,"backend_combo") and self.backend_combo.currentData()=="pyaml"
+                and self.review and not self._pyaml_locked()):
+            self.review.set_global_scale(float(value)/100.0)
+            self._sync_fraction()
+        self._refresh_correction_progress()
+
+    def associate_progress_measurement(self):
+        transaction=(self.pyaml_workspace.transaction if self.backend_combo.currentData()=="pyaml" else getattr(self,"fullfit_transaction",None))
+        if transaction is None:
+            QMessageBox.warning(self,"No verified step","Apply and verify a correction step first."); return
+        path,_=QFileDialog.getOpenFileName(self,"Associate measurement with latest verified step",self._browse_start("measurements"),"Measurement files (*.h5 *.hdf5 *.json);;All files (*)",options=QFileDialog.DontUseNativeDialog)
+        if not path:return
+        try:
+            transaction.mark_latest_measured([path]); self._remember_browse("measurements",path); self._refresh_correction_progress()
+        except Exception as exc:QMessageBox.warning(self,"Cannot associate measurements",str(exc))
+
+    def _screenshot_project_directory(self):
+        """Return the directory containing the active correction source."""
+        if not hasattr(self,"source_path"):
+            return None
+        value=self.source_path.text().strip()
+        if not value or value=="No source loaded":
+            return None
+        source=Path(value).expanduser().resolve(strict=False)
+        return source if source.is_dir() else source.parent
+
     def closeEvent(self, event):
+        if self.pyaml_workspace.thread is not None:
+            QMessageBox.warning(self, "Operation in progress", "Wait for the pyAML operation to finish before closing. Applied strengths will be kept; restoration is optional.")
+            event.ignore()
+            return
         fullfit = getattr(self, "fullfit_transaction", None)
-        fullfit_pending = bool(
-            fullfit is not None
-            and fullfit.record is not None
-            and fullfit.record.get("restore_required")
+        fullfit_unresolved = bool(
+            fullfit is not None and fullfit.record is not None and
+            fullfit.record.get("status") in {"write_pending","restoring","restore_failed"}
         )
-        if self.quadrupole_workspace.pending() or fullfit_pending:
+        if self.quadrupole_workspace.pending() or fullfit_unresolved:
             QMessageBox.warning(self, 'Restore required', 'Restore and verify the original quadrupole before closing. The journal is available for recovery.')
             event.ignore()
         else:
@@ -139,7 +333,8 @@ class CorrectMainWindow(QMainWindow):
     @staticmethod
     def _scroll_page(content):
         content.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
-        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setAlignment(Qt.AlignTop|Qt.AlignLeft); scroll.setWidget(content); return scroll
+        if content.layout() is not None:content.layout().setSizeConstraint(QLayout.SetMinimumSize)
+        scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame); scroll.setAlignment(Qt.AlignTop|Qt.AlignLeft); scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded); scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded); scroll.setWidget(content); return scroll
 
     def _source_page(self):
         page=QWidget(); layout=QVBoxLayout(page); layout.setAlignment(Qt.AlignTop); layout.setContentsMargins(22,22,22,22)
@@ -162,24 +357,68 @@ class CorrectMainWindow(QMainWindow):
                 label=QLabel(name); label.setMinimumHeight(24); value.setMinimumHeight(24); value.setWordWrap(True); value.setTextInteractionFlags(Qt.TextSelectableByMouse); grid.addWidget(label,row,0,Qt.AlignTop); grid.addWidget(value,row,1)
             return grid
 
-        connection_group=QGroupBox("pySC Server"); connection_group.setObjectName("correctionPySCConnectionSection"); connection_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); connection_form=QFormLayout(connection_group); connection_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        connection_group=QGroupBox("1. Machine connection"); connection_group.setObjectName("correctionPySCConnectionSection"); connection_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); connection_form=QFormLayout(connection_group); connection_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         controller=self.quadrupole_workspace; controller.connect_button.setText("Connect / verify"); connection_form.addRow("Machine / profile",controller.profile); connection_form.addRow("Diagnostics port",controller.port); connection_form.addRow("",controller.connect_button); connection_form.addRow("Connection",controller.identity); layout.addWidget(connection_group)
+        connection_group.hide()
+        self.offline_connection_group=QGroupBox("1. Machine connection"); offline_layout=QVBoxLayout(self.offline_connection_group); offline_text=QLabel("Mock is an offline, read-only review backend. It has no machine connection or live device inventory."); offline_text.setWordWrap(True); offline_layout.addWidget(offline_text); layout.addWidget(self.offline_connection_group)
 
-        mapping_group=QGroupBox("Machine Mapping"); mapping_group.setObjectName("machineMappingSection"); mapping_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        mapping_group=QGroupBox("2. Machine mapping"); mapping_group.setObjectName("machineMappingSection"); mapping_group.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum)
+        self.mapping_complete_banner=QLabel("MAPPING NOT READY")
+        self.mapping_complete_banner.setAlignment(Qt.AlignCenter); self.mapping_complete_banner.setMinimumHeight(42)
+        self.mapping_complete_banner.setAccessibleName("Machine mapping completion status")
         self.mapping_summary=QLabel("No correction source loaded"); self.mapping_file_status=QLabel("—"); self.mapped_status=QLabel("—"); self.unmapped_status=QLabel("—"); self.ambiguous_status=QLabel("—")
-        mapping_grid=status_grid(mapping_group,(("Mapping status",self.mapping_summary),("Mapping file",self.mapping_file_status),("Mapped magnets",self.mapped_status),("Unmapped magnets",self.unmapped_status),("Ambiguous mappings",self.ambiguous_status)))
-        self.mapping_source_notice=QLabel("Load a correction source first to configure PETRA magnet mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,5,0,1,2)
+        mapping_grid=status_grid(mapping_group,(("Status",self.mapping_summary),("Mapping source",self.mapping_file_status)))
+        mapping_grid.addWidget(self.mapping_complete_banner,2,0,1,2)
+        self.mapping_source_notice=QLabel("Load a correction source to begin mapping."); self.mapping_source_notice.setWordWrap(True); self.mapping_source_notice.setObjectName("mappingSourceNotice"); mapping_grid.addWidget(self.mapping_source_notice,3,0,1,2)
+        self.automatic_mapping_group=QGroupBox("Mapping actions"); automatic_layout=QVBoxLayout(self.automatic_mapping_group)
+        self.automatic_mapping_actions=QHBoxLayout(); automatic_layout.addLayout(self.automatic_mapping_actions); self.automatic_mapping_actions.addStretch(1)
+        self.automatic_mapping_feedback=QLabel("Not run yet."); self.automatic_mapping_feedback.setWordWrap(True); self.automatic_mapping_feedback.setObjectName("mappingHelpText")
         mapping_actions=QHBoxLayout()
-        self.mapping_button=QPushButton("Load mapping…"); self.mapping_button.setMinimumWidth(210); self.mapping_button.clicked.connect(self.load_petra_mapping); self.mapping_button.setEnabled(False)
-        self.generate_mapping_button=QPushButton("Generate mapping template…"); self.generate_mapping_button.clicked.connect(self.generate_mapping_template); self.generate_mapping_button.setEnabled(False)
-        mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addStretch(1); mapping_grid.addLayout(mapping_actions,6,0,1,2)
-        self.mapping_note=QLabel("Explicit mapping is required. Each fitted lattice element must resolve uniquely to a verified control-system name. Unmapped, ambiguous, and duplicate mappings remain blocked."); self.mapping_note.setWordWrap(True); self.mapping_note.setObjectName("mappingHelpText"); mapping_grid.addWidget(self.mapping_note,7,0,1,2)
+        self.generate_mapping_button=QPushButton("Create Machine Mapping template…"); self.generate_mapping_button.clicked.connect(self.generate_mapping_template); self.generate_mapping_button.setEnabled(False)
+        self.mapping_button=QPushButton("Load Machine Mapping…"); self.mapping_button.setMinimumWidth(210); self.mapping_button.clicked.connect(self.load_petra_mapping); self.mapping_button.setEnabled(False)
+        self.mapping_details_button=QPushButton("Machine Mapping details…"); self.mapping_details_button.clicked.connect(self.show_mapping_details); self.mapping_details_button.setEnabled(False)
+        self.save_validated_mapping_button=QPushButton("Save validated Machine Mapping…"); self.save_validated_mapping_button.setEnabled(False)
+        mapping_actions.addWidget(self.generate_mapping_button); mapping_actions.addWidget(self.mapping_button); mapping_actions.addWidget(self.mapping_details_button); mapping_actions.addWidget(self.save_validated_mapping_button); mapping_actions.addStretch(1); automatic_layout.addLayout(mapping_actions)
+        self.manual_mapping_feedback=QLabel("No mapping file loaded."); self.manual_mapping_feedback.setWordWrap(True); self.manual_mapping_feedback.setObjectName("mappingHelpText"); automatic_layout.addWidget(self.automatic_mapping_feedback); automatic_layout.addWidget(self.manual_mapping_feedback); mapping_grid.addWidget(self.automatic_mapping_group,4,0,1,2)
+        self.mapping_feedback=QLabel(); self.mapping_feedback.hide()
+        self.mapping_note=QLabel(); self.mapping_note.hide()
+        self.mapping_details_summary=QLabel("No FIT magnet mapping is available."); self.mapping_details_summary.setWordWrap(True); self.mapping_details_summary.setObjectName("mappingHelpText"); mapping_grid.addWidget(self.mapping_details_summary,5,0,1,2)
+        diagnostics=QGroupBox("Technical details and mapping-file help"); diagnostics.setCheckable(True); diagnostics.setChecked(False); diagnostics_layout=QVBoxLayout(diagnostics); self.mapping_template_help=QLabel("Mapping file: keep the fitted lattice name and ordinal; fill the exact machine control name. Loading validates the file against the active inventory."); self.mapping_template_help.setWordWrap(True); self.mapping_diagnostics=QLabel("No mapping diagnostics."); self.mapping_diagnostics.setWordWrap(True); self.mapping_diagnostics.setTextInteractionFlags(Qt.TextSelectableByMouse); diagnostics_layout.addWidget(self.mapping_template_help); diagnostics_layout.addWidget(self.mapping_diagnostics); self.mapping_template_help.setVisible(False); self.mapping_diagnostics.setVisible(False); diagnostics.toggled.connect(self.mapping_template_help.setVisible); diagnostics.toggled.connect(self.mapping_diagnostics.setVisible); mapping_grid.addWidget(diagnostics,6,0,1,2)
         layout.addWidget(mapping_group)
-        current_row=QHBoxLayout(); self.read_current_k_button=QPushButton("Read current K from pySC Server"); self.read_current_k_button.clicked.connect(self.read_current_pysc_k); self.current_k_status=QLabel("Connect a verified pySC machine/profile and load its explicit mapping."); self.current_k_status.setWordWrap(True); current_row.addWidget(self.read_current_k_button); current_row.addWidget(self.current_k_status,1); layout.addLayout(current_row)
+        self.mapping_group = mapping_group
+        self.mapping_details_dialog=QDialog(self); self.mapping_details_dialog.setWindowTitle("Machine Mapping details — pyLOCO Correct"); self.mapping_details_dialog.setWindowFlag(Qt.WindowMaximizeButtonHint,True); self.mapping_details_dialog.setSizeGripEnabled(True); self.mapping_details_dialog.setMinimumSize(900,520); self.mapping_details_dialog.resize(1250,700)
+        details_layout=QVBoxLayout(self.mapping_details_dialog)
+        mapping_origin=QLabel("Fitted identities come from the FIT result; AT FamName, Device, CommonName and zero-based index come from the authoritative reference lattice or retained Complete Machine Mapping. A saved target remains a proposal until it is revalidated against the current pyAML inventory."); mapping_origin.setWordWrap(True); details_layout.addWidget(mapping_origin)
+        mapping_origin.hide()
+        filter_row=QHBoxLayout(); self.mapping_filter=QLineEdit(); self.mapping_filter.setPlaceholderText("Search fitted magnet or machine device"); self.mapping_filter.textChanged.connect(self._refresh_mapping_details)
+        self.mapping_attention_filter=QComboBox(); self.mapping_attention_filter.addItem("All mappings","all"); self.mapping_attention_filter.addItem("Needs attention","attention"); self.mapping_attention_filter.addItem("Validated only","validated"); self.mapping_attention_filter.currentIndexChanged.connect(self._refresh_mapping_details); filter_row.addWidget(self.mapping_filter,1); filter_row.addWidget(self.mapping_attention_filter); details_layout.addLayout(filter_row)
+        self.mapping_details_table=CopyableMappingTable(0,11); self.mapping_details_table.setHorizontalHeaderLabels(["Fitted magnet","AT FamName","AT Device","AT CommonName","AT index (0-based)","pyAML target / control","Magnet type","Strength component","Units","Mapping status","Identity evidence / next action"]); configure_mapping_table(self.mapping_details_table,("Fitted magnet identity recorded in the FIT result.","FamName attribute read from the authoritative AT lattice.","Device attribute read from the authoritative AT lattice; never replaced with a control name.","CommonName attribute read from the authoritative AT lattice.","Zero-based AT lattice ordinal recorded by FIT.","Exact pyAML control identity; this is not an AT Device attribute.","Physical AT element class and fitted parameter role.","Validated control component such as B2L or A2L.","Physical units validated for the selected component.","Saved, proposed, unresolved, or validated against the active inventory.","Identity match, provenance, validation evidence, or actionable problem.")); self.mapping_details_table.setMinimumHeight(360); details_layout.addWidget(self.mapping_details_table,1)
+        close_buttons=QDialogButtonBox(QDialogButtonBox.Close); close_buttons.rejected.connect(self.mapping_details_dialog.hide); details_layout.addWidget(close_buttons)
+        self.pysc_connection_group = connection_group
+        self.pyaml_connection_group = QGroupBox("1. Machine connection")
+        self.pyaml_connection_layout = QVBoxLayout(self.pyaml_connection_group)
+        self.connection_guidance = QLabel(
+            "Select the approved pyAML configuration and test the connection. "
+            "Discovery is read only and does not authorize magnet writes."
+        )
+        self.connection_guidance.setWordWrap(True)
+        self.connection_guidance.setObjectName("connectionGuidance")
+        self.pyaml_connection_layout.addWidget(self.connection_guidance)
+        layout.insertWidget(0, self.pyaml_connection_group)
+        current_group=QGroupBox("3. Read current machine strengths — read only"); current_layout=QVBoxLayout(current_group); self.current_strength_help=QLabel("Read the present strengths from the connected machine or control system. This operation does not change magnet settings and requires valid mappings. A successful numeric readback does not independently verify physical calibration."); self.current_strength_help.setWordWrap(True); current_layout.addWidget(self.current_strength_help)
+        current_row=QHBoxLayout(); self.read_current_k_button=QPushButton("Read current K from pySC Server"); self.read_current_k_button.clicked.connect(self.read_current_pysc_k); self.current_k_status=QLabel("Connect a verified pySC machine/profile and load its explicit mapping."); self.current_k_status.setWordWrap(True); current_row.addWidget(self.read_current_k_button); current_row.addWidget(self.current_k_status,1); current_layout.addLayout(current_row); layout.addWidget(current_group)
         layout.addStretch(1); return self._scroll_page(page)
 
     def _plan_page(self):
         page=QWidget(); layout=QVBoxLayout(page)
+        plan_actions=QHBoxLayout()
+        self.save_plan_button=QPushButton("Save correction plan…")
+        self.save_plan_button.setToolTip("Save the current correction plan as JSON or YAML")
+        self.save_plan_button.setAccessibleName("Save correction plan")
+        self.save_plan_button.clicked.connect(self.save_plan)
+        plan_actions.addWidget(self.save_plan_button)
+        plan_actions.addStretch(1)
+        layout.addLayout(plan_actions)
         convention=QGroupBox("Correction convention"); convention.setObjectName("correctionConventionSection"); convention.setCheckable(True); convention.setChecked(True); convention.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); convention_layout=QVBoxLayout(convention)
         self.plan_conventions_body=QWidget(); convention_grid=QGridLayout(self.plan_conventions_body); convention_grid.setColumnMinimumWidth(0,240); convention_grid.setColumnStretch(1,1)
         definitions=(("Raw fitted ΔK","Original correction reported by pyLOCO. Never modified."),("Recommended machine ΔK","Correction after applying the explicit machine/sign convention."),("Global fraction","Fraction applied to every included magnet."),("Individual fraction","Additional scale for one magnet."),("Final ΔK","Recommended machine ΔK × global fraction × individual fraction."),("ΔK/K [%]","Final correction relative to the initial K value: 100 × Final ΔK / Initial K."))
@@ -196,29 +435,50 @@ class CorrectMainWindow(QMainWindow):
         self.correction_representation.addItem("ΔK × L — integrated strength [m⁻¹]","integrated")
         self.correction_representation.setToolTip("The explicit machine mapping must use B2/A2 for ΔK or B2L/A2L for ΔK × L.")
         self.correction_representation.currentIndexChanged.connect(self._representation_changed)
+        self.application_scope=QComboBox()
+        for text,key in (("All included magnets","all"),("Normal quadrupoles only","normal_quadrupole"),("Skew quadrupoles only","skew_quadrupole")): self.application_scope.addItem(text,key)
+        self.application_scope.setToolTip("Limits Preview and Apply to the selected magnet type. It does not modify fitted values or inclusion checkboxes.")
+        self.application_scope.setAccessibleName("Correction application scope")
+        self.application_scope.currentIndexChanged.connect(self._application_scope_changed)
         self.filter=QComboBox();
         for text,key in (("All","all"),("Normal quadrupoles","normal_quadrupole"),("Skew quadrupoles","skew_quadrupole"),("Quadrupole tilt","quadrupole_tilt"),("Included","included"),("Excluded","excluded"),("Warnings","warnings")): self.filter.addItem(text,key)
         self.filter.currentIndexChanged.connect(self.refresh_table); self.sort_by=QComboBox()
-        for text,key in (("Fitted order","index"),("Largest |ΔK/K|","relative"),("Largest |Final ΔK|","final"),("Largest |ΔI|","delta_i"),("Smallest current-limit margin","margin"),("Calibration warnings","calibration"),("Warnings first","warnings"),("Magnet name","name")):self.sort_by.addItem(text,key)
+        for text,key in (("Fitted order","index"),("Largest |ΔK/K|","relative"),("Largest |Final ΔK|","final"),("Largest |ΔI|","delta_i"),("Smallest current-limit margin","margin"),("Mapping warnings first","mapping"),("Calibration warnings","calibration"),("Warnings first (mapping included)","warnings"),("Magnet name","name")):self.sort_by.addItem(text,key)
         self.sort_by.currentIndexChanged.connect(self.refresh_table); self.search=QLineEdit(); self.search.setPlaceholderText("Search magnet/control name"); self.search.textChanged.connect(self.refresh_table)
-        first.addWidget(QLabel("Global fraction")); first.addWidget(self.fraction); first.addWidget(self.custom); first.addSpacing(12); first.addWidget(QLabel("Apply as")); first.addWidget(self.correction_representation); first.addSpacing(12); first.addWidget(QLabel("Filter")); first.addWidget(self.filter); first.addWidget(QLabel("Sort")); first.addWidget(self.sort_by); first.addWidget(self.search,1)
+        first.addWidget(QLabel("Global fraction")); first.addWidget(self.fraction); first.addWidget(self.custom); first.addSpacing(12); first.addWidget(QLabel("Apply to")); first.addWidget(self.application_scope); first.addSpacing(12); first.addWidget(QLabel("Representation")); first.addWidget(self.correction_representation); first.addSpacing(12); first.addWidget(QLabel("Filter")); first.addWidget(self.filter); first.addWidget(QLabel("Sort")); first.addWidget(self.sort_by); first.addWidget(self.search,1)
         include=QPushButton("Include selected"); exclude=QPushButton("Exclude selected"); reason=QLineEdit(); reason.setPlaceholderText("Exclusion reason"); include.clicked.connect(lambda:self._set_selected(True,"")); exclude.clicked.connect(lambda:self._set_selected(False,reason.text())); load=QPushButton("Load exclusion list…"); load.clicked.connect(self.load_exclusions); warn=QPushButton("Exclude warning…"); warn.setToolTip("Exclude every correction matching a selected warning category"); warn.clicked.connect(self.exclude_warning_category)
-        reason.setMinimumWidth(170); second.addWidget(include); second.addWidget(exclude); second.addWidget(reason,1); second.addWidget(load); second.addWidget(warn); controls_layout.addLayout(first); controls_layout.addLayout(second); layout.addWidget(controls)
+        reason.setMinimumWidth(170); second.addWidget(include); second.addWidget(exclude); second.addWidget(reason,1); second.addWidget(load); second.addWidget(warn); controls_layout.addLayout(first); controls_layout.addLayout(second)
+        self.representation_explanation=QLabel(); self.representation_explanation.setWordWrap(True); self.representation_explanation.setObjectName("mappingHelpText"); controls_layout.addWidget(self.representation_explanation); layout.addWidget(controls)
+        self.correction_type_counts=QLabel("Normal quadrupoles: 0 total / 0 included   •   Skew quadrupoles: 0 total / 0 included")
+        self.correction_type_counts.setObjectName("runState")
+        self.correction_type_counts.setToolTip("Counts all loaded fitted corrections and those currently enabled by their Apply checkboxes.")
+        self.correction_type_counts.setAccessibleName("Normal and skew quadrupole correction counts")
+        layout.addWidget(self.correction_type_counts)
+        self.comparison_help=QLabel(
+            "Compare with FIT using AT FamName, AT Device, or AT index (0-based). "
+            "Correction-row position is only this table's order; it is not a lattice index."
+        )
+        self.comparison_help.setWordWrap(True); self.comparison_help.setObjectName("mappingHelpText")
+        layout.addWidget(self.comparison_help)
         legend_row=QHBoxLayout(); legend=QLabel('● Normal &nbsp;&nbsp; <span style="color:#D99029">● Amber: attention</span> &nbsp;&nbsp; <span style="color:#D32F2F">● Red: blocked / unsafe</span> &nbsp;&nbsp; <span style="color:#888888">● Gray: excluded</span>'); legend.setTextFormat(Qt.RichText); legend.setObjectName("warningLegend"); legend.setToolTip("Only diagnostic cells are highlighted; excluded rows are muted."); legend_row.addWidget(legend); legend_row.addStretch(1)
-        self.clear_table_selection_button=QPushButton("Clear highlight"); self.clear_table_selection_button.clicked.connect(lambda:self.table.clearSelection()); self.show_first_columns_button=QPushButton("← First columns"); self.show_first_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().minimum())); self.show_last_columns_button=QPushButton("Show last columns →"); self.show_last_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().maximum())); legend_row.addWidget(self.clear_table_selection_button); legend_row.addWidget(self.show_first_columns_button); legend_row.addWidget(self.show_last_columns_button); layout.addLayout(legend_row)
-        self.table=QTableWidget(0,len(self.COLUMNS)); self.table.setMinimumHeight(260); self.table.setHorizontalHeaderLabels(self.COLUMNS); self.table.setSortingEnabled(True); self.table.setSelectionBehavior(QAbstractItemView.SelectRows); self.table.setSelectionMode(QAbstractItemView.ExtendedSelection); self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOn); self.table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents); self.table.horizontalHeader().setStretchLastSection(False); self.table.horizontalHeader().setSectionResizeMode(len(self.COLUMNS)-1,QHeaderView.Interactive); self.table.setColumnWidth(len(self.COLUMNS)-1,220); self.table.itemChanged.connect(self._item_changed); layout.addWidget(self.table,1)
+        self.clear_table_selection_button=QPushButton("Clear highlight"); self.clear_table_selection_button.clicked.connect(lambda:self.table.clearSelection()); self.show_first_rows_button=QPushButton("↑ First rows"); self.show_first_rows_button.clicked.connect(lambda:self.table.scrollToTop()); self.show_last_rows_button=QPushButton("↓ Last rows"); self.show_last_rows_button.clicked.connect(lambda:self.table.scrollToBottom()); self.show_first_columns_button=QPushButton("← First columns"); self.show_first_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().minimum())); self.show_last_columns_button=QPushButton("Last columns →"); self.show_last_columns_button.clicked.connect(lambda:self.table.horizontalScrollBar().setValue(self.table.horizontalScrollBar().maximum())); legend_row.addWidget(self.clear_table_selection_button); legend_row.addWidget(self.show_first_rows_button); legend_row.addWidget(self.show_last_rows_button); legend_row.addWidget(self.show_first_columns_button); legend_row.addWidget(self.show_last_columns_button); layout.addLayout(legend_row)
+        self.table=CopyableMappingTable(0,len(self.COLUMNS)); self.table.setMinimumHeight(260); self.table.setHorizontalHeaderLabels(self.COLUMNS); configure_mapping_table(self.table,tuple("Correction-plan value. Full content is available in each cell tooltip." for _ in self.COLUMNS),editable=True); self.table.horizontalHeader().setSectionResizeMode(len(self.COLUMNS)-1,QHeaderView.Interactive); self.table.setColumnWidth(len(self.COLUMNS)-1,220); self.table.itemChanged.connect(self._item_changed); layout.addWidget(self.table,1)
         self.plan_page=page; self._selection_clear_surfaces=(page,convention,controls,legend)
         for surface in self._selection_clear_surfaces:surface.installEventFilter(self)
         scroll=self._scroll_page(page); self.plan_scroll=scroll; scroll.viewport().installEventFilter(self); return scroll
 
     def _review_page(self):
         page=QWidget(); layout=QVBoxLayout(page); actions=QHBoxLayout(); self.apply_status=QLabel("Select a backend and preview before Apply"); self.apply_status.setObjectName("safetyBadge"); self.apply_status.setAlignment(Qt.AlignCenter); self.apply_status.setMinimumWidth(500); self.apply_status.setMaximumWidth(650); actions.addWidget(self.apply_status); actions.addStretch(); self.preview_apply_button=QPushButton("Preview machine changes"); self.preview_apply_button.clicked.connect(self.preview_machine_changes); actions.addWidget(self.preview_apply_button); self.apply_button=QPushButton("Apply…"); self.apply_button.setEnabled(False); self.apply_button.clicked.connect(self.apply_machine_changes); actions.addWidget(self.apply_button); self.undo_button=QPushButton("Undo last 10%…"); self.undo_button.setEnabled(False); self.undo_button.setToolTip("Return to the preceding verified cumulative correction level"); self.undo_button.clicked.connect(self.undo_last_machine_changes); actions.addWidget(self.undo_button); self.restore_button=QPushButton("Restore original…"); self.restore_button.setEnabled(False); self.restore_button.setToolTip("Restore exact pre-Apply B2 values in the pySC simulation"); self.restore_button.clicked.connect(self.restore_machine_changes); actions.addWidget(self.restore_button); export=QPushButton("Export CSV…"); export.setToolTip("Export the human-readable correction table"); export.clicked.connect(self.export_csv); actions.addWidget(export); layout.addLayout(actions)
+        self.apply_activity_progress=QProgressBar(); self.apply_activity_progress.setRange(0,0); self.apply_activity_progress.setFormat("Applying correction — waiting for verified readbacks…"); self.apply_activity_progress.setVisible(False); layout.addWidget(self.apply_activity_progress)
+        progress_details=QGroupBox("Correction step history and readbacks"); progress_details.setCheckable(True); progress_details.setChecked(True); progress_layout=QVBoxLayout(progress_details); progress_body=QWidget(); progress_body_layout=QVBoxLayout(progress_body); progress_body_layout.setContentsMargins(0,0,0,0); progress_body_layout.addWidget(self.progress_history); progress_body_layout.addWidget(self.progress_magnets); progress_layout.addWidget(progress_body); progress_details.toggled.connect(progress_body.setVisible); layout.addWidget(progress_details)
+        self.review_actions = layout
         metrics=QGroupBox(); self.review_metrics_group=metrics; metrics.setSizePolicy(QSizePolicy.Expanding,QSizePolicy.Maximum); grid=QGridLayout(metrics); self.review_metrics={}
-        labels=("Magnets loaded","Magnets included","Magnets excluded","Warnings","Current-limit violations","Global correction fraction","Max |ΔK/K|","Max |Final ΔK|")
+        labels=("Magnets loaded","Selected in plan","Applied by scope","Magnets excluded","Warnings","Current-limit violations","Global correction fraction","Max |ΔK/K|","Max |Final ΔK|")
         for index,name in enumerate(labels):
             column=(index%4)*2; row=index//4; value=QLabel("—"); value.setObjectName("metricValue"); caption=QLabel(name); caption.setObjectName("metricLabel"); grid.addWidget(caption,row,column); grid.addWidget(value,row,column+1); self.review_metrics[name]=value
         layout.addWidget(metrics); self.comments=QPlainTextEdit(); self.comments.setPlaceholderText("Plan comments / review notes"); self.comments.setFixedHeight(34); layout.addWidget(self.comments)
         changes_group=QGroupBox("Machine change preview / readback"); changes_layout=QVBoxLayout(changes_group); self.machine_changes_table=QTableWidget(0,6); self.machine_changes_table.setHorizontalHeaderLabels(["Control","Current value","Requested change","Proposed value","Readback","Status"]); self.machine_changes_table.setEditTriggers(QAbstractItemView.NoEditTriggers); self.machine_changes_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch); self.machine_changes_table.setMinimumHeight(135); changes_layout.addWidget(self.machine_changes_table); layout.addWidget(changes_group)
+        self.machine_changes_table.viewport().installEventFilter(self)
         self.expansion_summary=QLabel(
             "Family-mode LOCO: fitted quadrupole families → "
             "expanded physical quadrupoles"
@@ -227,14 +487,39 @@ class CorrectMainWindow(QMainWindow):
         self.expansion_summary.setWordWrap(True)
         layout.addWidget(self.expansion_summary)
 
+        recovery=QGroupBox("Application safety & recovery"); self.transaction_recovery_group=recovery; recovery.setCheckable(True); recovery.setChecked(False); recovery_layout=QVBoxLayout(recovery)
+        recovery_body=QWidget(); self.transaction_recovery_body=recovery_body; body_layout=QVBoxLayout(recovery_body); body_layout.setContentsMargins(0,0,0,0)
+        recovery_intro=QLabel("Use these controls if applying corrections is interrupted or needs to be stopped. Recovery attempts to restore the original magnet settings."); recovery_intro.setWordWrap(True); body_layout.addWidget(recovery_intro)
+        self.recovery_activity_status=QLabel("No correction application is currently running."); self.recovery_activity_status.setWordWrap(True); body_layout.addWidget(self.recovery_activity_status)
+        self.recovery_availability_status=QLabel("No recovery record is currently loaded. Select a saved JSON recovery record to check whether restoration is available."); self.recovery_availability_status.setWordWrap(True); body_layout.addWidget(self.recovery_availability_status)
+        self.recovery_feedback=QLabel(""); self.recovery_feedback.setWordWrap(True); self.recovery_feedback.setTextInteractionFlags(Qt.TextSelectableByMouse); body_layout.addWidget(self.recovery_feedback)
+        restore_help=QLabel("<b>Restore after interrupted application…</b> — Select and validate a saved recovery record from a previous interrupted application. Restoration may change magnet settings and requires connection and write authorization."); restore_help.setWordWrap(True); body_layout.addWidget(restore_help)
+        stop_help=QLabel("<b>Stop application and restore originals</b> — Request cancellation between magnet operations and attempt to restore original strengths already affected. Restoration is attempted, not guaranteed if the connection or hardware fails."); stop_help.setWordWrap(True); body_layout.addWidget(stop_help)
+        self.transaction_recovery_layout=QVBoxLayout(); body_layout.addLayout(self.transaction_recovery_layout)
+        technical=QGroupBox("Recovery record details"); technical.setCheckable(True); technical.setChecked(False); technical_layout=QVBoxLayout(technical)
+        technical_help=QLabel("The saved JSON journal records the validated connection identity, mapping, original and target strengths, attempted devices, readbacks and restoration results. Loading a record performs no writes; restoring it requires the matching connection and authorization."); technical_help.setWordWrap(True); technical_layout.addWidget(technical_help)
+        self.recovery_record_details=QPlainTextEdit(); self.recovery_record_details.setReadOnly(True); self.recovery_record_details.setMaximumHeight(130); self.recovery_record_details.setPlainText("No recovery record loaded."); technical_layout.addWidget(self.recovery_record_details); technical_help.setVisible(False); self.recovery_record_details.setVisible(False); technical.toggled.connect(technical_help.setVisible); technical.toggled.connect(self.recovery_record_details.setVisible); body_layout.addWidget(technical)
+        recovery_layout.addWidget(recovery_body); recovery_body.setVisible(False); recovery.toggled.connect(recovery_body.setVisible)
+
+        summary_row=QHBoxLayout(); self.correction_summary=QLabel("Load correction data to show review and mapping counts."); self.correction_summary.setWordWrap(True); self.correction_summary.setObjectName("mappingHelpText"); summary_row.addWidget(self.correction_summary,1)
+        self.connect_correction_markers=QCheckBox("Connect markers"); self.connect_correction_markers.setChecked(True); self.connect_correction_markers.setToolTip("Connect successive finite values in correction-list order. No interpolation or smoothing is applied."); self.connect_correction_markers.toggled.connect(lambda:self._draw_plots() if self.review else None); summary_row.addWidget(self.connect_correction_markers)
+        info=QGroupBox("Selected magnet information"); self.correction_info_group=info; info_layout=QVBoxLayout(info)
+        self.correction_hover_info=QLabel("Hover over a marker to inspect it temporarily; click to pin it."); self.correction_hover_info.setWordWrap(True); self.correction_hover_info.setTextInteractionFlags(Qt.TextSelectableByMouse); info_layout.addWidget(self.correction_hover_info)
+        self.correction_pinned_info=QLabel("Click a plotted magnet to keep its details here."); self.correction_pinned_info.setWordWrap(True); self.correction_pinned_info.setTextInteractionFlags(Qt.TextSelectableByMouse); info_layout.addWidget(self.correction_pinned_info)
+        self.correction_details_group=QGroupBox("Details"); self.correction_details_group.setCheckable(True); self.correction_details_group.setChecked(False); details_layout=QVBoxLayout(self.correction_details_group); self.correction_details_info=QLabel("Select a magnet to inspect detailed fit and scaling metadata."); self.correction_details_info.setWordWrap(True); self.correction_details_info.setTextInteractionFlags(Qt.TextSelectableByMouse); details_layout.addWidget(self.correction_details_info); self.correction_details_info.setVisible(False); self.correction_details_group.toggled.connect(self.correction_details_info.setVisible); info_layout.addWidget(self.correction_details_group)
+        self._correction_pinned_index=None; self._correction_pinned_plot_key="final"; self._correction_plot_payload={}; self._correction_plot_callbacks={}
         self.plot_tabs=QTabWidget(); self.plots={}
-        self._plot_specs=(("raw","Raw ΔK"),("final","Final ΔK"),("relative","ΔK/K [%]"),("magnet","Correction by magnet"),("overview","Included / excluded"),("current","Current diagnostics"))
+        self._plot_specs=(("final","Final proposed ΔK"),("integrated","Final Δ(KL)"),("strengths","Current / target KL"),("relative","ΔK/K [%]"),("raw","Raw recommended ΔK"),("current","Current diagnostics"))
         for key,title in self._plot_specs:
             placeholder=QLabel("Load correction data to display this plot."); placeholder.setAlignment(Qt.AlignCenter); self.plot_tabs.addTab(placeholder,title)
+        self.plot_tabs.currentChanged.connect(self._correction_plot_tab_changed)
         self.plot_tabs.setMinimumHeight(380)
         self.plot_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         layout.addWidget(self.plot_tabs)
-        return self._scroll_page(page)
+        layout.addLayout(summary_row)
+        layout.addWidget(info)
+        layout.addWidget(recovery)
+        scroll=self._scroll_page(page); self.review_scroll=scroll; return scroll
 
     def _ensure_plots(self):
         if self.plots:return
@@ -242,6 +527,12 @@ class CorrectMainWindow(QMainWindow):
         for position,(key,title) in enumerate(self._plot_specs):
             placeholder=self.plot_tabs.widget(position); self.plot_tabs.removeTab(position); placeholder.deleteLater()
             canvas=PlotCanvas(minimum_height=270); self.plots[key]=canvas; self.plot_tabs.insertTab(position,canvas,title)
+            canvas.installEventFilter(self)
+            canvas.canvas.installEventFilter(self)
+            self._correction_plot_callbacks[key]=(
+                canvas.canvas.mpl_connect("motion_notify_event", lambda event,k=key:self._correction_plot_hover(k,event)),
+                canvas.canvas.mpl_connect("button_press_event", lambda event,k=key:self._correction_plot_click(k,event)),
+            )
         self.plot_tabs.setCurrentIndex(index)
 
     def _load(self,path,iteration=None):
@@ -250,16 +541,68 @@ class CorrectMainWindow(QMainWindow):
         self._accept_loaded_review(review,path)
 
     def _accept_loaded_review(self,review,path):
+        if self._pyaml_locked():
+            QMessageBox.warning(self, "Restore required", "Restore pyAML strengths before changing correction source.")
+            return
         self.review=review
+        self._correction_pinned_index=None
+        self._correction_pinned_plot_key="final"
+        if hasattr(self,"correction_pinned_info"):
+            self.correction_pinned_info.setText("Click a plotted magnet to keep its details here.")
+            self.correction_hover_info.setText("Hover over a marker to inspect it temporarily; click to pin it.")
+            self.correction_details_info.setText("Select a magnet to inspect detailed fit and scaling metadata.")
+        if hasattr(self, "pyaml_workspace"):
+            self.pyaml_workspace._rendered = None
+            self.pyaml_workspace._embedded_mapping_error = None
+            self.pyaml_workspace.explicit = []
+            self.pyaml_workspace.mapping_path = None
+            self.pyaml_workspace.mapping_hash = None
+            self.mapping_path = None
+            if self.pyaml_workspace.transaction and self.pyaml_workspace.transaction.record:
+                self.pyaml_workspace.transaction.record["status"] = "stale"
         source=Path(path).resolve(); self.machine_snapshot=None; self.badge.setText(self.registry.descriptor(self.backend_combo.currentData()).badge)
         for item in self.review.items:item.metadata.setdefault("mapping_status","mapped" if item.control_name else "unmapped")
+        provenance=self.review.items[0].metadata if self.review.items else {}
+        embedded=getattr(self.review,"machine_mapping",{}) or {}
+        if is_machine_mapping(embedded):
+            entries=[MagnetMapping(row.get("lattice_name",""),row.get("control_name",""),
+                row.get("lattice_ordinal"),row.get("component"),row.get("unit"))
+                for row in correction_projection(embedded) if row.get("control_name")]
+            if entries:
+                counts=apply_explicit_mapping(self.review,entries)
+                for item in self.review.items:
+                    if item.metadata.get("mapping_status") == "mapped":
+                        item.metadata["mapping_status"] = "saved"
+                        item.metadata["match_source"] = "saved_machine_mapping"
+                        item.metadata["mapping_validation_level"] = "saved_requires_connection"
+                self.mapping_file_status.setText(
+                    f"Embedded FIT Machine Mapping — {counts['mapped']} saved; connection revalidation required")
         self.correction_changes=(); self.apply_button.setEnabled(False); self.apply_status.setText("Correction loaded — preview machine changes")
-        provenance=self.review.items[0].metadata if self.review.items else {}; session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False); self.mapping_file_status.setText("—"); self._refresh_mapping_status(); self._sync_fraction(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all(); self.tabs.setCurrentIndex(2); self.statusBar().showMessage(f"Loaded {len(self.review.items)} correction item(s)",5000)
+        session=provenance.get("measurement_session") or {}; self.source_iteration.setText(str(provenance.get("source_state") or "Final / loaded plan")); self.source_timestamp.setText(str(provenance.get("fit_timestamp") or "Not available")); self.source_session.setText(str(session.get("session_id") or "Not recorded")); self.source_path.setText(str(source)); self.source_path.setToolTip(str(source)); self.source_type.setText(self._source_kind(source)); self.source_parameters.setText(self._parameter_text()); self.source_status.setText("Correction data loaded and ready for mapping review"); self.mapping_button.setEnabled(True); self.mapping_details_button.setEnabled(bool(self.review.items)); self.generate_mapping_button.setEnabled(True); self.mapping_source_notice.setVisible(False)
+        if not is_machine_mapping(embedded):self.mapping_file_status.setText("—")
+        pyaml_provenance = self.pyaml_workspace.has_saved_pyaml_provenance(self.review)
+        if pyaml_provenance:
+            pyaml_index = self.backend_combo.findData("pyaml")
+            if pyaml_index >= 0:
+                self.backend_combo.setCurrentIndex(pyaml_index)
+            self.pyaml_workspace.apply_saved_provenance(self.review)
+        self._refresh_mapping_status(); self._sync_fraction(); self._sync_application_scope(); self._sync_representation(); self._read_current_pysc_k(strict=False); self.refresh_all()
+        self.tabs.setCurrentIndex(1 if pyaml_provenance else 2)
+        status = f"Loaded {len(self.review.items)} correction item(s)"
+        if pyaml_provenance:
+            status += " — saved pyAML mapping retained; connection revalidation required"
+        self.statusBar().showMessage(status,5000)
 
-    def load_source_responsively(self,path,iteration=None):
+    def load_source_responsively(self,path,iteration=None,machine_mapping=None):
+        if self._pyaml_locked():
+            QMessageBox.warning(self, "Restore required", "Restore pyAML strengths before changing correction source.")
+            return
         if self._source_load_thread is not None:
             self.statusBar().showMessage("A correction source is already loading.",3000)
             return
+        self._pending_machine_mapping = (
+            dict(machine_mapping) if is_machine_mapping(machine_mapping) else None
+        )
         self.statusBar().showMessage(f"Loading correction source… {path}")
         thread=QThread(self); worker=CorrectionSourceLoader(path,iteration); worker.moveToThread(thread)
         thread.started.connect(worker.run)
@@ -271,10 +614,19 @@ class CorrectMainWindow(QMainWindow):
 
     @Slot(object,str)
     def _source_loaded(self,review,path):
+        transferred = getattr(self, "_pending_machine_mapping", None)
+        if is_machine_mapping(transferred):
+            # The current FIT project may contain a newer complete mapping
+            # than an already-completed result. Preserve it as saved evidence;
+            # Correct still requires connection/inventory revalidation before
+            # any machine operation is enabled.
+            review.machine_mapping = transferred
+        self._pending_machine_mapping = None
         self._accept_loaded_review(review,path)
 
     @Slot(str)
     def _source_load_failed(self,message):
+        self._pending_machine_mapping = None
         self.statusBar().showMessage("Correction source could not be loaded.",5000)
         QMessageBox.critical(self,"Cannot load correction source",message)
 
@@ -318,10 +670,167 @@ class CorrectMainWindow(QMainWindow):
         path=QFileDialog.getOpenFileName(self,"Open correction plan or legacy JSON",self._browse_start("plans"),"Correction files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
         if path:self._remember_browse("plans",path); self.load_source_responsively(path)
 
+    @staticmethod
+    def _project_json_default(value):
+        if isinstance(value,np.generic):return value.item()
+        if isinstance(value,Path):return str(value)
+        raise TypeError(f"Unsupported project value: {type(value).__name__}")
+
+    def _correct_project_document(self):
+        if not self.review:raise ValueError("Load FIT results or a correction plan first")
+        self.review.comments=self.comments.toPlainText()
+        plan=asdict(self.review.to_plan("correct-project-plan"))
+        workspace=getattr(self,"pyaml_workspace",None)
+        transaction=getattr(workspace,"transaction",None) if workspace else None
+        record=copy.deepcopy(getattr(transaction,"record",None) or self.saved_progress_record)
+        pyaml_settings={}
+        if workspace:
+            pyaml_settings={
+                "config_path":workspace.fields["config_path"].text().strip(),
+                "normal_array":workspace.fields["normal_array"].text().strip(),
+                "skew_array":workspace.fields["skew_array"].text().strip(),
+                "mode":workspace.mode.currentData(),
+                "mapping_path":str(workspace.mapping_path or self.mapping_path or ""),
+            }
+        return {
+            "schema":"pyloco.correct_project","schema_version":1,
+            "saved_utc":datetime.now(timezone.utc).isoformat(),
+            "correction_plan":plan,
+            "ui_state":{
+                "backend":self.backend_combo.currentData(),"workflow_tab":self.tabs.currentIndex(),
+                "progress_increment_percent":self.progress_increment.value(),
+                "representation":self.correction_representation.currentData(),
+                "table_filter":self.filter.currentData(),"table_sort":self.sort_by.currentData(),
+                "table_search":self.search.text(),"mapping_filter":self.mapping_attention_filter.currentData(),
+                "mapping_search":self.mapping_filter.text(),"comments":self.comments.toPlainText(),
+            },
+            "pyaml":pyaml_settings,
+            "progress_record":record,
+            "safety":{
+                "connection_saved":False,"write_authorization_saved":False,
+                "message":"Opening a project never connects to a machine, authorizes writes or changes magnet strengths.",
+            },
+        }
+
+    def save_project(self):
+        if not self.review:
+            QMessageBox.information(self,"Nothing to save","Load FIT results or a correction plan first."); return
+        suggested=str(self.project_path or (Path(self.review.source_result).expanduser().parent/"correct-project.pyloco-correct.json"))
+        path=QFileDialog.getSaveFileName(self,"Save pyLOCO Correct project",suggested,"pyLOCO Correct project (*.pyloco-correct.json);;JSON (*.json)",options=QFileDialog.DontUseNativeDialog)[0]
+        if not path:return
+        target=Path(path).expanduser().resolve()
+        if not str(target).endswith(".json"):target=Path(str(target)+".pyloco-correct.json")
+        try:
+            self.save_project_to(target)
+        except Exception as exc:
+            QMessageBox.critical(self,"Cannot save Correct project",str(exc)); return
+        self.statusBar().showMessage(f"Saved Correct project: {target}",8000)
+
+    def save_project_to(self,target):
+        """Persist the complete offline Correct workspace without machine authority."""
+        target=Path(target).expanduser().resolve()
+        document=self._correct_project_document()
+        temporary=target.with_suffix(target.suffix+".tmp")
+        target.parent.mkdir(parents=True,exist_ok=True)
+        temporary.write_text(json.dumps(document,indent=2,allow_nan=False,default=self._project_json_default),encoding="utf-8")
+        temporary.replace(target)
+        self.project_path=target
+        self.setWindowTitle(f"pyLOCO Correct — {target.stem}")
+        return target
+
+    def open_project(self):
+        path=QFileDialog.getOpenFileName(self,"Open pyLOCO Correct project",self._browse_start("correct-projects"),"pyLOCO Correct project (*.pyloco-correct.json *.json)",options=QFileDialog.DontUseNativeDialog)[0]
+        if not path:return
+        source=Path(path).expanduser().resolve()
+        try:
+            self.load_project_path(source)
+        except Exception as exc:
+            QMessageBox.critical(self,"Cannot open Correct project",str(exc)); return
+        self._remember_browse("correct-projects",source)
+        self.statusBar().showMessage("Correct project restored — disconnected; machine writes remain unauthorized",10000)
+
+    def load_project_path(self,source):
+        """Restore a Correct workspace while deliberately remaining disconnected/read-only."""
+        source=Path(source).expanduser().resolve()
+        document=json.loads(source.read_text(encoding="utf-8"))
+        if document.get("schema")!="pyloco.correct_project" or document.get("schema_version")!=1:
+            raise ValueError("Not a supported pyLOCO Correct project")
+        data=document.get("correction_plan") or {}
+        records=tuple(CorrectionRecord(**row) for row in data.get("records",()))
+        plan=CorrectionPlan(plan_id=str(data.get("plan_id","")),source_result=str(data.get("source_result","")),records=records,global_scale=float(data.get("global_scale",1.0)),application_state=str(data.get("application_state","dry_run")),fraction_comparison=tuple(data.get("fraction_comparison",())),metadata=dict(data.get("metadata",{})),schema_version=str(data.get("schema_version","")),file_type=str(data.get("file_type","")))
+        plan.validate()
+        review=CorrectionReview.from_plan(plan)
+        result_path=Path(review.source_result).expanduser()
+        if not result_path.is_absolute():review.source_result=str((source.parent/result_path).resolve())
+        self._accept_loaded_review(review,review.source_result)
+        state=document.get("ui_state",{}); pyaml=document.get("pyaml",{})
+        backend=self.backend_combo.findData(state.get("backend","mock")); self.backend_combo.setCurrentIndex(backend if backend>=0 else 0)
+        if pyaml:
+            self.pyaml_workspace.fields["config_path"].setText(str(pyaml.get("config_path","") or "")); self.pyaml_workspace.fields["normal_array"].setText(str(pyaml.get("normal_array","Quads") or "Quads")); self.pyaml_workspace.fields["skew_array"].setText(str(pyaml.get("skew_array","SkewQuads") or "SkewQuads"))
+            mode=self.pyaml_workspace.mode.findData(pyaml.get("mode","live")); self.pyaml_workspace.mode.setCurrentIndex(mode if mode>=0 else 0)
+            mapping_text=str(pyaml.get("mapping_path","") or "").strip()
+            if mapping_text:
+                mapping_path=Path(mapping_text).expanduser()
+                if not mapping_path.is_absolute():mapping_path=source.parent/mapping_path
+                if mapping_path.is_file():self.pyaml_workspace.mapping_path=mapping_path.resolve(); self.mapping_path=str(mapping_path.resolve()); self.pyaml_workspace.mapping_label.setText(str(mapping_path.resolve()))
+        self.pyaml_workspace.writes.setChecked(False)
+        self.pyaml_workspace.connection=self.pyaml_workspace.transaction=None
+        self.saved_progress_record=copy.deepcopy(document.get("progress_record"))
+        self.progress_increment.blockSignals(True)
+        self.progress_increment.setValue(int(state.get("progress_increment_percent",10)))
+        self.progress_increment.blockSignals(False)
+        for combo,key in ((self.filter,"table_filter"),(self.sort_by,"table_sort"),(self.mapping_attention_filter,"mapping_filter"),(self.correction_representation,"representation")):
+            index=combo.findData(state.get(key))
+            if index>=0:combo.setCurrentIndex(index)
+        self.search.setText(str(state.get("table_search","") or "")); self.mapping_filter.setText(str(state.get("mapping_search","") or "")); self.comments.setPlainText(str(state.get("comments",review.comments) or ""))
+        self.tabs.setCurrentIndex(max(0,min(self.tabs.count()-1,int(state.get("workflow_tab",0)))))
+        self.project_path=source; self.setWindowTitle(f"pyLOCO Correct — {source.stem}")
+        self._set_connection(False,"DISCONNECTED"); self._refresh_correction_progress(); self.refresh_all()
+        return document
+
+    def _pyaml_locked(self):
+        workspace = getattr(self, "pyaml_workspace", None)
+        return bool(workspace and (workspace.pending() or workspace.thread is not None))
+
     def _backend_changed(self,*_):
+        if self._pyaml_locked() and self.backend_combo.currentData() != "pyaml":
+            self.backend_combo.blockSignals(True)
+            self.backend_combo.setCurrentIndex(self.backend_combo.findData("pyaml"))
+            self.backend_combo.blockSignals(False)
+            return
+        if hasattr(self, "pyaml_workspace"):
+            selected = self.backend_combo.currentData() == "pyaml"
+            key=self.backend_combo.currentData()
+            self.pyaml_connection_group.setVisible(selected)
+            self.pysc_connection_group.setVisible(key=="pysc")
+            self.offline_connection_group.setVisible(key=="mock")
+            self.pyaml_workspace.extra_actions.setVisible(selected)
+            self.pyaml_workspace.clear_mapping_button.setVisible(selected)
+            self.automatic_mapping_group.setVisible(True)
+            self.correction_representation.setEnabled(not selected)
+            self._refresh_representation_explanation()
+            self.undo_button.setVisible(not selected)
+            self.preview_apply_button.setVisible(not selected)
+            self.apply_button.setVisible(not selected)
+            self.restore_button.setVisible(not selected)
+            self.read_current_k_button.setText("Read current integrated strengths" if selected else "Read current K from pySC Server" if key=="pysc" else "Read current machine strengths")
+            self.read_current_k_button.setEnabled(key in {"pyaml","pysc"})
+            self.read_current_k_button.setToolTip("Read mapped B2L/A2L values only; no magnet settings are changed." if selected else "Read mapped physical K values only; no magnet settings are changed." if key=="pysc" else "Unavailable for the offline Mock backend.")
+            self.current_strength_help.setText("Read the present integrated quadrupole strengths (KL) from the connected pyAML machine. This is a separate read-only operation; it requires validated mappings and does not independently verify physical calibration." if selected else "Read physical K values from the connected pySC Server. This read-only operation requires validated mappings and does not change settings." if key=="pysc" else "The offline Mock backend has no live machine strengths to read.")
+            self.mapping_note.setText("Automatic matching uses unique literal FIT/pyAML identities; array order is never used. Unresolved included magnets block preview and application." if selected else "Every included fitted magnet must resolve uniquely to a verified machine device before executable preview or application.")
+            if selected:
+                self.tabs.setCurrentIndex(1)
+            else:
+                self.pyaml_workspace.invalidate_connection()
+                self.preview_apply_button.setEnabled(True)
+            self.restore_button.setToolTip("Restore exact original strengths")
+            self.current_k_status.setText("Connect and verify mapping before reading strengths.")
+            self.pyaml_workspace._rendered = None
+            self._last_correct_backend = self.backend_combo.currentData()
         key=self.backend_combo.currentData(); descriptor=self.registry.descriptor(key); self.badge.setText(descriptor.badge); self.backend_session=None; self.correction_changes=(); self.apply_button.setEnabled(False)
         self._set_connection(False,"OFFLINE" if key=="mock" else "DISCONNECTED"); self._style_backend_badge(key); self._populate_machine_changes(())
         self.apply_status.setText("Mock is read-only" if key=="mock" else "Backend selected — preview reads current values")
+        self._refresh_correction_progress()
 
     def _pysc_profile_selected(self,*_):
         """Selecting a pySC machine/profile also selects its backend.
@@ -397,15 +906,54 @@ class CorrectMainWindow(QMainWindow):
         return updated
 
     def read_current_pysc_k(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.run(self.pyaml_workspace.read_current)
+            return
         try:self._read_current_pysc_k(strict=True)
         except Exception as exc:
             self.current_k_status.setText(f"Current machine K unavailable: {exc}")
             QMessageBox.warning(self,"Cannot read current machine K",str(exc))
 
+    def reconcile_correction_history(self, connection):
+        """Reload the newest durable simulator journal and verify live state."""
+        if not self.review:
+            self.progress_machine_status.setText("Machine state: connected; no correction source loaded")
+            return None
+        directory=Path(self.review.source_result).resolve()/"correction"/"fullfit_transaction_journals"
+        candidates=sorted(directory.glob("*.json"),key=lambda path:path.stat().st_mtime,reverse=True) if directory.is_dir() else []
+        if not candidates:
+            self.fullfit_transaction=None
+            self.progress_machine_status.setText("Machine state: connected; no correction history found")
+            self._refresh_correction_progress(); return None
+        from .fullfit_transaction import FullFitB2Transaction
+        transaction=FullFitB2Transaction(connection=connection,journal_directory=directory)
+        try:
+            record=transaction.load_journal(candidates[0])
+        except Exception as exc:
+            self.fullfit_transaction=transaction
+            self.progress_machine_status.setText(f"Machine state: reconciliation blocked — {exc}")
+            self.progress_preview_button.setEnabled(False); self.progress_apply_button.setEnabled(False)
+            self.apply_button.setEnabled(False)
+            return None
+        self.fullfit_transaction=transaction
+        verified=float(record.get("cumulative_fraction",0.0)) if record.get("status")=="applied" else 0.0
+        self.progress_machine_status.setText(f"Machine state: reconciled from journal — {verified*100:g}% verified")
+        self.restore_button.setEnabled(bool(record.get("restore_required")))
+        self.undo_button.setEnabled(bool(record.get("history")))
+        self.preview_apply_button.setEnabled(verified < 1.0)
+        self.preview_apply_button.setText(f"Preview next +{min(self.progress_increment.value(),100-verified*100):g}%")
+        self._refresh_correction_progress()
+        return record
+
     def preview_machine_changes(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.tabs.setCurrentIndex(3)
+            self.pyaml_workspace.run(self.pyaml_workspace.preview)
+            return
         # Preview is read-only. An applied pass may be continued only after
         # its complete live state has been independently verified.
         existing=getattr(self,"fullfit_transaction",None)
+        self._fullfit_before_preview=existing
         previous_record = None
         if existing is not None and existing.record is not None:
             status = existing.record.get("status")
@@ -432,10 +980,18 @@ class CorrectMainWindow(QMainWindow):
             QMessageBox.warning(self, "No correction", "Load a correction source first.")
             return
 
-        included = [item for item in self.review.items if item.included]
+        current_fraction=float((previous_record or {}).get("cumulative_fraction",0.0))
+        requested_increment=self.progress_increment.value()/100.0
+        target_fraction=min(1.0,current_fraction+requested_increment)
+        increment_fraction=target_fraction-current_fraction
+        if increment_fraction <= 0:
+            QMessageBox.warning(self,"100% reached","The full fitted correction is already applied.")
+            return
+
+        included = [item for item in self.review.items if self.review.applies_to(item)]
 
         if not included:
-            QMessageBox.warning(self, "Empty correction", "No corrections are included.")
+            QMessageBox.warning(self, "Empty correction", "No included corrections match the selected application scope.")
             return
 
         # For this milestone only mapped normal B2 corrections are supported.
@@ -504,17 +1060,24 @@ class CorrectMainWindow(QMainWindow):
                 offset = float(row["offset"])
                 current = float(row["current"])
                 physical = float(row["physical"])
-                physical_delta = float(item.final_delta)
+                if factor == 0:
+                    raise RuntimeError(f"Zero calibration factor for {control}")
+                full_physical_delta = float(item.recommended_machine_delta * item.individual_scale)
+                previous_item = next((entry for entry in (previous_record or {}).get("items",())
+                                      if entry.get("control")==control),None)
+                baseline_control=float(previous_item.get("restore_control") if previous_item else current)
+                baseline_physical=float(previous_item.get("restore_physical_k") if previous_item else physical)
+                expected_current_physical=baseline_physical+full_physical_delta*current_fraction
+                if not math.isclose(physical,expected_current_physical,rel_tol=1e-10,abs_tol=1e-12):
+                    raise RuntimeError(f"Stale readback before preview: {control}")
+                expected_physical=baseline_physical+full_physical_delta*target_fraction
+                proposed=baseline_control+(full_physical_delta*target_fraction)/factor
+                physical_delta=expected_physical-physical
 
                 values = (factor, offset, current, physical, physical_delta)
                 if not all(math.isfinite(v) for v in values):
                     raise RuntimeError(
                         f"Non-finite B2 diagnostic for {control}"
-                    )
-
-                if factor == 0:
-                    raise RuntimeError(
-                        f"Zero calibration factor for {control}"
                     )
 
                 expected_physical = factor * current + offset
@@ -528,10 +1091,7 @@ class CorrectMainWindow(QMainWindow):
                         f"Physical/control calibration mismatch for {control}"
                     )
 
-                # final_delta is PHYSICAL ΔK.
-                # Convert it to the corresponding control-setpoint change.
                 control_delta = physical_delta / factor
-                proposed = current + control_delta
 
                 changes.append(
                     CorrectionChange(
@@ -546,20 +1106,6 @@ class CorrectMainWindow(QMainWindow):
 
             self.correction_changes = tuple(changes)
             self._populate_machine_changes(self.correction_changes)
-
-            # Full-FIT application is permitted ONLY for an explicitly
-            # validated local pySC simulation profile and
-            # only at the validated 10% correction fraction.
-            if not math.isclose(
-                float(self.review.global_scale),
-                0.10,
-                rel_tol=0.0,
-                abs_tol=1e-15,
-            ):
-                raise RuntimeError(
-                    "Full-FIT pySC application requires exactly "
-                    "10% global correction fraction."
-                )
 
             if not self.mapping_path:
                 raise RuntimeError(
@@ -654,7 +1200,7 @@ class CorrectMainWindow(QMainWindow):
                 offset = float(row["offset"])
                 current = float(row["current"])
                 physical = float(row["physical"])
-                physical_delta = float(item.final_delta)
+                full_physical_delta = float(item.recommended_machine_delta * item.individual_scale)
 
                 previous_item = previous_items.get(control)
                 if previous_record is not None and previous_item is None:
@@ -662,8 +1208,8 @@ class CorrectMainWindow(QMainWindow):
                         f"Cumulative correction set changed; missing previous control: {control}"
                     )
                 if previous_item is not None and not math.isclose(
-                    physical_delta,
-                    float(previous_item["physical_delta"]),
+                    full_physical_delta,
+                    float(previous_item.get("full_physical_delta",previous_item["physical_delta"]/.1)),
                     rel_tol=1e-12,
                     abs_tol=1e-15,
                 ):
@@ -672,9 +1218,15 @@ class CorrectMainWindow(QMainWindow):
                         "Restore original values before changing the plan."
                     )
 
-                control_delta = physical_delta / factor
-                proposed = current + control_delta
-                expected_physical = physical + physical_delta
+                restore_control=float(previous_item.get("restore_control",previous_item["current_control"]) if previous_item is not None else current)
+                restore_physical=float(previous_item.get("restore_physical_k",previous_item["current_physical_k"]) if previous_item is not None else physical)
+                expected_current=restore_physical+full_physical_delta*current_fraction
+                if not math.isclose(physical,expected_current,rel_tol=1e-10,abs_tol=1e-12):
+                    raise RuntimeError(f"Stale readback before cumulative preview: {control}")
+                expected_physical=restore_physical+full_physical_delta*target_fraction
+                proposed=restore_control+(full_physical_delta*target_fraction)/factor
+                physical_delta=expected_physical-physical
+                control_delta=proposed-current
 
                 records.append(
                     {
@@ -689,17 +1241,12 @@ class CorrectMainWindow(QMainWindow):
                         "current_control": current,
                         "current_physical_k": physical,
                         "physical_delta": physical_delta,
+                        "full_physical_delta": full_physical_delta,
                         "control_delta": control_delta,
                         "proposed_control": proposed,
                         "expected_physical_k": expected_physical,
-                        "restore_control": float(
-                            previous_item.get("restore_control", previous_item["current_control"])
-                            if previous_item is not None else current
-                        ),
-                        "restore_physical_k": float(
-                            previous_item.get("restore_physical_k", previous_item["current_physical_k"])
-                            if previous_item is not None else physical
-                        ),
+                        "restore_control": restore_control,
+                        "restore_physical_k": restore_physical,
                     }
                 )
 
@@ -707,11 +1254,13 @@ class CorrectMainWindow(QMainWindow):
                 "schema": FULLFIT_SCHEMA,
                 "mode": "READ_ONLY_PREVIEW",
                 "count": len(records),
-                "fraction": 0.10,
+                "fraction": increment_fraction,
+                "previous_fraction": current_fraction,
                 "application_number": application_number,
-                "cumulative_fraction": application_number * 0.10,
+                "cumulative_fraction": target_fraction,
                 "restore_required": previous_record is not None,
                 "history": list((previous_record or {}).get("history", [])),
+                "measurement_session": (self.review.items[0].metadata.get("measurement_session") if self.review.items else {}),
                 "server_identity": identity,
                 "source_lattice": {
                     "path": str(source_lattice),
@@ -767,7 +1316,7 @@ class CorrectMainWindow(QMainWindow):
 
             self.apply_status.setText(
                 f"VERIFIED pySC preview: {len(changes)} mapped B2 "
-                f"controls — next +10%, cumulative {application_number * 10}%"
+                f"controls — exact increment +{increment_fraction * 100:g}%, target {target_fraction * 100:g}%"
             )
 
             self.profile_badge.setText(
@@ -775,6 +1324,7 @@ class CorrectMainWindow(QMainWindow):
             )
 
             self._set_connection(True, "READ-ONLY PREVIEW")
+            self._refresh_correction_progress()
 
         except Exception as exc:
             self.correction_changes = ()
@@ -791,6 +1341,9 @@ class CorrectMainWindow(QMainWindow):
             )
 
     def apply_machine_changes(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.apply()
+            return
         import math
 
         transaction = getattr(
@@ -807,28 +1360,21 @@ class CorrectMainWindow(QMainWindow):
             )
             return
 
-        if (
-            not self.review
-            or not math.isclose(
-                float(self.review.global_scale),
-                0.10,
-                rel_tol=0.0,
-                abs_tol=1e-15,
-            )
-        ):
+        if not self.review:
             QMessageBox.warning(
                 self,
                 "Application blocked",
-                "Full-FIT simulation application requires exactly "
-                "10% correction fraction.",
+                "Load and preview a correction first.",
             )
             return
+
+        increment=float(transaction.record.get("fraction",.1)); target=float(transaction.record.get("cumulative_fraction",increment))
 
         answer = QMessageBox.question(
             self,
             "Confirm pySC full-FIT application",
-            "Apply the next verified 10% correction in the same fitted direction "
-            f"(cumulative {transaction.record.get('cumulative_fraction', .1) * 100:.0f}%) to the mapped normal "
+            f"Apply the explicitly previewed +{increment * 100:g}% correction step "
+            f"(target {target * 100:g}%) to the mapped normal "
             "B2 controls of the explicitly connected pySC simulation?\n\n"
             "This writes ONLY to the local pySC simulation. "
             "No PETRA/DOOCS hardware writes are performed.",
@@ -841,9 +1387,13 @@ class CorrectMainWindow(QMainWindow):
 
         self.apply_button.setEnabled(False)
         self.preview_apply_button.setEnabled(False)
+        self.progress_apply_button.setEnabled(False)
         self.restore_button.setEnabled(False)
         self.undo_button.setEnabled(False)
         self.apply_status.setText("Applying verified correction…")
+        self.apply_activity_progress.setFormat("Applying correction — waiting for verified readbacks…")
+        self.apply_activity_progress.setVisible(True)
+        self._refresh_correction_progress()
         thread=QThread(self); worker=CorrectionApplyWorker(transaction); worker.moveToThread(thread)
         thread.started.connect(worker.run); worker.progress.connect(self._apply_progress)
         worker.completed.connect(self._apply_completed); worker.failed.connect(self._apply_failed)
@@ -899,15 +1449,18 @@ class CorrectMainWindow(QMainWindow):
             self.apply_button.setEnabled(False)
             self.restore_button.setEnabled(True)
             self.undo_button.setEnabled(True)
-            self.preview_apply_button.setText("Preview next +10%")
+            next_increment=min(self.progress_increment.value(),max(0,100-record.get('cumulative_fraction',.1)*100))
+            self.preview_apply_button.setText(f"Preview next +{next_increment:g}%")
             self.preview_apply_button.setEnabled(True)
 
             self.apply_status.setText(
                 f"APPLIED AND VERIFIED in pySC simulation: "
                 f"{len(record['items'])} B2 controls — cumulative "
                 f"{record.get('cumulative_fraction', .1) * 100:.0f}% — "
-                "Preview again for the next +10%, or restore original"
+                "Preview the next explicit step, or restore the original baseline"
             )
+
+            self._refresh_correction_progress()
 
             self.statusBar().showMessage(f"Applied and verified • {len(record['items'])} B2 controls • DEMO only")
 
@@ -916,25 +1469,34 @@ class CorrectMainWindow(QMainWindow):
 
     @Slot(str)
     def _apply_failed(self,message):
+        self.apply_activity_progress.setVisible(False)
         self.apply_button.setEnabled(False)
         self.preview_apply_button.setText("Preview machine changes")
         self.preview_apply_button.setEnabled(True)
+        self.progress_machine_status.setText("Machine state: FAILED or unverified — reconcile before continuing")
+        self._refresh_correction_progress()
         QMessageBox.critical(self,"Full-FIT simulation application failed",message)
 
     @Slot()
     def _apply_finished(self):
+        self.apply_activity_progress.setVisible(False)
         self._apply_thread=None; self._apply_worker=None
 
     def undo_last_machine_changes(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.undo_last()
+            return
         transaction = getattr(self, "fullfit_transaction", None)
         if transaction is None or not transaction.record:
             QMessageBox.warning(self, "Nothing to undo", "No applied 10% increment is available.")
             return
         current = float(transaction.record.get("cumulative_fraction", 0.0))
-        target = max(0.0, current - 0.10)
+        history=transaction.record.get("history",())
+        last_increment=float(history[-1].get("increment_fraction",.1)) if history else .1
+        target=max(0.0,current-last_increment)
         answer = QMessageBox.question(
             self,
-            "Undo last 10%",
+            "Undo last verified step",
             f"Return the verified pySC correction from {current * 100:.0f}% "
             f"to {target * 100:.0f}%?\n\nThe current machine state is checked before any write.",
             QMessageBox.Yes | QMessageBox.No,
@@ -950,11 +1512,12 @@ class CorrectMainWindow(QMainWindow):
             self.restore_button.setEnabled(remaining > 0)
             self.preview_apply_button.setEnabled(True)
             self.preview_apply_button.setText(
-                "Preview next +10%" if remaining > 0 else "Preview machine changes"
+                f"Preview next +{self.progress_increment.value()}%" if remaining > 0 else "Preview machine changes"
             )
             self.apply_status.setText(
-                f"LAST 10% UNDONE AND VERIFIED — cumulative {remaining * 100:.0f}%"
+                f"LAST STEP UNDONE AND VERIFIED — cumulative {remaining * 100:g}%"
             )
+            self._refresh_correction_progress()
             self.statusBar().showMessage(
                 f"Undo verified • cumulative correction {remaining * 100:.0f}% • DEMO only"
             )
@@ -962,6 +1525,9 @@ class CorrectMainWindow(QMainWindow):
             QMessageBox.critical(self, "Undo failed", str(exc))
 
     def restore_machine_changes(self):
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.restore()
+            return
         transaction = getattr(
             self,
             "fullfit_transaction",
@@ -1059,6 +1625,7 @@ class CorrectMainWindow(QMainWindow):
                 )
 
             self.statusBar().showMessage(f"Restored and verified • {restored} B2 controls")
+            self._refresh_correction_progress()
 
         except Exception as exc:
             QMessageBox.critical(
@@ -1074,27 +1641,120 @@ class CorrectMainWindow(QMainWindow):
 
     def _refresh_mapping_status(self):
         if not self.review:
-            self.mapping_summary.setText("No correction source loaded"); self.mapped_status.setText("—"); self.unmapped_status.setText("—"); self.ambiguous_status.setText("—"); return
-        statuses={key:sum(item.metadata.get("mapping_status")==key for item in self.review.items) for key in ("mapped","unmapped","ambiguous","duplicate")}; available=sum(item.control_name is not None for item in self.review.items); mapped=statuses["mapped"] or available
-        self.mapping_summary.setText("Mapping ready for review" if mapped else "Explicit PETRA mapping required")
+            self.mapping_complete_banner.setText("MAPPING NOT READY")
+            self.mapping_complete_banner.setStyleSheet("background:#5A3B13;color:#FFE0A3;border:2px solid #D99029;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
+            self.mapping_summary.setText("No correction source loaded"); self.mapped_status.setText("—"); self.unmapped_status.setText("—"); self.ambiguous_status.setText("—"); self.mapping_feedback.setText("Load a correction source to begin mapping."); self.mapping_details_button.setEnabled(False); self.mapping_details_summary.setText("No FIT magnet mapping is available."); self._refresh_mapping_details(); return
+        statuses={key:sum(item.metadata.get("mapping_status")==key for item in self.review.items) for key in ("mapped","saved","unmapped","proposed","ambiguous","duplicate","invalid")}; mapped=statuses["mapped"]
+        unresolved=len(self.review.items)-mapped
+        total=len(self.review.items)
         self.mapped_status.setText(str(mapped)); self.unmapped_status.setText(str(statuses["unmapped"])); self.ambiguous_status.setText(f"{statuses['ambiguous']} ambiguous; {statuses['duplicate']} duplicate")
+        if not unresolved:
+            feedback="Mapping validated — ready to read current strengths"
+            self.mapping_complete_banner.setText(f"✓ MAPPING IS COMPLETE — {mapped:,}/{total:,} FITTED MAGNETS VALIDATED")
+            self.mapping_complete_banner.setStyleSheet("background:#123D2A;color:#8AF0B4;border:2px solid #38B875;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
+        elif statuses["ambiguous"] or statuses["duplicate"] or statuses["invalid"]:
+            feedback=f"{unresolved} magnets need attention — resolve ambiguous, invalid or duplicate mappings"
+            self.mapping_complete_banner.setText(f"⚠ MAPPING INCOMPLETE — {unresolved:,} MAGNETS NEED ATTENTION")
+            self.mapping_complete_banner.setStyleSheet("background:#552020;color:#FFB0B0;border:2px solid #D96666;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
+        elif getattr(self,"mapping_action_message","") == "automatic":
+            feedback=f"Automatic matching could not find a unique device for {unresolved} magnet{'s' if unresolved != 1 else ''}"
+            self.mapping_complete_banner.setText(f"⚠ MAPPING INCOMPLETE — {unresolved:,} MAGNETS UNRESOLVED")
+            self.mapping_complete_banner.setStyleSheet("background:#5A3B13;color:#FFE0A3;border:2px solid #D99029;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
+        else:
+            feedback=f"{unresolved} magnet{'s' if unresolved != 1 else ''} still need mapping"
+            self.mapping_complete_banner.setText(f"MAPPING REQUIRES VALIDATION — {unresolved:,} NOT CURRENTLY VERIFIED")
+            self.mapping_complete_banner.setStyleSheet("background:#5A3B13;color:#FFE0A3;border:2px solid #D99029;border-radius:8px;font-size:13pt;font-weight:900;padding:7px")
+        saved=statuses["saved"]
+        master=getattr(self.review,"machine_mapping",{}) or {}
+        complete=machine_mapping_statistics(master) if is_machine_mapping(master) else None
+        complete_text=(f" · Complete Machine Mapping: {complete['total']:,} entries, "
+                       f"{complete['mapped']:,} mapped, {complete['unresolved']:,} unresolved"
+                       if complete else "")
+        self.mapping_summary.setText(
+            f"{mapped} validated · {saved} saved pending revalidation · "
+            f"{unresolved - saved} unresolved · {total} fitted magnets"+complete_text)
+        self.mapping_details_button.setEnabled(bool(total))
+        self.mapping_details_summary.setText(
+            f"Machine Mapping details: {total:,} fitted magnet entr{'y' if total == 1 else 'ies'} available — "
+            f"{mapped:,} validated against the current inventory, {saved:,} retained from FIT pending revalidation, "
+            f"{max(0,unresolved-saved):,} unresolved."
+        )
+        if getattr(self,"mapping_action_message","")=="automatic":
+            if hasattr(self, "mapping_auto_feedback"):
+                self.automatic_mapping_feedback.setText(self.mapping_auto_feedback)
+            else:
+                unmatched=statuses["unmapped"]+statuses["invalid"]+statuses["duplicate"]
+                detail=f"Matching completed — {mapped} matched, {unmatched} unmatched, {statuses['ambiguous']} ambiguous."
+                next_step=(" All fitted magnets have validated device identities." if not unresolved else " Create a mapping template or load an approved completed mapping.")
+                self.automatic_mapping_feedback.setText(detail+next_step)
+        elif not hasattr(self,"mapping_action_message"):
+            self.automatic_mapping_feedback.setText("Not run yet.")
+        if total > 100 and self.mapping_attention_filter.currentData() == "all":
+            self.mapping_attention_filter.setCurrentIndex(
+                self.mapping_attention_filter.findData("attention")
+            )
+        self._refresh_mapping_details()
+
+    def show_mapping_details(self):
+        if not self.review or not self.review.items:
+            QMessageBox.information(self,"Machine Mapping details unavailable","Load FIT results or a correction plan containing fitted magnets first.")
+            return
+        self.mapping_filter.clear()
+        all_index=self.mapping_attention_filter.findData("all")
+        if all_index>=0:self.mapping_attention_filter.setCurrentIndex(all_index)
+        self._refresh_mapping_details()
+        self.mapping_details_dialog.show()
+        self.mapping_details_dialog.raise_()
+        self.mapping_details_dialog.activateWindow()
+        self.mapping_details_table.setFocus(Qt.OtherFocusReason)
+        self.mapping_details_table.scrollToTop()
+
+    def _refresh_mapping_details(self):
+        if not hasattr(self,"mapping_details_table"): return
+        table=self.mapping_details_table; query=self.mapping_filter.text().strip().lower() if hasattr(self,"mapping_filter") else ""; filter_key=self.mapping_attention_filter.currentData() if hasattr(self,"mapping_attention_filter") else "all"
+        table.setSortingEnabled(False); table.setRowCount(0)
+        for item in self.review.items if self.review else ():
+            control=item.control_name or ""; metadata=item.metadata
+            searchable=" ".join((item.name,control,str(metadata.get("lattice_fam_name") or ""),str(metadata.get("lattice_device") or ""),str(metadata.get("lattice_common_name") or ""))).lower()
+            if query and query not in searchable: continue
+            status=item.metadata.get("mapping_status","unmapped"); source=item.metadata.get("match_source")
+            if filter_key=="attention" and status=="mapped": continue
+            if filter_key=="validated" and status!="mapped": continue
+            shown_status=("Validated against current inventory" if status=="mapped" else
+                          "Saved mapping — revalidation required" if status=="saved" else
+                          "Proposed — not validated" if status=="proposed" else status.capitalize())
+            message={"mapped":"Validated against connected pyAML inventory","saved":"Retained from Complete Machine Mapping; connect to revalidate fingerprints and target","unmapped":"No unique pyAML device selected","ambiguous":"More than one candidate identity","duplicate":"Device is assigned more than once","unsupported":"Correction type is not supported"}.get(status,"Not yet validated")
+            element_class=item.metadata.get("element_class") or item.metadata.get("physical_element_type")
+            magnet_type=(f"{element_class} — " if element_class else "")+item.correction_type.replace("_"," ")
+            if "lattice_device_defined" in metadata:
+                device=metadata.get("lattice_device") or "Not defined in AT lattice"
+            else: device=metadata.get("lattice_device") or metadata.get("at_device") or "Unavailable — lattice provenance not loaded"
+            common=(metadata.get("lattice_common_name") or
+                    ("Not defined in AT lattice" if metadata.get("lattice_identity_source") else "Unavailable — lattice provenance not loaded"))
+            evidence=" · ".join(value for value in (
+                metadata.get("saved_mapping_identity_match"), metadata.get("saved_mapping_provenance"),
+                metadata.get("mapping_reason"), message) if value)
+            values=(item.name,metadata.get("lattice_fam_name") or item.name,device,common,
+                    item.lattice_ordinal if item.lattice_ordinal is not None else "Not available",
+                    control or "Not available",magnet_type,metadata.get("control_component") or "Not available",
+                    metadata.get("control_unit") or "Not available",shown_status,evidence)
+            row=table.rowCount(); table.insertRow(row)
+            for column,value in enumerate(values):
+                cell=QTableWidgetItem(str(value)); cell.setData(Qt.UserRole,item.index); cell.setToolTip(str(value)); table.setItem(row,column,cell)
+        table.setSortingEnabled(True)
 
     def generate_mapping_template(self):
-        """Create an explicit, editable mapping from the loaded FIT result."""
+        """Create a minimal mapping whose only user-editable value is control_name."""
         if not self.review:
             return
-        integrated = self.correction_representation.currentData() == "integrated"
+        pyaml = self.backend_combo.currentData() == "pyaml"
+        integrated = pyaml or self.correction_representation.currentData() == "integrated"
         entries = []
         for item in self.review.items:
-            skew = item.correction_type in {"skew_quadrupole", "quadrupole_tilt"}
-            component = ("A2L" if skew else "B2L") if integrated else ("A2" if skew else "B2")
-            control_base = str(item.metadata.get("lattice_common_name") or item.name)
             entries.append({
                 "lattice_name": item.name,
                 "lattice_ordinal": item.lattice_ordinal,
-                "control_name": f"{control_base}/{component}",
-                "component": component,
-                "unit": "m^-1" if integrated else "m^-2",
+                "control_name": item.control_name or "",
             })
         suggested = Path(self.review.source_result).expanduser()
         if suggested.is_file():
@@ -1107,14 +1767,44 @@ class CorrectMainWindow(QMainWindow):
         if not path:
             return
         target = Path(path).expanduser()
-        target.write_text(json.dumps({
+        template_document={
             "description": (
-                "Generated mapping template. Verify every control_name against the selected machine/profile before applying."
+                "Fill in only the machine device names. pyLOCO validates the mapping automatically when loaded."
             ),
+            "generated_fields": ["lattice_name", "lattice_ordinal"],
+            "user_field": "control_name",
+            "derived_on_load": ["component", "unit", "mapping_status"],
             "correction_representation": "integrated_delta_k_times_length" if integrated else "gradient_delta_k",
             "mappings": entries,
-        }, indent=2), encoding="utf-8")
+        }
+        if pyaml:
+            resolved={}
+            connection=getattr(self.pyaml_workspace,"connection",None)
+            if connection:
+                from .pyaml_connection import resolve_mapping as resolve_pyaml_mapping
+                resolved={(row["correction_type"],row["lattice_ordinal"],row["lattice_name"]):row.get("magnet_name")
+                          for row in resolve_pyaml_mapping(self.review,connection.inventory)
+                          if row.get("status")=="mapped"}
+            template_document=editable_machine_mapping_template({
+                "schema":MACHINE_MAPPING_SCHEMA,"schema_version":MACHINE_MAPPING_VERSION,
+                "mappings":[{
+                    "role":item.correction_type,
+                    "pyaml_device":item.control_name or resolved.get(
+                        (item.correction_type,item.lattice_ordinal,item.name),"") or "",
+                    "lattice_ordinal":item.lattice_ordinal,
+                } for item in self.review.items
+                  if item.correction_type in {"normal_quadrupole","skew_quadrupole"}],
+            })
+        target.write_text(json.dumps(template_document, indent=2), encoding="utf-8")
         self._remember_browse("mapping", target)
+        if pyaml:
+            self.mapping_action_message="template"
+            self.mapping_file_status.setText(f"Template saved — not loaded: {target.name}")
+            self.mapping_file_status.setToolTip(str(target.resolve()))
+            self.mapping_feedback.setText("Mapping file saved — complete the device names and load the file")
+            self.manual_mapping_feedback.setText("Mapping file saved — complete the device names and load the file for validation.")
+            self.statusBar().showMessage("Mapping template saved. Complete every pyaml_device, then use Load mapping to validate it.",8000)
+            return
         counts = apply_explicit_mapping(self.review, load_mapping(target))
         self.mapping_path = str(target.resolve())
         self.mapping_file_status.setText(target.name)
@@ -1125,18 +1815,22 @@ class CorrectMainWindow(QMainWindow):
         )
 
     def load_petra_mapping(self):
-        path=QFileDialog.getOpenFileName(self,"Load explicit magnet mapping",self._browse_start("mapping"),"Mapping files (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
+        path=QFileDialog.getOpenFileName(self,"Load Machine Mapping",self._browse_start("mapping"),"Machine Mapping (*.json *.yaml *.yml)",options=QFileDialog.DontUseNativeDialog)[0]
         if not path or not self.review:return
         self._remember_browse("mapping",path)
+        if self.backend_combo.currentData() == "pyaml":
+            self.pyaml_workspace.run(lambda: self.pyaml_workspace.load_mapping_path(path))
+            return
         try:counts=apply_explicit_mapping(self.review,load_mapping(path))
         except Exception as exc:QMessageBox.critical(self,"Cannot load PETRA mapping",str(exc)); return
         self.mapping_path=str(Path(path).resolve()); self.mapping_file_status.setText(Path(path).name); self.mapping_file_status.setToolTip(self.mapping_path); self._sync_representation(); self._refresh_mapping_status(); self._read_current_pysc_k(strict=False); self.statusBar().showMessage(f"Mapping loaded: {counts['mapped']} mapped, {counts['unmapped']} unmapped, {counts['ambiguous']} ambiguous, {counts['duplicate']} duplicate."); self.refresh_all()
 
     def _workflow_complete(self):
         source=self.review is not None
-        mapping=bool(source and self.review.items and all(item.metadata.get("mapping_status")=="mapped" for item in self.review.items))
-        plan=bool(mapping and self.review.items and any(item.included for item in self.review.items) and all(item.initial_value is not None for item in self.review.items))
-        review=bool(plan and not any(item.current_limit_status=="VIOLATION" for item in self.review.items if item.included))
+        scoped=[item for item in self.review.items if self.review.applies_to(item)] if source else []
+        mapping=bool(scoped and all(item.metadata.get("mapping_status")=="mapped" for item in scoped))
+        plan=bool(mapping and all(item.initial_value is not None for item in scoped))
+        review=bool(plan and not any(item.current_limit_status=="VIOLATION" for item in scoped))
         return source,mapping,plan,review
 
     def _update_workflow_tabs(self):
@@ -1145,6 +1839,26 @@ class CorrectMainWindow(QMainWindow):
     def _sync_fraction(self):
         if not self.review:return
         index=self.fraction.findData(self.review.global_scale); self.fraction.setCurrentIndex(index if index>=0 else self.fraction.count()-1); self.custom.setValue(self.review.global_scale*100)
+        if self.backend_combo.currentData()=="pyaml":
+            self.progress_increment.blockSignals(True)
+            self.progress_increment.setValue(max(1,min(100,round(self.review.global_scale*100))))
+            self.progress_increment.blockSignals(False)
+    def _sync_application_scope(self):
+        if not self.review or not hasattr(self,"application_scope"):return
+        self.application_scope.blockSignals(True)
+        index=self.application_scope.findData(self.review.application_scope)
+        self.application_scope.setCurrentIndex(max(0,index))
+        self.application_scope.blockSignals(False)
+    def _application_scope_changed(self):
+        if not self.review:return
+        if self._pyaml_locked():
+            self._sync_application_scope()
+            QMessageBox.warning(self,"Restore required","Restore the pending pyAML correction before changing the application scope.")
+            return
+        self.review.application_scope=str(self.application_scope.currentData() or "all")
+        self.correction_changes=(); self.apply_button.setEnabled(False)
+        self.apply_status.setText("Application scope changed — generate a fresh preview")
+        self._refresh_mapping_status(); self.refresh_all()
     def _sync_representation(self):
         if not self.review:return
         components={str(item.metadata.get("control_component","")).upper() for item in self.review.items}
@@ -1152,6 +1866,17 @@ class CorrectMainWindow(QMainWindow):
         self.correction_representation.blockSignals(True)
         self.correction_representation.setCurrentIndex(1 if integrated else 0)
         self.correction_representation.blockSignals(False)
+        self._refresh_representation_explanation()
+
+    def _refresh_representation_explanation(self):
+        if not hasattr(self,"representation_explanation"): return
+        pyaml=self.backend_combo.currentData()=="pyaml"
+        if pyaml:
+            self.correction_representation.setToolTip("Locked for pyAML: the current correction adapter supports integrated B2L/A2L strength controls only.")
+            self.representation_explanation.setText("pyAML representation is locked because this backend reads and writes integrated B2L/A2L controls. FIT corrections remain normalized ΔK [m⁻²]. For each validated magnet, Correct uses its lattice length L [m] and calculates Δ(KL) = ΔK × L [m⁻¹]. Both forms are shown below; changing this display cannot change the correction physics.")
+        else:
+            self.correction_representation.setToolTip("Select B2/A2 for normalized ΔK, or B2L/A2L for Δ(KL) = ΔK × L.")
+            self.representation_explanation.setText("The selected mapping component determines the machine representation: B2/A2 uses ΔK [m⁻²]; B2L/A2L uses Δ(KL) = ΔK × L [m⁻¹].")
     def _representation_changed(self):
         if not self.review:return
         integrated=self.correction_representation.currentData()=="integrated"
@@ -1161,12 +1886,17 @@ class CorrectMainWindow(QMainWindow):
             item.metadata["control_unit"]="m^-1" if integrated else "m^-2"
         self.statusBar().showMessage(
             "Integrated ΔK × L selected; use a B2L/A2L mapping." if integrated else "Gradient ΔK selected; use a B2/A2 mapping.",5000)
+        self._refresh_representation_explanation()
         self.refresh_all()
     def _fraction_changed(self):
         custom=self.fraction.currentData() is None; self.custom.setVisible(custom)
         if not custom:self._set_fraction(float(self.fraction.currentData()))
     def _set_fraction(self,value):
-        if self.review:self.review.set_global_scale(float(value)); self.refresh_all()
+        if self.review:
+            self.review.set_global_scale(float(value))
+            if self.backend_combo.currentData()=="pyaml":
+                self.progress_increment.blockSignals(True); self.progress_increment.setValue(max(1,min(100,round(float(value)*100)))); self.progress_increment.blockSignals(False)
+            self.refresh_all(); self._refresh_correction_progress()
 
     @staticmethod
     def _fmt(value): return "Not available" if value is None or (isinstance(value,float) and not np.isfinite(value)) else f"{value:.8g}" if isinstance(value,(int,float,np.number)) else str(value)
@@ -1180,6 +1910,7 @@ class CorrectMainWindow(QMainWindow):
         elif key=="delta_i":items.sort(key=lambda item:abs(item.delta_i_ampere or 0),reverse=True)
         elif key=="margin":items.sort(key=lambda item:float("inf") if item.current_limit_margin_ampere is None else item.current_limit_margin_ampere)
         elif key=="calibration":items.sort(key=lambda item:item.calibration_status=="Calibration OK")
+        elif key=="mapping":items.sort(key=lambda item:item.metadata.get("mapping_status")=="mapped")
         elif key=="warnings":items.sort(key=lambda item:(bool(item.warnings(self.review.thresholds)),len(item.warnings(self.review.thresholds))),reverse=True)
         elif key=="name":items.sort(key=lambda item:item.name.lower())
         else:items.sort(key=lambda item:item.index)
@@ -1187,25 +1918,41 @@ class CorrectMainWindow(QMainWindow):
     def refresh_table(self):
         if not hasattr(self,"table"):return
         self._updating=True; self.table.setSortingEnabled(False); self.table.setRowCount(0)
+        if hasattr(self,"correction_type_counts"):
+            counts={kind:(sum(item.correction_type==kind for item in self.review.items),sum(item.correction_type==kind and item.included for item in self.review.items)) if self.review else (0,0) for kind in ("normal_quadrupole","skew_quadrupole")}
+            normal_total,normal_included=counts["normal_quadrupole"]
+            skew_total,skew_included=counts["skew_quadrupole"]
+            self.correction_type_counts.setText(f"Normal quadrupoles: {normal_total:,} total / {normal_included:,} included   •   Skew quadrupoles: {skew_total:,} total / {skew_included:,} included")
         if self.review:
             for item in self._sorted_items():
                 try: applied=f"{item.applied_control_delta:.9g} {item.applied_control_unit}"
                 except ValueError: applied="Length required"
-                row=self.table.rowCount(); self.table.insertRow(row); values=(item.included,item.index,item.lattice_ordinal,item.name,item.control_name,item.metadata.get("mapping_status","unmapped"),item.correction_type,item.initial_value,item.fitted_value,item.machine_value,item.raw_fitted_delta,item.recommended_machine_delta,item.relative_percent,self.review.global_scale,item.individual_scale,item.final_delta,item.magnetic_length_m,item.integrated_final_delta,applied,item.target_value,item.current_ampere,item.target_current_ampere,item.delta_i_ampere,item.min_current_ampere,item.max_current_ampere,item.current_limit_margin_ampere,item.calibration_status,item.current_limit_status,item.exclusion_reason)
+                element_class=item.metadata.get("element_class")
+                magnet_type=(f"{element_class} — " if element_class else "")+item.correction_type.replace("_"," ")
+                values=(item.included,item.index,item.name,item.metadata.get("lattice_device") or item.metadata.get("at_device") or "Not available",item.lattice_ordinal,magnet_type,item.control_name,item.metadata.get("control_component") or "Not available",item.metadata.get("control_unit") or "Not available",item.metadata.get("mapping_status","unmapped"),item.initial_value,item.fitted_value,item.current_gradient_value,item.raw_fitted_delta,item.recommended_machine_delta,item.relative_percent,self.review.global_scale,item.individual_scale,item.final_delta,item.magnetic_length_m,item.integrated_final_delta,applied,item.target_value,item.current_ampere,item.target_current_ampere,item.delta_i_ampere,item.min_current_ampere,item.max_current_ampere,item.current_limit_margin_ampere,item.calibration_status,item.current_limit_status,item.exclusion_reason,item.current_integrated_value,item.target_integrated_value)
+                row=self.table.rowCount(); self.table.insertRow(row)
                 warnings=item.warnings(self.review.thresholds)
+                individual_scale_column=self.COLUMNS.index("Individual scale")
+                exclusion_reason_column=self.COLUMNS.index("Exclusion reason")
+                mapping_status_column=self.COLUMNS.index("Mapping status")
+                relative_column=self.COLUMNS.index("ΔK/K [%]")
+                limit_margin_column=self.COLUMNS.index("Limit margin [A]")
                 for col,value in enumerate(values):
                     table_item=QTableWidgetItem("" if col==0 else self._fmt(value)); table_item.setData(Qt.UserRole,item.index)
                     if col==0:table_item.setFlags(table_item.flags()|Qt.ItemIsUserCheckable); table_item.setCheckState(Qt.Checked if item.included else Qt.Unchecked)
-                    if col in (14,25):table_item.setFlags(table_item.flags()|Qt.ItemIsEditable)
+                    if col in (individual_scale_column,exclusion_reason_column):table_item.setFlags(table_item.flags()|Qt.ItemIsEditable)
                     elif col!=0:table_item.setFlags(table_item.flags()&~Qt.ItemIsEditable)
-                    table_item.setToolTip("Warnings: "+", ".join(warnings) if warnings else "Normal")
+                    value_text=self._fmt(value)
+                    table_item.setToolTip((value_text+"\n" if value_text else "")+("Warnings: "+", ".join(warnings) if warnings else "Normal"))
+                    if col == mapping_status_column and item.metadata.get("match_source"):
+                        table_item.setText(f"{value} ({item.metadata['match_source']})")
                     if not item.included:
                         table_item.setForeground(QColor("#888888"))
                         if col==0:table_item.setBackground(QColor("#D0D0D0"))
-                    elif any(code.startswith("mapping_") for code in warnings) and col in (0,5):table_item.setBackground(QColor("#D32F2F")); table_item.setForeground(QColor("white"))
-                    elif "current_limit_violation" in warnings and col in (0,24):table_item.setBackground(QColor("#D32F2F")); table_item.setForeground(QColor("white"))
-                    elif "serious_relative_correction" in warnings and col in (0,12):table_item.setBackground(QColor("#E88B22"))
-                    elif warnings and col in (0,12,23):table_item.setBackground(QColor("#F4C56A"))
+                    elif any(code.startswith("mapping_") for code in warnings) and col in (0,mapping_status_column):table_item.setBackground(QColor("#D32F2F")); table_item.setForeground(QColor("white"))
+                    elif "current_limit_violation" in warnings and col in (0,limit_margin_column):table_item.setBackground(QColor("#D32F2F")); table_item.setForeground(QColor("white"))
+                    elif "serious_relative_correction" in warnings and col in (0,relative_column):table_item.setBackground(QColor("#E88B22"))
+                    elif warnings and col in (0,relative_column,limit_margin_column):table_item.setBackground(QColor("#F4C56A"))
                     self.table.setItem(row,col,table_item)
                 self.table.setRowHeight(row,30)
         self.table.setSortingEnabled(True); self._updating=False
@@ -1215,8 +1962,8 @@ class CorrectMainWindow(QMainWindow):
         if item is None:return
         try:
             if cell.column()==0:item.included=cell.checkState()==Qt.Checked
-            elif cell.column()==14:item.individual_scale=float(cell.text())
-            elif cell.column()==25:item.exclusion_reason=cell.text()
+            elif cell.column()==self.COLUMNS.index("Individual scale"):item.individual_scale=float(cell.text())
+            elif cell.column()==self.COLUMNS.index("Exclusion reason"):item.exclusion_reason=cell.text()
         except ValueError:QMessageBox.warning(self,"Invalid scale","Individual scale must be numeric.")
         self.refresh_all()
     def _set_selected(self,included,reason):
@@ -1242,11 +1989,11 @@ class CorrectMainWindow(QMainWindow):
             if category in item.warnings(self.review.thresholds):item.included=False; item.exclusion_reason=f"Excluded warning category: {category}"
         self.refresh_all()
 
-    def refresh_all(self): self.refresh_table(); self.refresh_review(); self._update_workflow_tabs()
+    def refresh_all(self): self.refresh_table(); self._refresh_mapping_details(); self.refresh_review(); self._update_workflow_tabs()
     def refresh_review(self):
         if not self.review:return
-        active=[item for item in self.review.items if item.included]; included=len(active); warnings=sum(bool(item.warnings(self.review.thresholds)) for item in self.review.items); violations=sum(item.current_limit_status=="VIOLATION" for item in active); relative=[abs(item.relative_percent) for item in active if item.relative_percent is not None]; final=[abs(item.final_delta) for item in active]
-        values={"Magnets loaded":str(len(self.review.items)),"Magnets included":str(included),"Magnets excluded":str(len(self.review.items)-included),"Warnings":str(warnings),"Current-limit violations":str(violations),"Global correction fraction":f"{self.review.global_scale*100:g}%","Max |ΔK/K|":self._fmt(max(relative,default=None))+" %" if relative else "Not available","Max |Final ΔK|":self._fmt(max(final,default=None)) if final else "Not available"}
+        selected=[item for item in self.review.items if item.included]; scoped=[item for item in self.review.items if self.review.applies_to(item)]; included=len(selected); warnings=sum(bool(item.warnings(self.review.thresholds)) for item in self.review.items); violations=sum(item.current_limit_status=="VIOLATION" for item in scoped); relative=[abs(item.relative_percent) for item in scoped if item.relative_percent is not None]; final=[abs(item.final_delta) for item in scoped]
+        values={"Magnets loaded":str(len(self.review.items)),"Selected in plan":str(included),"Applied by scope":str(len(scoped)),"Magnets excluded":str(len(self.review.items)-included),"Warnings":str(warnings),"Current-limit violations":str(violations),"Global correction fraction":f"{self.review.global_scale*100:g}%","Max |ΔK/K|":self._fmt(max(relative,default=None))+" %" if relative else "Not available","Max |Final ΔK|":self._fmt(max(final,default=None)) if final else "Not available"}
         for name,value in values.items():self.review_metrics[name].setText(value)
 
         families={
@@ -1274,55 +2021,167 @@ class CorrectMainWindow(QMainWindow):
     def _draw_plots(self):
         if not self.review:return
         self._ensure_plots()
-        items=self.review.items; x=np.arange(len(items)); raw=np.array([i.raw_fitted_delta for i in items]); final=np.array([i.final_delta for i in items]); relative=np.array([np.nan if i.relative_percent is None else i.relative_percent for i in items]); included=np.array([i.included for i in items])
-        # Correct operates on expanded physical magnets.  A family-mode
-        # LOCO fit may therefore contain fewer fitted DOFs than the number
-        # of correction rows shown here (for this demo: 193 families ->
-        # 399 physical quadrupoles).
+        items=self.review.items; x=np.arange(len(items)); included=np.array([i.included for i in items])
+        recommended=np.array([i.recommended_machine_delta for i in items],dtype=float)
+        final=np.array([i.final_delta for i in items],dtype=float)
+        relative=np.array([np.nan if i.relative_percent is None else i.relative_percent for i in items],dtype=float)
+        integrated=np.array([np.nan if i.integrated_final_delta is None else i.integrated_final_delta for i in items],dtype=float)
+        current_kl=np.array([np.nan if i.current_integrated_value is None else i.current_integrated_value for i in items],dtype=float)
+        target_kl=np.array([np.nan if i.target_integrated_value is None else i.target_integrated_value for i in items],dtype=float)
+        colors=np.array(["#D67A13" if i.correction_type=="normal_quadrupole" else "#20A7A0" for i in items],dtype=object); colors[~included]="#888888"
+        count=len(items); inc=int(included.sum()); exc=count-inc; mapped_count=sum(i.metadata.get("mapping_status")=="mapped" for i in items); unresolved=count-mapped_count
+        self.correction_summary.setText(
+            f"Included for review: {inc} ({100*inc/count if count else 0:.1f}%)  ·  Excluded: {exc} ({100*exc/count if count else 0:.1f}%)  ·  "
+            f"Validated mappings: {mapped_count}  ·  Unresolved mappings: {unresolved}.  "
+            "Included means retained in this correction plan; it does not by itself mean safe or authorized to apply."
+        )
         specs={
-            "raw":(
-                raw,
-                "ΔK [m⁻²]",
-                "Expanded family correction → physical quadrupoles",
-            ),
-            "final":(
-                final,
-                "ΔK [m⁻²]",
-                "Final machine correction",
-            ),
-            "relative":(
-                relative,
-                "ΔK/K [%]",
-                "Final relative machine correction",
-            ),
+            "raw":(recommended,"Raw recommended ΔK [m⁻²]","Raw recommended correction before global and individual fractions"),
+            "final":(final,"Final proposed ΔK [m⁻²]","Final proposed correction after global and individual fractions"),
+            "relative":(relative,"Final ΔK/K [%]","Final scaled correction relative to initial K"),
+            "integrated":(integrated,"Final Δ(KL) [m⁻¹]","Integrated correction: final ΔK × validated magnetic length"),
         }
-
+        self._correction_plot_payload={}
         for key,(values,ylabel,title) in specs.items():
-            canvas=self.plots[key]
-            canvas.clear()
-            axis=canvas.figure.add_subplot(111)
-            axis.plot(x,values,color="#D67A13",linewidth=1)
-            axis.scatter(
-                x,values,
-                c=np.where(included,"#D67A13","#888888"),
-                s=10,
-            )
-            axis.set(
-                xlabel="Physical quadrupole position",
-                ylabel=ylabel,
-                title=title,
-            )
-            axis.grid(True,alpha=.25)
+            canvas=self.plots[key]; canvas.clear(); axis=canvas.figure.add_subplot(111)
+            finite=np.isfinite(values)
+            if finite.any():
+                if self.connect_correction_markers.isChecked():
+                    axis.plot(x,np.where(finite,values,np.nan),color="#5B8FD9",linewidth=.8,alpha=.8,zorder=2)
+                axis.scatter(x[finite],values[finite],c=colors[finite],s=18,marker="o",zorder=3)
+                axis.axhline(0,color=canvas.theme()["spine"],linewidth=.9,alpha=.75,zorder=1)
+                axis.set(xlabel="Magnet index (correction list)",ylabel=ylabel,title=title); axis.grid(True,alpha=.22)
+                from matplotlib.ticker import MaxNLocator
+                axis.xaxis.set_major_locator(MaxNLocator(integer=True))
+                self._correction_plot_payload[key]=dict(axis=axis,values=values,unit=ylabel.split("[")[-1].rstrip("]"),label=ylabel,hit_series=[(x,values,np.arange(len(items)))])
+            else:
+                axis.axis("off"); axis.text(.5,.5,"Unavailable — validated magnetic lengths are required.",ha="center",va="center",transform=axis.transAxes)
             canvas.apply_theme()
-        canvas=self.plots["magnet"]; canvas.clear(); axis=canvas.figure.add_subplot(111); axis.bar(x,final,color=np.where(included,"#D67A13","#999999")); axis.set(
-            xlabel="Physical quadrupole position",
-            ylabel="ΔK [m⁻²]",
-            title="Correction by physical quadrupole",
-        ); canvas.apply_theme()
-        canvas=self.plots["overview"]; canvas.clear(); axis=canvas.figure.add_subplot(111); axis.bar(["Included","Excluded"],[included.sum(),(~included).sum()],color=["#D67A13","#888888"]); axis.set(ylabel="Corrections",title="Included / excluded overview"); canvas.apply_theme()
+
+        mapped=np.array([
+            bool(i.control_name) and i.metadata.get("mapping_status")=="mapped"
+            for i in items
+        ])
+        valid=np.isfinite(current_kl)&np.isfinite(target_kl)&mapped
+        canvas=self.plots["strengths"]; canvas.clear(); axis=canvas.figure.add_subplot(111)
+        if valid.any():
+            if self.connect_correction_markers.isChecked():
+                axis.plot(x,np.where(valid,current_kl,np.nan),color="#4C8ED9",linewidth=.8,alpha=.85,zorder=2)
+                axis.plot(x,np.where(valid,target_kl,np.nan),color="#E67E22",linewidth=.8,alpha=.85,zorder=2)
+            from matplotlib.collections import LineCollection
+            pair_segments=[((index,current_kl[index]),(index,target_kl[index])) for index in np.flatnonzero(valid)]
+            axis.add_collection(LineCollection(pair_segments,colors="#9AA6B8",linewidths=.7,alpha=.7,zorder=2))
+            axis.scatter(x[valid],current_kl[valid],c="#4C8ED9",s=24,label="Current KL",zorder=3)
+            axis.scatter(x[valid],target_kl[valid],c="#E67E22",s=28,marker="D",label="Target KL",zorder=4)
+            axis.set(xlabel="Magnet index (correction list)",ylabel="Integrated strength KL [m⁻¹]",title="Current and target integrated machine strengths")
+            from matplotlib.ticker import MaxNLocator
+            axis.xaxis.set_major_locator(MaxNLocator(integer=True)); axis.grid(True,alpha=.22); axis.legend(); self._correction_plot_payload["strengths"]=dict(axis=axis,values=target_kl,unit="m⁻¹",label="Current / target KL",hit_series=[(x[valid],current_kl[valid],x[valid]),(x[valid],target_kl[valid],x[valid])])
+        else:
+            axis.axis("off"); axis.text(.5,.5,"Unavailable — validated mappings, magnetic lengths and machine KL readbacks are required.",ha="center",va="center",transform=axis.transAxes)
+        canvas.apply_theme()
+
         have_current=any(i.delta_i_ampere is not None for i in items); self.plot_tabs.setTabVisible(self.plot_tabs.indexOf(self.plots["current"]),have_current)
         if have_current:
-            canvas=self.plots["current"]; canvas.clear(); axis=canvas.figure.add_subplot(111); values=np.array([np.nan if i.delta_i_ampere is None else i.delta_i_ampere for i in items]); axis.bar(x,values,color="#D67A13"); axis.set(xlabel="Magnet",ylabel="ΔI [A]",title="Read-only current diagnostics"); canvas.apply_theme()
+            canvas=self.plots["current"]; canvas.clear(); axis=canvas.figure.add_subplot(111); values=np.array([np.nan if i.delta_i_ampere is None else i.delta_i_ampere for i in items]); finite=np.isfinite(values)
+            if self.connect_correction_markers.isChecked():axis.plot(x,np.where(finite,values,np.nan),color="#5B8FD9",linewidth=.8,alpha=.8,zorder=2)
+            axis.scatter(x[finite],values[finite],c=colors[finite],s=18,zorder=3); axis.axhline(0,color=canvas.theme()["spine"],linewidth=.9,alpha=.75); axis.set(xlabel="Magnet index (correction list)",ylabel="ΔI [A]",title="Read-only current diagnostics"); axis.grid(True,alpha=.22); self._correction_plot_payload["current"]=dict(axis=axis,values=values,unit="A",label="Current change",hit_series=[(x,values,np.arange(len(items)))]); canvas.apply_theme()
+        self._update_correction_plot_highlights()
+
+    def _correction_index_from_event(self,key,event):
+        payload=self._correction_plot_payload.get(key)
+        if not payload or event.inaxes is not payload["axis"] or event.xdata is None:return None
+        if getattr(event,"x",None) is not None and getattr(event,"y",None) is not None:
+            best=(float("inf"),None)
+            for point_x,point_y,indices in payload["hit_series"]:
+                finite=np.isfinite(point_x)&np.isfinite(point_y)
+                if not finite.any():continue
+                display=payload["axis"].transData.transform(np.column_stack((np.asarray(point_x)[finite],np.asarray(point_y)[finite])))
+                distances=np.hypot(display[:,0]-event.x,display[:,1]-event.y); nearest=int(np.argmin(distances))
+                if distances[nearest]<best[0]:best=(float(distances[nearest]),int(np.asarray(indices)[finite][nearest]))
+            return best[1] if best[0]<=10 else None
+        index=int(round(event.xdata))
+        if not 0<=index<len(self.review.items) or abs(event.xdata-index)>.2:return None
+        values=payload["values"]
+        return index if index<len(values) and np.isfinite(values[index]) else None
+
+    @staticmethod
+    def _correction_value(number,unit):
+        return "unavailable" if number is None or not np.isfinite(number) else f"{number:.7g} {unit}"
+
+    def _active_correction_value(self,index,key):
+        item=self.review.items[index]
+        if key=="strengths":
+            return f"Current KL: {self._correction_value(item.current_integrated_value,'m⁻¹')} · Target KL: {self._correction_value(item.target_integrated_value,'m⁻¹')}"
+        payload=self._correction_plot_payload.get(key)
+        if not payload or index>=len(payload["values"]):return "Plot value: unavailable"
+        return f"{payload['label']}: {self._correction_value(payload['values'][index],payload['unit'])}"
+
+    def _correction_item_text(self,index,key):
+        item=self.review.items[index]
+        value=self._correction_value
+        component=item.metadata.get("control_component") or "unavailable"
+        family=item.family or "unavailable"
+        status=item.metadata.get("mapping_status","unmapped")
+        main=(f"<b>{item.name}</b> · AT index (0-based) {item.lattice_ordinal if item.lattice_ordinal is not None else 'unavailable'}<br>"
+              f"Mapping: <b>{status}</b> · device: {item.control_name or 'unavailable'}<br>"
+              f"{self._active_correction_value(index,key)}<br>"
+              f"Final ΔK: {value(item.final_delta,'m⁻²')} · Final Δ(KL): {value(item.integrated_final_delta,'m⁻¹')}<br>"
+              f"Current KL: {value(item.current_integrated_value,'m⁻¹')} · Target KL: {value(item.target_integrated_value,'m⁻¹')}")
+        details=(f"Correction-list index: {item.index} · type: {item.correction_type.replace('_',' ')} · family: {family} · component: {component}<br>"
+                 f"Magnetic length: {value(item.magnetic_length_m,'m')} · raw fitted ΔK: {value(item.raw_fitted_delta,'m⁻²')} · raw recommended ΔK: {value(item.recommended_machine_delta,'m⁻²')}<br>"
+                 f"Global fraction: {item.global_scale:.7g} · individual fraction: {item.individual_scale:.7g}")
+        return main,details
+
+    def _restore_correction_hover(self):
+        if self._correction_pinned_index is None:
+            self.correction_hover_info.setText("Hover over a marker to inspect it temporarily; click to pin it.")
+        else:
+            item=self.review.items[self._correction_pinned_index]
+            self.correction_hover_info.setText(f"Selected: <b>{item.name}</b> · correction-list index {item.index} · {self._active_correction_value(self._correction_pinned_index,self._correction_pinned_plot_key)}")
+
+    def _correction_plot_tab_changed(self,index):
+        if self._correction_pinned_index is None or not self.review or not 0<=index<self.plot_tabs.count():return
+        widget=self.plot_tabs.widget(index)
+        key=next((name for name,canvas in self.plots.items() if canvas is widget),None)
+        if key not in self._correction_plot_payload:return
+        self._correction_pinned_plot_key=key
+        main,details=self._correction_item_text(self._correction_pinned_index,key)
+        self.correction_pinned_info.setText(main); self.correction_details_info.setText(details); self._restore_correction_hover()
+
+    def _correction_plot_hover(self,key,event):
+        if not self.review:return
+        index=self._correction_index_from_event(key,event)
+        if index is None:self._restore_correction_hover(); return
+        item=self.review.items[index]
+        self.correction_hover_info.setText(f"Hover: <b>{item.name}</b> · correction-list index {item.index} · {self._active_correction_value(index,key)}")
+
+    def _correction_plot_click(self,key,event):
+        if not self.review or getattr(event,"button",1)!=1:return
+        index=self._correction_index_from_event(key,event)
+        if index is None or index==self._correction_pinned_index:
+            self._clear_correction_plot_selection()
+            return
+        self._correction_pinned_index=index; self._correction_pinned_plot_key=key
+        main,details=self._correction_item_text(index,key); self.correction_pinned_info.setText(main); self.correction_details_info.setText(details); self._restore_correction_hover()
+        self._update_correction_plot_highlights()
+
+    def _clear_correction_plot_selection(self):
+        self._correction_pinned_index=None; self._correction_pinned_plot_key="final"
+        self.correction_pinned_info.setText("Click a plotted magnet to keep its details here.")
+        self.correction_details_info.setText("Select a magnet to inspect detailed fit and scaling metadata.")
+        self._restore_correction_hover(); self._update_correction_plot_highlights()
+
+    def _update_correction_plot_highlights(self):
+        index=self._correction_pinned_index
+        for key,payload in self._correction_plot_payload.items():
+            axis=payload["axis"]
+            for artist in tuple(axis.lines)+tuple(axis.collections):
+                if artist.get_gid()=="correct-selected-magnet":artist.remove()
+            if index is not None and index<len(payload["values"]) and np.isfinite(payload["values"][index]):
+                line=axis.axvline(index,color="#D67A13",linestyle="--",linewidth=1,alpha=.7,zorder=2); line.set_gid("correct-selected-magnet")
+                marker_x=payload.get("highlight_x",np.arange(len(payload["values"])))[index]
+                marker=axis.scatter([marker_x],[payload["values"][index]],s=72,facecolors="none",edgecolors="#FFD166",linewidths=1.8,zorder=5); marker.set_gid("correct-selected-magnet")
+            self.plots[key].canvas.draw_idle()
     def save_plan(self):
         if not self.review:self.statusBar().showMessage("Load a correction source first"); return
         path=QFileDialog.getSaveFileName(self,"Save correction plan","correction-plan.json","JSON (*.json);;YAML (*.yaml *.yml)")[0]
@@ -1341,6 +2200,20 @@ class CorrectMainWindow(QMainWindow):
         for canvas in getattr(self,"plots",{}).values():canvas.apply_theme()
 
     def eventFilter(self,watched,event):
+        if event.type()==QEvent.Wheel and hasattr(self,"review_scroll"):
+            forward=False
+            if hasattr(self,"machine_changes_table") and watched is self.machine_changes_table.viewport():
+                inner=self.machine_changes_table.verticalScrollBar(); delta=event.angleDelta().y()
+                forward=(delta>0 and inner.value()<=inner.minimum()) or (delta<0 and inner.value()>=inner.maximum())
+            elif any(watched is canvas or watched is canvas.canvas for canvas in getattr(self,"plots",{}).values()):
+                forward=True
+            if forward:
+                outer=self.review_scroll.verticalScrollBar()
+                pixel_delta=event.pixelDelta().y()
+                movement=pixel_delta if pixel_delta else event.angleDelta().y()
+                outer.setValue(outer.value()-movement)
+                event.accept()
+                return True
         if event.type()==QEvent.MouseButtonPress and hasattr(self,"table") and (watched in getattr(self,"_selection_clear_surfaces",()) or watched is getattr(getattr(self,"plan_scroll",None),"viewport",lambda:None)()):
             self.table.clearSelection()
         if watched is QApplication.instance() and event.type()==QEvent.DynamicPropertyChange and bytes(event.propertyName())==b"pyLOCOThemePlot":self._sync_theme_chrome()

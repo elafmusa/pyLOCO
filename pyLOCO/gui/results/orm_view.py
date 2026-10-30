@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from .plot_canvas import PlotCanvas
 
 
 class OrmView(QWidget):
+    comparison_requested = Signal()
     ITEMS = (
         ("Measured", "measured_orm"), ("Initial model", "initial_orm"),
         ("Fitted", "fitted_orm"), ("Residual before", "residual_before"),
@@ -32,7 +33,14 @@ class OrmView(QWidget):
         row = QGridLayout()
         row.addWidget(QLabel("Matrix"), 0, 0); row.addWidget(self.selector, 0, 1)
         row.addWidget(QLabel("View"), 0, 2); row.addWidget(self.view_mode, 0, 3)
-        row.addWidget(self.metrics, 1, 0, 1, 4)
+        self.side_by_side_button = QPushButton("Compare measured and fitted model…")
+        self.side_by_side_button.setToolTip(
+            "Open the selected stage and iteration in a side-by-side viewer with shared color scales, 2D/3D views and export."
+        )
+        self.side_by_side_button.clicked.connect(self.comparison_requested.emit)
+        self.side_by_side_button.setEnabled(False)
+        row.addWidget(self.metrics, 1, 0, 1, 3)
+        row.addWidget(self.side_by_side_button, 1, 3)
         row.setColumnStretch(1, 1); row.setColumnStretch(3, 1)
         self.metrics.setWordWrap(True)
         self.plot = PlotCanvas(show_toolbar=True, minimum_height=360)
@@ -47,6 +55,10 @@ class OrmView(QWidget):
 
     def set_loader(self, loader) -> None:
         self.loader = loader
+        self.side_by_side_button.setEnabled(
+            loader is not None and getattr(loader, "measured_orm", None) is not None
+            and getattr(loader, "fitted_orm", None) is not None
+        )
         self.redraw()
 
     def redraw(self) -> None:

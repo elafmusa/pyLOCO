@@ -36,6 +36,18 @@ def test_progress_reporter_is_monotonic_bounded_and_supports_arbitrary_iteration
     assert all(event["total_iterations"] == 7 for event in events)
 
 
+def test_progress_reporter_preserves_structured_parameter_counts():
+    events = []
+    reporter = _WorkflowProgressReporter(events.append, 1)
+    reporter.emit(
+        "jacobian_calculation", .4, "Jacobian (quads): 25 / 100 parameters.",
+        iteration=1, parameter_block="quads", parameters_done=25, parameters_total=100,
+    )
+    assert events[0]["parameter_block"] == "quads"
+    assert events[0]["parameters_done"] == 25
+    assert events[0]["parameters_total"] == 100
+
+
 def test_successful_pyloco_reaches_one_only_on_completed_event(tmp_path):
     at = pytest.importorskip("at")
     drift = at.Drift("D", 0.5)
@@ -164,6 +176,37 @@ def test_gui_worker_progress_signal_updates_workspace(monkeypatch):
     assert workspace.run_iteration_label.text() == "Iteration 3 of 4"
     assert workspace.run_status_label.text() == "Computing analytical quadrupole Jacobian."
     workspace.close()
+
+
+def test_main_window_log_deduplicates_stage_and_reports_parameter_milestones():
+    from pyLOCO.gui.main_window import MainWindow
+
+    app = _qt_app()
+    window = MainWindow()
+    window.results_workspace.begin_run()
+    common = {
+        "phase": "jacobian_calculation", "workflow_stage": 1, "workflow_stages": 2,
+        "stage_name": "Optics", "iteration": 1, "total_iterations": 1,
+        "parameter_block": "quads", "parameters_total": 100,
+    }
+    for done in (1, 2, 9, 10, 11, 19, 20, 100):
+        window._on_loco_progress({
+            **common, "parameters_done": done, "workflow_fraction": done / 200,
+            "stage_fraction": done / 100,
+            "message": f"Jacobian (quads): {done} / 100 parameters.",
+        })
+
+    text = window.results_workspace.log.text.toPlainText()
+    assert text.count("===== Stage 1/2 — Optics =====") == 1
+    assert "Jacobian (quads): 1 / 100 parameters." in text
+    assert "Jacobian (quads): 10 / 100 parameters." in text
+    assert "Jacobian (quads): 20 / 100 parameters." in text
+    assert "Jacobian (quads): 100 / 100 parameters." in text
+    assert "Jacobian (quads): 2 / 100 parameters." not in text
+    assert "Jacobian (quads): 11 / 100 parameters." not in text
+    window.project.modified = False
+    window.close()
+    app.processEvents()
 
 
 def test_multistage_worker_executes_off_the_gui_thread(monkeypatch):

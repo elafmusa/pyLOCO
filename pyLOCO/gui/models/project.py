@@ -66,6 +66,7 @@ class LatticeSelection:
     path: str = ""
     file_type: str = ""
     element_count: int | None = None
+    mat_variable: str = ""
 
     @property
     def name(self) -> str:
@@ -106,7 +107,7 @@ class ResponseMatrixConfig:
     dkick_v: float = 1e-5
     bidirectional: bool = True
     includeDispersion: bool = False
-    rfStep: float = -3000.0
+    rfStep: float = 3000.0
     delta_coupling: float = 1e-6
     coupling_orm: bool = False
     calculator: str = "Linear"
@@ -187,6 +188,7 @@ class RejectionConfig:
     fixedpathlength: bool = False
     individuals: bool = True
     remove_coupling_: bool = True
+    orm_terms: str = "diagonal"
     plot_fit_parameters: bool = False
     skew_individuals: bool = True
     tilt_individuals: bool = True
@@ -383,7 +385,7 @@ class ParameterSelectionConfig:
     init_policy: str = ""
     init_policy_overrides: dict[str, str] = field(default_factory=dict)
     cmstep: CMStepConfig = field(default_factory=CMStepConfig)
-    rfStep: float = -3000.0
+    rfStep: float = 3000.0
     init: str = ""
     quads_attr: str = "PolynomB"
     quads_attr_index: int = 1
@@ -419,7 +421,7 @@ class ParameterSelectionConfig:
             "CMstep": self.cmstep_value(),
             "rfStep": self.rfStep,
             "individuals": self.individuals,
-            "init": _literal_or_none(self.init),
+            "init": self.init_value(),
             "quads_attr": self.quads_attr,
             "quads_attr_index": self.quads_attr_index,
             "skew_attr": self.skew_attr,
@@ -430,7 +432,7 @@ class ParameterSelectionConfig:
         }
 
     def init_policy_value(self) -> dict[str, str] | None:
-        if self.init_policy.strip():
+        if str(self.init_policy or "").strip():
             value = _literal_or_none(self.init_policy)
             if not isinstance(value, dict):
                 raise ValueError("init_policy must be a dictionary when edited as a literal")
@@ -440,6 +442,17 @@ class ParameterSelectionConfig:
             if str(value).strip():
                 policy[key] = str(value).strip()
         return policy
+
+    def init_value(self) -> dict[str, Any] | None:
+        if not str(self.init or "").strip():
+            return None
+        value = _literal_or_none(self.init)
+        if not isinstance(value, dict):
+            raise ValueError("Explicit initial values must be a Python-literal dictionary")
+        unknown = sorted(set(value) - set(DEFAULT_INIT_POLICY))
+        if unknown:
+            raise ValueError(f"Unsupported explicit-initial-value key: {unknown[0]}")
+        return value
 
     def cmstep_value(self, n_hcor: int | None = None, n_vcor: int | None = None) -> Any:
         return self.cmstep.value(n_hcor, n_vcor)
@@ -541,7 +554,7 @@ class FixedParameterConfig:
 
     Frequency: str = "499664399.4230182"
     HarmNumber: int = 3840
-    rfstep: float = -3000.0
+    rfstep: float = 3000.0
     dk: str = ""
     delta_skew: float = 1e-3
     delta_q_tilt: float = 1e-6
@@ -584,6 +597,9 @@ class LocoConfiguration:
         """Return a serializable mapping of backend-compatible constructor data."""
 
         options = asdict(self.solver) | asdict(self.svd) | asdict(self.rejection)
+        # Preserve the legacy backend flag while making the three-way block
+        # selection authoritative for new projects and FIT stages.
+        options["remove_coupling_"] = self.rejection.orm_terms == "diagonal"
         options["fit_list"] = self.parameters.fit_list()
         options["includeDispersion"] = self.rejection.includeDispersion
         self._sync_response_matrix_elements()
@@ -632,7 +648,7 @@ class LocoConfiguration:
             state = "fitted" if enabled else "not fitted"
             element_summary.append(f"{label}: {state} by {mode} — {count} parameters / {len(ords)} physical magnets")
         return [
-            f"Response matrix: {self.response_matrix.calculator}, dispersion={self.response_matrix.includeDispersion}, coupling={self.response_matrix.coupling_orm}, bidirectional={self.response_matrix.bidirectional}",
+            f"Response matrix: {self.response_matrix.calculator}, dispersion={self.response_matrix.includeDispersion}, model coupling={self.response_matrix.coupling_orm}, ORM terms fitted={self.rejection.orm_terms}, bidirectional={self.response_matrix.bidirectional}",
             f"Solver: {self.solver.algorithm.upper()}, iterations={self.solver.nIter}, LM inner={self.solver.nLMIter}, scaled={self.solver.scaled}",
             f"SVD: method={self.svd.svd_selection_method}, threshold={self.svd.svd_threshold:g}, rank={self.svd.cut_}",
             f"Outliers: enabled={self.rejection.outlier_rejection}, sigma={self.rejection.sigma_outlier:g}, normalization={self.rejection.normalization_mode if self.rejection.apply_normalization else 'off'}",
@@ -667,6 +683,7 @@ class LocoConfiguration:
             "auto_correct_delta": self.rejection.auto_correct_delta,
             "fixedpathlength": self.rejection.fixedpathlength,
             "remove_coupling": self.rejection.remove_coupling_,
+            "orm_terms": self.rejection.orm_terms,
             "plot_fit_parameters": self.rejection.plot_fit_parameters,
             "skew_individuals": self.rejection.skew_individuals,
             "tilt_individuals": self.rejection.tilt_individuals,
@@ -765,9 +782,19 @@ class LocoConfiguration:
         for key, label in (("dkick_h", "horizontal response-matrix kick step"), ("dkick_v", "vertical response-matrix kick step")):
             if key in response_matrix:
                 response_matrix[key] = _parse_float(response_matrix[key], label)
+        bipolar_rf = bool(response_matrix.get("bidirectional", True))
+        if "rfStep" in response_matrix and bipolar_rf:
+            response_matrix["rfStep"] = abs(_parse_float(response_matrix["rfStep"], "total RF separation"))
 
         parameters = dict(data.get("parameters", {}))
+        if "rfStep" in parameters and bipolar_rf:
+            parameters["rfStep"] = abs(_parse_float(parameters["rfStep"], "total RF separation"))
         rejection = dict(data.get("rejection", {}))
+        if "orm_terms" not in rejection:
+            rejection["orm_terms"] = (
+                "diagonal" if rejection.get("remove_coupling_", True) else "full"
+            )
+        rejection["remove_coupling_"] = rejection["orm_terms"] == "diagonal"
         legacy_individuals = parameters.get("individuals", rejection.get("individuals", True))
         parameters.setdefault("individuals", bool(legacy_individuals))
         rejection.setdefault("skew_individuals", bool(legacy_individuals))
@@ -795,6 +822,14 @@ class LocoConfiguration:
             machine_data["quadrupole_tilt_ords"] = list(
                 machine_data.get("normal_quadrupole_ords", [])
             )
+        fixed_parameters = dict(data.get("fixed_parameters", {}))
+        if "rfstep" in fixed_parameters and bipolar_rf:
+            fixed_parameters["rfstep"] = abs(_parse_float(fixed_parameters["rfstep"], "total RF separation"))
+        if "HarmNumber" in fixed_parameters:
+            try:
+                fixed_parameters["HarmNumber"] = int(fixed_parameters["HarmNumber"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Harmonic number must be an integer") from exc
         return cls(
             machine_elements=MachineElementsConfig(**machine_data),
             response_matrix=ResponseMatrixConfig(**response_matrix),
@@ -803,7 +838,7 @@ class LocoConfiguration:
             rejection=RejectionConfig(**rejection),
             constraints=ConstraintConfigState(**_known_kwargs(ConstraintConfigState, data.get("constraints", {}))),
             parameters=ParameterSelectionConfig(**parameters),
-            fixed_parameters=FixedParameterConfig(**data.get("fixed_parameters", {})),
+            fixed_parameters=FixedParameterConfig(**fixed_parameters),
             mcf_source=data.get("mcf_source", "automatic"),
             mcf_user_value=data.get("mcf_user_value", ""),
             output_directory=data.get("output_directory", ""),
@@ -834,7 +869,7 @@ class ProjectMetadata:
 
     name: str = "Untitled LOCO Project"
     description: str = ""
-    mode: str = "Basic"
+    mode: str = "Advanced"
     path: str = ""
     base_directory: str = ""
     modified: bool = False
@@ -846,6 +881,11 @@ class ProjectMetadata:
     measurement_session: dict[str, Any] = field(default_factory=dict)
     fit_recipe: dict[str, Any] = field(default_factory=dict)
     fit_run_session: dict[str, Any] = field(default_factory=dict)
+    recipe_machine_policy: str = "recipe"
+    machine_configuration_override: dict[str, Any] = field(default_factory=dict)
+    compatibility_validation: dict[str, Any] = field(default_factory=dict)
+    measurement_device_mapping: dict[str, Any] = field(default_factory=dict)
+    machine_mapping: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_saved(self) -> bool:
@@ -855,8 +895,13 @@ class ProjectMetadata:
         """Return missing required inputs for enabling LOCO execution."""
 
         messages: list[str] = []
+        compatibility = self.compatibility_validation or {}
+        if compatibility.get("required") and compatibility.get("status") != "validated":
+            messages.append("Measurement compatibility must be validated before running or resuming FIT.")
         if not self.name.strip():
             messages.append("Project name is required.")
+        if self.fit_recipe and "stages" in self.fit_recipe and not self.fit_recipe.get("stages"):
+            messages.append("At least one FIT stage must be configured before running LOCO.")
         if not self.lattice.path:
             messages.append("A lattice/model file is required.")
         elif not Path(self.lattice.path).expanduser().exists():
@@ -895,6 +940,17 @@ class ProjectMetadata:
             messages.append("LM lambda values must be non-negative.")
         if self.loco_config.svd.svd_selection_method not in {"threshold", "rank", "user_input", "interactive"}:
             messages.append("SVD selection method is invalid.")
+        orm_terms = self.loco_config.rejection.orm_terms
+        if orm_terms not in {"full", "diagonal", "off_diagonal"}:
+            messages.append("ORM terms to fit must be Full ORM, Diagonal only, or Off-diagonal only.")
+        if (
+            str(self.loco_config.response_matrix.calculator).strip().lower() == "analytical"
+            and orm_terms != "diagonal"
+        ):
+            messages.append(
+                "The Analytical response calculator is uncoupled and cannot fit transverse off-diagonal ORM terms. "
+                "Use Linear or Numerical, or select Diagonal only (XX, YY)."
+            )
         if self.loco_config.constraints.enable:
             c = self.loco_config.constraints
             if c.quad_sigma_mode == "relative" and c.quad_relative_sigma <= 0:
@@ -946,15 +1002,25 @@ class ProjectMetadata:
                 break
         return primary
 
-    @staticmethod
-    def _portable_reference(value: str, target_directory: Path) -> str:
+    def _portable_reference(self, value: str, target_directory: Path) -> str:
         if not value:
             return ""
         candidate = Path(value).expanduser()
         if not candidate.is_absolute():
             return value
+        candidate = candidate.resolve()
+        # Keep project-local assets portable.  When using Save As, also retain
+        # portability for assets that belonged to the original project bundle.
+        # Unrelated external measurements stay absolute instead of becoming a
+        # fragile chain of ../../.. components.
+        portable_roots = [target_directory.resolve()]
+        if self.base_directory:
+            source_directory = Path(self.base_directory).expanduser().resolve()
+            portable_roots.extend((source_directory, source_directory.parent))
+        if not any(candidate == root or root in candidate.parents for root in portable_roots):
+            return str(candidate)
         try:
-            return Path(os.path.relpath(candidate.resolve(), target_directory.resolve())).as_posix()
+            return Path(os.path.relpath(candidate, target_directory.resolve())).as_posix()
         except (OSError, ValueError):
             return str(candidate)
 
@@ -1000,6 +1066,17 @@ class ProjectMetadata:
         if data.get("measurement_session"):
             data["measurement_session"]["manifest"] = portable(data["measurement_session"].get("manifest", ""))
             data["measurement_session"]["measurement_files"] = {key:portable(value) for key,value in data["measurement_session"].get("measurement_files",{}).items()}
+        mapping = data.get("measurement_device_mapping") or {}
+        reference = mapping.get("reference_lattice") or {}
+        profile = mapping.get("machine_profile") or {}
+        if reference.get("path"):
+            reference["path"] = portable(reference["path"])
+        if profile.get("configuration_path"):
+            profile["configuration_path"] = portable(profile["configuration_path"])
+        master = data.get("machine_mapping") or {}
+        master_reference=master.get("reference_lattice") or {}; master_profile=master.get("machine_profile") or {}
+        if master_reference.get("path"):master_reference["path"]=portable(master_reference["path"])
+        if master_profile.get("configuration_path"):master_profile["configuration_path"]=portable(master_profile["configuration_path"])
         return data
 
     @classmethod
@@ -1023,6 +1100,11 @@ class ProjectMetadata:
             measurement_session=deepcopy(data.get("measurement_session", {})),
             fit_recipe=deepcopy(data.get("fit_recipe", {})),
             fit_run_session=deepcopy(data.get("fit_run_session", {})),
+            recipe_machine_policy=str(data.get("recipe_machine_policy", "recipe")),
+            machine_configuration_override=deepcopy(data.get("machine_configuration_override", {})),
+            compatibility_validation=deepcopy(data.get("compatibility_validation", {})),
+            measurement_device_mapping=deepcopy(data.get("measurement_device_mapping", {})),
+            machine_mapping=deepcopy(data.get("machine_mapping", {})),
         )
         return project
 
@@ -1076,6 +1158,17 @@ class ProjectMetadata:
         if project.measurement_session:
             if project.measurement_session.get("manifest"):project.measurement_session["manifest"]=resolve_project_path(project.measurement_session["manifest"])
             project.measurement_session["measurement_files"]={key:resolve_project_path(value) for key,value in project.measurement_session.get("measurement_files",{}).items()}
+        mapping = project.measurement_device_mapping or {}
+        reference = mapping.get("reference_lattice") or {}
+        profile = mapping.get("machine_profile") or {}
+        if reference.get("path"):
+            reference["path"] = resolve_project_path(reference["path"])
+        if profile.get("configuration_path"):
+            profile["configuration_path"] = resolve_project_path(profile["configuration_path"])
+        master = project.machine_mapping or {}
+        master_reference=master.get("reference_lattice") or {}; master_profile=master.get("machine_profile") or {}
+        if master_reference.get("path"):master_reference["path"]=resolve_project_path(master_reference["path"])
+        if master_profile.get("configuration_path"):master_profile["configuration_path"]=resolve_project_path(master_profile["configuration_path"])
         project.path = str(source)
         project.base_directory = str(source.parent)
         project.modified = False
@@ -1131,7 +1224,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "vertical": kick_v,
             "file": steps if isinstance(steps, str) else "",
         },
-        "rfStep": rf.get("step_hz", -3000.0),
+        "rfStep": abs(float(rf.get("step_hz", 3000.0))),
         "skew_attr": str(loco.get("skew_attribute", "PolynomA")),
         "skew_attr_index": int(loco.get("skew_attribute_index", 1)),
         "individuals": str(
@@ -1167,7 +1260,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "calculator": measurement.get("response_matrix_calculator", "Linear"),
             "dkick_h": kick_h,
             "dkick_v": kick_v,
-            "rfStep": rf.get("step_hz", -3000.0),
+            "rfStep": abs(float(rf.get("step_hz", 3000.0))),
             "includeDispersion": bool(loco.get("include_dispersion", False)),
         },
         "solver": {key: loco[key] for key in ("algorithm", "nIter", "nLMIter", "Starting_Lambda", "max_lm_lambda", "scaled") if key in loco},
@@ -1184,6 +1277,10 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
             "hor_dispersion_weight": loco.get("horizontal_dispersion_weight", 1.0),
             "ver_dispersion_weight": loco.get("vertical_dispersion_weight", 1.0),
             "remove_coupling_": loco.get("remove_coupling", True),
+            "orm_terms": loco.get(
+                "orm_terms",
+                "diagonal" if loco.get("remove_coupling", True) else "full",
+            ),
             "auto_correct_delta": loco.get("auto_correct_delta", True),
             "fixedpathlength": loco.get("fixedpathlength", False),
             "plot_fit_parameters": loco.get("plot_fit_parameters", False),
@@ -1218,7 +1315,7 @@ def _example_config_to_gui(data: dict[str, Any]) -> dict[str, Any]:
         "constraints": constraints,
         "fixed_parameters": {
             "Frequency": str(rf.get("frequency_hz", 499664399.4230182)),
-            "rfstep": rf.get("step_hz", -3000.0),
+            "rfstep": abs(float(rf.get("step_hz", 3000.0))),
         },
         "output_directory": output_directory,
         "run_name": run_name,
@@ -1246,7 +1343,7 @@ _EDITABLE_YAML_PATHS.update(f"loco.{name}" for name in (
     "svd_selection_method", "svd_threshold", "cut", "show_svd_plot",
     "outlier_rejection", "sigma_outlier", "apply_normalization", "normalization_mode",
     "include_dispersion", "horizontal_dispersion_weight", "vertical_dispersion_weight",
-    "remove_coupling", "skew_individuals", "tilt_individuals", "skew_attribute",
+    "remove_coupling", "orm_terms", "skew_individuals", "tilt_individuals", "skew_attribute",
     "plot_fit_parameters", "auto_correct_delta", "fixedpathlength", "calculate_delta_chi2",
     "quad_jacobian_calculator", "skew_jacobian_calculator",
     "analytical_thick_quadrupole", "analytical_thick_steerers",

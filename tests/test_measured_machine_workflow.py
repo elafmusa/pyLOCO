@@ -2,10 +2,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
+from pyLOCO.gui.results.results_loader import ResultsLoader
 from pyLOCO.measured_machine.workflow import (
     _file_spec,
     _remove_configured_correctors,
+    load_configured_lattice,
     select_elements,
 )
 
@@ -51,6 +54,45 @@ def test_pattern_and_regex_selection(tmp_path):
         ring, {"pattern": "Q*", "name_attribute": "FamName"}, tmp_path, "quads"), [0, 1])
     np.testing.assert_array_equal(select_elements(
         ring, {"regex": "^QD", "name_attribute": "FamName"}, tmp_path, "quads"), [1])
+
+
+def test_configured_lattice_passes_optional_mat_variable(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        "pyLOCO.measured_machine.workflow.at.load_lattice",
+        lambda path, **kwargs: calls.append((path, kwargs)) or "ring",
+    )
+
+    assert load_configured_lattice(
+        tmp_path, {"file": "ebs.mat", "use": "betamodel"}
+    ) == "ring"
+    assert calls == [(tmp_path / "ebs.mat", {"use": "betamodel"})]
+
+
+def test_measured_results_preserve_session_and_lattice_variable(tmp_path):
+    config = tmp_path / "fit.yaml"
+    config.write_text(yaml.safe_dump({
+        "lattice": {"file": "ebs.mat", "use": "betamodel"},
+        "data": {},
+        "elements": {},
+        "rf": {},
+        "loco": {},
+        "measurement_session": {
+            "manifest": "session.pyloco-session.json",
+            "session_id": "ebs-smoke",
+        },
+    }), encoding="utf-8")
+    results = tmp_path / "run" / "results"
+    results.mkdir(parents=True)
+    (results / "run_summary.yaml").write_text(yaml.safe_dump({
+        "configuration_file": str(config),
+        "fit_list": [],
+    }), encoding="utf-8")
+
+    request = ResultsLoader(tmp_path / "run").request
+
+    assert request["lattice_use"] == "betamodel"
+    assert request["measurement_session"]["session_id"] == "ebs-smoke"
 
 
 def test_remove_named_horizontal_corrector_and_orm_column():

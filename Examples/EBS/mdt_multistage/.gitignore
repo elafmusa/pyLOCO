@@ -1,0 +1,6 @@
+results/
+results-smoke/
+fit-run-session.json
+fit-run-session-comparison.json
+smoke-session.json
+smoke-session-comparison.json

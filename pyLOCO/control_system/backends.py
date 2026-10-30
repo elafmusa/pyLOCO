@@ -53,6 +53,7 @@ class AbstractInterfaceAdapter(WritableAdapter):
         self.allow_writes = bool(allow_writes)
         self.allow_rf_writes = bool(allow_rf_writes)
         self.backend_metadata = dict(backend_metadata or {})
+        self.allow_get_only_restoration = True  # Built-in pySC profile is explicitly simulator-only.
         self.history: list[tuple[str, str, object]] = []
 
     @property
@@ -140,6 +141,12 @@ class AbstractInterfaceAdapter(WritableAdapter):
                 "corrector_unit": self.backend_metadata.get("corrector_control_unit", "rad"),
                 "calibration": "backend managed"}
 
+    def corrector_restoration_evidence(self, name):
+        return {"level":"adapter_value","source":"fresh pySC simulator AbstractInterface.get() value; independent readback unavailable"}
+
+    def read_corrector_readback(self, name):
+        return float(self.interface.get(name)),self.corrector_restoration_evidence(name)
+
 
 class InterfaceRegistry:
     """Factory and presentation metadata for every supported backend."""
@@ -148,16 +155,18 @@ class InterfaceRegistry:
         BackendDescriptor("mock", "Mock", "MOCK • READ ONLY", "MOCK", False, False),
         BackendDescriptor("pysc", "pySC Server", "DEMO • pySC SERVER", "DEMO", False, True),
         BackendDescriptor("petra", "PETRA III DOOCS", "LIVE • PETRA III DOOCS", "LIVE", True, True),
+        BackendDescriptor("pyaml", "pyAML", "pyAML • READ ONLY", "CONFIGURED", True, False),
     )
 
     def __init__(self, *, mock_factory: Callable[[], object] | None = None,
                  interface_loaders: dict[str, Callable[[], object]] | None = None,
                  repository_root: Path | None = None,
-                 pysc_profile: str = "ebs") -> None:
+                 pysc_profile: str = "ebs", pyaml_options: dict | None = None) -> None:
         self.mock_factory = mock_factory
         self.interface_loaders = dict(interface_loaders or {})
         self.root = repository_root or Path(__file__).resolve().parents[2]
         self.pysc_profile = pysc_profile
+        self.pyaml_options = dict(pyaml_options or {})
 
     def descriptors(self):
         return self.DESCRIPTORS
@@ -175,6 +184,11 @@ class InterfaceRegistry:
 
     def create(self, key: str) -> BackendSession:
         descriptor = self.descriptor(key)
+        if key == "pyaml":
+            from .pyaml_adapter import PyAMLAdapter
+            if not self.pyaml_options.get("config_path"):
+                raise ValueError("Select a pyAML configuration file first")
+            return BackendSession(descriptor, PyAMLAdapter(**self.pyaml_options))
         if key == "mock":
             if self.mock_factory is None:
                 raise RuntimeError("A Mock adapter factory must be configured by the application")

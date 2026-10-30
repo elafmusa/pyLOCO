@@ -15,9 +15,9 @@ def _default_measurement_selections() -> dict[str, dict[str, Any]]:
     """Independent, ordered device selections for each Measure workflow."""
     return {
         kind: {
-            "bpm": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
-            "hcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
-            "vcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": ""},
+            "bpm": {"method": "all", "manual": "", "names_file": "", "excluded_positions": "", "search": "", "resolved_names": []},
+            "hcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": "", "search": "", "resolved_names": []},
+            "vcor": {"method": "all", "manual": "", "names_file": "", "excluded_positions": "", "search": "", "resolved_names": []},
         }
         for kind in ("bpm_noise", "dispersion", "orm")
     }
@@ -45,13 +45,18 @@ class MeasureProject:
     excluded_vcor_positions: str = ""
     measurement_selections: dict[str, dict[str, Any]] = field(default_factory=_default_measurement_selections)
     readings: int = 20
-    delay_seconds: float = 0.1
+    bpm_noise_ddof: int = 0
+    delay_seconds: float = 1.0
     settling_delay_seconds: float = 0.0
     verify_restored_orbit: bool = True
     rf_control_mode: str = "manual"
     nominal_rf_hz: float | None = None
     nominal_rf_source: str = "manual"
     rf_step_hz: float = 200.0
+    # Absolute RF restoration-readback tolerance. 0.1 Hz is 0.1% of the
+    # smallest standard 100 Hz one-sided MDT step and remains explicit in the
+    # acquisition diagnostics; sites may tighten it to their readback resolution.
+    rf_restoration_tolerance_hz: float = 0.1
     dispersion_direction: str = "bipolar"
     orm_direction: str = "bipolar"
     orm_kick_mode: str = "common"
@@ -61,6 +66,7 @@ class MeasureProject:
     orm_scaled: bool = False
     reference_model_path: str = ""
     reference_model_source: str = "automatic"
+    reference_model_mat_variable: str = ""
     compare_with_reference_model: bool = True
     output_directory: str = "measurements"
     theme: str = "dark"
@@ -71,7 +77,7 @@ class MeasureProject:
     def validate(self) -> None:
         if self.file_type != FILE_TYPE or self.schema_version != SCHEMA_VERSION:
             raise ValueError("Invalid or unsupported pyLOCO Measure project")
-        if self.adapter not in {"Mock","pySC Server","PETRA / DOOCS","PETRA III DOOCS"}:
+        if self.adapter not in {"Mock","pySC Server","PETRA / DOOCS","PETRA III DOOCS","pyAML"}:
             raise ValueError("Unsupported Measure adapter")
         if self.pysc_profile not in {"ebs", "petra3", "petra3_realistic"}:
             raise ValueError("Unsupported pySC machine profile")
@@ -89,6 +95,8 @@ class MeasureProject:
             raise ValueError("ORM acquisition is unavailable in PETRA read-only mode")
         if self.rf_control_mode not in {"manual","automatic"}:
             raise ValueError("Unsupported RF control mode")
+        if not isinstance(self.rf_restoration_tolerance_hz, (int, float)) or not float("-inf") < float(self.rf_restoration_tolerance_hz) < float("inf") or self.rf_restoration_tolerance_hz < 0:
+            raise ValueError("RF restoration tolerance must be finite and non-negative")
         if self.dispersion_direction not in {"bipolar", "positive", "negative"}:
             raise ValueError("Unsupported dispersion direction")
         if self.measurement_type == "dispersion":
@@ -106,10 +114,13 @@ class MeasureProject:
             raise ValueError("ORM kick values must be positive")
         if self.readings < 2 or self.delay_seconds < 0:
             raise ValueError("Readings must be at least 2 and delay must be non-negative")
+        if self.bpm_noise_ddof not in (0, 1):
+            raise ValueError("BPM-noise ddof must be 0 or 1")
         if not self.measurement_name.strip() or not self.output_directory.strip():
             raise ValueError("Measurement name and output directory are required")
-        if Path(self.output_directory).is_absolute():
-            raise ValueError("Portable Measure projects require a relative output directory")
+        # Ordinary local Measure projects may use an absolute acquisition
+        # directory. Full-session export rewrites this to a bundle-relative
+        # directory so the exported session remains portable.
 
 
 def save_measure_project(path: str | Path, project: MeasureProject) -> Path:

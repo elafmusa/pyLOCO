@@ -20,12 +20,21 @@ import re
 import copy
 import shutil
 import tempfile
+import hashlib
 from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .models.project import ProjectMetadata, validate_element_groups
+
+
+def _input_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass(slots=True)
@@ -37,8 +46,10 @@ class LocoRunRequest:
     lattice_path: str
     measurements: dict[str, str]
     backend_mapping: dict[str, Any]
+    lattice_mat_variable: str = ""
     measurement_options: dict[str, dict[str, Any]] = field(default_factory=dict)
     measurement_session: dict[str, Any] = field(default_factory=dict)
+    machine_mapping: dict[str, Any] = field(default_factory=dict)
 
     @property
     def results_root(self) -> Path:
@@ -62,12 +73,14 @@ class LocoRunRequest:
             project_name=project.name,
             project_path=project.path,
             lattice_path=str(project.resolve_path(project.lattice.path)),
+            lattice_mat_variable=project.lattice.mat_variable,
             measurements={
                 key: str(project.resolve_path(dataset.path))
                 for key, dataset in project.measurements.items()
             },
             measurement_options={key: dict(dataset.options) for key, dataset in project.measurements.items()},
             measurement_session=copy.deepcopy(project.measurement_session),
+            machine_mapping=copy.deepcopy(project.machine_mapping),
             backend_mapping=backend_mapping,
         )
 
@@ -150,9 +163,13 @@ def run_loco_request(
     try:
         import at
         from pyLOCO.pyloco import pyloco, remove_bad_bpms, save_fit_dict
+        from .lattice_loader import load_project_lattice
 
-        ring = _prepare_loco_lattice(at.load_lattice(request.lattice_path))
-        log(f"Loaded lattice: {request.lattice_path}")
+        ring = _prepare_loco_lattice(
+            load_project_lattice(request.lattice_path, request.lattice_mat_variable or None)
+        )
+        variable_note = f" (MAT variable {request.lattice_mat_variable})" if request.lattice_mat_variable else ""
+        log(f"Loaded lattice: {request.lattice_path}{variable_note}")
         if not bool(getattr(ring, "is_6d", False)):
             log("Prepared 4D lattice for LOCO optics and orbit calculations.")
         measured = _load_measurements(request.measurements, request.measurement_options)
@@ -160,6 +177,8 @@ def run_loco_request(
         indices = _derive_indices(ring, measured)
         fit_cfg = config_module.FitInitConfig(**request.backend_mapping["FitInitConfig"])
         rm_cfg = config_module.RMConfig(**request.backend_mapping["RMConfig"])
+        if bool(rm_cfg.includeDispersion):
+            _validate_configured_rf_against_lattice(ring, config_module.fixed_parameters)
         # Establish the user's complete machine selection before applying bad
         # BPM positions.  Reapplying the complete selection afterwards would
         # restore removed BPMs and make the ORM row count inconsistent.
@@ -272,9 +291,21 @@ def run_loco_request(
                 iteration=int(iteration),
                 retain_matrix=retain_full_jacobian,
             )
+        if requested_svd_plot:
+            log(
+                "SVD plot requested: capturing the final numerical Jacobian spectrum "
+                "for Results; worker-thread plot windows remain disabled."
+            )
         kwargs["output_dir"] = str(results_dir)
+        persisted_request = _jsonable(asdict(request))
+        persisted_request["input_fingerprints"] = {
+            "lattice_sha256": _input_sha256(request.lattice_path),
+            "measurement_sha256": {
+                role: _input_sha256(path) for role, path in request.measurements.items()
+            },
+        }
         (results_dir / "run_request.json").write_text(
-            json.dumps(_jsonable(asdict(request)), indent=2), encoding="utf-8"
+            json.dumps(persisted_request, indent=2), encoding="utf-8"
         )
         log("Starting pyLOCO backend execution...")
         stream = _ProgressStream(log)
@@ -401,7 +432,7 @@ def _make_gui_config(mapping: dict[str, Any]):
     class GUIFixedParameters:
         Frequency: float = 499664399.4230182
         HarmNumber: int = 3840
-        rfstep: float = -3000.0
+        rfstep: float = 3000.0
         dk: Any = None
         delta_skew: float = 1e-3
         delta_q_tilt: float = 1e-6
@@ -468,6 +499,34 @@ def _prepare_loco_lattice(ring):
     return prepared
 
 
+def _validate_configured_rf_against_lattice(ring, fixed_parameters) -> None:
+    """Fail closed when FIT RF metadata disagrees with the reference lattice."""
+    import numpy as np
+    cavities = [element for element in ring if hasattr(element, "Frequency")]
+    frequencies = [float(element.Frequency) for element in cavities if float(element.Frequency) > 0]
+    if not frequencies or not np.allclose(frequencies, frequencies[0], rtol=1e-12, atol=1e-6):
+        raise ValueError("Reference lattice RF frequency is missing or inconsistent across cavities.")
+    lattice_frequency = frequencies[0]
+    configured_frequency = float(fixed_parameters.Frequency)
+    if not np.isclose(configured_frequency, lattice_frequency, rtol=1e-12, atol=1e-3):
+        raise ValueError(
+            f"Configured FIT RF frequency {configured_frequency:.12g} Hz does not match the "
+            f"reference lattice {lattice_frequency:.12g} Hz. Reload the lattice to use its authoritative RF settings."
+        )
+    explicit = getattr(ring, "harmonic_number", None)
+    cavity_harmonics = [int(element.HarmNumber) for element in cavities if getattr(element, "HarmNumber", None)]
+    lattice_harmonic = int(explicit) if explicit else (
+        cavity_harmonics[0] if cavity_harmonics and len(set(cavity_harmonics)) == 1 else None
+    )
+    if lattice_harmonic is None:
+        raise ValueError("Reference lattice harmonic number is missing or inconsistent.")
+    if int(fixed_parameters.HarmNumber) != lattice_harmonic:
+        raise ValueError(
+            f"Configured FIT harmonic number {int(fixed_parameters.HarmNumber)} does not match "
+            f"the reference lattice {lattice_harmonic}."
+        )
+
+
 def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
     import numpy as np
 
@@ -487,8 +546,25 @@ def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]]
     n_bpms = data["orm"].shape[0] // 2
     if "dispersion" in paths:
         arrays = _load_array_mapping(paths["dispersion"])
-        dispersion_options = options.get("dispersion", {})
+        dispersion_options = dict(options.get("dispersion", {}))
+        if Path(paths["dispersion"]).suffix.lower() in {".h5", ".hdf5"}:
+            import h5py
+            from pyLOCO.dispersion_convention import canonical_dispersion_convention
+            with h5py.File(paths["dispersion"], "r") as handle:
+                is_pyloco_measurement = bool(handle.attrs.get("pyloco_file_type"))
+                has_rf_metadata = "rf_step_hz" in handle.attrs or "rf_signed_step_hz" in handle.attrs
+                convention = canonical_dispersion_convention(handle.attrs) if (is_pyloco_measurement or has_rf_metadata) else None
+            if convention is not None:
+                already_canonicalized = (
+                    dispersion_options.get("rf_difference_sign_convention") == "positive_minus_negative"
+                    and dispersion_options.get("source_rf_difference_sign_convention") is not None
+                )
+                if not already_canonicalized:
+                    dispersion_options["horizontal_scale"] = float(dispersion_options.get("horizontal_scale", 1.0)) * convention.array_scale
+                    dispersion_options["vertical_scale"] = float(dispersion_options.get("vertical_scale", 1.0)) * convention.array_scale
         names = dispersion_options.get("datasets", {})
+        if not isinstance(names, dict):
+            names = {}
         data["eta_x"] = np.ravel(_pick_array(arrays, str(names.get("horizontal") or "measured_eta_x"), "eta_x", fallback_index=0)).astype(float) * float(dispersion_options.get("horizontal_scale", 1.0))
         data["eta_y"] = np.ravel(_pick_array(arrays, str(names.get("vertical") or "measured_eta_y"), "eta_y", fallback_index=1)).astype(float) * float(dispersion_options.get("vertical_scale", 1.0))
     else:
@@ -499,6 +575,8 @@ def _load_measurements(paths: dict[str, str], options: dict[str, dict[str, Any]]
         arrays = _load_array_mapping(paths["bpm_noise"])
         noise_options = options.get("bpm_noise", {})
         names = noise_options.get("datasets", {})
+        if not isinstance(names, dict):
+            names = {}
         data["noise_x"] = np.ravel(_pick_array(arrays, str(names.get("horizontal") or "Noise_BPMx"), "noise_x", fallback_index=0)).astype(float) * float(noise_options.get("horizontal_scale", 1.0))
         data["noise_y"] = np.ravel(_pick_array(arrays, str(names.get("vertical") or "Noise_BPMy"), "noise_y", fallback_index=1)).astype(float) * float(noise_options.get("vertical_scale", 1.0))
     else:
@@ -870,7 +948,9 @@ def _build_pyloco_kwargs(*, ring, options, rm_cfg, fit_cfg, constraint_cfg, fixe
         quad_individuals=quad_individuals,
         skew_individuals=skew_individuals,
         tilt_individuals=tilt_individuals,
-        remove_coupling_=options.get("remove_coupling_", True), outlier_rejection=options.get("outlier_rejection", False),
+        remove_coupling_=options.get("remove_coupling_", True),
+        orm_terms=options.get("orm_terms"),
+        outlier_rejection=options.get("outlier_rejection", False),
         sigma_outlier=options.get("sigma_outlier", 10), apply_normalization=options.get("apply_normalization", False),
         normalization_mode=options.get("normalization_mode", "global"), svd_selection_method=options.get("svd_selection_method", "threshold"),
         svd_threshold=options.get("svd_threshold", 1e-7), cut_=options.get("cut_"), show_svd_plot=options.get("show_svd_plot", False),
@@ -971,7 +1051,11 @@ def _make_results_dir(request: LocoRunRequest) -> Path:
     name = configured or request.project_name
     safe = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in str(name)).strip("_") or "pyloco"
     path = request.results_root / f"{safe}-{stamp}"
-    path.mkdir(parents=True, exist_ok=True)
+    suffix = 2
+    while path.exists():
+        path = request.results_root / f"{safe}-{stamp}-{suffix}"
+        suffix += 1
+    path.mkdir(parents=True, exist_ok=False)
     return path
 
 
@@ -986,14 +1070,15 @@ def _save_initial_model_orm(results_dir: Path, orm_model) -> Path:
     return path
 
 
-def _save_optics(results_dir, initial_lattice_path, final_ring, indices):
+def _save_optics(results_dir, initial_lattice_path, final_ring, indices, lattice_mat_variable=None):
     """Compatibility helper used by GUI regression tests and external callers."""
     if not initial_lattice_path or not indices:
         return None
     try:
         import at
         import numpy as np
-        initial_ring = at.load_lattice(initial_lattice_path)
+        from .lattice_loader import load_project_lattice
+        initial_ring = load_project_lattice(initial_lattice_path, lattice_mat_variable)
         bpm_ords = np.asarray(indices["used_bpms_ords"], dtype=int)
         _, initial_ringdata, initial_data = at.get_optics(initial_ring, refpts=bpm_ords)
         _, fitted_ringdata, fitted_data = at.get_optics(final_ring, refpts=bpm_ords)

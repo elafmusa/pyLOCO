@@ -6,8 +6,12 @@ import pytest
 from pyLOCO.pyloco import (
     _canonicalize_measured_response,
     _validate_loco_system_dimensions,
+    build_orm_term_indices,
     build_iNoCoupling,
+    compute_chi_squared_,
+    pyloco,
     remove_coupling,
+    select_orm_terms,
 )
 
 
@@ -47,6 +51,70 @@ def test_remove_coupling_without_dispersion_asymmetric_dimensions():
     np.testing.assert_array_equal(filtered[5], expected)
     for actual, source in zip(filtered[:4], arrays):
         np.testing.assert_array_equal(actual, source[expected])
+
+
+@pytest.mark.parametrize("mode", ["full", "diagonal", "off_diagonal"])
+def test_orm_term_masks_support_unequal_plane_counts_and_keep_dispersion(mode):
+    counts = (5, 3, 4, 2)
+    arrays = _vectors(*counts, True)
+    filtered = select_orm_terms(*arrays, *counts, True, mode)
+    indices, chi_indices, _ = build_orm_term_indices(*counts, True, mode)
+    np.testing.assert_array_equal(filtered[4], indices)
+    np.testing.assert_array_equal(filtered[5], chi_indices)
+    for actual, source in zip(filtered[:4], arrays):
+        np.testing.assert_array_equal(actual, source[indices])
+    n_bpm = counts[0] + counts[1]
+    expected_orm = {
+        "full": n_bpm * (counts[2] + counts[3]),
+        "diagonal": counts[0] * counts[2] + counts[1] * counts[3],
+        "off_diagonal": counts[0] * counts[3] + counts[1] * counts[2],
+    }[mode]
+    assert indices.size == expected_orm + n_bpm
+    np.testing.assert_array_equal(indices[-n_bpm:], np.arange(arrays[0].size - n_bpm, arrays[0].size))
+
+
+@pytest.mark.parametrize("mode,perturbed_block", [
+    ("diagonal", "off_diagonal"),
+    ("off_diagonal", "diagonal"),
+])
+def test_excluded_orm_blocks_do_not_contribute_to_chi_squared(mode, perturbed_block):
+    counts = (3, 2, 2, 1)
+    n_hbpm, n_vbpm, n_hcor, n_vcor = counts
+    n_total = (n_hbpm + n_vbpm) * (n_hcor + n_vcor)
+    measured = np.zeros((n_total, 1))
+    model = np.zeros_like(measured)
+    excluded, _, _ = build_orm_term_indices(*counts, False, perturbed_block)
+    model[excluded] = 1.0e9
+    selected, _, _ = build_orm_term_indices(*counts, False, mode)
+    chi2 = compute_chi_squared_(
+        measured, model, np.ones_like(measured),
+        nHBPM=n_hbpm, nVBPM=n_vbpm, nHorCOR=n_hcor, nVerCOR=n_vcor,
+        include_dispersion=False, remove_coupling_=True, iNoCoupling=selected,
+        iOutliers=np.asarray([], dtype=int), n_fit_parameters=np.zeros((n_total, 1)),
+    )
+    assert chi2 == 0.0
+
+
+def test_full_orm_includes_cross_plane_residuals_in_objective():
+    counts = (3, 2, 2, 1)
+    n_total = (counts[0] + counts[1]) * (counts[2] + counts[3])
+    measured = np.zeros((n_total, 1))
+    model = np.zeros_like(measured)
+    cross_plane, _, _ = build_orm_term_indices(*counts, False, "off_diagonal")
+    model[cross_plane[0]] = 2.0
+    full, _, _ = build_orm_term_indices(*counts, False, "full")
+    chi2 = compute_chi_squared_(
+        measured, model, np.ones_like(measured),
+        nHBPM=counts[0], nVBPM=counts[1], nHorCOR=counts[2], nVerCOR=counts[3],
+        include_dispersion=False, remove_coupling_=False, iNoCoupling=full,
+        iOutliers=np.asarray([], dtype=int), n_fit_parameters=np.zeros((n_total, 1)),
+    )
+    assert chi2 > 0.0
+
+
+def test_analytical_response_calculator_rejects_coupled_objectives_early():
+    with pytest.raises(ValueError, match="supports only diagonal ORM terms"):
+        pyloco(None, response_matrix_calculator="Analytical", orm_terms="off_diagonal")
 
 
 def test_remove_coupling_with_dispersion_retains_both_eta_planes_petra_iv_size():

@@ -39,18 +39,20 @@ class _WorkflowProgressReporter:
         self.total_iterations = max(0, int(total_iterations))
         self.last_fraction = 0.0
 
-    def emit(self, phase, fraction, message, *, iteration=0):
+    def emit(self, phase, fraction, message, *, iteration=0, **details):
         if self.callback is None:
             return
         bounded = min(1.0, max(self.last_fraction, float(fraction)))
         self.last_fraction = bounded
-        self.callback({
+        event = {
             "phase": str(phase),
             "iteration": int(iteration),
             "total_iterations": self.total_iterations,
             "workflow_fraction": bounded,
             "message": str(message),
-        })
+        }
+        event.update(details)
+        self.callback(event)
 
     def iteration_fraction(self, iteration, phase_fraction):
         total = max(1, self.total_iterations)
@@ -166,6 +168,80 @@ def weight_matrix(W, include_dispersion=False,
     return W_flat, W_flat_chi
 
 
+ORM_TERM_MODES = ("full", "diagonal", "off_diagonal")
+
+
+def normalize_orm_terms(orm_terms=None, remove_coupling_=None):
+    """Return the objective's canonical transverse ORM block selection.
+
+    ``remove_coupling_`` is retained solely as a compatibility input for old
+    projects and direct API callers: True meant diagonal-only, False meant the
+    full ORM.  New callers should provide ``orm_terms`` explicitly.
+    """
+    if orm_terms in (None, ""):
+        return "diagonal" if remove_coupling_ is not False else "full"
+    aliases = {
+        "all": "full", "full_orm": "full", "diagonal_only": "diagonal",
+        "off-diagonal": "off_diagonal", "offdiagonal": "off_diagonal",
+        "off_diagonal_only": "off_diagonal",
+    }
+    value = aliases.get(str(orm_terms).strip().lower(), str(orm_terms).strip().lower())
+    if value not in ORM_TERM_MODES:
+        raise ValueError(
+            f"Unsupported ORM terms selection {orm_terms!r}; expected full, diagonal, or off_diagonal."
+        )
+    return value
+
+
+def build_orm_term_indices(nHBPM, nVBPM, nHorCOR, nVerCOR,
+                           include_dispersion, orm_terms="diagonal"):
+    """Build canonical Fortran-flat indices for selected ORM blocks.
+
+    RF-dispersion entries are always retained independently of the transverse
+    ORM block choice.
+    """
+    mode = normalize_orm_terms(orm_terms)
+    n_bpm = int(nHBPM) + int(nVBPM)
+    n_cor = int(nHorCOR) + int(nVerCOR)
+    mask = np.zeros((n_bpm, n_cor + int(bool(include_dispersion))), dtype=bool)
+    if mode == "full":
+        mask[:, :n_cor] = True
+    elif mode == "diagonal":
+        mask[:nHBPM, :nHorCOR] = True       # XX
+        mask[nHBPM:, nHorCOR:n_cor] = True  # YY
+    else:
+        mask[:nHBPM, nHorCOR:n_cor] = True  # XY
+        mask[nHBPM:, :nHorCOR] = True       # YX
+    if include_dispersion:
+        mask[:, -1] = True
+    selected = np.flatnonzero(mask.reshape(-1, order="F"))
+    return selected, selected.copy(), n_bpm
+
+
+def select_orm_terms(orm1, orm2, W=None, Jacobian=None,
+                     nHBPM=None, nVBPM=None, nHorCOR=None, nVerCOR=None,
+                     include_dispersion=False, orm_terms="diagonal",
+                     for_chi_squared=False):
+    """Apply one objective ORM-block mask to data, weights and Jacobian."""
+    if None in [nHBPM, nVBPM, nHorCOR, nVerCOR]:
+        raise ValueError("Must provide all BPM and corrector counts.")
+    _validate_loco_system_dimensions(
+        orm1, orm2, W, Jacobian,
+        nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
+        include_dispersion=include_dispersion,
+    )
+    fit_indices, chi_indices, _ = build_orm_term_indices(
+        nHBPM, nVBPM, nHorCOR, nVerCOR, include_dispersion, orm_terms
+    )
+    selected = chi_indices if for_chi_squared else fit_indices
+    return (
+        orm1[selected], orm2[selected],
+        W[selected] if W is not None else None,
+        Jacobian[selected, :] if Jacobian is not None else None,
+        fit_indices, chi_indices,
+    )
+
+
 def remove_coupling(orm1, orm2, W=None, Jacobian=None,
                     nHBPM=None, nVBPM=None, nHorCOR=None, nVerCOR=None,
                     include_dispersion=False, for_chi_squared=False):
@@ -199,51 +275,16 @@ def remove_coupling(orm1, orm2, W=None, Jacobian=None,
     if None in [nHBPM, nVBPM, nHorCOR, nVerCOR]:
         raise ValueError("Must provide all BPM and corrector counts.")
 
-    _validate_loco_system_dimensions(
-        orm1, orm2, W, Jacobian,
-        nHBPM=nHBPM, nVBPM=nVBPM,
-        nHorCOR=nHorCOR, nVerCOR=nVerCOR,
-        include_dispersion=include_dispersion,
+    return select_orm_terms(
+        orm1, orm2, W, Jacobian, nHBPM, nVBPM, nHorCOR, nVerCOR,
+        include_dispersion, "diagonal", for_chi_squared,
     )
-    iNoCoupling, iNoCoupling_chi, _ = build_iNoCoupling(
-        nHBPM, nVBPM, nHorCOR, nVerCOR, include_dispersion
-    )
-    selected = iNoCoupling_chi if for_chi_squared else iNoCoupling
-
-    # Apply filtering
-    orm1_filtered = orm1[selected]
-    orm2_filtered = orm2[selected]
-    W_filtered = W[selected] if W is not None else None
-    Jacobian_filtered = Jacobian[selected, :] if Jacobian is not None else None
-
-    return orm1_filtered, orm2_filtered, W_filtered, Jacobian_filtered, iNoCoupling, iNoCoupling_chi
 
 
 def build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion):
-    nBPM = nHBPM + nVBPM
-
-    CF = np.block([
-        [np.ones((nHBPM, nHorCOR)), np.zeros((nHBPM, nVerCOR))],
-        [np.zeros((nVBPM, nHorCOR)), np.ones((nVBPM, nVerCOR))]
-    ])
-
-    if includeDispersion:
-        # Dispersion is an independent RF-response measurement, not an ORM
-        # cross-plane block.  Retain both eta_x and eta_y while removing only
-        # H-corrector -> V-BPM and V-corrector -> H-BPM terms.
-        disp_fit = np.ones((nBPM, 1))
-        CF_fit = np.hstack((CF, disp_fit))
-        iNoCoupling = np.where(CF_fit.flatten(order="F") > 0)[0]
-
-        # Fit and chi-squared use the same scientific response components.
-        disp_chi = np.ones((nBPM, 1))
-        CF_chi = np.hstack((CF, disp_chi))
-        iNoCoupling_chi = np.where(CF_chi.flatten(order="F") > 0)[0]
-    else:
-        iNoCoupling = np.where(CF.flatten(order="F") > 0)[0]
-        iNoCoupling_chi = iNoCoupling.copy()
-
-    return iNoCoupling, iNoCoupling_chi, nBPM
+    return build_orm_term_indices(
+        nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion, "diagonal"
+    )
 
 
 def _canonicalize_measured_response(
@@ -5831,7 +5872,7 @@ def pyloco(
         # features
         fit_list=(), quad_individuals=True,
             skew_individuals=True,
-            tilt_individuals=True, remove_coupling_=True,
+            tilt_individuals=True, remove_coupling_=True, orm_terms=None,
         # outliers & normalization
         outlier_rejection=False, sigma_outlier=10,
         apply_normalization=False, normalization_mode='global',
@@ -5897,6 +5938,10 @@ def pyloco(
         save_jacobians=False,
 
 ):
+    orm_terms = normalize_orm_terms(orm_terms, remove_coupling_)
+    # Compatibility boolean remains available to the historical code paths;
+    # every reduced objective now uses the explicit index mask below.
+    filter_orm_terms = orm_terms != "full"
     analytical_implementation = _normalize_analytical_implementation(
         analytical_implementation
     )
@@ -5927,6 +5972,15 @@ def pyloco(
         response_matrix_calculator, quad_jacobian_calculator
     )
     response_matrix_calculator = calculator_plan["response_matrix_calculator"]
+    if (
+        str(response_matrix_calculator).strip().lower() == "analytical"
+        and orm_terms != "diagonal"
+    ):
+        raise ValueError(
+            "The Analytical response calculator is an uncoupled transverse "
+            "model and supports only diagonal ORM terms (XX, YY). Select the "
+            "Linear calculator for full or off-diagonal ORM fitting."
+        )
     _trace_calculator(
         calculator_trace_callback, "calculator_configuration", calculator_plan
     )
@@ -6213,6 +6267,9 @@ def pyloco(
                 f"Jacobian ({plane}): {done} / {total} "
                 f"parameters, elapsed {elapsed:.1f} s.",
                 iteration=iteration,
+                parameter_block=str(plane),
+                parameters_done=int(done),
+                parameters_total=int(total),
             )
 
         Jfull, dq, dskew, dtilt = compute_jacobian(
@@ -6336,11 +6393,13 @@ def pyloco(
 
 
 
-        iNoCoupling, iNoCoupling_chi, nBPM = build_iNoCoupling(nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion)
-        if remove_coupling_ == True:
-            y_meas, y_model, weights_flat, J, iNoCoupling, iNoCoupling_chi = remove_coupling(
+        iNoCoupling, iNoCoupling_chi, nBPM = build_orm_term_indices(
+            nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion, orm_terms
+        )
+        if filter_orm_terms:
+            y_meas, y_model, weights_flat, J, iNoCoupling, iNoCoupling_chi = select_orm_terms(
                 y_meas_, y_model_, weights_flat_, J_,
-                nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion
+                nHBPM, nVBPM, nHorCOR, nVerCOR, includeDispersion, orm_terms
             )
 
 
@@ -6412,7 +6471,7 @@ def pyloco(
                 J = J[keep, :]
                 # Map reduced outliers -> coupled indices for chi^2
                 n_total = y_meas_.size  # full coupled length
-                if remove_coupling_ == True:
+                if filter_orm_terms:
                     iOut_coupled = reduced_outliers_to_coupled(out_reduced, iNoCoupling_chi, n_total)
                 else:
                     iOut_coupled = out_reduced.copy()
@@ -6451,7 +6510,7 @@ def pyloco(
             Mstd=weights_flat_chi_,
             nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
             include_dispersion=includeDispersion,
-            remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi_persistent,
+            remove_coupling_=filter_orm_terms, iNoCoupling=iNoCoupling_chi_persistent,
             iOutliers=iOut_coupled_persistent,
             n_fit_parameters=J_
         )
@@ -6637,10 +6696,10 @@ def pyloco(
 
                 y_model_trial_ = orm_trial.reshape(-1, 1, order="F")
 
-                if remove_coupling_ == True:
-                    _, y_model_trial, _, _, _, _ = remove_coupling(
+                if filter_orm_terms:
+                    _, y_model_trial, _, _, _, _ = select_orm_terms(
                         orm_measured.reshape(-1, 1, order="F"), y_model_trial_, None, None, nHBPM, nVBPM, nHorCOR,
-                        nVerCOR, includeDispersion
+                        nVerCOR, includeDispersion, orm_terms
                     )
 
                 # Flatten and compute trial chi² using the SAME keep_mask and weights
@@ -6651,7 +6710,7 @@ def pyloco(
                     Mstd=weights_flat_chi_,
                     nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
                     include_dispersion=includeDispersion,
-                    remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi_persistent,
+                    remove_coupling_=filter_orm_terms, iNoCoupling=iNoCoupling_chi_persistent,
                     iOutliers=iOut_coupled_persistent,
                     n_fit_parameters=J_
                 )
@@ -6816,10 +6875,10 @@ def pyloco(
                 orm_model_after[nHBPM:, jj] += VCMEnergyShift[i] * eta_y_mcf
 
         y_model_after_ = orm_model_after.reshape(-1, 1, order="F")
-        if remove_coupling_ == True:
-            _, y_model_after, _, _, _, _ = remove_coupling(
+        if filter_orm_terms:
+            _, y_model_after, _, _, _, _ = select_orm_terms(
                 orm_measured.reshape(-1, 1, order="F"), y_model_after_, None, None, nHBPM,
-                nVBPM, nHorCOR, nVerCOR, includeDispersion
+                nVBPM, nHorCOR, nVerCOR, includeDispersion, orm_terms
             )
 
         # chi2_after = compute_chi_squared(y_meas, y_model_after[keep_mask],
@@ -6831,7 +6890,7 @@ def pyloco(
             Mstd=weights_flat_chi_,
             nHBPM=nHBPM, nVBPM=nVBPM, nHorCOR=nHorCOR, nVerCOR=nVerCOR,
             include_dispersion=includeDispersion,
-            remove_coupling_=remove_coupling_, iNoCoupling=iNoCoupling_chi,
+            remove_coupling_=filter_orm_terms, iNoCoupling=iNoCoupling_chi,
             iOutliers=iOut_coupled,
             n_fit_parameters=J_
         )
@@ -6845,8 +6904,14 @@ def pyloco(
 
         if iteration_metrics_callback is not None:
             residual_after = np.asarray(orm_measured) - np.asarray(orm_model_after)
-            horizontal_residual = residual_after[:nHBPM, :]
-            vertical_residual = residual_after[nHBPM:nHBPM + nVBPM, :]
+            orm_residual = residual_after[:, :nHorCOR + nVerCOR]
+            selected_orm_indices, _, _ = build_orm_term_indices(
+                nHBPM, nVBPM, nHorCOR, nVerCOR, False, orm_terms
+            )
+            selected_residual = orm_residual.reshape(-1, order="F")[selected_orm_indices]
+            selected_rows = selected_orm_indices % (nHBPM + nVBPM)
+            horizontal_residual = selected_residual[selected_rows < nHBPM]
+            vertical_residual = selected_residual[selected_rows >= nHBPM]
 
             def _residual_metrics(values):
                 finite = np.asarray(values, dtype=float)
@@ -6862,7 +6927,9 @@ def pyloco(
                 "iteration": int(it + 1),
                 "chi2_before": float(chi2_before),
                 "chi2_after": float(chi2_after),
-                "orm_residual": _residual_metrics(residual_after),
+                "orm_terms": orm_terms,
+                "orm_points_used": int(selected_residual.size),
+                "orm_residual": _residual_metrics(selected_residual),
                 "horizontal_orm_residual": _residual_metrics(horizontal_residual),
                 "vertical_orm_residual": _residual_metrics(vertical_residual),
                 "timings": {
@@ -6899,7 +6966,9 @@ def pyloco(
                 quads_ords=quads_ords,
                 quads_tilt_ind=quads_tilt_ind,
                 skew_ords=skew_ords,
-                individuals=individuals,
+                quad_individuals=quad_individuals,
+                skew_individuals=skew_individuals,
+                tilt_individuals=tilt_individuals,
                 fit_cfg=fit_cfg,
                 used_bpms_ords=used_bpms_ords,
                 used_cor_ords=used_cor_ords,

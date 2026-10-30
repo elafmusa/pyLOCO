@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
-    QFileDialog,
     QGridLayout,
     QLabel,
     QMessageBox,
@@ -22,6 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QApplication,
 )
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 
 
 @dataclass(frozen=True)
@@ -41,7 +41,7 @@ class OrmComparisonWindow(QDialog):
     computed from the original full-resolution data.
     """
 
-    def __init__(self, measured_orm, model_orm, parent: QWidget | None = None) -> None:
+    def __init__(self, measured_orm, model_orm, parent: QWidget | None = None, *, context: dict | None = None) -> None:
         super().__init__(parent)
         self.measured_orm = self._as_matrix(measured_orm, "Measured ORM")
         self.model_orm = self._as_matrix(model_orm, "Model ORM")
@@ -64,7 +64,8 @@ class OrmComparisonWindow(QDialog):
         self._last_limits: tuple[float, float] | None = None
         self._theme = self._theme_from_application()
 
-        self.setWindowTitle("ORM Comparison")
+        self.context = dict(context or {})
+        self.setWindowTitle("Compare measurements with fitted model")
         screen = QApplication.primaryScreen()
         available = screen.availableGeometry().size() if screen is not None else None
         self.resize(
@@ -73,6 +74,15 @@ class OrmComparisonWindow(QDialog):
         )
         self.setMinimumSize(560, 380)
         layout = QVBoxLayout(self)
+        stage = self.context.get("stage_name") or "Selected FIT stage"
+        iteration = self.context.get("iteration")
+        state = "Final fitted state" if iteration is None else (
+            "Stage initial model (before fitting)" if int(iteration) == 0 else f"Fitted iteration {iteration}"
+        )
+        self.context_label = QLabel(f"Model: {stage} — {state}")
+        self.context_label.setWordWrap(True)
+        self.context_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.context_label)
         self.rms_label = QLabel(self._rms_text())
         self.rms_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.rms_label)
@@ -177,7 +187,7 @@ class OrmComparisonWindow(QDialog):
         self.figure.clear()
         self._theme = self._theme_from_application()
         self.figure.patch.set_facecolor(self._theme["face"])
-        matrices = [("Measured ORM", self.measured_orm), ("Model ORM", self.model_orm), ("Difference (Measured − Model)", self.difference_orm)]
+        matrices = [("Measured", self.measured_orm), ("Model", self.model_orm), ("Residual (Measured − Model)", self.difference_orm)]
         is_surface = self.plot_mode.currentText().startswith("3D")
         axes = []
         for idx, (title, matrix) in enumerate(matrices, start=1):

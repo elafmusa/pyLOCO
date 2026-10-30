@@ -83,6 +83,7 @@ class LOCOOptions:
     fixedpathlength: bool = False
     individuals: bool = True
     remove_coupling_: bool = True
+    orm_terms: str | None = None
 
 
 loco_options = LOCOOptions()
@@ -175,7 +176,9 @@ def get_mcf(ring: Any) -> float:
 class FixedParameters:
     Frequency: float = 499664399.4230182
     HarmNumber: int = 3840
-    rfstep: float = -3000.0
+    # Canonical bipolar convention: positive total RF separation.  The
+    # response calculator applies +/- rfstep/2 around the nominal frequency.
+    rfstep: float = 3000.0
     dk: Any = None
     delta_skew: float = 1e-3
     delta_q_tilt: float = 1e-6

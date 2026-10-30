@@ -26,8 +26,24 @@ def inspect_measurement_metadata(path: str | Path, role: str) -> dict[str, Any]:
 
     with h5py.File(source, "r") as handle:
         attrs = dict(handle.attrs)
-        metadata["datasets"] = []
-        handle.visititems(lambda name, obj: metadata["datasets"].append(name) if isinstance(obj, h5py.Dataset) else None)
+        metadata["available_datasets"] = []
+        handle.visititems(lambda name, obj: metadata["available_datasets"].append(name) if isinstance(obj, h5py.Dataset) else None)
+    available = metadata["available_datasets"]
+    if role == "orm":
+        for name in ("response_matrix", "orm"):
+            if name in available:
+                metadata["dataset"] = name
+                break
+    elif role == "dispersion":
+        horizontal = next((name for name in ("measured_eta_x", "eta_x") if name in available), None)
+        vertical = next((name for name in ("measured_eta_y", "eta_y") if name in available), None)
+        if horizontal and vertical:
+            metadata["datasets"] = {"horizontal": horizontal, "vertical": vertical}
+    elif role == "bpm_noise":
+        horizontal = next((name for name in ("Noise_BPMx", "noise_x") if name in available), None)
+        vertical = next((name for name in ("Noise_BPMy", "noise_y") if name in available), None)
+        if horizontal and vertical:
+            metadata["datasets"] = {"horizontal": horizontal, "vertical": vertical}
     def scalar(*names):
         for name in names:
             if name in attrs:
@@ -43,7 +59,7 @@ def inspect_measurement_metadata(path: str | Path, role: str) -> dict[str, Any]:
         if bidirectional is not None:
             metadata["bidirectional"] = bool(bidirectional)
     elif role == "dispersion":
-        step = scalar("rf_step_hz", "delta_f_hz", "df_hz")
+        step = scalar("rf_step_hz", "rf_signed_step_hz", "rf_bipolar_separation_hz", "rf_full_step", "delta_f_hz", "df_hz")
         if step is None and "dispersion_difference" in attrs:
             import re
             description = str(attrs["dispersion_difference"])
@@ -56,6 +72,14 @@ def inspect_measurement_metadata(path: str | Path, role: str) -> dict[str, Any]:
         bidirectional = scalar("bidirectional")
         if bidirectional is not None:
             metadata["bidirectional"] = bool(bidirectional)
+        if bool(metadata.get("bidirectional")):
+            from pyLOCO.dispersion_convention import canonical_dispersion_convention
+            convention = canonical_dispersion_convention(attrs)
+            metadata["rf_step_hz"] = convention.rf_step_hz
+            metadata["horizontal_scale"] = convention.array_scale
+            metadata["vertical_scale"] = convention.array_scale
+            metadata["source_rf_difference_sign_convention"] = convention.source_sign
+            metadata["rf_difference_sign_convention"] = "positive_minus_negative"
     return metadata
 
 

@@ -191,6 +191,7 @@ def write_bpm_noise(
     bpm_names: Sequence[str],
     raw_orbits_x_m: Any,
     raw_orbits_y_m: Any,
+    ddof: int | None = None,
     metadata: Mapping[str, Any] | None = None,
     diagnostics: Mapping[str, Any] | None = None,
 ) -> Path:
@@ -200,17 +201,116 @@ def write_bpm_noise(
     raw_y = _array(raw_orbits_y_m, "raw_orbits_y_m", ndim=2).astype(float)
     if raw_x.shape != raw_y.shape or raw_x.shape[1] != n_bpm:
         raise ValueError("raw BPM-noise orbit arrays must be (n_samples, n_bpms) with equal shapes")
+    stored_x = _array(noise_x_m, "noise_x_m", ndim=1).astype(float)
+    stored_y = _array(noise_y_m, "noise_y_m", ndim=1).astype(float)
+    if ddof not in (None, 0, 1):
+        raise ValueError("BPM-noise ddof must be 0, 1, or None for a legacy file")
+    if ddof == 1 and raw_x.shape[0] < 2:
+        raise ValueError("Sample BPM noise requires at least two raw orbit samples")
+    convention_consistent = ddof is not None and all((
+        np.allclose(stored_x, np.std(raw_x, axis=0, ddof=ddof), rtol=1e-12, atol=1e-18),
+        np.allclose(stored_y, np.std(raw_y, axis=0, ddof=ddof), rtol=1e-12, atol=1e-18),
+    ))
+    if ddof is not None and not convention_consistent:
+        raise ValueError(f"BPM-noise vectors must equal the raw standard deviation calculated with ddof={ddof}")
     with _initialize(path, "bpm_noise", metadata) as handle:
+        if ddof is not None:
+            handle.attrs["noise_statistic"] = "population_standard_deviation" if ddof == 0 else "sample_standard_deviation"
+            handle.attrs["noise_standard_deviation_ddof"] = ddof
+        handle.attrs["bpm_name_order"] = "dataset:names/bpms; identical order in X and Y vectors/raw columns"
         # Both legacy and descriptive aliases are intentionally provided.
-        handle.create_dataset("Noise_BPMx", data=noise_x_m)
-        handle.create_dataset("Noise_BPMy", data=noise_y_m)
+        noise_x = handle.create_dataset("Noise_BPMx", data=stored_x)
+        noise_y = handle.create_dataset("Noise_BPMy", data=stored_y)
+        noise_x.attrs["unit"] = "m"
+        noise_y.attrs["unit"] = "m"
         handle["noise_x"] = handle["Noise_BPMx"]
         handle["noise_y"] = handle["Noise_BPMy"]
         _create_text_dataset(handle.create_group("names"), "bpms", bpm_names)
-        handle.create_dataset("raw/orbits_x_m", data=raw_x, compression="gzip")
-        handle.create_dataset("raw/orbits_y_m", data=raw_y, compression="gzip")
+        raw_x_dataset = handle.create_dataset("raw/orbits_x_m", data=raw_x, compression="gzip")
+        raw_y_dataset = handle.create_dataset("raw/orbits_y_m", data=raw_y, compression="gzip")
+        raw_x_dataset.attrs["unit"] = "m"
+        raw_y_dataset.attrs["unit"] = "m"
+        handle["raw"].attrs["dimensions"] = "sample,bpm"
         _write_diagnostics(handle, diagnostics)
     return Path(path)
+
+
+def write_bpm_noise_review_annotations(
+    path: str | Path,
+    *,
+    manual_bad_bpm_indices: Sequence[int] = (),
+    threshold_flagged_bpm_indices: Sequence[int] = (),
+    pinned_bpm_indices: Sequence[int] = (),
+    review_notes: Mapping[int, str] | None = None,
+    review_statuses: Mapping[int, str] | None = None,
+    horizontal_threshold_nm: float | None = None,
+    vertical_threshold_nm: float | None = None,
+) -> Path:
+    """Persist non-excluding BPM review annotations in an existing noise file.
+
+    These annotations are deliberately outside the canonical fitting datasets;
+    ``Noise_BPMx`` and ``Noise_BPMy`` and their BPM order remain unchanged.
+    """
+    source = Path(path)
+    with h5py.File(source, "r+") as handle:
+        if str(handle.attrs.get("measurement_kind", "")) != "bpm_noise" or "names/bpms" not in handle:
+            raise ValueError("BPM review annotations require a pyLOCO BPM-noise file with stored names")
+        names = [item.decode() if isinstance(item, bytes) else str(item) for item in handle["names/bpms"][:]]
+        n_bpm = len(names)
+
+        def checked(values: Sequence[int], label: str) -> np.ndarray:
+            result = np.asarray(sorted(set(int(value) for value in values)), dtype=np.int64)
+            if result.size and (result[0] < 0 or result[-1] >= n_bpm):
+                raise ValueError(f"{label} contains an index outside the stored BPM order")
+            return result
+
+        manual = checked(manual_bad_bpm_indices, "manual_bad_bpm_indices")
+        threshold = checked(threshold_flagged_bpm_indices, "threshold_flagged_bpm_indices")
+        pinned = checked(pinned_bpm_indices, "pinned_bpm_indices")
+        notes = {int(index): str(note).strip() for index, note in (review_notes or {}).items() if str(note).strip()}
+        checked(notes, "review_notes")
+        allowed_statuses={"Unreviewed","Good","Suspect","Bad"}
+        statuses={int(index):str(status) for index,status in (review_statuses or {}).items() if str(status)!="Unreviewed"}
+        checked(statuses,"review_statuses")
+        invalid=set(statuses.values())-allowed_statuses
+        if invalid:raise ValueError(f"Unsupported BPM review status: {sorted(invalid)}")
+        if "review" in handle:
+            del handle["review"]
+        review = handle.create_group("review")
+        review.attrs["role"] = "operator_review_annotation_only"
+        review.attrs["affects_fitting"] = False
+        review.attrs["index_order"] = "zero-based indices into names/bpms and Noise_BPMx/Noise_BPMy"
+        review.attrs["horizontal_threshold_nm"] = np.nan if horizontal_threshold_nm is None else float(horizontal_threshold_nm)
+        review.attrs["vertical_threshold_nm"] = np.nan if vertical_threshold_nm is None else float(vertical_threshold_nm)
+        review.create_dataset("manual_bad_bpm_indices", data=manual)
+        review.create_dataset("threshold_flagged_bpm_indices", data=threshold)
+        review.create_dataset("pinned_bpm_indices", data=pinned)
+        _create_text_dataset(review, "manual_bad_bpm_names", [names[index] for index in manual])
+        _create_text_dataset(review, "threshold_flagged_bpm_names", [names[index] for index in threshold])
+        _create_text_dataset(review, "pinned_bpm_names", [names[index] for index in pinned])
+        note_indices=np.asarray(sorted(notes),dtype=np.int64)
+        review.create_dataset("note_bpm_indices",data=note_indices)
+        _create_text_dataset(review,"note_text",[notes[index] for index in note_indices])
+        status_indices=np.asarray(sorted(statuses),dtype=np.int64)
+        review.create_dataset("status_bpm_indices",data=status_indices)
+        _create_text_dataset(review,"status_values",[statuses[index] for index in status_indices])
+    return source
+
+
+def read_bpm_noise_review_annotations(path: str | Path) -> dict[str, Any]:
+    """Load optional review annotations without touching physics datasets."""
+    with h5py.File(Path(path),"r") as handle:
+        names=[item.decode() if isinstance(item,bytes) else str(item) for item in handle["names/bpms"][:]]
+        review=handle.get("review")
+        if review is None:return {"bpm_names":names,"manual_bad_bpm_indices":(),"threshold_flagged_bpm_indices":(),"pinned_bpm_indices":(),"review_notes":{},"review_statuses":{},"horizontal_threshold_nm":None,"vertical_threshold_nm":None}
+        def indices(key):return tuple(int(value) for value in review[key][:]) if key in review else ()
+        def texts(key):return [value.decode() if isinstance(value,bytes) else str(value) for value in review[key][:]] if key in review else []
+        note_indices=indices("note_bpm_indices"); status_indices=indices("status_bpm_indices")
+        statuses=dict(zip(status_indices,texts("status_values")))
+        for index in indices("manual_bad_bpm_indices"):statuses.setdefault(index,"Bad")
+        def threshold(name):
+            value=float(review.attrs.get(name,np.nan)); return value if np.isfinite(value) else None
+        return {"bpm_names":names,"manual_bad_bpm_indices":indices("manual_bad_bpm_indices"),"threshold_flagged_bpm_indices":indices("threshold_flagged_bpm_indices"),"pinned_bpm_indices":indices("pinned_bpm_indices"),"review_notes":dict(zip(note_indices,texts("note_text"))),"review_statuses":statuses,"horizontal_threshold_nm":threshold("horizontal_threshold_nm"),"vertical_threshold_nm":threshold("vertical_threshold_nm")}
 
 
 def write_dispersion(
@@ -230,6 +330,8 @@ def write_dispersion(
     diagnostics: Mapping[str, Any] | None = None,
     state_labels: Sequence[str] | None = None,
     operator_confirmed: Any | None = None,
+    rf_actual_sources: Sequence[str] | None = None,
+    rf_readback_verified: Any | None = None,
     sample_timestamps_s: Any | None = None,
     restoration_status: str = "not_verified",
 ) -> Path:
@@ -263,6 +365,14 @@ def write_dispersion(
     ).astype(bool)
     if confirmed.size != rf.size:
         raise ValueError("operator_confirmed length must match RF states")
+    actual_sources = tuple(rf_actual_sources or ("legacy_unspecified" for _ in range(rf.size)))
+    if len(actual_sources) != rf.size:
+        raise ValueError("rf_actual_sources length must match RF states")
+    readback_verified = np.zeros(rf.size, dtype=bool) if rf_readback_verified is None else _array(
+        rf_readback_verified, "rf_readback_verified", ndim=1
+    ).astype(bool)
+    if readback_verified.size != rf.size:
+        raise ValueError("rf_readback_verified length must match RF states")
     timestamps = None
     if sample_timestamps_s is not None:
         timestamps = _array(sample_timestamps_s, "sample_timestamps_s", ndim=2)
@@ -274,12 +384,24 @@ def write_dispersion(
         handle.attrs["rf_step_hz"] = float(rf_step_hz)
         handle.attrs["bidirectional"] = bool(bidirectional)
         handle.attrs["restoration_status"] = str(restoration_status)
+        default_sign = "positive_minus_negative" if float(rf_step_hz) > 0 else "negative_minus_positive"
+        default_definition = (
+            "mean_orbit_positive - mean_orbit_negative"
+            if default_sign == "positive_minus_negative" else
+            "mean_orbit_negative - mean_orbit_positive"
+        )
         handle.attrs["measured_eta_definition"] = str((metadata or {}).get(
-            "canonical_measured_eta_definition", "orbit difference for rf_step_hz"
+            "canonical_measured_eta_definition", default_definition
         ))
         handle.attrs["measured_eta_unit"] = "m"
-        if metadata and metadata.get("rf_difference_sign_convention") is not None:
-            handle.attrs["rf_difference_sign_convention"] = str(metadata["rf_difference_sign_convention"])
+        handle.attrs["rf_difference_sign_convention"] = str(
+            (metadata or {}).get("rf_difference_sign_convention", default_sign)
+        )
+        if bool(bidirectional):
+            handle.attrs["rf_response_convention_version"] = (
+                "positive_total_separation_v1" if default_sign == "positive_minus_negative"
+                else "legacy_negative_step_v1"
+            )
         if metadata and metadata.get("momentum_compaction_factor") is not None:
             handle.attrs["momentum_compaction_factor"] = float(metadata["momentum_compaction_factor"])
             handle.attrs["relativistic_correction_inverse_gamma_squared"] = float(metadata["relativistic_correction_inverse_gamma_squared"])
@@ -302,7 +424,7 @@ def write_dispersion(
                     float(metadata["rf_positive_hz"]) - float(metadata["rf_negative_hz"])
                 )
                 handle.attrs["rf_signed_step_hz"] = (
-                    float(metadata["rf_negative_hz"]) - float(metadata["rf_positive_hz"])
+                    float(metadata["rf_positive_hz"]) - float(metadata["rf_negative_hz"])
                 )
             if metadata.get("delta_span_definition") is not None:
                 handle.attrs["delta_span_definition"] = str(metadata["delta_span_definition"])
@@ -325,6 +447,8 @@ def write_dispersion(
         raw.create_dataset("std_orbits_x_m", data=std_x)
         raw.create_dataset("std_orbits_y_m", data=std_y)
         raw.create_dataset("operator_confirmed", data=confirmed)
+        raw.create_dataset("rf_readback_verified", data=readback_verified)
+        _create_text_dataset(raw, "rf_actual_sources", actual_sources)
         _create_text_dataset(raw, "state_labels", labels)
         states_group = raw.create_group("states")
         for index,label in enumerate(labels):
@@ -332,6 +456,8 @@ def write_dispersion(
             state_group.attrs["rf_setpoint_hz"]=float(setpoint[index])
             state_group.attrs["rf_readback_hz"]=float(readback[index])
             state_group.attrs["operator_confirmed"]=bool(confirmed[index])
+            state_group.attrs["rf_readback_verified"]=bool(readback_verified[index])
+            state_group.attrs["rf_actual_source"]=str(actual_sources[index])
             state_group.create_dataset("orbits_x_m",data=raw_x[index],compression="gzip")
             state_group.create_dataset("orbits_y_m",data=raw_y[index],compression="gzip")
             state_group.create_dataset("mean_orbit_x_m",data=mean_x[index])
@@ -414,6 +540,13 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
                     else:
                         mean_plus=plus[:] if plus.ndim==2 else np.mean(plus[:],axis=1)
                         mean_minus=minus[:] if minus.ndim==2 else np.mean(minus[:],axis=1)
+                        if strict_orm and plus.ndim==3:
+                            if int(measurement_metadata.get("readings_per_state",-1))!=plus.shape[1]:errors.append("ORM readings_per_state metadata does not match raw samples")
+                            for field in ("delay_seconds","settling_delay_seconds"):
+                                try:value=float(measurement_metadata[field])
+                                except (KeyError,TypeError,ValueError):errors.append(f"missing or invalid ORM {field} metadata")
+                                else:
+                                    if not np.isfinite(value) or value<0:errors.append(f"invalid ORM {field} metadata")
                         raw_columns=(mean_plus-mean_minus).T
                         scaled=bool(handle.attrs.get("scaled",False)); expected=raw_columns
                         if scaled:
@@ -423,6 +556,10 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
                         if strict_orm and not np.allclose(matrix[:],expected,rtol=1e-12,atol=1e-15):errors.append("ORM matrix does not equal mean(positive)-mean(negative), normalized by actual readback separation when scaled")
                         if strict_orm and str(handle.attrs.get("direction",""))=="bipolar":
                             if str(handle["raw"].attrs.get("state_a",""))!="+kick" or str(handle["raw"].attrs.get("state_b",""))!="-kick":errors.append("invalid bipolar ORM state/sign convention")
+                            if all(name in handle for name in ("setpoints/actual_state_a","setpoints/actual_state_b")):
+                                separation=handle["setpoints/actual_state_a"][:]-handle["setpoints/actual_state_b"][:]
+                                recorded=np.concatenate((handle["kicks/horizontal/actual"][:],handle["kicks/vertical/actual"][:]))
+                                if not np.allclose(separation,recorded,rtol=1e-12,atol=1e-15):errors.append("ORM actual kick separations do not match state readbacks")
                         if str(handle["raw"].attrs.get("response_row_order",""))!="horizontal_bpms,vertical_bpms" or str(handle["raw"].attrs.get("corrector_order",""))!="horizontal_correctors,vertical_correctors":errors.append("raw ORM ordering does not match selected-name ordering")
                 state_required=("setpoints/original","setpoints/final","setpoints/restoration_status")
                 if strict_orm and all(name in handle for name in state_required):
@@ -452,6 +589,46 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
                 if strict_orm and measurement_metadata.get("backend_key")=="pysc":
                     for field in ("machine","profile","profile_key","lattice_file","lattice_provenance"):
                         if not measurement_metadata.get(field):errors.append(f"missing ORM machine/profile provenance field {field}")
+        if kind == "bpm_noise" and all(name in handle for name in ("Noise_BPMx", "Noise_BPMy", "raw/orbits_x_m", "raw/orbits_y_m")):
+            noise_x = handle["Noise_BPMx"]
+            noise_y = handle["Noise_BPMy"]
+            raw_x = handle["raw/orbits_x_m"]
+            raw_y = handle["raw/orbits_y_m"]
+            if noise_x.ndim != 1 or noise_y.ndim != 1 or noise_x.shape != noise_y.shape:
+                errors.append("BPM-noise X/Y vectors must be equal one-dimensional arrays")
+            if raw_x.ndim != 2 or raw_y.ndim != 2 or raw_x.shape != raw_y.shape:
+                errors.append("raw BPM-noise orbit arrays must be equal (samples, bpms) arrays")
+            elif noise_x.ndim == 1 and raw_x.shape[1] != noise_x.shape[0]:
+                errors.append("raw BPM-noise BPM dimension does not match noise vectors")
+            for name, dataset in (("Noise_BPMx", noise_x), ("Noise_BPMy", noise_y),
+                                  ("raw/orbits_x_m", raw_x), ("raw/orbits_y_m", raw_y)):
+                if not np.isfinite(dataset[:]).all():
+                    errors.append(f"{name} contains non-finite values")
+            if "names/bpms" in handle:
+                names = [item.decode() if isinstance(item, bytes) else str(item) for item in handle["names/bpms"][:]]
+                if noise_x.ndim != 1 or len(names) != noise_x.shape[0]:
+                    errors.append("BPM-noise names do not match the noise-vector length")
+                if len(set(names)) != len(names) or any(not name for name in names):
+                    errors.append("BPM-noise names must be non-empty and unique")
+                selected = measurement_metadata.get("selected_bpm_names")
+                if selected is not None and selected != names:
+                    errors.append("BPM-noise selected_bpm_names metadata does not match stored BPM order")
+            convention = str(handle.attrs.get("noise_statistic", ""))
+            if convention:
+                recorded_ddof = int(handle.attrs.get("noise_standard_deviation_ddof", -1))
+                expected_convention = {0: "population_standard_deviation", 1: "sample_standard_deviation"}.get(recorded_ddof)
+                if convention != expected_convention:
+                    errors.append("invalid BPM-noise standard-deviation convention")
+                elif recorded_ddof == 1 and raw_x.ndim == 2 and raw_x.shape[0] < 2:
+                    errors.append("sample BPM noise requires at least two orbit readings")
+                elif raw_x.ndim == 2 and noise_x.ndim == 1:
+                    if not np.allclose(noise_x[:], np.std(raw_x[:], axis=0, ddof=recorded_ddof), rtol=1e-12, atol=1e-18):
+                        errors.append(f"Noise_BPMx does not equal raw standard deviation (ddof={recorded_ddof})")
+                    if not np.allclose(noise_y[:], np.std(raw_y[:], axis=0, ddof=recorded_ddof), rtol=1e-12, atol=1e-18):
+                        errors.append(f"Noise_BPMy does not equal raw standard deviation (ddof={recorded_ddof})")
+                for name in ("Noise_BPMx", "Noise_BPMy", "raw/orbits_x_m", "raw/orbits_y_m"):
+                    if str(handle[name].attrs.get("unit", "")) != "m":
+                        errors.append(f"{name} must declare unit m")
         if kind == "dispersion" and "measured_eta_x" in handle and "measured_eta_y" in handle:
             if handle["measured_eta_x"].shape != handle["measured_eta_y"].shape:
                 errors.append("measured_eta_x/y shapes differ")
@@ -470,20 +647,24 @@ def validate_measurement_file(path: str | Path) -> dict[str, Any]:
                         negative, positive = labels.index("negative"), labels.index("positive")
                         means_x = raw_x[:] if raw_x.ndim == 2 else np.mean(raw_x[:], axis=1)
                         means_y = raw_y[:] if raw_y.ndim == 2 else np.mean(raw_y[:], axis=1)
-                        expected_x = means_x[negative] - means_x[positive]
-                        expected_y = means_y[negative] - means_y[positive]
+                        try:
+                            from pyLOCO.dispersion_convention import canonical_dispersion_convention
+                            convention = canonical_dispersion_convention(handle.attrs)
+                        except ValueError as exc:
+                            errors.append(str(exc)); convention = None
+                        scale = convention.array_scale if convention is not None else 1.0
+                        expected_x = (means_x[positive] - means_x[negative]) / scale
+                        expected_y = (means_y[positive] - means_y[negative]) / scale
                         if not np.allclose(handle["measured_eta_x"][:], expected_x, rtol=1e-12, atol=1e-15):
-                            errors.append("measured_eta_x is not the historical negative-minus-positive RF orbit difference")
+                            errors.append("measured_eta_x does not match its recorded bipolar subtraction convention")
                         if not np.allclose(handle["measured_eta_y"][:], expected_y, rtol=1e-12, atol=1e-15):
-                            errors.append("measured_eta_y is not the historical negative-minus-positive RF orbit difference")
-                        if str(handle.attrs.get("rf_difference_sign_convention", "")) != "negative_minus_positive":
-                            errors.append("missing or invalid RF difference sign convention")
+                            errors.append("measured_eta_y does not match its recorded bipolar subtraction convention")
                         frequencies = handle["raw/rf_readback_hz"][:]
                         if np.isfinite(frequencies[[negative, positive]]).all():
-                            signed_step = float(frequencies[negative] - frequencies[positive])
-                            if not np.isclose(float(handle.attrs.get("rf_step_hz", np.nan)), signed_step,
+                            signed_step = float(frequencies[positive] - frequencies[negative])
+                            if convention is not None and not np.isclose(convention.rf_step_hz, signed_step,
                                               rtol=0.0, atol=1e-9):
-                                errors.append("rf_step_hz does not equal the historical signed step f- minus f+")
+                                errors.append("canonical RF separation does not equal f+ minus f-")
     if errors:
         raise ValueError(f"Invalid pyLOCO measurement file {source}: " + "; ".join(errors))
     return {"path": str(source), "kind": kind, "schema_version": SCHEMA_VERSION}

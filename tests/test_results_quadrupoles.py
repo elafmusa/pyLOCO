@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from types import SimpleNamespace
 
 import numpy as np
@@ -34,8 +33,10 @@ def _results(tmp_path, values, ordinals, *, individuals):
 
 
 def _fake_at(monkeypatch, families, strengths):
-    ring = [SimpleNamespace(FamName=name, PolynomB=np.asarray([0.0, strength])) for name, strength in zip(families, strengths)]
-    monkeypatch.setitem(sys.modules, "at", SimpleNamespace(load_lattice=lambda _path: ring))
+    ring = [SimpleNamespace(FamName=name, Device=f"device/{name}/{index}",
+                            PolynomB=np.asarray([0.0, strength]))
+            for index, (name, strength) in enumerate(zip(families, strengths))]
+    monkeypatch.setattr(ResultsLoader, "_load_reference_lattice", lambda _self, path=None: ring)
 
 
 def test_quadrupole_plot_and_table_share_exact_individual_order(app, tmp_path, monkeypatch):
@@ -44,14 +45,25 @@ def test_quadrupole_plot_and_table_share_exact_individual_order(app, tmp_path, m
     loader = ResultsLoader(tmp_path)
     rows = loader.quadrupole_parameter_rows
     assert [row["name"] for row in rows] == ["Q1", "Q2", "Q3"]
+    assert [row["at_device"] for row in rows] == ["device/Q1/0", "device/Q2/1", "device/Q3/2"]
     assert [row["lattice_ordinal"] for row in rows] == [0, 1, 2]
     np.testing.assert_allclose([row["delta_k"] for row in rows], [.1, -.2, .6])
 
     view = ParametersView(); view.set_loader(loader)
+    assert view.selector.currentData() == "quads"
+    assert view.table.horizontalHeaderItem(0).text() == "Fitted-vector position"
+    assert "not a lattice index" in view.comparison_help.text()
+    assert view.table.horizontalHeaderItem(1).text() == "Fitted magnet (AT FamName)"
+    assert view.table.item(0, 1).text() == "Q1"
+    assert view.table.item(0, 2).text() == "device/Q1/0"
+    assert view.table.item(0, 3).text() == "0"
     view.selector.setCurrentIndex(view.selector.findData("__quad_delta__")); app.processEvents()
     assert view.table.rowCount() == len(rows) == 3
     np.testing.assert_allclose(view.plot.figure.axes[0].lines[0].get_ydata(), [.1, -.2, .6])
-    assert view.table.horizontalHeaderItem(6).text() == "ΔK/K [%]"
+    assert view.table.horizontalHeaderItem(7).text() == "ΔK/K [%]"
+    assert view.table.item(0, 1).text() == "Q1"
+    assert view.table.item(0, 2).text() == "device/Q1/0"
+    assert view.table.item(0, 3).text() == "0"
     assert view.plot.save_button.isEnabled()
     view.selector.setCurrentIndex(view.selector.findData("__quad_relative__")); app.processEvents()
     np.testing.assert_allclose(view.plot.figure.axes[0].lines[0].get_ydata(), [10.0, -10.0, 20.0])
@@ -70,7 +82,8 @@ def test_family_fit_has_one_named_row_per_family_without_fake_ordinal(app, tmp_p
     view.selector.setCurrentIndex(view.selector.findData("__quad_delta__")); app.processEvents()
     assert view.table.rowCount() == 2
     assert view.table.item(0, 1).text() == "QF"
-    assert view.table.item(0, 2).text() == "—"
+    assert view.table.item(0, 2).text() == "Unavailable"
+    assert view.table.item(0, 3).text() == "—"
     assert "0, 1" in view.table.item(0, 1).toolTip()
     view.close()
 

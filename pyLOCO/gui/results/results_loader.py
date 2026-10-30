@@ -9,6 +9,18 @@ from pathlib import Path
 from typing import Any
 
 
+def notebook_physical_dispersion(rf_orbit_difference, *, at_slip_factor: float,
+                                 rf_frequency_hz: float, signed_rf_step_hz: float):
+    """Apply the historical AT-notebook conversion without changing FIT data."""
+    import numpy as np
+
+    values = np.asarray(rf_orbit_difference, dtype=float)
+    scalars = np.asarray((at_slip_factor, rf_frequency_hz, signed_rf_step_hz), dtype=float)
+    if not np.isfinite(scalars).all() or signed_rf_step_hz == 0:
+        raise ValueError("Slip factor, RF frequency and signed RF step must be finite and non-zero")
+    return values * float(at_slip_factor) * float(rf_frequency_hz) / float(signed_rf_step_hz)
+
+
 @dataclass(frozen=True)
 class OrmPartitions:
     n_hbpm: int
@@ -47,6 +59,14 @@ class ResultsLoader:
         self._runtime_override = runtime
         self._cache: dict[str, Any] = {}
         self._unavailable: dict[str, str] = {}
+
+    def _load_reference_lattice(self, path=None):
+        from pyLOCO.gui.lattice_loader import load_project_lattice
+        source = path or self.request.get("lattice_path", "")
+        resolved = self._resolve_reference(source)
+        return load_project_lattice(
+            resolved, self.request.get("lattice_mat_variable") or None,
+        )
 
     def unavailable_reason(self, quantity: str) -> str | None:
         """Return a developer-useful reason after an unavailable property was attempted."""
@@ -162,7 +182,7 @@ class ResultsLoader:
         result = []
         for entry in sorted(entries, key=lambda item: int(item["iteration"])):
             number = int(entry["iteration"])
-            label = "Initial / Iteration 0" if number == 0 else f"Iteration {number}"
+            label = "Stage initial model (before fitting)" if number == 0 else f"Iteration {number}"
             if number == last and manifest.get("run_status") == "completed":
                 label += " / Final"
             result.append({**entry, "label": label, "legacy": False})
@@ -251,7 +271,10 @@ class ResultsLoader:
             lattice_path = resolve(lattice.get("file"))
 
             if lattice_path:
-                ring = at.load_lattice(lattice_path)
+                lattice_kwargs = {}
+                if lattice.get("use") is not None:
+                    lattice_kwargs["use"] = str(lattice["use"])
+                ring = at.load_lattice(lattice_path, **lattice_kwargs)
                 resolved = resolve_example_machine_elements(
                     str(config_path),
                     ring,
@@ -361,7 +384,9 @@ class ResultsLoader:
             or summary.get("run_name"),
             "project_path": str(config_path),
             "lattice_path": resolve(lattice.get("file")),
+            "lattice_use": lattice.get("use"),
             "measurements": measurements,
+            "measurement_session": config.get("measurement_session") or {},
             "measurement_options": measurement_options,
             "backend_mapping": backend_mapping,
         }
@@ -431,6 +456,54 @@ class ResultsLoader:
     def iteration_metrics(self) -> list[dict[str, Any]]:
         values = self.summary.get("iteration_metrics")
         return [value for value in values if isinstance(value, dict)] if isinstance(values, list) else []
+
+    def metrics_for_iteration(self, iteration: int | None = None) -> dict[str, Any] | None:
+        """Return the persisted diagnostics for one completed iteration.
+
+        ``None`` means the last completed iteration.  This deliberately does
+        not infer an iteration start from the preceding iteration's end:
+        objective masks, weights, or normalization may have changed.
+        """
+        records = self.iteration_metrics
+        if not records:
+            return None
+        target = self.iteration if iteration is None else iteration
+        if target is None:
+            return records[-1]
+        for record in records:
+            try:
+                if int(record.get("iteration")) == int(target):
+                    return record
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @property
+    def selected_iteration_chi2_before(self) -> float | None:
+        record = self.metrics_for_iteration()
+        if record:
+            value = _finite_float(record.get("chi2_before"))
+            if value is not None:
+                return value
+        return _finite_float(self.iteration_metadata.get("chi2_before"))
+
+    @property
+    def selected_iteration_chi2_after(self) -> float | None:
+        record = self.metrics_for_iteration()
+        if record:
+            value = _finite_float(record.get("chi2_after"))
+            if value is not None:
+                return value
+        return _finite_float(self.iteration_metadata.get("chi2_after"))
+
+    @property
+    def stage_initial_chi2(self) -> float | None:
+        records = self.iteration_metrics
+        if records:
+            value = _finite_float(records[0].get("chi2_before"))
+            if value is not None:
+                return value
+        return self.initial_chi2
 
     @property
     def timing_totals(self) -> dict[str, float | None]:
@@ -586,16 +659,18 @@ class ResultsLoader:
         machine = self.request.get("backend_mapping", {}).get("MachineElements", {})
         key_map = {"hbpm_gain": "bpm_ords", "vbpm_gain": "bpm_ords", "hbpm_coupling": "bpm_ords", "vbpm_coupling": "bpm_ords", "hcor_cal": "horizontal_corrector_ords", "hcor_coupling": "horizontal_corrector_ords", "vcor_cal": "vertical_corrector_ords", "vcor_coupling": "vertical_corrector_ords", "quads": "normal_quadrupole_ords", "quads_tilt": "normal_quadrupole_ords", "skew_quads": "skew_quadrupole_ords"}
         ordinals = machine.get(key_map.get(block_key, "")) or []
-        result = {"selected_list_position": index, "lattice_ordinal": None, "element_name": None}
+        result = {"selected_list_position": index, "lattice_ordinal": None,
+                  "element_name": None, "at_device": None}
         if index < len(ordinals):
             result["lattice_ordinal"] = int(ordinals[index])
             try:
                 ring = self._cache.get("parameter_identity_ring")
                 if ring is None:
-                    import at
-                    ring = at.load_lattice(self._resolve_reference(self.request["lattice_path"]))
+                    ring = self._load_reference_lattice()
                     self._cache["parameter_identity_ring"] = ring
-                result["element_name"] = str(getattr(ring[int(ordinals[index])], "FamName", ordinals[index]))
+                element = ring[int(ordinals[index])]
+                result["element_name"] = str(getattr(element, "FamName", ordinals[index]))
+                result["at_device"] = str(getattr(element, "Device", "") or "") or None
             except Exception: pass
         return result
 
@@ -671,6 +746,7 @@ class ResultsLoader:
                                     "name": source[
                                         "representative_name"
                                     ],
+                                    "at_device": None,
                                     "lattice_ordinal": int(
                                         source[
                                             "representative_lattice_index"
@@ -718,8 +794,7 @@ class ResultsLoader:
         identities = []
         baseline = None if block.baseline is None else np.asarray(block.baseline, dtype=float).ravel()
         try:
-            import at
-            ring = at.load_lattice(self._resolve_reference(self.request.get("lattice_path", "")))
+            ring = self._load_reference_lattice()
             attribute = fit_init.get("quads_attr") or "PolynomB"
             attribute_index = int(fit_init.get("quads_attr_index", 1))
 
@@ -728,7 +803,9 @@ class ResultsLoader:
                 return float(raw[attribute_index]) if raw.ndim else float(raw)
 
             if individuals:
-                identities = [{"name": str(getattr(ring[o], "FamName", o)), "ordinal": o, "members": [o]} for o in ordinals]
+                identities = [{"name": str(getattr(ring[o], "FamName", o)),
+                               "device": str(getattr(ring[o], "Device", "") or "") or None,
+                               "ordinal": o, "members": [o]} for o in ordinals]
                 if baseline is None and len(ordinals) == values.size:
                     baseline = np.asarray([strength(o) for o in ordinals], dtype=float)
             else:
@@ -739,7 +816,7 @@ class ResultsLoader:
                     if match is None:
                         match = [family, []]; groups.append(match)
                     match[1].append(ordinal)
-                identities = [{"name": family, "ordinal": None, "members": members} for family, members in groups]
+                identities = [{"name": family, "device": None, "ordinal": None, "members": members} for family, members in groups]
                 if baseline is None and len(groups) == values.size:
                     baseline = np.asarray([strength(members[0]) for _family, members in groups], dtype=float)
         except Exception:
@@ -747,12 +824,13 @@ class ResultsLoader:
 
         rows = []
         for index, fitted in enumerate(values):
-            identity = identities[index] if index < len(identities) else {"name": None, "ordinal": None, "members": []}
+            identity = identities[index] if index < len(identities) else {"name": None, "device": None, "ordinal": None, "members": []}
             initial = float(baseline[index]) if baseline is not None and index < baseline.size else None
             delta = None if initial is None else float(fitted - initial)
             relative = None if delta is None or initial == 0 else float(100.0 * delta / initial)
             rows.append({
-                "index": index, "name": identity["name"], "lattice_ordinal": identity["ordinal"],
+                "index": index, "name": identity["name"], "at_device": identity.get("device"),
+                "lattice_ordinal": identity["ordinal"],
                 "member_ordinals": list(identity["members"]), "initial": initial,
                 "fitted": float(fitted), "delta_k": delta, "relative_percent": relative,
                 "unit": block.unit, "mode": "individual" if individuals else "family",
@@ -767,7 +845,7 @@ class ResultsLoader:
         try:
             import at
             import numpy as np
-            initial = at.load_lattice(self._resolve_reference(self.request["lattice_path"])); final = at.load_lattice(self.fitted_lattice_path)
+            initial = self._load_reference_lattice(); final = at.load_lattice(self.fitted_lattice_path)
             ordinals = self.request.get("backend_mapping", {}).get("MachineElements", {}).get("normal_quadrupole_ords") or list(np.asarray(at.get_refpts(initial, at.elements.Quadrupole), dtype=int))
             initial_k = np.asarray([initial[int(i)].PolynomB[1] for i in ordinals]); fitted_k = np.asarray([final[int(i)].PolynomB[1] for i in ordinals])
             delta = initial_k - fitted_k; relative = np.divide(100 * delta, initial_k, out=np.full_like(delta, np.nan), where=initial_k != 0)
@@ -865,9 +943,7 @@ class ResultsLoader:
         if not lattice_path:
             return None
         try:
-            import at
-
-            ring = at.load_lattice(self._resolve_reference(lattice_path))
+            ring = self._load_reference_lattice(lattice_path)
             values = []
             for ordinal in ordinals:
                 value = getattr(ring[int(ordinal)], attribute)
@@ -908,10 +984,78 @@ class ResultsLoader:
                 data["display_quantity"] = str(_scalar_value(
                     persisted.get("dispersion_display_quantity"), "physical_dispersion"
                 ))
+                physical = self._notebook_physical_dispersion_data(data, persisted)
+                if physical is not None:
+                    data["physical"] = physical
                 self._cache["dispersion_data"] = data
                 return data
-        self._cache["dispersion_data"] = self._legacy_dispersion_diagnostic()
+        legacy = self._legacy_dispersion_diagnostic()
+        if legacy is not None:
+            physical = self._notebook_physical_dispersion_data(legacy, persisted)
+            if physical is not None:
+                legacy["physical"] = physical
+        self._cache["dispersion_data"] = legacy
         return self._cache["dispersion_data"]
+
+    def _notebook_physical_dispersion_data(self, response, persisted):
+        """Return notebook-compatible measured/reference/fitted D arrays.
+
+        This is a results diagnostic only. The RF-response arrays supplied to
+        the LOCO objective are neither replaced nor rescaled.
+        """
+        import numpy as np
+
+        try:
+            import at
+
+            reference_path = self._resolve_reference(self.request.get("lattice_path", ""))
+            fitted_path = self.fitted_lattice_path
+            if reference_path is None or not fitted_path.exists():
+                return None
+            reference = self._load_reference_lattice(reference_path)
+            fitted = at.load_lattice(fitted_path)
+            if getattr(reference, "is_6d", False): reference.disable_6d()
+            if getattr(fitted, "is_6d", False): fitted.disable_6d()
+
+            ords = persisted.get("dispersion_bpm_ords")
+            if ords is None:
+                mapping = self.request.get("backend_mapping", {})
+                machine = mapping.get("MachineElements", {})
+                rm = mapping.get("RMConfig", {})
+                ords = list(machine.get("bpm_ords") or rm.get("bpm_ords") or [])
+                bad = set(mapping.get("BadBPMPositions") or [])
+                ords = [value for index, value in enumerate(ords) if index not in bad]
+            ords = np.asarray(ords, dtype=np.uint32).ravel()
+            if not len(ords): return None
+
+            mapping = self.request.get("backend_mapping", {})
+            rm = mapping.get("RMConfig", {})
+            rf_step = _scalar_value(persisted.get("dispersion_rf_step_hz"), rm.get("rfStep"))
+            cavities = np.asarray(at.get_refpts(reference, at.elements.RFCavity), dtype=int)
+            if not len(cavities): return None
+            frequencies = np.asarray([float(reference[index].Frequency) for index in cavities], dtype=float)
+            if not np.isfinite(frequencies).all() or not np.allclose(frequencies, frequencies[0], rtol=1e-12, atol=1e-6):
+                return None
+            rf_frequency = float(frequencies[0])
+            at_slip = float(reference.get_slip_factor())
+            initial = np.asarray(reference.get_optics(refpts=ords)[2].dispersion, dtype=float)
+            final = np.asarray(fitted.get_optics(refpts=ords)[2].dispersion, dtype=float)
+            if initial.shape[0] != len(response["x"]["measured"]) or final.shape[0] != len(ords):
+                return None
+            return {
+                "x": {"measured": notebook_physical_dispersion(response["x"]["measured"], at_slip_factor=at_slip, rf_frequency_hz=rf_frequency, signed_rf_step_hz=float(rf_step)),
+                      "initial": initial[:, 0], "fitted": final[:, 0]},
+                "y": {"measured": notebook_physical_dispersion(response["y"]["measured"], at_slip_factor=at_slip, rf_frequency_hz=rf_frequency, signed_rf_step_hz=float(rf_step)),
+                      "initial": initial[:, 2], "fitted": final[:, 2]},
+                "at_slip_factor": at_slip,
+                "rf_momentum_coefficient": -at_slip,
+                "rf_frequency_hz": rf_frequency,
+                "signed_rf_step_hz": float(rf_step),
+                "definition": "D = RF orbit difference × eta_AT × f_RF / signed RF step",
+                "residual_definition": "measured physical dispersion minus model physical dispersion",
+            }
+        except (OSError, ValueError, TypeError, IndexError, AttributeError):
+            return None
 
     @property
     def dispersion_unavailable_reason(self) -> str | None:
@@ -928,9 +1072,9 @@ class ResultsLoader:
         for plane, values in (self.dispersion_data or {}).items():
             if plane not in {"x", "y"}: continue
             measured = np.asarray(values["measured"], dtype=float)
-            # Results convention requested by the GUI: model minus measurement.
-            before = np.asarray(values["initial"], dtype=float) - measured
-            after = np.asarray(values["fitted"], dtype=float) - measured
+            # Case C Results convention: measurement minus the selected model state.
+            before = measured - np.asarray(values["initial"], dtype=float)
+            after = measured - np.asarray(values["fitted"], dtype=float)
             def metrics(residual):
                 finite = residual[np.isfinite(residual)]
                 return {"rms": float(np.sqrt(np.mean(finite**2))), "mean": float(np.mean(finite)),
@@ -970,6 +1114,8 @@ class ResultsLoader:
             return None
         options = (self.request.get("measurement_options") or {}).get("dispersion", {})
         names = options.get("datasets", {})
+        if not isinstance(names, dict):
+            names = {}
         eta_x = self._load_vector_reference(dispersion_file, dataset_names=(str(names.get("horizontal") or "measured_eta_x"), "eta_x"))
         eta_y = self._load_vector_reference(dispersion_file, dataset_names=(str(names.get("vertical") or "measured_eta_y"), "eta_y"), fallback_index=1)
         if eta_x is None or eta_y is None:
@@ -991,7 +1137,7 @@ class ResultsLoader:
         try:
             import at
             from pyLOCO.config import get_mcf
-            reference = at.load_lattice(reference_path)
+            reference = self._load_reference_lattice(reference_path)
             fitted = at.load_lattice(fitted_path)
 
             # The PETRA III family-LOCO configuration is explicitly 4D
@@ -1067,7 +1213,7 @@ class ResultsLoader:
         try:
             import at
             import numpy as np
-            ref_ring, fit_ring = at.load_lattice(reference), at.load_lattice(fitted)
+            ref_ring, fit_ring = self._load_reference_lattice(reference), at.load_lattice(fitted)
             if len(ref_ring) != len(fit_ring):
                 return None
             refpts = np.arange(len(ref_ring), dtype=np.uint32)
@@ -1121,10 +1267,11 @@ class ResultsLoader:
     @property
     def svd_metadata(self) -> dict[str, Any]:
         config = self.options
-        spectrum = self._npz_value("singular_values")
+        spectrum = self._npz_value("singular_values", final_run_artifact=True)
         return {
             "method": config.get("svd_selection_method"), "threshold": config.get("svd_threshold"),
             "rank": config.get("cut_"), "spectrum": spectrum,
+            "spectrum_source": self._cache.get("npz-source:singular_values"),
             "measurement_values": int(self.fitted_orm.size) if self.fitted_orm is not None else None,
             "fitted_dofs": self.fitted_parameter_count,
         }
@@ -1172,13 +1319,108 @@ class ResultsLoader:
             self._cache["measured_orm"] = self._load_measured_orm()
         return self._cache["measured_orm"]
 
+    def orm_comparison_inputs(self):
+        """Return provenance-checked corrector ORM matrices for the selected state.
+
+        FIT artifacts may append one RF-response column to the model matrix.
+        This method removes that column only when the saved request proves that
+        dispersion was enabled and the remaining column count exactly matches
+        the recorded ordered H/V corrector selections.  Measurement exclusions
+        are replayed from the saved run request; no positional guessing or
+        shape-only truncation is allowed.
+        """
+        import numpy as np
+
+        mapping = self.request.get("backend_mapping", {})
+        machine = mapping.get("MachineElements", {})
+        rm = mapping.get("RMConfig", {})
+        h_ords = list(machine.get("horizontal_corrector_ords") or [])
+        v_ords = list(machine.get("vertical_corrector_ords") or [])
+        if not (h_ords or v_ords):
+            cm_ords = rm.get("cm_ords") or []
+            if len(cm_ords) == 2:
+                h_ords, v_ords = list(cm_ords[0]), list(cm_ords[1])
+        bpm_ords = list(machine.get("bpm_ords") or rm.get("bpm_ords") or [])
+        if not bpm_ords or not h_ords or not v_ords:
+            raise ValueError(
+                "The selected FIT result does not record the ordered BPM and H/V corrector "
+                "selections required for a reliable ORM comparison."
+            )
+
+        raw = self._load_measured_orm_raw()
+        if raw is None:
+            reason = self._unavailable.get("measured_orm", "the recorded ORM measurement is unavailable")
+            raise ValueError(f"Cannot load the measured ORM used by this FIT result: {reason}.")
+        bad = [int(value) for value in mapping.get("BadBPMPositions", [])]
+        if len(set(bad)) != len(bad) or any(value < 0 or value >= len(bpm_ords) for value in bad):
+            raise ValueError("The saved BPM exclusions are invalid for the recorded BPM inventory.")
+        expected_raw = (2 * len(bpm_ords), len(h_ords) + len(v_ords))
+        if tuple(raw.shape) != expected_raw:
+            raise ValueError(
+                f"The saved measured ORM has shape {tuple(raw.shape)}, but the recorded ordered "
+                f"device inventory requires {expected_raw}. The comparison was not opened."
+            )
+        rows = bad + [len(bpm_ords) + value for value in bad]
+        measured = np.delete(raw, rows, axis=0) if rows else raw.copy()
+
+        excluded = mapping.get("ExcludedCorrectorPositions", {})
+        h_bad = [int(value) for value in excluded.get("horizontal", [])]
+        v_bad = [int(value) for value in excluded.get("vertical", [])]
+        if (len(set(h_bad)) != len(h_bad) or len(set(v_bad)) != len(v_bad)
+                or any(value < 0 or value >= len(h_ords) for value in h_bad)
+                or any(value < 0 or value >= len(v_ords) for value in v_bad)):
+            raise ValueError("The saved corrector exclusions are invalid for the recorded corrector inventory.")
+        columns = h_bad + [len(h_ords) + value for value in v_bad]
+        if columns:
+            measured = np.delete(measured, columns, axis=1)
+        effective_h = [value for index, value in enumerate(h_ords) if index not in set(h_bad)]
+        effective_v = [value for index, value in enumerate(v_ords) if index not in set(v_bad)]
+
+        model = self.fitted_orm
+        if model is None:
+            raise ValueError("The selected fitted stage and iteration do not contain a model ORM artifact.")
+        model = np.asarray(model, dtype=float)
+        expected = (2 * (len(bpm_ords) - len(bad)), len(effective_h) + len(effective_v))
+        include_rf = bool(mapping.get("LOCOOptions", {}).get("includeDispersion", rm.get("includeDispersion", False)))
+        if model.shape == (expected[0], expected[1] + 1) and include_rf:
+            model = model[:, :expected[1]]
+        elif tuple(model.shape) != expected:
+            raise ValueError(
+                f"The selected model artifact has shape {tuple(model.shape)}; the recorded ordered "
+                f"device selections and exclusions require {expected} corrector ORM values"
+                + (" plus one separately handled RF-response column." if include_rf else ".")
+            )
+        if tuple(measured.shape) != expected or tuple(model.shape) != expected:
+            raise ValueError(
+                f"Prepared measured/model ORM shapes are {tuple(measured.shape)} and {tuple(model.shape)}, "
+                f"but the saved run requires {expected}."
+            )
+        context = {
+            "stage_name": str(self.summary.get("stage_name") or self.request.get("project_name") or "FIT stage"),
+            "iteration": self.iteration,
+            "result_dir": str(self.result_dir),
+            "bpm_count": len(bpm_ords) - len(bad),
+            "horizontal_correctors": len(effective_h),
+            "vertical_correctors": len(effective_v),
+            "rf_column_separated": include_rf,
+        }
+        return measured, model, context
+
     @property
     def initial_orm(self):
         if "initial_orm" not in self._cache:
-            self._cache["initial_orm"] = self._hdf5_matrix(
+            combined = self._hdf5_matrix(
                 self.result_dir / "model_orm_initial.h5", "response_matrix", "initial_orm"
             )
+            self._cache["initial_orm_combined"] = combined
+            self._cache["initial_orm"] = self._model_corrector_orm(combined, "initial_orm")
         return self._cache["initial_orm"]
+
+    @property
+    def initial_rf_response(self):
+        """Return the separately identified initial RF-response column, if saved."""
+        _ = self.initial_orm
+        return self._cache.get("initial_rf_response")
 
     @property
     def fitted_orm(self):
@@ -1210,15 +1452,70 @@ class ResultsLoader:
                     if matrix is not None:
                         break
 
-            self._cache["fitted_orm"] = matrix
+            self._cache["fitted_orm_combined"] = matrix
+            self._cache["fitted_orm"] = self._model_corrector_orm(matrix, "fitted_orm")
 
-            if matrix is None:
+            if self._cache["fitted_orm"] is None and matrix is None:
                 self._unavailable["fitted_orm"] = (
                     "No persisted fitted ORM matrix was found in either "
                     "the native GUI or measured-machine result format."
                 )
 
         return self._cache["fitted_orm"]
+
+    @property
+    def fitted_rf_response(self):
+        """Return the separately identified fitted RF-response column, if saved."""
+        _ = self.fitted_orm
+        return self._cache.get("fitted_rf_response")
+
+    def _model_corrector_orm(self, matrix, quantity: str):
+        """Separate a saved RF column only when run metadata proves its role."""
+        if matrix is None:
+            return None
+        import numpy as np
+
+        matrix = np.asarray(matrix, dtype=float)
+        mapping = self.request.get("backend_mapping", {})
+        machine = mapping.get("MachineElements", {})
+        rm = mapping.get("RMConfig", {})
+        h_ords = list(machine.get("horizontal_corrector_ords") or [])
+        v_ords = list(machine.get("vertical_corrector_ords") or [])
+        if not (h_ords or v_ords):
+            cm_ords = rm.get("cm_ords") or []
+            if len(cm_ords) == 2:
+                h_ords, v_ords = list(cm_ords[0]), list(cm_ords[1])
+
+        # Old/minimal results without ordered device metadata remain readable,
+        # but are never shape-trimmed by inference.
+        if not h_ords and not v_ords:
+            return matrix
+
+        excluded = mapping.get("ExcludedCorrectorPositions", {})
+        h_bad = [int(value) for value in excluded.get("horizontal", [])]
+        v_bad = [int(value) for value in excluded.get("vertical", [])]
+        if (len(set(h_bad)) != len(h_bad) or len(set(v_bad)) != len(v_bad)
+                or any(value < 0 or value >= len(h_ords) for value in h_bad)
+                or any(value < 0 or value >= len(v_ords) for value in v_bad)):
+            self._unavailable[quantity] = "Saved corrector exclusions are invalid for the recorded ordered inventory."
+            return None
+
+        corrector_columns = len(h_ords) + len(v_ords) - len(h_bad) - len(v_bad)
+        include_rf = bool(mapping.get("LOCOOptions", {}).get(
+            "includeDispersion", rm.get("includeDispersion", False)
+        ))
+        if matrix.shape[1] == corrector_columns:
+            return matrix
+        if include_rf and matrix.shape[1] == corrector_columns + 1:
+            self._cache[f"{quantity.removesuffix('_orm')}_rf_response"] = matrix[:, -1].copy()
+            return matrix[:, :corrector_columns].copy()
+
+        self._unavailable[quantity] = (
+            f"Saved model matrix has {matrix.shape[1]} columns, while the recorded ordered "
+            f"device inventory requires {corrector_columns} corrector columns"
+            + (" and one RF-response column." if include_rf else ".")
+        )
+        return None
 
     @property
     def residual_before(self):
@@ -1284,19 +1581,53 @@ class ResultsLoader:
             result.append(("info", "Dispersion was not included in this fit"))
         return result
 
-    def _npz_value(self, name: str):
-        key = f"npz:{name}"
+    def _is_completed_final_iteration(self) -> bool:
+        """Return true only for the manifest-declared final completed state."""
+        if self.iteration is None:
+            return True
+        path = self.result_dir / "iterations" / "manifest.json"
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            iterations = [
+                int(entry["iteration"])
+                for entry in manifest.get("iterations", [])
+                if isinstance(entry, dict) and isinstance(entry.get("iteration"), int)
+            ]
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+        return bool(
+            manifest.get("run_status") == "completed"
+            and iterations
+            and int(self.iteration) == max(iterations)
+        )
+
+    def _npz_value(self, name: str, *, final_run_artifact: bool = False):
+        key = f"npz:{name}:final={int(final_run_artifact)}"
         if key not in self._cache:
-            path = self.artifact_dir / "loco_results.npz"
-            if not path.exists():
-                self._cache[key] = None
-            else:
+            root_path = self.result_dir / "loco_results.npz"
+            artifact_path = self.artifact_dir / "loco_results.npz"
+            paths = [artifact_path]
+            if final_run_artifact and self._is_completed_final_iteration():
+                # The final Jacobian spectrum is produced after the backend run
+                # and intentionally belongs to the run root.  Earlier
+                # iterations must never inherit it.
+                paths = [root_path]
+                if artifact_path != root_path:
+                    paths.append(artifact_path)
+            self._cache[key] = None
+            self._cache[f"npz-source:{name}"] = None
+            for path in paths:
+                if not path.exists():
+                    continue
                 try:
                     import numpy as np
                     with np.load(path, allow_pickle=True) as archive:
-                        self._cache[key] = np.array(archive[name]) if name in archive else None
+                        if name in archive:
+                            self._cache[key] = np.array(archive[name])
+                            self._cache[f"npz-source:{name}"] = str(path)
+                            break
                 except (OSError, ValueError, KeyError):
-                    self._cache[key] = None
+                    continue
         return self._cache[key]
 
     def _combined_limits(self, matrices, *, symmetric: bool):
@@ -1344,7 +1675,7 @@ class ResultsLoader:
                 self._unavailable[quantity] = f"could not read {path}: {exc}"
             return None
 
-    def _load_measured_orm(self):
+    def _load_measured_orm_raw(self):
         value = self.request.get("measurements", {}).get("orm")
         if not value:
             self._unavailable["measured_orm"] = "run_request.json does not reference an ORM measurement file"
@@ -1374,13 +1705,44 @@ class ResultsLoader:
         except (OSError, ValueError, KeyError, ImportError) as exc:
             self._unavailable["measured_orm"] = f"could not load referenced measurement file {path}: {exc}"
             return None
-        target = self.fitted_orm
-        if target is None:
-            target = self.initial_orm
-        if matrix is not None and target is not None and matrix.shape != target.shape:
-            bad = self.request.get("backend_mapping", {}).get("BadBPMPositions") or []
-            if bad and matrix.shape[0] - 2 * len(bad) == target.shape[0] and matrix.shape[1] == target.shape[1]:
-                matrix = np.delete(matrix, list(bad) + [matrix.shape[0] // 2 + int(i) for i in bad], axis=0)
+        return matrix
+
+    def _load_measured_orm(self):
+        import numpy as np
+
+        matrix = self._load_measured_orm_raw()
+        if matrix is None:
+            return None
+        mapping = self.request.get("backend_mapping", {})
+        machine = mapping.get("MachineElements", {})
+        bpm_ords = list(machine.get("bpm_ords") or mapping.get("RMConfig", {}).get("bpm_ords") or [])
+        h_ords = list(machine.get("horizontal_corrector_ords") or [])
+        v_ords = list(machine.get("vertical_corrector_ords") or [])
+        if bpm_ords and h_ords and v_ords:
+            expected_raw = (2 * len(bpm_ords), len(h_ords) + len(v_ords))
+            if tuple(matrix.shape) != expected_raw:
+                self._unavailable["measured_orm"] = (
+                    f"Saved measured ORM has shape {tuple(matrix.shape)}, while the recorded "
+                    f"ordered device inventory requires {expected_raw}."
+                )
+                return None
+            bad = [int(value) for value in mapping.get("BadBPMPositions", [])]
+            excluded = mapping.get("ExcludedCorrectorPositions", {})
+            h_bad = [int(value) for value in excluded.get("horizontal", [])]
+            v_bad = [int(value) for value in excluded.get("vertical", [])]
+            if (len(set(bad)) != len(bad)
+                    or any(value < 0 or value >= len(bpm_ords) for value in bad)
+                    or len(set(h_bad)) != len(h_bad) or len(set(v_bad)) != len(v_bad)
+                    or any(value < 0 or value >= len(h_ords) for value in h_bad)
+                    or any(value < 0 or value >= len(v_ords) for value in v_bad)):
+                self._unavailable["measured_orm"] = "Saved BPM/corrector exclusions are invalid for the recorded ordered inventory."
+                return None
+            rows = bad + [len(bpm_ords) + value for value in bad]
+            columns = h_bad + [len(h_ords) + value for value in v_bad]
+            if rows:
+                matrix = np.delete(matrix, rows, axis=0)
+            if columns:
+                matrix = np.delete(matrix, columns, axis=1)
         return matrix
 
     def _resolve_reference(self, value: str | Path) -> Path | None:

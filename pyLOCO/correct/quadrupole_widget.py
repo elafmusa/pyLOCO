@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QComboBox, QLabel,
-                              QPushButton, QFileDialog, QMessageBox, QSpinBox,
+                              QPushButton, QMessageBox, QSpinBox,
                               QTableWidget, QTableWidgetItem, QHeaderView)
+from pyLOCO.gui.file_dialogs import FileDialog as QFileDialog
 from pyLOCO.control_system.pysc_profiles import available_pysc_profiles
 from .quadrupole_transaction import SimulationConnection, QuadrupoleTransaction
 from .multi_quadrupole_transaction import MultiQuadrupoleTransaction
@@ -94,6 +95,7 @@ class QuadrupoleWidget(QWidget):
         self.owner.registry.pysc_profile = self.profile.currentData()
         self.transaction = QuadrupoleTransaction(connection, Path.cwd() / 'correction-transactions')
         self.owner._read_current_pysc_k(strict=False)
+        self.owner.reconcile_correction_history(connection)
 
     def load_request(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Load explicit B2 request', '', 'JSON (*.json)')

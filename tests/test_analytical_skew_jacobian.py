@@ -340,6 +340,7 @@ def test_two_iteration_skew_loco_numerical_vs_analytical(tmp_path):
             fit_list=("skew_quads",),
             skew_individuals=True,
             remove_coupling_=False,
+            orm_terms="off_diagonal",
             auto_correct_delta=False,
             fixedpathlength=False,
             fit_cfg=FitInitConfig(fit_list=("skew_quads",)),

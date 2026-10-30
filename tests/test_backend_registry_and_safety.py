@@ -26,9 +26,9 @@ def adapter(interface=None):
     return AbstractInterfaceAdapter(interface or FakeInterface(),("B1",),("H1",),())
 
 
-def test_registry_has_exact_three_persistent_badges(tmp_path):
+def test_registry_has_persistent_badges(tmp_path):
     descriptors=InterfaceRegistry(repository_root=Path.cwd()).descriptors()
-    assert [(d.key,d.badge) for d in descriptors]==[("mock","MOCK • READ ONLY"),("pysc","DEMO • pySC SERVER"),("petra","LIVE • PETRA III DOOCS")]
+    assert [(d.key,d.badge) for d in descriptors]==[("mock","MOCK • READ ONLY"),("pysc","DEMO • pySC SERVER"),("petra","LIVE • PETRA III DOOCS"),("pyaml","pyAML • READ ONLY")]
 
 
 def test_pysc_registry_uses_its_own_generated_catalog(tmp_path):
@@ -116,6 +116,43 @@ def test_automatic_dispersion_restores_rf_on_success_failure_and_cancel():
     cancel=Event(); cancel.set()
     with pytest.raises(AcquisitionCancelled):
         AutomaticDispersionAcquirer(item,bpm).acquire(1000,2,0,cancel_event=cancel,sleeper=lambda _:None)
+    assert interface.rf==500_000_000.
+
+
+def test_automatic_dispersion_waits_for_rf_readback_before_recording_orbit():
+    class DelayedReadbackInterface(FakeInterface):
+        def __init__(self):
+            super().__init__(); self.visible_rf=self.rf; self.pending_reads=0
+        def get_orbit(self):
+            offset=self.visible_rf-500_000_000.
+            return np.array([offset*2e-9]),np.array([-offset*1e-9])
+        def get_rf_main_frequency(self):
+            if self.pending_reads:
+                self.pending_reads-=1
+                if not self.pending_reads:self.visible_rf=self.rf
+            return self.visible_rf
+        def set_rf_main_frequency(self,value):
+            self.rf=value; self.pending_reads=2
+
+    interface=DelayedReadbackInterface(); events=[]
+    result=AutomaticDispersionAcquirer(adapter(interface),(BpmDevice("B1","BPM:B1:X","BPM:B1:Y"),)).acquire(
+        1000,2,0,direction="bipolar",verify_restored_orbit=False,
+        sleeper=lambda _:None,status=lambda phase,details:events.append((phase,details)),
+    )
+    assert result.state("positive").actual_rf_hz==500_001_000.
+    assert result.state("negative").actual_rf_hz==499_999_000.
+    assert [details["label"] for phase,details in events if phase=="rf_readback"]==["reference","positive","negative"]
+
+
+def test_automatic_dispersion_rejects_rf_state_when_readback_never_changes():
+    class StaleReadbackInterface(FakeInterface):
+        def get_rf_main_frequency(self): return 500_000_000.
+
+    interface=StaleReadbackInterface()
+    with pytest.raises(RuntimeError,match="RF readback did not reach the requested positive state"):
+        AutomaticDispersionAcquirer(adapter(interface),(BpmDevice("B1","BPM:B1:X","BPM:B1:Y"),)).acquire(
+            1000,2,0,direction="bipolar",verify_restored_orbit=False,sleeper=lambda _:None,
+        )
     assert interface.rf==500_000_000.
 
 
