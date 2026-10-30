@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from pyLOCO.gui.backend import LocoRunRequest
 from pyLOCO.gui.fit_workflow import FitRecipe, FitRunSession, execute_workflow
@@ -20,6 +21,7 @@ SPEC = importlib.util.spec_from_file_location("ebs_mdt_multistage", EXAMPLE / "r
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
+MDT_INPUTS_AVAILABLE = not ProjectMetadata.load(PROJECT).validation_messages()
 
 
 def test_project_and_four_stage_recipe_use_current_mdt_inventory():
@@ -54,6 +56,7 @@ def test_project_and_four_stage_recipe_use_current_mdt_inventory():
     assert "/Users/" not in PROJECT.read_text(encoding="utf-8")
 
 
+@pytest.mark.skipif(not MDT_INPUTS_AVAILABLE, reason="external approved EBS MDT scientific input bundle is unavailable")
 def test_scientific_preflight_validates_exact_saved_payload():
     project = ProjectMetadata.load(PROJECT)
     recipe = FitRecipe.load(RECIPE)
@@ -106,6 +109,7 @@ def _write_mock_stage(root: Path, stage_number: int) -> SimpleNamespace:
     return SimpleNamespace(results_dir=str(root))
 
 
+@pytest.mark.skipif(not MDT_INPUTS_AVAILABLE, reason="external approved EBS MDT scientific input bundle is unavailable")
 def test_continuation_persistence_reopening_and_comparison(tmp_path, monkeypatch):
     project = ProjectMetadata.load(PROJECT)
     recipe = FitRecipe.load(RECIPE)

@@ -416,6 +416,10 @@ class MeasureMainWindow(QMainWindow):
     def __init__(self, *, devices: Sequence[BpmDevice] | None = None, adapter=None,
                  horizontal_correctors=None, vertical_correctors=None) -> None:
         super().__init__()
+        # Measure owns many Matplotlib/Qt resources and is opened as a fresh
+        # workflow window. Closing it must release those resources instead of
+        # leaving hidden top-level widgets registered with QApplication.
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle("pyLOCO Measure"); self.setWindowIcon(application_icon("measure"))
         self.resize(1200, 800); self.setMinimumSize(900, 650)
         if devices is None and adapter is not None and hasattr(adapter, "list_devices"):
@@ -1919,14 +1923,18 @@ class MeasureMainWindow(QMainWindow):
         result_tab_bar.setUsesScrollButtons(False)
         result_tab_bar.setElideMode(Qt.ElideRight)
         self.results_tabs.currentChanged.connect(self._result_plot_tab_changed)
-        self.x_plot=PlotCanvas(minimum_height=260); self.y_plot=PlotCanvas(minimum_height=260)
-        self.raw_x_plot=PlotCanvas(minimum_height=260); self.raw_y_plot=PlotCanvas(minimum_height=260)
-        self.mean_x_plot=PlotCanvas(minimum_height=260); self.mean_y_plot=PlotCanvas(minimum_height=260)
-        self.rf_shift_x_plot=PlotCanvas(minimum_height=260); self.rf_shift_y_plot=PlotCanvas(minimum_height=260)
-        self.dispersion_model_x_plot=PlotCanvas(minimum_height=260); self.dispersion_model_y_plot=PlotCanvas(minimum_height=260)
-        self.dispersion_residual_x_plot=PlotCanvas(minimum_height=260); self.dispersion_residual_y_plot=PlotCanvas(minimum_height=260)
-        self.orm_vv_plot=PlotCanvas(minimum_height=260); self.orm_column_plot=PlotCanvas(minimum_height=260); self.orm_kick_plot=PlotCanvas(minimum_height=260)
-        self.orm_model_plot=PlotCanvas(minimum_height=260); self.orm_difference_plot=PlotCanvas(minimum_height=260)
+        # Own every reusable canvas from construction time. Canvases for
+        # inactive measurement modes are not inserted into a tab yet; without
+        # this parent they become top-level widgets and survive closed Measure
+        # windows, making application-wide theme updates progressively slower.
+        self.x_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.y_plot=PlotCanvas(self.results_tabs,minimum_height=260)
+        self.raw_x_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.raw_y_plot=PlotCanvas(self.results_tabs,minimum_height=260)
+        self.mean_x_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.mean_y_plot=PlotCanvas(self.results_tabs,minimum_height=260)
+        self.rf_shift_x_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.rf_shift_y_plot=PlotCanvas(self.results_tabs,minimum_height=260)
+        self.dispersion_model_x_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.dispersion_model_y_plot=PlotCanvas(self.results_tabs,minimum_height=260)
+        self.dispersion_residual_x_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.dispersion_residual_y_plot=PlotCanvas(self.results_tabs,minimum_height=260)
+        self.orm_vv_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.orm_column_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.orm_kick_plot=PlotCanvas(self.results_tabs,minimum_height=260)
+        self.orm_model_plot=PlotCanvas(self.results_tabs,minimum_height=260); self.orm_difference_plot=PlotCanvas(self.results_tabs,minimum_height=260)
         self.results_tabs.addTab(self.x_plot,"Horizontal BPM noise"); self.results_tabs.addTab(self.y_plot,"Vertical BPM noise"); self.results_tabs.addTab(self.mean_x_plot,"Mean horizontal orbit"); self.results_tabs.addTab(self.mean_y_plot,"Mean vertical orbit"); layout.addWidget(self.results_tabs)
         self._bpm_plot_state={}; self._mean_plot_state={}; self._dispersion_plot_state={}; self._orm_plot_state={}; self._orm_column_state=None; self._orm_selected_info=""; self._selected_bpm_index=None; self._manual_bad_bpm_indices=set(); self._threshold_flagged_bpm_indices=set(); self._pinned_bpm_indices=set(); self._bpm_review_notes={}; self._saved_bpm_review_notes={}; self._bpm_review_statuses={}; self._bpm_review_dirty=False; self._loading_bpm_review_panel=False
         for plane,canvas in (("x",self.x_plot),("y",self.y_plot)):
@@ -4946,11 +4954,12 @@ class MeasureMainWindow(QMainWindow):
         return MeasureProject(measurement_type=self.measurement_type.currentData(),measurement_name=self.measurement_name.text(),measurement_label=self.measurement_label.text(),operator_comments=self.comments.toPlainText(),adapter=self.adapter_combo.currentText(),pysc_profile=self.pysc_profile_combo.currentData(),bpm_selection_method=self.selection_method.currentData(),bpm_manual=self.manual_input.text(),bpm_names_file=self.names_file.text(),excluded_bpm_positions=self.bpm_exclusions.text(),hcor_selection_method=h["method"].currentData(),hcor_manual=h["manual"].text(),hcor_names_file=h["file"].text(),vcor_selection_method=v["method"].currentData(),vcor_manual=v["manual"].text(),vcor_names_file=v["file"].text(),excluded_hcor_positions=h["exclusion"].text(),excluded_vcor_positions=v["exclusion"].text(),measurement_selections=self._selection_states,readings=self.readings.value(),bpm_noise_ddof=int(self.bpm_noise_convention.currentData()),delay_seconds=self.delay.value(),settling_delay_seconds=active_settling,verify_restored_orbit=self.verify_restored_orbit.isChecked(),rf_control_mode=self.rf_control_mode.currentData(),nominal_rf_hz=self._nominal_rf_value(),nominal_rf_source="manual",rf_step_hz=self.rf_step.value(),rf_restoration_tolerance_hz=self.rf_restoration_tolerance.value(),dispersion_direction=self.dispersion_direction.currentData(),orm_direction=self.orm_direction.currentData(),orm_kick_mode=self.orm_kick_mode.currentData(),orm_horizontal_kick_rad=self.orm_hkick.value()*1e-6,orm_vertical_kick_rad=self.orm_vkick.value()*1e-6,orm_kick_file=self.orm_kick_file.text(),orm_scaled=False,reference_model_path=self.reference_model_path.text(),reference_model_source="automatic" if self.adapter_combo.currentData()=="pysc" else "user",reference_model_mat_variable=self.reference_model.mat_variable if self.reference_model is not None and self.reference_model.mat_variable else "",compare_with_reference_model=self.compare_reference.isChecked(),output_directory=self.output_directory.text(),theme=self.project.theme,metadata={**self.project.metadata,"machine_identity":identity,"profile":profile_meta,"orm_normalized_analysis":self.orm_normalized_analysis.isChecked(),"measurement_view_states":deepcopy(self._measurement_view_states),"active_workspace":workspace})
 
     def _load_project_widgets(self):
-        # Restore requested capabilities, never connection/write authorization.
-        # Test Connection still presents the target and requires confirmation.
+        # A saved project may describe the capabilities used previously, but
+        # reopening it must always start without a new machine-write request.
+        # Test Connection presents the target and requires fresh confirmation.
         saved_pyaml=self.project.metadata.get("pyaml_options", {})
-        for widget,value in ((self.pyaml_magnet_writes,bool(saved_pyaml.get("requested_magnet_writes",False))),(self.pyaml_rf_writes,bool(saved_pyaml.get("requested_rf_writes",False)))):
-            widget.blockSignals(True); widget.setChecked(value); widget.blockSignals(False)
+        for widget in (self.pyaml_magnet_writes,self.pyaml_rf_writes):
+            widget.blockSignals(True); widget.setChecked(False); widget.blockSignals(False)
         self.pyaml_orbit_correction.setChecked(bool(saved_pyaml.get("orbit_correction_enabled", False)))
         self.device_selection_reviewed.blockSignals(True); self.device_selection_reviewed.setChecked(bool(self.project.metadata.get("device_selection_reviewed",False))); self.device_selection_reviewed.blockSignals(False)
         self.pyaml_simulator_identity_status.setText("Project opened — Test connection to confirm pyAML capabilities and restoration evidence.")

@@ -77,6 +77,7 @@ def _modern_measurements(tmp_path, *, bpm_names=("B1", "B2"), h_names=("H1",),
                 handle.create_dataset(name, data=np.zeros(len(bpm_names)))
             if role == "dispersion":
                 handle.attrs["measured_eta_unit"] = "m"
+                handle.attrs["rf_step_hz"] = 200.0
                 handle.attrs["rf_bipolar_separation_hz"] = 200.0
             else:
                 metadata = handle.create_group("metadata")

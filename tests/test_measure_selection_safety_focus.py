@@ -11,6 +11,7 @@ from pyLOCO.measure.acquisition import AcquisitionCancelled, BpmDevice, Correcto
 from pyLOCO.measure.automatic import AutomaticDispersionAcquirer
 from pyLOCO.measure.main_window import MeasureMainWindow, MeasureScrollArea, _device_filter_terms, _device_matches_filter
 from pyLOCO.measure.project import load_measure_project, save_measure_project
+from pyLOCO.gui.results.plot_canvas import PlotCanvas
 
 
 @pytest.fixture(scope="module")
@@ -30,6 +31,14 @@ def test_measure_pages_expose_both_scrollbars_in_compact_windows(app):
     assert areas
     assert all(area.horizontalScrollBarPolicy()==Qt.ScrollBarAlwaysOn for area in areas)
     assert all(area.verticalScrollBarPolicy()==Qt.ScrollBarAlwaysOn for area in areas)
+    window.close()
+
+
+def test_inactive_measure_plots_are_owned_by_the_window(app):
+    window=_window()
+    assert window.testAttribute(Qt.WA_DeleteOnClose)
+    assert len(window.findChildren(PlotCanvas)) == 18
+    assert not any(isinstance(widget,PlotCanvas) for widget in app.topLevelWidgets())
     window.close()
 
 

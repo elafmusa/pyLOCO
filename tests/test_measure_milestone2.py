@@ -161,7 +161,7 @@ def test_saved_measurement_session_and_existing_importer(app, tmp_path):
     np.testing.assert_allclose(loaded["noise_x"], result.noise_x_m)
     window.tabs.setCurrentIndex(5); app.processEvents()
     assert window.review_status.text() == "✓ BPM noise saved — measurement session incomplete"
-    assert "<b>BPM noise</b>" in window.review_details.text() and "Present" in window.review_details.text()
+    assert "<b>BPM noise</b>" in window.review_details.text() and "File present · validated · result restored ✓" in window.review_details.text()
     assert "<b>Dispersion</b>" in window.review_details.text() and "<b>ORM</b>" in window.review_details.text()
     assert "Missing for FIT: orm, dispersion" in window.review_details.text()
     assert str(window.saved_measurement_path) in window.review_paths.text()
@@ -183,8 +183,8 @@ def test_review_page_reports_complete_automatic_session_without_extra_save_actio
     window=MeasureMainWindow(devices=devices,adapter=adapter)
     window.result=result; window.saved_measurement_path=tmp_path/"bpm_noise.h5"; window.saved_session_path=manifest
     window._refresh_review_page()
-    assert window.review_status.text()=="✓ Measurement session complete for FIT"
-    assert window.review_details.text().count("Present ✓")==3
+    assert window.review_status.text()=="Measurement files complete; review restoration and device mapping status"
+    assert window.review_details.text().count("File present · validation failed: not validated")==3
     assert "Complete for FIT" in window.review_details.text()
     assert str(manifest) in window.review_paths.text()
     assert window.review_open_button.text()=="Open in FIT"
@@ -393,7 +393,7 @@ def test_results_are_separate_and_workflow_completion_is_visible(app):
     assert window.summary_x.text().startswith("Horizontal:")
     assert window.summary_y.text().startswith("Vertical:")
     assert window.tabs.tabText(0).startswith("✓ ")
-    assert window.tabs.tabText(1).startswith("✓ ")
+    assert not window.tabs.tabText(1).startswith("✓ ")
     window.close()
 
 

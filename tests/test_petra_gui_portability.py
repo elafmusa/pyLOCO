@@ -209,13 +209,25 @@ def test_validated_petra_coupling_project_mapping_and_round_trip(tmp_path):
     base = ProjectMetadata.load(PROJECT_FILE)
     base_mapping = base.loco_config.to_backend_mapping()
     elements = mapping["MachineElements"]
-    assert {key: len(value) for key, value in elements.items()} == {
+    assert {key: len(elements[key]) for key in (
+        "bpm_ords", "horizontal_corrector_ords", "vertical_corrector_ords",
+        "normal_quadrupole_ords", "skew_quadrupole_ords", "cavity_ords",
+    )} == {
         "bpm_ords": 246,
         "horizontal_corrector_ords": 219,
         "vertical_corrector_ords": 194,
         "normal_quadrupole_ords": 398,
         "skew_quadrupole_ords": 16,
         "cavity_ords": 12,
+    }
+    assert {key: len(elements[key]) for key in (
+        "normal_quadrupole_groups", "skew_quadrupole_groups",
+        "quadrupole_tilt_ords", "quadrupole_tilt_groups",
+    )} == {
+        "normal_quadrupole_groups": 0,
+        "skew_quadrupole_groups": 0,
+        "quadrupole_tilt_ords": 398,
+        "quadrupole_tilt_groups": 0,
     }
     assert elements == base_mapping["MachineElements"]
     assert json_safe(mapping["RMConfig"]) == json_safe(base_mapping["RMConfig"])
@@ -238,7 +250,9 @@ def test_validated_petra_coupling_project_mapping_and_round_trip(tmp_path):
     assert mapping["BadBPMPositions"] == base_mapping["BadBPMPositions"]
     assert len(mapping["RMConfig"]["dkick"][0]) == 219
     assert len(mapping["RMConfig"]["dkick"][1]) == 194
-    assert mapping["RMConfig"]["rfStep"] == -3000.0
+    # Legacy projects store negative-minus-positive. Loading normalizes the
+    # bipolar separation to the canonical positive-minus-negative convention.
+    assert mapping["RMConfig"]["rfStep"] == 3000.0
     assert mapping["RMConfig"]["calculator"] == "Linear"
     assert mapping["RMConfig"]["coupling_orm"] is True
     options = mapping["LOCOOptions"]

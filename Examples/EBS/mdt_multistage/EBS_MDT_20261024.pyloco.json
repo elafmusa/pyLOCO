@@ -77537,7 +77537,7 @@
       "total": 1954
     },
     "reference_lattice": {
-      "path": "../../../../../Final pyLOCO things/ebs_pysc_pyaml/betamodel.mat",
+      "path": "../../../measurements/lattice/1b6744878147-betamodel.mat",
       "sha256": "1b674487814734f60f9d4d988e4061c630adeb0476fa7ff0fc7bdfabcb846419",
       "element_count": 4434
     },
