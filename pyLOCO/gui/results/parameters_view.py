@@ -31,7 +31,6 @@ class ParametersView(QWidget):
         self.summary = QLabel("No parameter results loaded.")
         self.summary.setWordWrap(True)
         self.comparison_help = QLabel(
-            "Compare with pyLOCO Correct using AT FamName, AT Device, or AT index (0-based). "
             "Fitted-vector position is only the row's position in the optimizer vector; it is not a lattice index."
         )
         self.comparison_help.setWordWrap(True); self.comparison_help.setObjectName("mappingHelpText")
