@@ -80,4 +80,3 @@ For a non-pySC2pyaml ESRF simulator, obtain from Simone: the exact active contro
 | Missing measurement file | `_save_result`, `pyLOCO/data_schema/measurement.py`, `pyLOCO/data_schema/session.py` |
 
 For external ESRF simulator problems, record the requested setpoint, the value returned by `get()`, a genuinely independent readback if exposed, timestamps, and BPM orbit timestamps. Do not infer external simulator behavior from the local pySC compatibility server.
-
