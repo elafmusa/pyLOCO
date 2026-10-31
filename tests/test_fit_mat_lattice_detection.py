@@ -22,7 +22,9 @@ def app():
 
 
 def _ring(at, count, prefix):
-    return at.Lattice([at.Drift(f"{prefix}{index}", 0.1) for index in range(count)], energy=6.0e9)
+    elements = [at.Drift(f"{prefix}{index}", 0.1) for index in range(count - 1)]
+    elements.append(at.RFCavity(f"{prefix}RF", 0.0, 3.0e6, 5.0e8, 992, 6.0e9))
+    return at.Lattice(elements, energy=6.0e9)
 
 
 def _multi_mat(tmp_path, variables):
@@ -108,6 +110,9 @@ def test_gui_auto_selects_unique_variable_and_displays_it(app, tmp_path, monkeyp
         lambda *_args, **_kwargs: (str(path), ""),
     )
     monkeypatch.setattr(MainWindow, "_refresh_reference_model_info", lambda _self: None)
+    # This test covers MAT-variable selection; RF extraction and optics
+    # validation have dedicated reference-model tests with physical rings.
+    monkeypatch.setattr(MainWindow, "_apply_reference_lattice_rf", lambda _self, _project: None)
     window = MainWindow(); window.select_lattice()
     assert window.project.lattice.mat_variable == "unique_model"
     assert window.project.lattice.element_count == 3
@@ -130,6 +135,7 @@ def test_gui_prompts_for_multiple_variables_and_can_change_selection(app, tmp_pa
         lambda *_args, **_kwargs: next(choices),
     )
     monkeypatch.setattr(MainWindow, "_refresh_reference_model_info", lambda _self: None)
+    monkeypatch.setattr(MainWindow, "_apply_reference_lattice_rf", lambda _self, _project: None)
     window = MainWindow(); window.select_lattice()
     assert (window.project.lattice.mat_variable, window.project.lattice.element_count) == ("second", 5)
     window.change_mat_variable()

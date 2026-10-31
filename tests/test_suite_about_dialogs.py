@@ -18,7 +18,8 @@ from pyLOCO.correct.main_window import CorrectMainWindow
 def test_logo_about_dialog_preserves_originating_window_page_and_reuses_dialog(kind):
     app=QApplication.instance() or build_application(["suite-about-test"])
     if kind=="fit":
-        window=MainWindow(); window._workspace.setCurrentIndex(2); click=lambda:window.header_brand.click()
+        window=MainWindow(); window._workspace.setCurrentIndex(2)
+        click=lambda:next(action for action in window.header_brand.menu().actions() if action.text()=="About pyLOCO").trigger()
     elif kind=="measure":
         window=MeasureMainWindow(); window.tabs.setCurrentIndex(2); click=lambda:window.logo_button.clicked.emit()
     else:

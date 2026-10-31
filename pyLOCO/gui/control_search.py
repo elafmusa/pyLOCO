@@ -227,6 +227,11 @@ class ControlSearchController(QObject):
             app = QApplication.instance()
             if app is not None:
                 app.processEvents()
+            if self.search_editor is not None:
+                # Showing the editor can trigger the responsive toolbar's
+                # final height/layout pass.  Re-anchor against that settled
+                # geometry so the overlay never clips the toolbar edge.
+                self._position_compact_editor()
         self.window.raise_()
         self.window.activateWindow()
         self.search_box.setFocus(Qt.ShortcutFocusReason)

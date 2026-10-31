@@ -104,7 +104,7 @@ class CorrectionApplyWorker(QObject):
 class CorrectMainWindow(QMainWindow):
     COLUMNS=("Apply?","Correction-row position","Fitted magnet (AT FamName)","AT Device","AT index (0-based)","Magnet class / type","pyAML target / control","Strength component","Control units","Mapping status","Initial K [m⁻²]","Fitted K [m⁻²]","Current K [m⁻²]","Raw fitted ΔK [m⁻²]","Recommended machine ΔK [m⁻²]","ΔK/K [%]","Global scale","Individual scale","Final ΔK [m⁻²]","L [m]","Final Δ(KL) [m⁻¹]","Applied control change","Target K [m⁻²]","Current [A]","Target current [A]","ΔI [A]","Min current [A]","Max current [A]","Limit margin [A]","Calibration status","Current-limit status","Exclusion reason","Current KL [m⁻¹]","Target KL [m⁻¹]")
     def __init__(self, *, registry=None):
-        super().__init__(); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.project_path=None; self.saved_progress_record=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
+        super().__init__(); self.setAttribute(Qt.WA_DeleteOnClose,True); self.resize(1500,900); self.setMinimumSize(1000,700); self.setWindowTitle("pyLOCO Correct — Review and Apply"); self.setWindowIcon(application_icon("correct")); self.review:CorrectionReview|None=None; self.project_path=None; self.saved_progress_record=None; self.theme_key=ensure_suite_appearance(QApplication.instance()).key; self._updating=False; self.mapping_path=None; self.sign_difference_names=frozenset(); self.large_difference_names=frozenset(); self.machine_snapshot=None; self.registry=registry or InterfaceRegistry(); self.backend_session=None; self.correction_changes=(); self._source_load_thread=None; self._source_load_worker=None; self._apply_thread=None; self._apply_worker=None; self.setStyleSheet(AMBER_QSS); self._build(); self._sync_theme_chrome(); QApplication.instance().installEventFilter(self)
         screen=self.screen()
         if screen is not None:self.resize(min(1500,screen.availableGeometry().width()),min(900,screen.availableGeometry().height()))
 
@@ -328,6 +328,7 @@ class CorrectMainWindow(QMainWindow):
             QMessageBox.warning(self, 'Restore required', 'Restore and verify the original quadrupole before closing. The journal is available for recovery.')
             event.ignore()
         else:
+            QApplication.instance().removeEventFilter(self)
             super().closeEvent(event)
 
     @staticmethod

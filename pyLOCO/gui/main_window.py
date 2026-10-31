@@ -213,6 +213,7 @@ class ClickableBrandLabel(QLabel):
 
     def __init__(self) -> None:
         super().__init__()
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setText(
             '<span style="font-size:28px; font-weight:800; color:#5B00E6;">py</span>'
             '<span style="font-size:28px; font-weight:800; color:#002B73;">LOCO</span>'
@@ -1404,6 +1405,10 @@ class MainWindow(QMainWindow):
             self.restoreState(saved_window_state)
         else:
             self.resizeDocks([self._project_explorer], [320], Qt.Horizontal)
+        # Restoring a Qt dock state can promote the current size hint to a
+        # hard minimum.  Keep the explorer natively resizable/collapsible.
+        self._project_explorer.setMinimumWidth(0)
+        self._project_explorer.widget().setMinimumWidth(0)
         self._create_actions()
         self._create_menu_bar()
         self._create_toolbar()
@@ -3768,7 +3773,11 @@ class MainWindow(QMainWindow):
         self.header_brand_label = QLabel(wordmark_html(self.current_theme.key)); self.header_brand_label.setTextFormat(Qt.RichText)
         self.header_brand_label.setMinimumWidth(180)
         self.header_brand_label.setAttribute(Qt.WA_TransparentForMouseEvents); brand_layout.addWidget(self.header_brand_label)
-        self.header_brand.setCursor(Qt.PointingHandCursor); self.header_brand.setToolTip("About pyLOCO"); self.header_brand.clicked.connect(self._show_about_dialog)
+        self.header_brand.setCursor(Qt.PointingHandCursor); self.header_brand.setToolTip("About pyLOCO and scientific resources")
+        brand_menu = self._build_brand_menu()
+        self.header_brand.setMenu(brand_menu)
+        self.header_brand.setDefaultAction(next(action for action in brand_menu.actions() if action.text() == "About pyLOCO"))
+        self.header_brand.setPopupMode(QToolButton.MenuButtonPopup)
         self.header_brand_action = toolbar.addWidget(self.header_brand)
         self.addToolBar(Qt.TopToolBarArea, toolbar)
         # QMainWindow resets a toolbar's minimum dimension while docking it,
@@ -3791,7 +3800,12 @@ class MainWindow(QMainWindow):
         """Move secondary header controls behind More at narrow widths."""
         if not hasattr(self, "more_toolbar_action"):
             return
-        narrow = self.width() < 1180
+        try:
+            narrow = self.width() < 1180
+        except RuntimeError:
+            # A queued zero-delay layout pass can arrive while Qt is tearing
+            # down a short-lived test or application window.
+            return
         for action in (
             self.save_project_as_toolbar_action,
             self.appearance_toolbar_action,

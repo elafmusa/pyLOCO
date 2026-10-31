@@ -77,10 +77,10 @@ def test_measurement_help_is_compact_and_context_sensitive(app):
     assert not window.measurement_help_body.isHidden()
     window.measurement_type.setCurrentIndex(window.measurement_type.findData("dispersion"))
     assert window.measurement_help_title.text() == "Dispersion / RF response"
-    assert "raw RF-state orbit measurements" in window.measurement_help_text.text()
-    assert "used directly by pyLOCO" in window.measurement_help_text.text()
-    assert "mean(−Δf) − mean(+Δf)" in window.measurement_help_convention.text()
-    assert "canonical signed RF step = f− − f+ = −2Δf" in window.measurement_help_convention.text()
+    assert "RF-induced orbit differences" in window.measurement_help_text.text()
+    assert "used directly by the current pyLOCO FIT importer" in window.measurement_help_text.text()
+    assert "mean(+Δf/2) − mean(−Δf/2)" in window.measurement_help_convention.text()
+    assert "canonical total RF separation = f+ − f− = +Δf" in window.measurement_help_convention.text()
     assert "normalized lattice dispersion" not in (
         window.measurement_help_text.text() + window.measurement_help_convention.text()
     ).lower()

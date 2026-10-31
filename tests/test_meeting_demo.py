@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from pyLOCO.correct.model import load_review
 from pyLOCO.gui.backend import LocoRunRequest
 from pyLOCO.gui.models.project import ProjectMetadata
@@ -10,10 +12,14 @@ from pyLOCO.gui.results.optics_view import OpticsView
 
 
 DEMO = Path(__file__).resolve().parents[1] / "Examples" / "Demo"
+LIVE_DEMO = DEMO / "01_PETRAIII_Fit_1_Iteration_Live.pyloco.json"
+COMPLETED_DEMO = DEMO / "02_PETRAIII_Fit_8_Iterations_Completed.pyloco.json"
+CORRECTION_DEMO = DEMO / "03_PETRAIII_Correction_Review.pyloco-correction.json"
 
 
+@pytest.mark.skipif(not LIVE_DEMO.is_file(), reason="optional generated PETRA III meeting demo bundle is unavailable")
 def test_live_demo_is_portable_valid_and_one_iteration():
-    path = DEMO / "01_PETRAIII_Fit_1_Iteration_Live.pyloco.json"
+    path = LIVE_DEMO
     text = path.read_text(encoding="utf-8")
     assert not any(value in text for value in ("/Users/", "/home/", "/private/tmp/", "Documents/Codex"))
     project = ProjectMetadata.load(path)
@@ -24,8 +30,9 @@ def test_live_demo_is_portable_valid_and_one_iteration():
     assert all(Path(value).is_file() for value in request.measurements.values())
 
 
+@pytest.mark.skipif(not COMPLETED_DEMO.is_file(), reason="optional generated PETRA III meeting demo bundle is unavailable")
 def test_completed_demo_restores_real_eight_iteration_artifacts():
-    project_path = DEMO / "02_PETRAIII_Fit_8_Iterations_Completed.pyloco.json"
+    project_path = COMPLETED_DEMO
     project = ProjectMetadata.load(project_path)
     loader = ResultsLoader(project.resolve_path(project.completed_run.results_dir))
     assert len(loader.chi2_history) == 8
@@ -47,12 +54,13 @@ def test_completed_demo_restores_real_eight_iteration_artifacts():
     assert loader.jacobian_available is False
 
 
+@pytest.mark.skipif(not COMPLETED_DEMO.is_file(), reason="optional generated PETRA III meeting demo bundle is unavailable")
 def test_completed_demo_renders_native_beta_and_dispersion_plots():
     from PySide6.QtWidgets import QApplication
 
     app = QApplication.instance() or QApplication([])
     project = ProjectMetadata.load(
-        DEMO / "02_PETRAIII_Fit_8_Iterations_Completed.pyloco.json"
+        COMPLETED_DEMO
     )
     result_dir = project.resolve_path(project.completed_run.results_dir)
     view = OpticsView()
@@ -84,8 +92,9 @@ def test_individual_correction_changes_only_selected_lattice_element():
     assert ring[1].PolynomB[1] == 1.25
 
 
+@pytest.mark.skipif(not CORRECTION_DEMO.is_file(), reason="optional generated PETRA III meeting demo bundle is unavailable")
 def test_correction_demo_contains_real_expanded_final_corrections():
-    plan = DEMO / "03_PETRAIII_Correction_Review.pyloco-correction.json"
+    plan = CORRECTION_DEMO
     text = plan.read_text(encoding="utf-8")
     assert not any(value in text for value in ("/Users/", "/home/", "/private/tmp/", "Documents/Codex"))
     review = load_review(plan)

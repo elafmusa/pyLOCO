@@ -933,6 +933,7 @@ def compute_jacobian(
                     output_dir=output_dir,
                     log_filename="quad_jacobian_logs2.txt",
                     orm_calculator=orm_calculator,
+                    Frequency=Frequency,
                     cancel_callback=cancel_callback,
                     iteration=iteration,
                     progress_callback=analytical_progress_callback,
@@ -1385,6 +1386,7 @@ def compute_jacobian(
                     fit_cfg=fit_cfg, includeDispersion=includeDispersion, output_dir=output_dir,
                     log_filename="skew_jacobian_logs.txt",
                     orm_calculator=response_matrix_calculator,
+                    Frequency=Frequency,
                     cancel_callback=cancel_callback,
                     iteration=iteration,
                     progress_callback=analytical_progress_callback,
@@ -1817,7 +1819,7 @@ def calculate_quads_jacobian(
         auto_correct_delta=True,
         fit_cfg=None, output_dir="output",
         log_filename="quad_jacobian_logs.txt", processes=None, includeDispersion=False,
-        orm_calculator="Linear", cancel_callback=None, iteration=None,
+        orm_calculator="Linear", Frequency=None, cancel_callback=None, iteration=None,
         progress_callback=None,
 ):
     from pathlib import Path
@@ -1863,7 +1865,7 @@ def calculate_quads_jacobian(
                 individuals, HCMCoupling, VCMCoupling, rf_step,
                 auto_correct_delta,
                 block, fit_cfg_dict, includeDispersion, orm_calculator,
-                CAVords, iteration,
+                CAVords, iteration, Frequency,
             ))
 
         worker_count = available_worker_count(
@@ -2128,6 +2130,7 @@ def calculate_quads_dispersion_jacobian(
             output_dir="output",
             log_filename="quad_dispersion_jacobian_logs.txt",
             includeDispersion=True, orm_calculator=orm_calculator,
+            Frequency=frequency,
             cancel_callback=cancel_callback, processes=workers,
         )
         if diagnostics_callback is not None:
@@ -3674,7 +3677,7 @@ def generating_quads_response_matrices(
         delta_init, individuals, HCMCoupling, VCMCoupling,
         rf_step, auto_correct_delta, block, fit_cfg,
         includeDispersion, orm_calculator="Linear", CAVords=None,
-        iteration=None,
+        iteration=None, Frequency=None,
 ):
     """
     Generate the numerical quadrupole Jacobian for one fitted
@@ -3845,6 +3848,7 @@ def generating_quads_response_matrices(
         includeDispersion=includeDispersion,
         rfStep=rf_step,
         calculator=orm_calculator,
+        Frequency=Frequency,
     )
 
     # ============================================================

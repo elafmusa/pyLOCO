@@ -22,7 +22,7 @@ def select_suite_appearance(app, key):
     # An embedded companion shares the FIT QApplication. Use FIT's existing
     # appearance action so its menu, current_theme and plots stay synchronized.
     owners = [w for w in app.topLevelWidgets()
-              if callable(getattr(w, "_apply_theme_selection", None))]
+              if w.isVisible() and callable(getattr(w, "_apply_theme_selection", None))]
     if owners:
         for owner in owners: owner._apply_theme_selection(theme.key)
     else:

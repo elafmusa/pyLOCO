@@ -22,7 +22,9 @@ class CorrectionApplicationService:
     def preview(self, review):
         result = []
         for item in review.items:
-            if not review.applies_to(item): continue
+            applies_to = getattr(review, "applies_to", None)
+            if not (applies_to(item) if callable(applies_to) else item.included):
+                continue
             name = item.control_name or item.name; channel = f"MAGNET:{name}"
             current = float(self.adapter.read(channel).value)
             result.append(CorrectionChange(name, channel, current, current + float(item.final_delta)))

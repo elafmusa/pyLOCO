@@ -8,6 +8,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM","offscreen")
 from PySide6.QtWidgets import QApplication
+from PySide6.QtTest import QTest
 
 from pyLOCO.control_system import AdapterCapability, PETRAReadOnlyAdapter
 from pyLOCO.control_system.petra import BPM_ADDRESS_X, BPM_ADDRESS_Y, READ_ONLY_ERROR
@@ -74,7 +75,14 @@ def test_measure_gui_petra_mode_is_read_only_and_orm_disabled_without_connecting
 def test_safe_connection_check_and_preview_diagnostics_are_reads_only(app,monkeypatch):
     window=MeasureMainWindow(); window.adapter_combo.setCurrentIndex(window.adapter_combo.findData("petra")); fake=FakePydoocs(tuple(range(1,len(window.devices)+1)),tuple(range(101,101+len(window.devices)))); cal=FakeDoocs4py(); window.adapter._pydoocs_module=fake; window.adapter._doocs4py_module=cal
     monkeypatch.setattr("pyLOCO.measure.main_window.QMessageBox.information",lambda *args:None); monkeypatch.setattr("pyLOCO.measure.main_window.QMessageBox.warning",lambda *args:None)
-    window._test_connection(); assert window.machine_info["connection"].text().startswith("Connected"); window._refresh_corrector_preview("hcor"); assert window.corrector_selection_widgets["hcor"]["table"].item(0,4).text()=="11.5"; assert not any(call[0]=="write" for call in fake.calls); window.close()
+    window._test_connection()
+    for _ in range(100):
+        if window.connection_thread is None:
+            break
+        QTest.qWait(10)
+    assert window.connection_thread is None
+    assert window.machine_info["connection"].text().startswith("Connected")
+    window._refresh_corrector_preview("hcor"); assert window.corrector_selection_widgets["hcor"]["table"].item(0,4).text()=="11.5"; assert not any(call[0]=="write" for call in fake.calls); window.close()
 
 
 @pytest.mark.skipif(os.environ.get("PYLOCO_PETRA_HARDWARE_TESTS")!="1",reason="explicit PETRA hardware opt-in required")

@@ -827,7 +827,7 @@ def test_save_project_snapshots_live_widgets_and_overwrites_loaded_file(app, tmp
     first.rm_calculator.setCurrentIndex(first.rm_calculator.findData("Numerical"))
     first.rm_dkick_h.setValue(1.25e-5)
     first.rm_dkick_v.setValue(2.5e-5)
-    first.rm_rf_step.setValue(-2750.0)
+    first.rm_rf_step.setValue(2750.0)
     first.rm_dispersion.setChecked(False)
     first.loco_hor_dispersion_weight.setValue(5.0)
     first.loco_ver_dispersion_weight.setValue(2.5)
@@ -853,7 +853,7 @@ def test_save_project_snapshots_live_widgets_and_overwrites_loaded_file(app, tmp
     assert second.rm_calculator.currentData() == "Numerical"
     assert second.rm_dkick_h.value() == pytest.approx(1.25e-5)
     assert second.rm_dkick_v.value() == pytest.approx(2.5e-5)
-    assert second.rm_rf_step.value() == pytest.approx(-2750.0)
+    assert second.rm_rf_step.value() == pytest.approx(2750.0)
     assert not second.rm_dispersion.isChecked()
     assert second.loco_hor_dispersion_weight.value() == 5.0
     assert second.loco_ver_dispersion_weight.value() == 2.5

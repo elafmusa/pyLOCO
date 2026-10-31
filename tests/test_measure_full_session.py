@@ -227,7 +227,10 @@ def test_full_session_restores_requested_write_preferences_without_authorization
     window=MeasureMainWindow(); monkeypatch.setattr(QMessageBox,"information",lambda *args:QMessageBox.Ok)
     try:
         window.open_full_measurement_session(bundle.manifest_path); app.processEvents()
-        assert window.pyaml_magnet_writes.isChecked() and window.pyaml_rf_writes.isChecked()
+        assert not window.pyaml_magnet_writes.isChecked()
+        assert not window.pyaml_rf_writes.isChecked()
+        assert window.project.metadata["pyaml_options"]["requested_magnet_writes"] is True
+        assert window.project.metadata["pyaml_options"]["requested_rf_writes"] is True
         assert not window.connection_verified
         assert "disconnected review" in window.statusBar().currentMessage()
     finally:window.close(); app.processEvents()
