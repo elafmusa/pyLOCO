@@ -1,8 +1,8 @@
 ## Project Origins and Authors
 
-The development of **pyLOCO** began in 2021 as part of a PhD research project at **Deutsches Elektronen-Synchrotron (DESY)**, Hamburg, Germany. The initial implementation was developed and tested through simulation studies for FCC-ee and PETRA IV.
+The development of **pyLOCO** began in 2021 as part of a PhD research project at **Deutsches Elektronen-Synchrotron (DESY)**, Hamburg, Germany. The initial implementation was developed and evaluated through simulation studies for FCC-ee and PETRA IV.
 
-Following the PhD research, development continued to extend the framework towards operational applications. The framework was subsequently validated through experimental studies and released under the name **pyLOCO**.
+Following the PhD research, development continued to extend the framework towards operational applications. The framework was subsequently tested and validated on real accelerators and further developed under the name **pyLOCO**.
 
 ### Authors
 
