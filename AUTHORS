@@ -1,0 +1,13 @@
+## Project Origins and Authors
+
+The development of **pyLOCO** began in 2021 as part of a PhD research project at **Deutsches Elektronen-Synchrotron (DESY)**, Hamburg, Germany. The initial implementation was developed and tested through simulation studies for FCC-ee and PETRA IV.
+
+Following the PhD research, development continued to extend the framework towards operational applications. The framework was subsequently validated through experimental studies and released under the name **pyLOCO**.
+
+### Authors
+
+- **Elaf Musa** — [elaf.musa@desy.de](mailto:elaf.musa@desy.de)
+- **Ilya Agapov** — [ilya.agapov@desy.de](mailto:ilya.agapov@desy.de)
+- **Konstantinos Paraschou** — [konstantinos.paraschou@desy.de](mailto:konstantinos.paraschou@desy.de)
+
+**Affiliation:** Deutsches Elektronen-Synchrotron (DESY), Hamburg, Germany.
