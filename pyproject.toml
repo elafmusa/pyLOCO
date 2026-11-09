@@ -25,6 +25,7 @@ dependencies = [
   "matplotlib",
   "numpy",
   "PyYAML",
+  "PySide6",
   "tomli; python_version < '3.11'",
 ]
 
